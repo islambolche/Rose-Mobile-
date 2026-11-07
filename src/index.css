@@ -1,0 +1,81 @@
+@import "tailwindcss";
+
+@layer utilities {
+  @keyframes orb-pulse {
+    0%, 100% { transform: scale(1); filter: brightness(1) drop-shadow(0 0 10px rgba(20, 184, 166, 0.4)); }
+    50% { transform: scale(1.05); filter: brightness(1.2) drop-shadow(0 0 25px rgba(20, 184, 166, 0.7)); }
+  }
+
+  @keyframes data-flow-glow {
+    0% { filter: brightness(1) drop-shadow(0 0 2px currentColor); opacity: 0.3; }
+    50% { filter: brightness(1.8) drop-shadow(0 0 8px currentColor); opacity: 1; }
+    100% { filter: brightness(1) drop-shadow(0 0 2px currentColor); opacity: 0.3; }
+  }
+
+  .animate-orb-pulse {
+    animation: orb-pulse 3s ease-in-out infinite;
+  }
+
+  .animate-data-flow {
+    animation: data-flow-glow 2s ease-in-out infinite;
+  }
+
+  @keyframes rose-idle-sway {
+    0%, 100% {
+      transform: translateY(0px) rotate(0deg) scale(1);
+    }
+    50% {
+      transform: translateY(-2px) rotate(0.5deg) scale(1.01);
+    }
+  }
+
+  @keyframes rose-listening-sway {
+    0%, 100% {
+      transform: translateY(0px) rotate(-0.8deg) scale(1.002);
+    }
+    50% {
+      transform: translateY(-2px) rotate(-0.2deg) scale(1.01);
+    }
+  }
+
+  @keyframes rose-thinking-sway {
+    0%, 100% {
+      transform: translateY(-1px) rotate(0.6deg) scale(1.005);
+    }
+    50% {
+      transform: translateY(-2.5px) rotate(1.1deg) scale(1.01);
+    }
+  }
+
+  @keyframes rose-speaking-nod {
+    0%, 100% {
+      transform: translateY(0px) rotate(0deg) scale(1.004);
+    }
+    25% {
+      transform: translateY(1.5px) rotate(-0.4deg) scale(1.008);
+    }
+    50% {
+      transform: translateY(-1.5px) rotate(0.4deg) scale(1.01);
+    }
+    75% {
+      transform: translateY(1px) rotate(-0.25deg) scale(1.006);
+    }
+  }
+
+  .animate-rose-idle {
+    animation: rose-idle-sway 4s ease-in-out infinite;
+  }
+
+  .animate-rose-listening {
+    animation: rose-listening-sway 4s ease-in-out infinite;
+  }
+
+  .animate-rose-thinking {
+    animation: rose-thinking-sway 4s ease-in-out infinite;
+  }
+
+  .animate-rose-speaking {
+    animation: rose-speaking-nod 1.8s ease-in-out infinite;
+  }
+}
+

@@ -1,0 +1,6 @@
+{
+  "name": "ROSE",
+  "description": "Premium personal AI assistant for MD YOUSUF KHAN. Modern, secure, and intelligent.",
+  "requestFramePermissions": ["microphone", "camera"],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

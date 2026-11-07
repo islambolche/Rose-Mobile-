@@ -1,0 +1,30 @@
+{
+  "name": "rose-ai-desktop",
+  "version": "1.6.0",
+  "description": "Rose AI Assistant Desktop App",
+  "main": "main.js",
+  "scripts": {
+    "desktop:start": "electron .",
+    "desktop:dist": "electron-builder"
+  },
+  "dependencies": {},
+  "devDependencies": {
+    "electron": "^33.0.0",
+    "electron-builder": "^25.1.8"
+  },
+  "build": {
+    "appId": "com.yousuf.rose.desktop",
+    "productName": "Rose",
+    "directories": {
+      "output": "release"
+    },
+    "files": [
+      "main.js",
+      "preload.js",
+      "../dist/**/*"
+    ],
+    "win": {
+      "target": ["nsis"]
+    }
+  }
+}

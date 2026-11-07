@@ -1,0 +1,30 @@
+name: Deploy IYABD
+
+on:
+  push:
+    branches: [ main ]
+
+jobs:
+  build-and-deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Install dependencies
+        run: npm install
+
+      - name: Build
+        env:
+          VITE_SUPABASE_URL: ${{ secrets.VITE_SUPABASE_URL }}
+          VITE_SUPABASE_ANON_KEY: ${{ secrets.VITE_SUPABASE_ANON_KEY }}
+          VITE_ADMIN_EMAIL: ${{ secrets.VITE_ADMIN_EMAIL }}
+          VITE_OWNER_NAME: ${{ secrets.VITE_OWNER_NAME }}
+          VITE_SHOW_ADMIN_LOGIN: "true"
+        run: npm run build
+
+      # Add further deployment steps here as needed (e.g., Firebase, Cloud Run, etc.)

@@ -1,0 +1,11 @@
+{
+  "name": "fb-page-auto-reply-bot",
+  "version": "1.0.0",
+  "description": "Facebook Page Auto-Reply Bot powered by Gemini AI and deployed on Vercel",
+  "type": "module",
+  "main": "api/webhook.js",
+  "scripts": {
+    "start": "node api/webhook.js"
+  },
+  "dependencies": {}
+}

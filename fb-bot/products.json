@@ -1,0 +1,37 @@
+{
+  "shopInfo": {
+    "shopName": "Rose Fashion & Crafts",
+    "deliveryInfo": "Inside Dhaka: 70 BDT (1-2 days). Outside Dhaka: 130 BDT (2-4 days via Steadfast/Pathao Courier).",
+    "returnPolicy": "7-day return policy for unused items in original packaging. Video proof required upon unboxing.",
+    "workingHours": "10:00 AM - 10:00 PM (Everyday)",
+    "contactPhone": "+8801671060679",
+    "contactEmail": "support@rosefashionbd.com",
+    "humanContactInstructions": "Call +8801671060679 or leave your phone number here, and a customer service representative will contact you shortly."
+  },
+  "products": [
+    {
+      "id": "p101",
+      "name": "Handcrafted Cotton Kurti",
+      "price": "1450 BDT",
+      "description": "100% pure organic cotton handcrafted Kurti with exquisite embroidery. Available sizes: M, L, XL.",
+      "inStock": true,
+      "howToOrder": "To order, please provide your Full Name, Phone Number, Size, and Delivery Address."
+    },
+    {
+      "id": "p102",
+      "name": "Leather Bifold Wallet",
+      "price": "850 BDT",
+      "description": "Genuine leather minimalist wallet with 6 card slots and full cash compartment. Color: Dark Brown.",
+      "inStock": true,
+      "howToOrder": "To order, please provide your Full Name, Phone Number, and Delivery Address."
+    },
+    {
+      "id": "p103",
+      "name": "Silk Printed Dupatta",
+      "price": "650 BDT",
+      "description": "Premium soft silk Dupatta featuring traditional floral hand block prints.",
+      "inStock": false,
+      "howToOrder": "Currently out of stock. Stock replenishment expected next week."
+    }
+  ]
+}

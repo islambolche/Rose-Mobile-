@@ -1,0 +1,29 @@
+1986:  const addVoiceLog = (text: string, type: "info" | "success" | "error" = "info") => {
+2000:    addVoiceLog(logMsg, newState === "IDLE" ? "info" : newState === "LISTENING" ? "info" : "success");
+2310:      addVoiceLog(step + ": Completed successfully", "success");
+2312:      addVoiceLog(step + ": " + (error || "Failed"), "error");
+2314:      addVoiceLog(step + ": Processing...", "info");
+2394:        addVoiceLog("Safety timer: audio ended or timed out, returning to LISTENING", "info");
+2860:      addVoiceLog("Error: Missing Gemini API key", "error");
+3002:          addVoiceLog(displayErr, "error");
+3005:          addVoiceLog(`Disconnected (${closeReason}). Reconnecting in 2s...`, "info");
+3034:      addVoiceLog(`Mic access error: ${err.message}`, "error");
+3127:      addVoiceLog("No Gemini API Key found", "error");
+3155:        addVoiceLog('Answer received from Gemini (' + answerTime + 's): "' + generatedText + '"', "success");
+3171:      addVoiceLog("Voice turn exception: " + err.message, "error");
+3302:          addVoiceLog("Network status " + res.status + " (" + rawError + "). Retrying...", "info");
+3312:          addVoiceLog("Network exception (" + rawError + "). Retrying...", "info");
+3412:      addVoiceLog("Already processing a voice turn, ignoring duplicate trigger", "info");
+3425:      addVoiceLog("Converting recorded audio clip to base64...", "info");
+3438:        addVoiceLog("Using FAST MODE (Groq text generation + Gemini TTS voice output)...", "info");
+3468:          addVoiceLog('Groq Whisper transcription error (' + transRes.status + '): ' + transRes.rawError, "error");
+3474:        addVoiceLog('Groq Whisper transcribed (' + transcriptionTime + 's): "' + userTranscript + '"', "success");
+3511:          addVoiceLog("Groq Chat error (" + chatResponse.status + "): " + rawErr, "error");
+3548:        addVoiceLog("Groq answer arrived (" + answerTime + "s): \"" + finalAnswer + "\"", "info");
+3564:        addVoiceLog("Using QUALITY MODE (Gemini API with smart quota fallback)...", "info");
+3635:                addVoiceLog("Model " + modelName + " hit quota limit. Marked exhausted today. Trying next model...", "info");
+3637:                addVoiceLog("Model " + modelName + " error: " + err.message + ". Trying next...", "info");
+3647:          addVoiceLog("All Gemini answer models exhausted. Falling back to Groq for text answer...", "info");
+3703:        addVoiceLog("Answer received from " + chosenModel + " (" + answerTime + "s): \"" + generatedText + "\"", "success");
+3728:      addVoiceLog(
+3734:      addVoiceLog(`Voice turn exception: ${err.message}`, "error");
