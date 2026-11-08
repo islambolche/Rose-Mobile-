@@ -6,6 +6,135 @@ export { TEXT_MODELS };
 
 const WORKING_MODEL_STORAGE_KEY = 'working_gemini_text_model';
 
+export const GEMINI_PER_REQUEST_TIMEOUT_MS = 15000;
+export const GEMINI_TOTAL_CHAIN_TIMEOUT_MS = 40000;
+const GEMINI_TTS_PER_REQUEST_TIMEOUT_MS = 15000;
+const GEMINI_TTS_TOTAL_CHAIN_TIMEOUT_MS = 40000;
+
+export const sanitizeOutApiKey = (text: string, apiKey?: string): string => {
+  if (!text) return '';
+  let out = String(text);
+  const cleanKey = String(apiKey || getGeminiKey() || '')
+    .replace(/[\r\n\t\s"']+/g, '')
+    .trim();
+  if (cleanKey && cleanKey.length > 4) {
+    out = out.split(cleanKey).join('[REDACTED]');
+  }
+  out = out.replace(/AIza[0-9A-Za-z\-_]+/g, '[REDACTED]');
+  out = out.replace(/([?&]key=)[^&\s]+/gi, '$1[REDACTED]');
+  return out;
+};
+
+export const formatGeminiErrorForUI = (
+  err: any,
+  apiKey?: string
+): { bengaliMessage: string; debugLine: string } => {
+  const modelName = String(
+    err?.modelName || getSavedWorkingTextModel() || TEXT_MODELS[0]
+  )
+    .replace(/^models\//, '')
+    .trim();
+
+  const rawMsg = sanitizeOutApiKey(
+    String(
+      err?.googleMessage ||
+        err?.bodyText ||
+        err?.message ||
+        err ||
+        'Gemini request failed'
+    ),
+    apiKey
+  )
+    .replace(/\s+/g, ' ')
+    .trim();
+
+  const isTimeout =
+    Boolean(err?.isTimeout) ||
+    err?.status === 'timeout' ||
+    /timed?\s*out|timeout|aborted/i.test(rawMsg);
+
+  const statusVal = isTimeout
+    ? 'timeout'
+    : err?.status !== undefined && err?.status !== null && err?.status !== ''
+      ? String(err.status)
+      : (() => {
+          const m = rawMsg.match(/\b(400|401|403|404|429|500|502|503|504)\b/);
+          return m ? m[1] : 'error';
+        })();
+
+  const timeSec =
+    err?.elapsedSeconds !== undefined
+      ? String(err.elapsedSeconds)
+      : isTimeout
+        ? '15.0'
+        : '0.0';
+
+  const cleanGoogleErr = rawMsg
+    .replace(/\s*\(HTTP\s+\d+\)\s*$/i, '')
+    .trim()
+    .slice(0, 120);
+
+  const debugLine = `model: ${modelName} | status: ${statusVal} | time: ${timeSec}s | ${cleanGoogleErr || 'Request failed'}`;
+
+  if (/Add your Gemini key in Settings/i.test(rawMsg)) {
+    return {
+      bengaliMessage: 'Add your Gemini key in Settings > Connections.',
+      debugLine,
+    };
+  }
+
+  const numStatus = Number(statusVal);
+  if (
+    numStatus === 429 ||
+    /\b429\b|quota|resource_exhausted|rate\s*limit/i.test(rawMsg)
+  ) {
+    return {
+      bengaliMessage: 'Gemini key-র ফ্রি সীমা শেষ, কিছুক্ষণ পরে চেষ্টা করুন',
+      debugLine,
+    };
+  }
+
+  if (
+    (numStatus === 400 || numStatus === 401 || numStatus === 403) &&
+    /api\s*key|api_key|key\s*not\s*valid|invalid\s*argument|unauthenticated|permission_denied/i.test(
+      rawMsg
+    )
+  ) {
+    return {
+      bengaliMessage:
+        'Gemini key ভুল বা বন্ধ, Settings → Connections-এ নতুন key দিন',
+      debugLine,
+    };
+  }
+
+  if (isTimeout) {
+    return {
+      bengaliMessage: 'নেটওয়ার্ক ধীর বা মডেল ব্যস্ত',
+      debugLine,
+    };
+  }
+
+  if (numStatus === 404 || /\b404\b|not\s*found|not_found/i.test(rawMsg)) {
+    return {
+      bengaliMessage: 'মডেলের নাম পুরনো, অ্যাপ নতুন মডেল খুঁজছে',
+      debugLine,
+    };
+  }
+
+  if (numStatus === 400 || numStatus === 401 || numStatus === 403) {
+    return {
+      bengaliMessage:
+        'Gemini key ভুল বা বন্ধ, Settings → Connections-এ নতুন key দিন',
+      debugLine,
+    };
+  }
+
+  return {
+    bengaliMessage: cleanGoogleErr || 'নেটওয়ার্ক ধীর বা মডেল ব্যস্ত',
+    debugLine,
+  };
+};
+
 const isDeprecatedOrLiveModel = (modelName?: string): boolean => {
   if (!modelName) return true;
   const clean = modelName.replace(/^models\//, '').trim().toLowerCase();
@@ -56,6 +185,31 @@ const clearWorkingTextModelIfMatches = (failedModel: string) => {
   } catch (e) {}
 };
 
+const isRetryableModelStatus = (status: any): boolean => {
+  const code = Number(status);
+  return code === 404 || code === 429 || code === 500 || code === 503;
+};
+
+const buildOrderedModelList = (requestedModel?: string): string[] => {
+  const ordered: string[] = [];
+  const savedWorkingModel = getSavedWorkingTextModel();
+  if (savedWorkingModel) {
+    ordered.push(savedWorkingModel);
+  }
+  for (const m of TEXT_MODELS) {
+    if (!ordered.includes(m)) {
+      ordered.push(m);
+    }
+  }
+  if (requestedModel && !isDeprecatedOrLiveModel(requestedModel)) {
+    const cleanReq = String(requestedModel).replace(/^models\//, '').trim();
+    if (cleanReq && !ordered.includes(cleanReq)) {
+      ordered.push(cleanReq);
+    }
+  }
+  return ordered;
+};
+
 export const discoverAvailableFlashModels = async (
   apiKey: string,
   excludeModels: Set<string> = new Set()
@@ -65,9 +219,17 @@ export const discoverAvailableFlashModels = async (
     .trim();
   if (!cleanKey) return [];
   try {
+    const controller = new AbortController();
+    const timer = setTimeout(() => {
+      try {
+        controller.abort();
+      } catch (e) {}
+    }, 6000);
     const res = await fetch(
-      `https://generativelanguage.googleapis.com/v1beta/models?key=${encodeURIComponent(cleanKey)}`
+      `https://generativelanguage.googleapis.com/v1beta/models?key=${encodeURIComponent(cleanKey)}`,
+      { signal: controller.signal }
     );
+    clearTimeout(timer);
     if (!res.ok) return [];
     const data = await res.json();
     const models = Array.isArray(data?.models) ? data.models : [];
@@ -100,13 +262,13 @@ export const discoverAvailableFlashModels = async (
   }
 };
 
-const GEMINI_TEXT_TIMEOUT_MS = 12000;
-const GEMINI_TTS_TIMEOUT_MS = 25000;
-
 const fetchWithSignalTimeout = async (
   input: RequestInfo | URL,
   init: RequestInit,
-  timeoutMs: number
+  timeoutMs: number,
+  modelName = TEXT_MODELS[0],
+  reqStartTime = Date.now(),
+  cleanKey = ''
 ): Promise<Response> => {
   const controller = new AbortController();
   const timer = setTimeout(() => {
@@ -117,10 +279,27 @@ const fetchWithSignalTimeout = async (
   try {
     return await fetch(input, { ...init, signal: controller.signal });
   } catch (err: any) {
+    const elapsedSeconds = ((Date.now() - reqStartTime) / 1000).toFixed(1);
     if (err?.name === 'AbortError') {
-      throw new Error(`Request timed out after ${Math.round(timeoutMs / 1000)}s`);
+      const timeoutSec = Math.round(timeoutMs / 1000);
+      const tErr: any = new Error(`Request timed out after ${timeoutSec}s`);
+      tErr.isTimeout = true;
+      tErr.status = 'timeout';
+      tErr.modelName = modelName;
+      tErr.elapsedSeconds = elapsedSeconds;
+      tErr.googleMessage = `Request timed out after ${timeoutSec}s`;
+      tErr.bodyText = tErr.googleMessage;
+      throw tErr;
     }
+    const rawMsg = sanitizeOutApiKey(
+      String(err?.message || 'Cannot reach Gemini. Check your internet and your Gemini key.'),
+      cleanKey
+    );
     const netErr: any = new Error('Cannot reach Gemini. Check your internet and your Gemini key.');
+    netErr.status = 'network_error';
+    netErr.modelName = modelName;
+    netErr.elapsedSeconds = elapsedSeconds;
+    netErr.googleMessage = rawMsg;
     netErr.bodyText = 'Cannot reach Gemini. Check your internet and your Gemini key.';
     throw netErr;
   } finally {
@@ -146,26 +325,34 @@ const callGeminiTextEndpoint = async (params: {
     apiKey,
     tools,
     toolConfig,
-    timeoutMs = GEMINI_TEXT_TIMEOUT_MS,
+    timeoutMs = GEMINI_PER_REQUEST_TIMEOUT_MS,
   } = params;
 
   const cleanKey = String(apiKey || getGeminiKey() || '')
     .replace(/[\r\n\t\s"']+/g, '')
     .trim();
 
+  const cleanModel =
+    String(model || TEXT_MODELS[0]).replace(/^models\//, '').trim() || TEXT_MODELS[0];
+
   if (!cleanKey) {
     const missingErr: any = new Error('Add your Gemini key in Settings > Connections.');
     missingErr.bodyText = 'Add your Gemini key in Settings > Connections.';
+    missingErr.googleMessage = 'Add your Gemini key in Settings > Connections.';
+    missingErr.modelName = cleanModel;
+    missingErr.status = 400;
+    missingErr.elapsedSeconds = '0.0';
     throw missingErr;
   }
-
-  const cleanModel = String(model || TEXT_MODELS[0]).replace(/^models\//, '').trim() || TEXT_MODELS[0];
 
   const mergedGenConfig: any = {
     maxOutputTokens: 150,
     thinkingConfig: { thinkingBudget: 0 },
     ...(generationConfig || {}),
   };
+  if (!mergedGenConfig.thinkingConfig) {
+    mergedGenConfig.thinkingConfig = { thinkingBudget: 0 };
+  }
 
   const directBody: any = {
     contents,
@@ -184,6 +371,8 @@ const callGeminiTextEndpoint = async (params: {
   }
 
   const url = `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(cleanModel)}:generateContent?key=${encodeURIComponent(cleanKey)}`;
+  const reqStartTime = Date.now();
+  const perReqTimeout = Math.min(GEMINI_PER_REQUEST_TIMEOUT_MS, Math.max(1000, timeoutMs));
 
   let res = await fetchWithSignalTimeout(
     url,
@@ -192,7 +381,10 @@ const callGeminiTextEndpoint = async (params: {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(directBody),
     },
-    timeoutMs
+    perReqTimeout,
+    cleanModel,
+    reqStartTime,
+    cleanKey
   );
 
   if (res.status === 400 && directBody.generationConfig?.thinkingConfig) {
@@ -207,11 +399,15 @@ const callGeminiTextEndpoint = async (params: {
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify(directBody),
         },
-        timeoutMs
+        GEMINI_PER_REQUEST_TIMEOUT_MS,
+        cleanModel,
+        Date.now(),
+        cleanKey
       );
     }
   }
 
+  const elapsedSeconds = ((Date.now() - reqStartTime) / 1000).toFixed(1);
   const rawBodyText = await res.text().catch(() => '');
 
   let parsed: any = null;
@@ -221,6 +417,9 @@ const callGeminiTextEndpoint = async (params: {
     const msg = `Cannot reach Gemini. Check your internet and your Gemini key. (HTTP ${res.status})`;
     const err: any = new Error(msg);
     err.status = res.status;
+    err.modelName = cleanModel;
+    err.elapsedSeconds = elapsedSeconds;
+    err.googleMessage = sanitizeOutApiKey(rawBodyText.slice(0, 120) || msg, cleanKey);
     err.bodyText = msg;
     throw err;
   }
@@ -229,16 +428,26 @@ const callGeminiTextEndpoint = async (params: {
     const msg = `Cannot reach Gemini. Check your internet and your Gemini key. (HTTP ${res.status})`;
     const err: any = new Error(msg);
     err.status = res.status;
+    err.modelName = cleanModel;
+    err.elapsedSeconds = elapsedSeconds;
+    err.googleMessage = msg;
     err.bodyText = msg;
     throw err;
   }
 
   if (!res.ok) {
+    const rawGoogleErr = sanitizeOutApiKey(
+      parsed?.error?.message || `HTTP ${res.status}`,
+      cleanKey
+    );
     const googleErrMsg = parsed?.error?.message
-      ? `${parsed.error.message} (HTTP ${res.status})`
+      ? `${rawGoogleErr} (HTTP ${res.status})`
       : `Cannot reach Gemini. Check your internet and your Gemini key. (HTTP ${res.status})`;
     const err: any = new Error(googleErrMsg);
     err.status = res.status;
+    err.modelName = cleanModel;
+    err.elapsedSeconds = elapsedSeconds;
+    err.googleMessage = rawGoogleErr;
     err.bodyText = googleErrMsg;
     throw err;
   }
@@ -252,6 +461,8 @@ const callGeminiStreamEndpoint = async (params: {
   systemInstruction?: string;
   generationConfig?: any;
   apiKey: string;
+  tools?: any[];
+  toolConfig?: any;
   onTextChunk: (deltaText: string) => void;
   timeoutMs?: number;
 }) => {
@@ -261,37 +472,220 @@ const callGeminiStreamEndpoint = async (params: {
     systemInstruction,
     generationConfig,
     apiKey,
+    tools,
+    toolConfig,
     onTextChunk,
-    timeoutMs = GEMINI_TEXT_TIMEOUT_MS,
+    timeoutMs = GEMINI_PER_REQUEST_TIMEOUT_MS,
   } = params;
 
-  const parsed = await callGeminiTextEndpoint({
-    model,
+  const cleanKey = String(apiKey || getGeminiKey() || '')
+    .replace(/[\r\n\t\s"']+/g, '')
+    .trim();
+  const cleanModel =
+    String(model || TEXT_MODELS[0]).replace(/^models\//, '').trim() || TEXT_MODELS[0];
+
+  if (!cleanKey) {
+    const missingErr: any = new Error('Add your Gemini key in Settings > Connections.');
+    missingErr.bodyText = 'Add your Gemini key in Settings > Connections.';
+    missingErr.googleMessage = 'Add your Gemini key in Settings > Connections.';
+    missingErr.modelName = cleanModel;
+    missingErr.status = 400;
+    missingErr.elapsedSeconds = '0.0';
+    throw missingErr;
+  }
+
+  const mergedGenConfig: any = {
+    maxOutputTokens: 150,
+    thinkingConfig: { thinkingBudget: 0 },
+    ...(generationConfig || {}),
+  };
+  if (!mergedGenConfig.thinkingConfig) {
+    mergedGenConfig.thinkingConfig = { thinkingBudget: 0 };
+  }
+
+  const directBody: any = {
     contents,
-    systemInstruction,
-    generationConfig,
-    apiKey,
-    timeoutMs,
-  });
+    generationConfig: mergedGenConfig,
+  };
+  if (systemInstruction && String(systemInstruction).trim().length > 0) {
+    directBody.systemInstruction = {
+      parts: [{ text: String(systemInstruction).trim() }],
+    };
+  }
+  if (tools && Array.isArray(tools) && tools.length > 0) {
+    directBody.tools = tools;
+    if (toolConfig) {
+      directBody.toolConfig = toolConfig;
+    }
+  }
+
+  const url = `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(cleanModel)}:streamGenerateContent?alt=sse&key=${encodeURIComponent(cleanKey)}`;
+  const reqStartTime = Date.now();
+  const perReqTimeout = Math.min(GEMINI_PER_REQUEST_TIMEOUT_MS, Math.max(1000, timeoutMs));
+
+  let res = await fetchWithSignalTimeout(
+    url,
+    {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(directBody),
+    },
+    perReqTimeout,
+    cleanModel,
+    reqStartTime,
+    cleanKey
+  );
+
+  if (res.status === 400 && directBody.generationConfig?.thinkingConfig) {
+    const errTxt = await res.clone().text().catch(() => '');
+    if (errTxt.toLowerCase().includes('thinking')) {
+      const { thinkingConfig, ...restGen } = directBody.generationConfig;
+      directBody.generationConfig = restGen;
+      res = await fetchWithSignalTimeout(
+        url,
+        {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(directBody),
+        },
+        GEMINI_PER_REQUEST_TIMEOUT_MS,
+        cleanModel,
+        Date.now(),
+        cleanKey
+      );
+    }
+  }
+
+  if (!res.ok) {
+    const elapsedSeconds = ((Date.now() - reqStartTime) / 1000).toFixed(1);
+    const rawBodyText = await res.text().catch(() => '');
+    let parsed: any = null;
+    try {
+      parsed = rawBodyText ? JSON.parse(rawBodyText) : null;
+      if (Array.isArray(parsed) && parsed[0]) parsed = parsed[0];
+    } catch {}
+    const rawGoogleErr = sanitizeOutApiKey(
+      parsed?.error?.message || rawBodyText.slice(0, 120) || `HTTP ${res.status}`,
+      cleanKey
+    );
+    const googleErrMsg = parsed?.error?.message
+      ? `${rawGoogleErr} (HTTP ${res.status})`
+      : `Cannot reach Gemini. Check your internet and your Gemini key. (HTTP ${res.status})`;
+    const err: any = new Error(googleErrMsg);
+    err.status = res.status;
+    err.modelName = cleanModel;
+    err.elapsedSeconds = elapsedSeconds;
+    err.googleMessage = rawGoogleErr;
+    err.bodyText = googleErrMsg;
+    throw err;
+  }
 
   let fullText = '';
-  const parts = parsed?.candidates?.[0]?.content?.parts;
-  if (Array.isArray(parts)) {
-    for (const p of parts) {
-      if (typeof p?.text === 'string' && p.text) {
-        fullText += p.text;
-        onTextChunk(p.text);
+  const collectedParts: any[] = [];
+
+  const processParsedChunk = (chunkObj: any) => {
+    const parts = chunkObj?.candidates?.[0]?.content?.parts;
+    if (Array.isArray(parts)) {
+      for (const p of parts) {
+        if (typeof p?.text === 'string' && p.text) {
+          fullText += p.text;
+          collectedParts.push(p);
+          onTextChunk(p.text);
+        } else if (p?.functionCall) {
+          collectedParts.push(p);
+        }
       }
+    }
+  };
+
+  if (res.body && typeof res.body.getReader === 'function') {
+    const reader = res.body.getReader();
+    const decoder = new TextDecoder('utf-8');
+    let buffer = '';
+
+    while (true) {
+      const readPromise = reader.read();
+      const timeoutPromise = new Promise<never>((_, reject) => {
+        setTimeout(() => {
+          try {
+            reader.cancel();
+          } catch {}
+          const tErr: any = new Error('Request timed out after 15s');
+          tErr.isTimeout = true;
+          tErr.status = 'timeout';
+          tErr.modelName = cleanModel;
+          tErr.elapsedSeconds = ((Date.now() - reqStartTime) / 1000).toFixed(1);
+          tErr.googleMessage = 'Request timed out after 15s';
+          tErr.bodyText = 'Request timed out after 15s';
+          reject(tErr);
+        }, GEMINI_PER_REQUEST_TIMEOUT_MS);
+      });
+
+      const { done, value } = await Promise.race([readPromise, timeoutPromise]);
+      if (done) break;
+      buffer += decoder.decode(value, { stream: true });
+
+      const lines = buffer.split(/\r?\n/);
+      buffer = lines.pop() || '';
+
+      for (const line of lines) {
+        const trimmed = line.trim();
+        if (!trimmed.startsWith('data:')) continue;
+        const dataStr = trimmed.slice(5).trim();
+        if (!dataStr || dataStr === '[DONE]') continue;
+        try {
+          const parsedChunk = JSON.parse(dataStr);
+          processParsedChunk(parsedChunk);
+        } catch {}
+      }
+    }
+
+    if (buffer.trim().startsWith('data:')) {
+      const dataStr = buffer.trim().slice(5).trim();
+      if (dataStr && dataStr !== '[DONE]') {
+        try {
+          processParsedChunk(JSON.parse(dataStr));
+        } catch {}
+      }
+    }
+  } else {
+    const rawText = await res.text().catch(() => '');
+    const lines = rawText.split(/\r?\n/);
+    let parsedAny = false;
+    for (const line of lines) {
+      const trimmed = line.trim();
+      if (trimmed.startsWith('data:')) {
+        const dataStr = trimmed.slice(5).trim();
+        if (dataStr && dataStr !== '[DONE]') {
+          try {
+            processParsedChunk(JSON.parse(dataStr));
+            parsedAny = true;
+          } catch {}
+        }
+      }
+    }
+    if (!parsedAny && rawText.trim()) {
+      try {
+        const fallbackJson = JSON.parse(rawText);
+        if (Array.isArray(fallbackJson)) {
+          fallbackJson.forEach(processParsedChunk);
+        } else {
+          processParsedChunk(fallbackJson);
+        }
+      } catch {}
     }
   }
 
   return {
     text: fullText,
-    modelUsed: parsed.modelUsed || model,
-    candidates: parsed.candidates || [
+    modelUsed: cleanModel,
+    candidates: [
       {
         content: {
-          parts: [{ text: fullText }],
+          parts:
+            collectedParts.length > 0
+              ? collectedParts
+              : [{ text: fullText }],
         },
       },
     ],
@@ -299,7 +693,8 @@ const callGeminiStreamEndpoint = async (params: {
 };
 
 export const directGeminiGenerate = async (payload: any) => {
-  const { contents, systemInstruction, generationConfig, apiKey, tools, toolConfig, model } = payload || {};
+  const { contents, systemInstruction, generationConfig, apiKey, tools, toolConfig, model } =
+    payload || {};
 
   const cleanKey = String(apiKey || getGeminiKey() || '')
     .replace(/[\r\n\t\s"']+/g, '')
@@ -308,13 +703,20 @@ export const directGeminiGenerate = async (payload: any) => {
   if (!cleanKey) {
     const missingErr: any = new Error('Add your Gemini key in Settings > Connections.');
     missingErr.bodyText = 'Add your Gemini key in Settings > Connections.';
+    missingErr.googleMessage = 'Add your Gemini key in Settings > Connections.';
+    missingErr.modelName = getSavedWorkingTextModel() || TEXT_MODELS[0];
+    missingErr.status = 400;
+    missingErr.elapsedSeconds = '0.0';
     throw missingErr;
   }
 
-  const normalizedContents = Array.isArray(contents) ? contents : [];
-  const hasRichParts = normalizedContents.some((c: any) =>
-    Array.isArray(c?.parts) &&
-    c.parts.some((p: any) => p?.inlineData || p?.inline_data || p?.functionCall || p?.functionResponse)
+  const normalizedContents = Array.isArray(contents) ? contents.slice(-8) : [];
+  const hasRichParts = normalizedContents.some(
+    (c: any) =>
+      Array.isArray(c?.parts) &&
+      c.parts.some(
+        (p: any) => p?.inlineData || p?.inline_data || p?.functionCall || p?.functionResponse
+      )
   );
 
   const preparedContents = hasRichParts
@@ -327,29 +729,19 @@ export const directGeminiGenerate = async (payload: any) => {
         systemInstruction || ''
       );
 
-  const deadline = Date.now() + GEMINI_TEXT_TIMEOUT_MS;
-  const savedWorkingModel = getSavedWorkingTextModel();
-  const initialModels: string[] = [];
-  if (model && !isDeprecatedOrLiveModel(model)) {
-    initialModels.push(String(model).replace(/^models\//, '').trim());
-  }
-  if (savedWorkingModel && !initialModels.includes(savedWorkingModel)) {
-    initialModels.push(savedWorkingModel);
-  }
-  for (const m of TEXT_MODELS) {
-    if (!initialModels.includes(m)) {
-      initialModels.push(m);
-    }
-  }
+  const deadline = Date.now() + GEMINI_TOTAL_CHAIN_TIMEOUT_MS;
+  const initialModels = buildOrderedModelList(model);
 
   const triedModels = new Set<string>();
   let lastError: any = null;
+  let allFailedWithRetryableStatus = true;
 
   for (const candidateModel of initialModels) {
-    const remainingMs = deadline - Date.now();
-    if (remainingMs <= 0) {
-      throw new Error('Gemini text request timed out (12s)');
+    const remainingChainMs = deadline - Date.now();
+    if (remainingChainMs <= 0) {
+      break;
     }
+    const perReqTimeoutMs = Math.min(GEMINI_PER_REQUEST_TIMEOUT_MS, remainingChainMs);
     triedModels.add(candidateModel);
     try {
       const result = await callGeminiTextEndpoint({
@@ -360,23 +752,27 @@ export const directGeminiGenerate = async (payload: any) => {
         apiKey: cleanKey,
         tools,
         toolConfig,
-        timeoutMs: remainingMs,
+        timeoutMs: perReqTimeoutMs,
       });
       saveWorkingTextModel(candidateModel);
       return result;
     } catch (err: any) {
       lastError = err;
       clearWorkingTextModelIfMatches(candidateModel);
+      if (!isRetryableModelStatus(err?.status)) {
+        allFailedWithRetryableStatus = false;
+        break;
+      }
       if (Date.now() >= deadline) break;
-      continue;
     }
   }
 
-  if (Date.now() < deadline) {
+  if (allFailedWithRetryableStatus && Date.now() < deadline) {
     const discoveredModels = await discoverAvailableFlashModels(cleanKey, triedModels);
     for (const discoveredModel of discoveredModels) {
-      const remainingMs = deadline - Date.now();
-      if (remainingMs <= 0) break;
+      const remainingChainMs = deadline - Date.now();
+      if (remainingChainMs <= 0) break;
+      const perReqTimeoutMs = Math.min(GEMINI_PER_REQUEST_TIMEOUT_MS, remainingChainMs);
       triedModels.add(discoveredModel);
       try {
         const result = await callGeminiTextEndpoint({
@@ -387,14 +783,14 @@ export const directGeminiGenerate = async (payload: any) => {
           apiKey: cleanKey,
           tools,
           toolConfig,
-          timeoutMs: remainingMs,
+          timeoutMs: perReqTimeoutMs,
         });
         saveWorkingTextModel(discoveredModel);
         return result;
       } catch (err: any) {
         lastError = err;
+        if (!isRetryableModelStatus(err?.status)) break;
         if (Date.now() >= deadline) break;
-        continue;
       }
     }
   }
@@ -406,7 +802,8 @@ export const directGeminiStream = async (
   payload: any,
   onTextChunk: (deltaText: string) => void
 ) => {
-  const { contents, systemInstruction, generationConfig, apiKey } = payload || {};
+  const { contents, systemInstruction, generationConfig, apiKey, tools, toolConfig, model } =
+    payload || {};
 
   const cleanKey = String(apiKey || getGeminiKey() || '')
     .replace(/[\r\n\t\s"']+/g, '')
@@ -415,90 +812,94 @@ export const directGeminiStream = async (
   if (!cleanKey) {
     const missingErr: any = new Error('Add your Gemini key in Settings > Connections.');
     missingErr.bodyText = 'Add your Gemini key in Settings > Connections.';
+    missingErr.googleMessage = 'Add your Gemini key in Settings > Connections.';
+    missingErr.modelName = getSavedWorkingTextModel() || TEXT_MODELS[0];
+    missingErr.status = 400;
+    missingErr.elapsedSeconds = '0.0';
     throw missingErr;
   }
 
-  const preparedContents = prepareHistory(
-    (contents || []).map((c: any) => ({
-      role: c.role,
-      text: c?.parts?.[0]?.text ?? c?.text ?? '',
-    })),
-    systemInstruction || ''
+  const normalizedContents = Array.isArray(contents) ? contents.slice(-8) : [];
+  const hasRichParts = normalizedContents.some(
+    (c: any) =>
+      Array.isArray(c?.parts) &&
+      c.parts.some(
+        (p: any) => p?.inlineData || p?.inline_data || p?.functionCall || p?.functionResponse
+      )
   );
 
-  const deadline = Date.now() + GEMINI_TEXT_TIMEOUT_MS;
-  const savedWorkingModel = getSavedWorkingTextModel();
-  const initialModels: string[] = [];
-  if (savedWorkingModel) {
-    initialModels.push(savedWorkingModel);
-  }
-  for (const m of TEXT_MODELS) {
-    if (!initialModels.includes(m)) {
-      initialModels.push(m);
-    }
-  }
+  const preparedContents = hasRichParts
+    ? normalizedContents
+    : prepareHistory(
+        normalizedContents.map((c: any) => ({
+          role: c.role,
+          text: c?.parts?.[0]?.text ?? c?.text ?? '',
+        })),
+        systemInstruction || ''
+      );
+
+  const deadline = Date.now() + GEMINI_TOTAL_CHAIN_TIMEOUT_MS;
+  const initialModels = buildOrderedModelList(model);
 
   const triedModels = new Set<string>();
   let lastError: any = null;
+  let allFailedWithRetryableStatus = true;
 
   for (const candidateModel of initialModels) {
-    const remainingMs = deadline - Date.now();
-    if (remainingMs <= 0) {
-      throw new Error('Gemini text request timed out (12s)');
-    }
+    const remainingChainMs = deadline - Date.now();
+    if (remainingChainMs <= 0) break;
+    const perReqTimeoutMs = Math.min(GEMINI_PER_REQUEST_TIMEOUT_MS, remainingChainMs);
     triedModels.add(candidateModel);
     try {
-      const result = await Promise.race([
-        callGeminiStreamEndpoint({
-          model: candidateModel,
-          contents: preparedContents,
-          systemInstruction,
-          generationConfig,
-          apiKey: cleanKey,
-          onTextChunk,
-          timeoutMs: remainingMs,
-        }),
-        new Promise<any>((_, reject) =>
-          setTimeout(() => reject(new Error('Gemini text request timed out (12s)')), remainingMs)
-        ),
-      ]);
+      const result = await callGeminiStreamEndpoint({
+        model: candidateModel,
+        contents: preparedContents,
+        systemInstruction,
+        generationConfig,
+        apiKey: cleanKey,
+        tools,
+        toolConfig,
+        onTextChunk,
+        timeoutMs: perReqTimeoutMs,
+      });
       saveWorkingTextModel(candidateModel);
       return result;
     } catch (err: any) {
       lastError = err;
       clearWorkingTextModelIfMatches(candidateModel);
+      if (!isRetryableModelStatus(err?.status)) {
+        allFailedWithRetryableStatus = false;
+        break;
+      }
       if (Date.now() >= deadline) break;
-      continue;
     }
   }
 
-  if (Date.now() < deadline) {
+  if (allFailedWithRetryableStatus && Date.now() < deadline) {
     const discoveredModels = await discoverAvailableFlashModels(cleanKey, triedModels);
     for (const discoveredModel of discoveredModels) {
-      const remainingMs = deadline - Date.now();
-      if (remainingMs <= 0) break;
+      const remainingChainMs = deadline - Date.now();
+      if (remainingChainMs <= 0) break;
+      const perReqTimeoutMs = Math.min(GEMINI_PER_REQUEST_TIMEOUT_MS, remainingChainMs);
       triedModels.add(discoveredModel);
       try {
-        const result = await Promise.race([
-          callGeminiStreamEndpoint({
-            model: discoveredModel,
-            contents: preparedContents,
-            systemInstruction,
-            generationConfig,
-            apiKey: cleanKey,
-            onTextChunk,
-            timeoutMs: remainingMs,
-          }),
-          new Promise<any>((_, reject) =>
-            setTimeout(() => reject(new Error('Gemini text request timed out (12s)')), remainingMs)
-          ),
-        ]);
+        const result = await callGeminiStreamEndpoint({
+          model: discoveredModel,
+          contents: preparedContents,
+          systemInstruction,
+          generationConfig,
+          apiKey: cleanKey,
+          tools,
+          toolConfig,
+          onTextChunk,
+          timeoutMs: perReqTimeoutMs,
+        });
         saveWorkingTextModel(discoveredModel);
         return result;
       } catch (err: any) {
         lastError = err;
+        if (!isRetryableModelStatus(err?.status)) break;
         if (Date.now() >= deadline) break;
-        continue;
       }
     }
   }
@@ -530,7 +931,10 @@ export const discoverAvailableTtsModels = async (apiKey: string): Promise<string
     const res = await fetchWithSignalTimeout(
       `https://generativelanguage.googleapis.com/v1beta/models?key=${encodeURIComponent(cleanKey)}`,
       { method: 'GET' },
-      3000
+      6000,
+      'models-list',
+      Date.now(),
+      cleanKey
     );
     if (!res.ok) return [];
     const data = await res.json();
@@ -558,11 +962,14 @@ export const directGeminiTTS = async (payload: any) => {
   if (!cleanKey) {
     const missingErr: any = new Error('Add your Gemini key in Settings > Connections.');
     missingErr.bodyText = 'Add your Gemini key in Settings > Connections.';
+    missingErr.googleMessage = 'Add your Gemini key in Settings > Connections.';
+    missingErr.status = 400;
     throw missingErr;
   }
 
-  const preferredModel = getSavedWorkingTtsModel() || model || 'gemini-2.5-flash-preview-tts';
-  const deadline = Date.now() + GEMINI_TTS_TIMEOUT_MS;
+  const savedTts = getSavedWorkingTtsModel();
+  const preferredModel = savedTts || model || 'gemini-2.5-flash-preview-tts';
+  const deadline = Date.now() + GEMINI_TTS_TOTAL_CHAIN_TIMEOUT_MS;
 
   const rawText = String(text || '').trim();
   if (!rawText) throw new Error('Empty text for TTS');
@@ -577,23 +984,30 @@ export const directGeminiTTS = async (payload: any) => {
     transcript = prefixMatch[1].trim();
   }
 
-  const initialModels = Array.from(new Set([
-    preferredModel && preferredModel.includes('tts') ? preferredModel.replace(/^models\//, '').trim() : null,
-    'gemini-2.5-flash-preview-tts',
-    'gemini-2.5-flash-tts',
-    'gemini-2.0-flash-preview-tts',
-    'gemini-2.0-flash-tts',
-  ].filter(Boolean))) as string[];
+  const initialModels = Array.from(
+    new Set(
+      [
+        savedTts && savedTts.includes('tts') ? savedTts.replace(/^models\//, '').trim() : null,
+        preferredModel && preferredModel.includes('tts')
+          ? preferredModel.replace(/^models\//, '').trim()
+          : null,
+        'gemini-2.5-flash-preview-tts',
+        'gemini-2.5-flash-tts',
+        'gemini-2.0-flash-preview-tts',
+        'gemini-2.0-flash-tts',
+      ].filter(Boolean)
+    )
+  ) as string[];
 
   const triedModels = new Set<string>();
-  let lastErrorText = '';
+  let lastError: any = null;
 
   const callDirectTts = async (m: string) => {
-    const remainingMs = Math.max(1000, deadline - Date.now());
+    const remainingChainMs = Math.max(1000, deadline - Date.now());
+    const perReqTimeoutMs = Math.min(GEMINI_TTS_PER_REQUEST_TIMEOUT_MS, remainingChainMs);
     const cleanModel = m.replace(/^models\//, '').trim();
     const url = `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(cleanModel)}:generateContent?key=${encodeURIComponent(cleanKey)}`;
-
-    console.log(`[Gemini TTS Client] Calling direct Gemini TTS with model: ${cleanModel}, voice: ${voiceName || "Leda"}, text: "${transcript.slice(0, 30)}..."`);
+    const reqStartTime = Date.now();
 
     const res = await fetchWithSignalTimeout(
       url,
@@ -614,18 +1028,24 @@ export const directGeminiTTS = async (payload: any) => {
           },
         }),
       },
-      remainingMs
+      perReqTimeoutMs,
+      cleanModel,
+      reqStartTime,
+      cleanKey
     );
 
+    const elapsedSeconds = ((Date.now() - reqStartTime) / 1000).toFixed(1);
     const rawBodyText = await res.text().catch(() => '');
     let data: any = null;
     try {
       data = rawBodyText ? JSON.parse(rawBodyText) : null;
     } catch (parseErr) {
       const msg = `Cannot reach Gemini. Check your internet and your Gemini key. (HTTP ${res.status})`;
-      lastErrorText = msg;
       const err: any = new Error(msg);
       err.status = res.status;
+      err.modelName = cleanModel;
+      err.elapsedSeconds = elapsedSeconds;
+      err.googleMessage = sanitizeOutApiKey(rawBodyText.slice(0, 120) || msg, cleanKey);
       err.exactError = msg;
       err.bodyText = msg;
       throw err;
@@ -633,22 +1053,31 @@ export const directGeminiTTS = async (payload: any) => {
 
     if (!data || typeof data !== 'object') {
       const msg = `Cannot reach Gemini. Check your internet and your Gemini key. (HTTP ${res.status})`;
-      lastErrorText = msg;
       const err: any = new Error(msg);
       err.status = res.status;
+      err.modelName = cleanModel;
+      err.elapsedSeconds = elapsedSeconds;
+      err.googleMessage = msg;
       err.exactError = msg;
       err.bodyText = msg;
       throw err;
     }
 
     if (!res.ok) {
-      lastErrorText = data?.error?.message
-        ? `${data.error.message} (HTTP ${res.status})`
+      const rawGoogleErr = sanitizeOutApiKey(
+        data?.error?.message || `HTTP ${res.status}`,
+        cleanKey
+      );
+      const errText = data?.error?.message
+        ? `${rawGoogleErr} (HTTP ${res.status})`
         : `Cannot reach Gemini. Check your internet and your Gemini key. (HTTP ${res.status})`;
-      const err: any = new Error(lastErrorText);
+      const err: any = new Error(errText);
       err.status = res.status;
-      err.exactError = lastErrorText;
-      err.bodyText = lastErrorText;
+      err.modelName = cleanModel;
+      err.elapsedSeconds = elapsedSeconds;
+      err.googleMessage = rawGoogleErr;
+      err.exactError = errText;
+      err.bodyText = errText;
       throw err;
     }
 
@@ -678,40 +1107,36 @@ export const directGeminiTTS = async (payload: any) => {
     return { audio: processedB64, modelUsed: cleanModel };
   };
 
-  const runTtsWithRetry = async () => {
-    for (let attempt = 0; attempt < 2; attempt++) {
-      for (const m of initialModels) {
-        if (Date.now() >= deadline) throw new Error('Gemini TTS request timed out (25s)');
-        if (triedModels.has(m)) continue;
-        triedModels.add(m);
-        try {
-          return await callDirectTts(m);
-        } catch (err: any) {
-          // Continue to next model or discovery
-        }
-      }
-
-      const discovered = await discoverAvailableTtsModels(cleanKey);
-      for (const dm of discovered) {
-        if (Date.now() >= deadline) break;
-        if (triedModels.has(dm)) continue;
-        triedModels.add(dm);
-        try {
-          return await callDirectTts(dm);
-        } catch (e) {}
-      }
-
-      if (attempt === 0 && Date.now() + 250 < deadline) {
-        await new Promise((r) => setTimeout(r, 250));
+  let allFailedWithRetryable = true;
+  for (const m of initialModels) {
+    if (Date.now() >= deadline) break;
+    if (triedModels.has(m)) continue;
+    triedModels.add(m);
+    try {
+      return await callDirectTts(m);
+    } catch (err: any) {
+      lastError = err;
+      if (!isRetryableModelStatus(err?.status)) {
+        allFailedWithRetryable = false;
+        break;
       }
     }
-    throw new Error(lastErrorText || 'Cannot reach Gemini. Check your internet and your Gemini key.');
-  };
+  }
 
-  return await Promise.race([
-    runTtsWithRetry(),
-    new Promise<any>((_, reject) =>
-      setTimeout(() => reject(new Error('Gemini TTS request timed out (25s)')), GEMINI_TTS_TIMEOUT_MS)
-    ),
-  ]);
+  if (allFailedWithRetryable && Date.now() < deadline) {
+    const discovered = await discoverAvailableTtsModels(cleanKey);
+    for (const dm of discovered) {
+      if (Date.now() >= deadline) break;
+      if (triedModels.has(dm)) continue;
+      triedModels.add(dm);
+      try {
+        return await callDirectTts(dm);
+      } catch (err: any) {
+        lastError = err;
+        if (!isRetryableModelStatus(err?.status)) break;
+      }
+    }
+  }
+
+  throw lastError || new Error('Cannot reach Gemini. Check your internet and your Gemini key.');
 };

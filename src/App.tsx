@@ -90,7 +90,7 @@ import { storage } from "./lib/storage";
 import rosePortraitImg from "./assets/images/rose_portrait_1793010994175.jpg";
 import realisticAssistantImg from "./assets/images/iyabd_realistic_assistant_1792805556831.jpg";
 import * as Permissions from "./lib/permissions";
-import { directGeminiGenerate, directGeminiStream, directGeminiTTS, TEXT_MODELS } from "./lib/ai-service";
+import { directGeminiGenerate, directGeminiStream, directGeminiTTS, formatGeminiErrorForUI, TEXT_MODELS } from "./lib/ai-service";
 import {
   GEMINI_PHONE_TOOLS,
   browserPhoneBridge,
@@ -2539,6 +2539,7 @@ export function App() {
       role: "user" | "rose" | "system";
       text: string;
       time?: string;
+      debugLine?: string;
     }) => {
       const cleanText = String(msg.text ?? "").trim();
       if (!cleanText) return;
@@ -2556,6 +2557,7 @@ export function App() {
         text: cleanText,
         content: cleanText,
         time: nowTime,
+        ...(msg.debugLine ? { debugLine: msg.debugLine } : {}),
       };
 
       setChatHistory((prev) => {
@@ -4677,7 +4679,7 @@ export function App() {
 
   const [activeVoiceEngine, setActiveVoiceEngine] = useState<string>("Voice: Phone TTS");
 
-  // Prefetch Gemini TTS audio for a sentence in parallel with 25s timeout
+  // Prefetch Gemini TTS audio for a sentence in parallel
   const requestGeminiTTSAudio = useCallback(
     async (text: string, token: number): Promise<{ audio?: string; error?: string }> => {
       if (speechTokenRef.current !== token) return {};
@@ -4693,17 +4695,12 @@ export function App() {
           activePersonalityId === "Custom" && settingsRef.current?.customPersonalityText
             ? `Say in a sweet female voice matching this character (${settingsRef.current.customPersonalityText}): `
             : activePersonalityConfig?.ttsStylePrefix || preset.personalityPrompt;
-        const data = await Promise.race([
-          directGeminiTTS({
-            text,
-            style: activeStyle,
-            voiceName: voiceLabel,
-            apiKey: sanitizedKey,
-          }),
-          new Promise<any>((_, reject) =>
-            setTimeout(() => reject(new Error("Gemini TTS timed out (25s)")), 25000)
-          ),
-        ]);
+        const data = await directGeminiTTS({
+          text,
+          style: activeStyle,
+          voiceName: voiceLabel,
+          apiKey: sanitizedKey,
+        });
         if (speechTokenRef.current !== token) return {};
         if (data?.audio) {
           return { audio: data.audio };
@@ -4787,16 +4784,16 @@ export function App() {
     [pcmInt16ToWavBlobUrl, transitionToState]
   );
 
-  // Speak a single sentence using phone speechSynthesis (preferring saved voice or female voice) and update activeVoiceEngine label
+  // Speak a single sentence using phone speechSynthesis (preferring female Bengali voice) and return true if spoken
   const speakSentenceWithPhoneVoice = useCallback(
-    async (clean: string, token: number): Promise<void> => {
-      if (!clean || speechTokenRef.current !== token) return;
+    async (clean: string, token: number): Promise<boolean> => {
+      if (!clean || speechTokenRef.current !== token) return false;
       if (typeof window === "undefined" || !("speechSynthesis" in window)) {
-        return;
+        return false;
       }
 
       const voices = await waitForVoices();
-      if (speechTokenRef.current !== token) return;
+      if (speechTokenRef.current !== token) return false;
 
       const targetVoice = selectPreferredVoice(voices);
       const savedPitchVal = (() => {
@@ -4813,27 +4810,28 @@ export function App() {
       isSpeakingTTSRef.current = true;
       transitionToState("SPEAKING");
 
-      await new Promise<void>((resolve) => {
+      return await new Promise<boolean>((resolve) => {
         if (speechTokenRef.current !== token) {
-          resolve();
+          resolve(false);
           return;
         }
 
         let settled = false;
+        let didStart = false;
         let safetyTimer: any = null;
-        const finishSentence = () => {
+        const finishSentence = (ok: boolean) => {
           if (settled) return;
           settled = true;
           if (safetyTimer) {
             try { clearTimeout(safetyTimer); } catch (e) {}
           }
-          resolve();
+          resolve(ok);
         };
 
         // Safety timeout so speechSynthesis never hangs if onend fails to fire
         safetyTimer = setTimeout(() => {
-          finishSentence();
-        }, 10000);
+          finishSentence(true);
+        }, 12000);
         fallbackTimersRef.current.add(safetyTimer);
 
         const utterance = new SpeechSynthesisUtterance(clean);
@@ -4850,9 +4848,10 @@ export function App() {
         }
 
         utterance.onstart = () => {
+          didStart = true;
           if (speechTokenRef.current !== token) {
             try { window.speechSynthesis.cancel(); } catch (e) {}
-            finishSentence();
+            finishSentence(true);
             return;
           }
           setActiveVoiceEngine("Voice: Phone TTS");
@@ -4864,16 +4863,22 @@ export function App() {
         };
 
         utterance.onboundary = () => {
+          didStart = true;
           lastWordBoundaryTimeRef.current = performance.now();
           mouthWordPulseRef.current = 0.8 + Math.random() * 0.2;
         };
 
         utterance.onend = () => {
-          finishSentence();
+          finishSentence(true);
         };
 
-        utterance.onerror = () => {
-          finishSentence();
+        utterance.onerror = (ev: any) => {
+          const errCode = String(ev?.error || "").toLowerCase();
+          if (didStart || errCode === "interrupted" || errCode === "canceled") {
+            finishSentence(true);
+          } else {
+            finishSentence(false);
+          }
         };
 
         try {
@@ -4881,14 +4886,14 @@ export function App() {
           window.speechSynthesis.speak(utterance);
           window.speechSynthesis.resume();
         } catch (e) {
-          finishSentence();
+          finishSentence(false);
         }
       });
     },
     [waitForVoices, selectPreferredVoice, transitionToState]
   );
 
-  // Guaranteed Voice: speak with selected engine first; if Gemini TTS fails or times out, immediately speak the same reply with the phone voice once
+  // Guaranteed Voice: speak with Gemini TTS first; if Gemini TTS fails, speak the same text with phone's speechSynthesis (female Bengali voice preferred) and only show toast if BOTH fail
   const speakSingleSentenceWithToken = useCallback(
     async (
       item: {
@@ -4902,7 +4907,7 @@ export function App() {
       if (item.spoken) return;
       item.spoken = true;
 
-      const { sentence, token, engineMode, ttsPromise } = item;
+      const { sentence, token, ttsPromise } = item;
       const clean = sentence.trim();
       if (!clean || speechTokenRef.current !== token) return;
 
@@ -4927,13 +4932,17 @@ export function App() {
       }
 
       if (!playedGeminiOk && speechTokenRef.current === token) {
-        setToast("Gemini কণ্ঠ লোড হয়নি, Settings → Connections-এ key দেখুন");
+        const playedPhoneOk = await speakSentenceWithPhoneVoice(clean, token);
+        if (!playedPhoneOk && speechTokenRef.current === token) {
+          setToast("Gemini কণ্ঠ লোড হয়নি, Settings → Connections-এ key দেখুন");
+        }
       }
     },
     [
       transitionToState,
       requestGeminiTTSAudio,
       playPrefetchedGeminiAudio,
+      speakSentenceWithPhoneVoice,
     ]
   );
 
@@ -5225,7 +5234,6 @@ export function App() {
               : 140;
 
         const payload = {
-          model: TEXT_MODELS[0],
           contents: historyWithoutSystem,
           systemInstruction: systemInst,
           tools: GEMINI_PHONE_TOOLS,
@@ -5236,13 +5244,14 @@ export function App() {
           apiKey: sanitizedKey,
         };
 
-        // 12-second timeout on Gemini text request with phone actions function calling
-        const geminiRes: any = await Promise.race([
-          directGeminiGenerate(payload),
-          new Promise<never>((_, reject) =>
-            setTimeout(() => reject(new Error("Gemini text request timed out (12s)")), 12000)
-          ),
-        ]);
+        // Stream response so text appears immediately as it arrives; each request has its own 15s timeout and the chain may take up to 40s
+        const geminiRes: any = await directGeminiStream(payload, (deltaText: string) => {
+          if (speechTokenRef.current !== turnToken) return;
+          fullAccumulatedText += deltaText;
+          sentenceBuffer += deltaText;
+          updateSharedRoseBubble(fullAccumulatedText);
+          extractCompletedSentences();
+        });
 
         if (speechTokenRef.current !== turnToken) return;
 
@@ -5282,16 +5291,26 @@ export function App() {
           }
         } else {
           // Standard conversational text generated
-          const generatedText = parts.map((p: any) => p.text || "").join("").trim();
+          const generatedText =
+            fullAccumulatedText ||
+            parts.map((p: any) => p.text || "").join("").trim();
           fullAccumulatedText = generatedText;
           const finalCleanedReply = fullAccumulatedText.replace(/[*#_~`]/g, "").trim();
           if (!finalCleanedReply) {
             throw new Error("Empty reply received from Gemini");
           }
 
+          // Always show the text reply first before enqueuing remaining TTS
           updateSharedRoseBubble(finalCleanedReply);
-          anySentenceEnqueued = true;
-          enqueueSentenceForToken(finalCleanedReply, turnToken, lockedEngineMode);
+          const remainingSentence = sentenceBuffer.replace(/[*#_~`]/g, "").trim();
+          sentenceBuffer = "";
+          if (remainingSentence) {
+            anySentenceEnqueued = true;
+            enqueueSentenceForToken(remainingSentence, turnToken, lockedEngineMode);
+          } else if (!anySentenceEnqueued) {
+            anySentenceEnqueued = true;
+            enqueueSentenceForToken(finalCleanedReply, turnToken, lockedEngineMode);
+          }
 
           if (rememberMeRef.current) {
             extractAndSaveMemoriesFromTurn(userText, finalCleanedReply, sanitizedKey);
@@ -5303,7 +5322,10 @@ export function App() {
         if (speechTokenRef.current !== turnToken) return;
         console.error("[Gemini] API error or timeout:", err);
 
-        // On timeout or partial response: show the reply text and move on
+        const currentKey = getGeminiKey() || apiKeysRef.current.gemini || "";
+        const sanitizedKey = currentKey.replace(/["'\r\n\t\s]+/g, "").trim();
+
+        // On partial response: show the reply text and move on
         const partialReply = fullAccumulatedText.replace(/[*#_~`]/g, "").trim();
         if (partialReply) {
           updateSharedRoseBubble(partialReply);
@@ -5317,23 +5339,14 @@ export function App() {
             enqueueSentenceForToken(partialReply, turnToken, lockedEngineMode);
           }
         } else {
-          const exactErrorBody =
-            err?.bodyText ||
-            (err?.message ? String(err.message) : String(err || "Gemini API request failed"));
-          const isTimeout = exactErrorBody.toLowerCase().includes("timed out");
-          if (isTimeout) {
-            const timeoutFallbackReply = "দুঃখিত, উত্তর দিতে একটু বেশি সময় লাগছে। আবার বলো?";
-            updateSharedRoseBubble(timeoutFallbackReply);
-            anySentenceEnqueued = true;
-            enqueueSentenceForToken(timeoutFallbackReply, turnToken, lockedEngineMode);
-          } else {
-            setLiveErrorMsg("Gemini error: " + exactErrorBody);
-            setToast("Gemini API Error: " + exactErrorBody);
-            pushSharedMessage({
-              role: "system",
-              text: "Gemini error: " + exactErrorBody,
-            });
-          }
+          const { bengaliMessage, debugLine } = formatGeminiErrorForUI(err, sanitizedKey);
+          setLiveErrorMsg(bengaliMessage);
+          setToast(bengaliMessage);
+          pushSharedMessage({
+            role: "system",
+            text: bengaliMessage,
+            debugLine,
+          });
         }
       } finally {
         // Always reset thinking/processing status in finally block so Rose is NEVER stuck on thinking
@@ -5854,7 +5867,7 @@ export function App() {
   const fetchWithTimeoutAndRetry = fetchWithRetry;
 
   const playPersonalitySample = async (personalityId: string, voiceId: string) => {
-    cancelAllSpeechAndAudio(true);
+    const token = cancelAllSpeechAndAudio(true);
     const config = PERSONALITY_CONFIGS[personalityId] || PERSONALITY_CONFIGS["Normal"];
     const text =
       config.previewAnswerBn ||
@@ -5863,6 +5876,7 @@ export function App() {
       "হ্যালো, আমি রোজ।";
     const key = (apiKeys.gemini || getGeminiKey() || "").replace(/["']/g, "").trim();
     const targetVoice = getVoicePreset(voiceId || prefsRef.current.voiceName).voiceName || "Leda";
+    let playedOk = false;
     try {
       const data = await directGeminiTTS({
         text,
@@ -5871,11 +5885,16 @@ export function App() {
       });
       if (data?.audio) {
         playPcmBuffer(base64ToPcm(data.audio), targetVoice, clampSpeechSpeed(prefsRef.current.speechSpeed));
-      } else {
-        setToast("Gemini কণ্ঠ লোড হয়নি, Settings → Connections-এ key দেখুন");
+        playedOk = true;
       }
     } catch (err: any) {
-      setToast("Gemini কণ্ঠ লোড হয়নি, Settings → Connections-এ key দেখুন");
+      playedOk = false;
+    }
+    if (!playedOk) {
+      const phoneOk = await speakSentenceWithPhoneVoice(text, token);
+      if (!phoneOk) {
+        setToast("Gemini কণ্ঠ লোড হয়নি, Settings → Connections-এ key দেখুন");
+      }
     }
   };
 
@@ -5899,23 +5918,25 @@ export function App() {
     try {
       const key = (apiKeys.gemini || getGeminiKey() || "").replace(/["']/g, "").trim();
       const targetVoice = getVoicePreset(prefsRef.current.voiceName || config.suggestedVoice).voiceName || "Leda";
-      const res = await directGeminiTTS({
-        text: textToSpeak,
-        voiceName: targetVoice,
-        apiKey: key,
-      });
-      if (speechTokenRef.current !== token) return;
-      if (res?.audio) {
-        const played = await playPrefetchedGeminiAudio(res.audio, token);
-        if (!played && speechTokenRef.current === token) {
+      let playedOk = false;
+      try {
+        const res = await directGeminiTTS({
+          text: textToSpeak,
+          voiceName: targetVoice,
+          apiKey: key,
+        });
+        if (speechTokenRef.current !== token) return;
+        if (res?.audio) {
+          playedOk = await playPrefetchedGeminiAudio(res.audio, token);
+        }
+      } catch (e) {
+        playedOk = false;
+      }
+      if (!playedOk && speechTokenRef.current === token) {
+        const phoneOk = await speakSentenceWithPhoneVoice(textToSpeak, token);
+        if (!phoneOk && speechTokenRef.current === token) {
           setToast("Gemini কণ্ঠ লোড হয়নি, Settings → Connections-এ key দেখুন");
         }
-      } else {
-        setToast("Gemini কণ্ঠ লোড হয়নি, Settings → Connections-এ key দেখুন");
-      }
-    } catch (e) {
-      if (speechTokenRef.current === token) {
-        setToast("Gemini কণ্ঠ লোড হয়নি, Settings → Connections-এ key দেখুন");
       }
     } finally {
       if (speechTokenRef.current === token) {
@@ -7614,6 +7635,11 @@ export function App() {
                       <div className="max-w-[90%] px-4 py-2.5 rounded-2xl bg-rose-950/90 border border-rose-500/50 text-rose-200 text-xs font-semibold text-center shadow-lg break-words">
                         {msgText}
                       </div>
+                      {(msg as any).debugLine && (
+                        <div className="max-w-[92%] text-[10px] text-slate-400 font-mono text-center mt-1 break-words px-2">
+                          {(msg as any).debugLine}
+                        </div>
+                      )}
                       {timeStr && (
                         <span className="text-[10px] text-slate-400 font-medium mt-1">
                           {timeStr}

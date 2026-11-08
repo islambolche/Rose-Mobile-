@@ -318,8 +318,37 @@ export const VoiceLanguageSettings: React.FC<VoiceLanguageSettingsProps> = ({
     } catch (error: any) {
       console.error("Voice preview error:", error);
       setLoadingVoiceId(null);
-      setPreviewingVoiceId(null);
-      showToast(error?.message || "Failed to call Gemini API");
+      let phoneSpoke = false;
+      try {
+        if (typeof window !== "undefined" && "speechSynthesis" in window) {
+          window.speechSynthesis.cancel();
+          const voices = window.speechSynthesis.getVoices() || [];
+          const isFem = (v: SpeechSynthesisVoice) =>
+            /female|woman|girl|samantha|victoria|zira|veena|kalpana|lekha|heera|swara|tanishaa|piya|nabanita|bashkar/i.test(v.name) &&
+            !/male\b|man\b|boy\b|bashkar/i.test(v.name);
+          const bnFemale =
+            voices.find((v) => v.lang?.toLowerCase().startsWith("bn") && isFem(v)) ||
+            voices.find((v) => v.lang?.toLowerCase().startsWith("hi") && isFem(v)) ||
+            voices.find((v) => v.lang?.toLowerCase().startsWith("bn")) ||
+            voices.find((v) => isFem(v));
+          const u = new SpeechSynthesisUtterance(textToSpeak);
+          u.lang = bnFemale?.lang || (isBengali ? "bn-BD" : "en-US");
+          if (bnFemale) u.voice = bnFemale;
+          u.pitch = 1.15;
+          setPreviewingVoiceId(voiceName);
+          u.onend = () => setPreviewingVoiceId((c) => (c === voiceName ? null : c));
+          u.onerror = () => setPreviewingVoiceId((c) => (c === voiceName ? null : c));
+          window.speechSynthesis.speak(u);
+          window.speechSynthesis.resume();
+          phoneSpoke = true;
+        }
+      } catch (e) {
+        phoneSpoke = false;
+      }
+      if (!phoneSpoke) {
+        setPreviewingVoiceId(null);
+        showToast("Gemini কণ্ঠ লোড হয়নি, Settings → Connections-এ key দেখুন");
+      }
     }
   };
 

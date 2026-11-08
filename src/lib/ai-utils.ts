@@ -23,19 +23,14 @@ export function prepareHistory(messages: { role: string, text: string }[], syste
     }
   }
 
-  // 3. Ensure starts with user (if not, add dummy user)
-  if (merged.length > 0 && merged[0].role !== 'user') {
-    merged.unshift({ role: 'user', parts: [{ text: "Hello." }] });
+  // 3. Limit to last 8 messages as history
+  const result = merged.slice(-8);
+
+  // 4. Ensure starts with user (if not, add dummy user)
+  if (result.length > 0 && result[0].role !== 'user') {
+    result.unshift({ role: 'user', parts: [{ text: "Hello." }] });
   }
 
-  // Final check: if the last role is 'model', force it to 'user' for current input safety? 
-  // No, just ensure the last input was not dropped. 
-  // If the last message was a user message and it was filtered out (e.g. empty), 
-  // that's the problem. But our filter handles that.
-  
-  // 4. Limit to last 20
-  const result = merged.slice(-20);
-  console.log("SENDING CONTENTS: ", result.length, result.map(r => r.role));
   return result;
 }
 
