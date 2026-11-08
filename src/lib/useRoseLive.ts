@@ -1,4 +1,5 @@
 import { useRef, useState } from "react";
+import { getGeminiKey } from "./geminiKey";
 
 type Opts = {
   apiKey: string; model: string; voiceName: string; systemInstruction: string;
@@ -51,22 +52,20 @@ export function useRoseLive(getOpts: () => Opts) {
     new Promise<void>((resolve, reject) => {
       const s = R.current;
       const o = getOpts();
-      const apiKey = o.apiKey;
-      const debugPath = `wss://generativelanguage.googleapis.com/...`;
-      
-      if (!apiKey) { 
-        const e = new Error("Please add your Gemini API key in Settings."); 
-        setError(e.message); reject(e); return; 
-      }
-      
-      const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-      const wsUrl = `${protocol}//${window.location.host}/api/live?model=${encodeURIComponent(o.model)}&apiKey=${encodeURIComponent(apiKey)}&voiceName=${encodeURIComponent(o.voiceName || 'Sulafat')}&systemInstruction=${encodeURIComponent(o.systemInstruction)}`;
+      const apiKey = String(o.apiKey || getGeminiKey() || "").replace(/[\r\n\t\s"']+/g, "").trim();
 
-      console.log(`[Live] Connecting to server via ${wsUrl}`);
-      
+      if (!apiKey) {
+        const e = new Error("Add your Gemini key in Settings > Connections.");
+        setError(e.message); reject(e); return;
+      }
+
+      const rawModel = (o.model || "gemini-2.5-flash-native-audio-preview-09-2025").replace(/^models\//, "").trim();
+      const fullModel = `models/${rawModel}`;
+      const wsUrl = `wss://generativelanguage.googleapis.com/ws/google.ai.generativelanguage.v1beta.GenerativeService.BidiGenerateContent?key=${encodeURIComponent(apiKey)}`;
+
       const ws = new WebSocket(wsUrl);
       let ready = false;
-      
+
       const wrapper = {
         sendRealtimeInput: (x: any) => {
           if (ready && ws.readyState === 1) ws.send(JSON.stringify(x));
@@ -76,21 +75,37 @@ export function useRoseLive(getOpts: () => Opts) {
         },
         close: () => { try { ws.close(); } catch {} },
       };
-      
+
       ws.onopen = () => {
-        // Setup is handled by the server
-        console.log("[Live] WebSocket connected to server");
+        ws.send(JSON.stringify({
+          setup: {
+            model: fullModel,
+            generationConfig: {
+              responseModalities: ["AUDIO"],
+              speechConfig: {
+                voiceConfig: {
+                  prebuiltVoiceConfig: {
+                    voiceName: o.voiceName || "Sulafat",
+                  },
+                },
+              },
+            },
+            ...(o.systemInstruction
+              ? { systemInstruction: { parts: [{ text: o.systemInstruction }] } }
+              : {}),
+          },
+        }));
       };
 
       ws.onmessage = async (ev: MessageEvent) => {
         try {
           const m = JSON.parse(typeof ev.data === "string" ? ev.data : await (ev.data as Blob).text());
-          
+
           if (m.setupComplete) {
             ready = true; s.session = wrapper; s.retry = 0;
             setStatus("listening"); resolve(); return;
           }
-          
+
           if (m.serverContent) {
             const content = m.serverContent;
             if (content.modelTurn) {
@@ -108,9 +123,9 @@ export function useRoseLive(getOpts: () => Opts) {
           if (m.error) setError(m.error.message || JSON.stringify(m.error));
         } catch (err: any) { setError("Parse error: " + String(err?.message || err)); }
       };
-      
-      ws.onerror = () => { setError("WebSocket connection error"); if (!ready) reject(new Error("ws error")); };
-      
+
+      ws.onerror = () => { setError("Cannot reach Gemini. Check your internet and your Gemini key."); if (!ready) reject(new Error("ws error")); };
+
       ws.onclose = (ev: CloseEvent) => {
         if (!s.active) return;
         const msg = `Closed ${ev.code} ${ev.reason || ""}`;
@@ -125,7 +140,8 @@ export function useRoseLive(getOpts: () => Opts) {
   const start = async () => {
     const s = R.current;
     const o = getOpts();
-    if (s.active || !o.apiKey) return;
+    const apiKey = String(o.apiKey || getGeminiKey() || "").replace(/[\r\n\t\s"']+/g, "").trim();
+    if (s.active || !apiKey) return;
     setError(""); setStatus("connecting"); R.current.retries = 0;
     try {
       s.active = true; s.sentN = 0; s.recvN = 0; setSent(0); setRecv(0);

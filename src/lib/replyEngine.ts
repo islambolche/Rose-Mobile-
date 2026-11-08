@@ -1,99 +1,37 @@
-import { extractReplyText, prepareHistory } from "./ai-utils";
-import { getModelRoute } from "./modelRouter";
+import { directGeminiStream, TEXT_MODELS } from "./ai-service";
+import { getGeminiKey } from "./geminiKey";
+
 export async function getReply(
   messages: { role: string; text: string }[],
   systemInstruction: string,
   onToken: (token: string) => void
 ): Promise<string> {
   const model = (localStorage.getItem("chat_model") || "").trim();
-  const geminiKey = localStorage.getItem("gemini_api_key") || "";
-  const groqKeys = (localStorage.getItem("groq_api_keys") || "").split(",").map(k => k.trim()).filter(k => k);
-  const groqKey = groqKeys[0] || "";
+  const cleanKey = String(getGeminiKey() || localStorage.getItem("gemini_api_key") || "")
+    .replace(/[\r\n\t\s"']+/g, "")
+    .trim();
 
-  const provider = getModelRoute(model);
-  
-  // Validate if we have key for the selected provider
-  const hasGroqKey = groqKey.length > 0;
-  const hasGeminiKey = geminiKey.length > 0;
-  
-  let actualProvider = provider;
-  if (provider === 'groq' && !hasGroqKey) actualProvider = 'gemini';
-  if (provider === 'gemini' && !hasGeminiKey) actualProvider = 'groq';
+  if (!cleanKey) {
+    throw new Error("Add your Gemini key in Settings > Connections.");
+  }
 
-  let finalModel = model;
-  if (actualProvider === 'gemini' && !finalModel.startsWith('gemini')) finalModel = 'gemini-3.5-flash';
-  if (actualProvider === 'groq' && !finalModel.startsWith('llama') && !finalModel.startsWith('mixtral') && !finalModel.startsWith('gemma')) finalModel = 'llama-3.3-70b-versatile';
-
-  const usedKey = actualProvider === 'groq' ? groqKey : geminiKey;
-  if (!usedKey) throw new Error("Could not answer. Please try again.");
-
-  console.log(`[ReplyEngine] Provider: ${actualProvider}, Model: ${finalModel}, Key: ${usedKey ? 'Present' : 'Missing'}`);
+  const finalModel = model && model.startsWith("gemini") ? model : TEXT_MODELS[0];
 
   try {
-    if (actualProvider === 'groq') {
-      const res = await fetch("/api/groq/chat", {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json"
-        },
-        body: JSON.stringify({
-          apiKey: usedKey,
-          model: finalModel,
-          messages: [{ role: "system", content: systemInstruction }, ...messages.map(m => ({ role: m.role === 'user' ? 'user' : 'assistant', content: m.text }))],
-          stream: true,
-          max_tokens: 300
-        })
-      });
-
-      if (!res.ok) {
-        const errorText = await res.text();
-        console.error(`Groq Error (${res.status}): ${errorText}`);
-        throw new Error("মডেল পাওয়া যায়নি। Settings > AI Model-এ মডেল বদলান।");
-      }
-
-      const reader = res.body?.getReader();
-      const decoder = new TextDecoder();
-      let fullText = "";
-
-      if (reader) {
-        while (true) {
-          const { done, value } = await reader.read();
-          if (done) break;
-          const chunk = decoder.decode(value, { stream: true });
-          const lines = chunk.split('\n');
-          for (const line of lines) {
-            if (line.startsWith('data: ')) {
-              const data = line.substring(6);
-              if (data === '[DONE]') break;
-              try {
-                const json = JSON.parse(data);
-                const token = json.choices[0].delta.content || "";
-                fullText += token;
-                onToken(token);
-              } catch (e) {
-                // Ignore parse errors
-              }
-            }
-          }
-        }
-      }
-      return fullText;
-    } else {
-      // Gemini
-      const { directGeminiStream } = await import("./ai-service");
-      const result = await directGeminiStream(
-        {
-          model: finalModel,
-          contents: messages,
-          systemInstruction: systemInstruction,
-          apiKey: usedKey
-        },
-        onToken
-      );
-      return result.text;
-    }
+    const result = await directGeminiStream(
+      {
+        model: finalModel,
+        contents: messages,
+        systemInstruction: systemInstruction,
+        apiKey: cleanKey,
+      },
+      onToken
+    );
+    return result.text;
   } catch (e: any) {
     console.error(e);
-    throw new Error(e.message || "মডেল পাওয়া যায়নি। Settings > AI Model-এ মডেল বদলান।");
+    throw new Error(
+      e?.message || "Cannot reach Gemini. Check your internet and your Gemini key."
+    );
   }
 }

@@ -81,8 +81,8 @@ export const DiagnosticsView: React.FC<DiagnosticsViewProps> = ({
 
     try {
       // 1. Connecting
-      const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-      const wsUrl = `${protocol}//${window.location.host}/api/live?apiKey=${encodeURIComponent(key)}&minimal=1`;
+      const cleanKey = key.replace(/[\r\n\t\s"']+/g, "").trim();
+      const wsUrl = `wss://generativelanguage.googleapis.com/ws/google.ai.generativelanguage.v1beta.GenerativeService.BidiGenerateContent?key=${encodeURIComponent(cleanKey)}`;
       
       ws = new WebSocket(wsUrl);
 
@@ -97,11 +97,21 @@ export const DiagnosticsView: React.FC<DiagnosticsViewProps> = ({
 
       ws.onopen = async () => {
         clearTimeout(timeout);
-        // Server handles setup
+        ws?.send(
+          JSON.stringify({
+            setup: {
+              model: "models/gemini-2.5-flash-native-audio-preview-09-2025",
+              generationConfig: {
+                responseModalities: ["AUDIO"],
+              },
+            },
+          })
+        );
       };
 
       ws.onmessage = async (event) => {
-        const data = JSON.parse(event.data);
+        const raw = typeof event.data === "string" ? event.data : await (event.data as Blob).text();
+        const data = JSON.parse(raw);
         
         if (data.setupComplete) {
           updateStep(0, 'done');

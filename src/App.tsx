@@ -1202,12 +1202,7 @@ const VoiceCheckView = ({
       clearTimeout(timeoutId);
       return true;
     } catch {
-      try {
-        const res = await fetch("/index.html", { method: "HEAD", cache: "no-cache" });
-        return res.ok || res.type === "opaque";
-      } catch {
-        return false;
-      }
+      return false;
     }
   };
 
@@ -3940,77 +3935,45 @@ export function App() {
 
     try {
       for (const key of keyList) {
+        const cleanKey = key.replace(/["'\r\n\t\s]+/g, "").trim();
+        if (!cleanKey) continue;
         const controller = new AbortController();
         const timeoutId = setTimeout(() => controller.abort(), 10000); // 10s timeout
 
-        let url = "";
-        let headers: any = {};
-
-        if (type === "gemini") {
-          url = "/api/gemini/generate";
-          headers = { "Content-Type": "application/json" };
-          const body = {
-            apiKey: key,
-            contents: [{ role: "user", parts: [{ text: "hi" }] }],
-            model: "gemini-1.5-flash"
-          };
-          try {
-            const res = await fetch(url, { method: "POST", headers, body: JSON.stringify(body), signal: controller.signal });
-            clearTimeout(timeoutId);
-            if (res.ok) {
-              verifiedCount++;
-            } else if (res.status === 400 || res.status === 401 || res.status === 403) {
-              invalidFound = true;
-            } else {
-              networkError = true;
-            }
-          } catch (e) { 
-            clearTimeout(timeoutId);
-            networkError = true;
-          }
-          continue;
-        } else if (type === "groq") {
-          url = "/api/groq/chat";
-          headers = { "Content-Type": "application/json" };
-          const body = {
-            apiKey: key,
-            messages: [{ role: "user", content: "hi" }],
-            model: "llama-3.1-8b-instant"
-          };
-          try {
-            const res = await fetch(url, { method: "POST", headers, body: JSON.stringify(body), signal: controller.signal });
-            clearTimeout(timeoutId);
-            if (res.ok) {
-              verifiedCount++;
-            } else if (res.status === 400 || res.status === 401 || res.status === 403) {
-              invalidFound = true;
-            } else {
-              networkError = true;
-            }
-          } catch (e) { 
-            clearTimeout(timeoutId);
-            networkError = true;
-          }
-          continue;
-        } else if (type === "openai") {
-          url = "https://api.openai.com/v1/models";
-          headers = { Authorization: "Bearer " + key };
-        }
-
         try {
-          const res = await fetch(url, { headers, signal: controller.signal });
+          const url = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${encodeURIComponent(cleanKey)}`;
+          const body = {
+            contents: [{ role: "user", parts: [{ text: "hi" }] }],
+            generationConfig: { maxOutputTokens: 5 }
+          };
+          const res = await fetch(url, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify(body),
+            signal: controller.signal
+          });
           clearTimeout(timeoutId);
-
-          if (res.ok) {
+          const rawText = await res.text().catch(() => "");
+          let parsed: any = null;
+          try {
+            parsed = rawText ? JSON.parse(rawText) : null;
+          } catch {
+            parsed = null;
+          }
+          if (!parsed || typeof parsed !== "object" || (!parsed.candidates && !parsed.error)) {
+            networkError = true;
+            setToast(`Cannot reach Gemini. Check your internet and your Gemini key. (HTTP ${res.status})`);
+          } else if (res.ok && parsed.candidates) {
             verifiedCount++;
-          } else if (res.status === 401 || res.status === 403 || res.status === 400) {
+          } else if (res.status === 400 || res.status === 401 || res.status === 403) {
             invalidFound = true;
           } else {
             networkError = true;
           }
-        } catch (err: any) {
+        } catch (e) {
           clearTimeout(timeoutId);
           networkError = true;
+          setToast("Cannot reach Gemini. Check your internet and your Gemini key. (HTTP 0)");
         }
       }
 
@@ -4053,56 +4016,25 @@ export function App() {
     return buildSystemInstruction(settings, prefs, forVoice);
   };
 
-  const callLLM = async (provider: "groq" | "openai", prompt: string, keys: string) => {
-    const keyList = keys
-      .split(",")
-      .map((k) => k.trim())
-      .filter((k) => k);
-    const baseUrl = provider === "groq" ? "https://api.groq.com/openai/v1" : "https://api.openai.com/v1";
-    const model = provider === "groq" ? "llama-3.1-70b-versatile" : openaiModel;
-
-    for (const key of keyList) {
-      try {
-        const url = provider === "groq" ? "/api/groq/chat" : `${baseUrl}/chat/completions`;
-        const res = await fetch(url, {
-          method: "POST",
-          headers: {
-            "Content-Type": "application/json",
-            ...(provider !== "groq" ? { Authorization: "Bearer " + key } : {}),
-          },
-          body: JSON.stringify({
-            apiKey: provider === "groq" ? key : undefined,
-            model,
-            temperature: 0.9,
-            messages: [
-              {
-                role: "system",
-                content: buildSystemInstruction(settings, prefs, false),
-              },
-              {
-                role: "user",
-                content: formatUserPromptWithCharacterGuard(prompt, settings, prefs),
-              },
-            ],
-            response_format: { type: "json_object" },
-          }),
-        });
-
-        if (res.status === 429) continue; // Rate limited, try next key
-        if (!res.ok) {
-          const errorData = await res.json().catch(() => ({}));
-          console.error(`${provider} API error:`, res.status, errorData);
-          throw new Error("API error");
-        }
-
-        const data = await res.json();
-        const content = JSON.parse(data.choices[0].message.content);
-        return content;
-      } catch (err) {
-        console.error(`${provider} error:`, err);
-      }
+  const callLLM = async (_provider: "groq" | "openai", prompt: string, keys: string) => {
+    const cleanKey = (getGeminiKey() || apiKeys.gemini || keys || "").split(",")[0].replace(/["'\r\n\t\s]+/g, "").trim();
+    if (!cleanKey) {
+      throw new Error("Add your Gemini key in Settings > Connections.");
     }
-    throw new Error(`${provider} failed after trying all keys`);
+    const result = await directGeminiGenerate({
+      model: PRIORITY_ANSWER_MODELS[0] || "gemini-2.5-flash",
+      contents: [{ role: "user", parts: [{ text: formatUserPromptWithCharacterGuard(prompt, settings, prefs) }] }],
+      systemInstruction: buildSystemInstruction(settings, prefs, false),
+      generationConfig: { temperature: 0.9, maxOutputTokens: 280 },
+      apiKey: cleanKey,
+    });
+    const replyText = result?.candidates?.[0]?.content?.parts?.[0]?.text || "";
+    if (!replyText) throw new Error("Empty reply from Gemini");
+    try {
+      return JSON.parse(replyText);
+    } catch {
+      return { app: "chat", message: replyText.trim() };
+    }
   };
 
   const processCommand = async (text: string) => {
@@ -4117,83 +4049,53 @@ export function App() {
 
     try {
       let data: any = null;
-
-      // Try Groq first
-      if (apiKeys.groq) {
-        try {
-          data = await callLLM("groq", text, apiKeys.groq);
-        } catch (e) {
-          console.warn("Groq failed, falling back to GPT");
-        }
+      const geminiKey = (getGeminiKey() || apiKeys.gemini || "").replace(/["'\r\n\t\s]+/g, "").trim();
+      if (!geminiKey) {
+        setToast("Add your Gemini key in Settings > Connections.");
+        setStatus("idle");
+        return;
       }
 
-      // Try OpenAI next
-      if (!data && apiKeys.openai) {
+      for (const model of PRIORITY_ANSWER_MODELS) {
+        if (isModelExhausted(model)) continue;
+
         try {
-          data = await callLLM("openai", text, apiKeys.openai);
-        } catch (e) {
-          console.warn("OpenAI failed, falling back to Gemini");
-        }
-      }
+          const result = await directGeminiGenerate({
+            model: model,
+            contents: [{ role: "user", parts: [{ text: formatUserPromptWithCharacterGuard(text, settings, prefs) }] }],
+            systemInstruction: buildSystemInstruction(settings, prefs, false),
+            generationConfig: {
+              temperature: 0.9,
+              maxOutputTokens:
+                settings.responseStyle === "Detailed"
+                  ? 650
+                  : settings.responseStyle === "Balanced"
+                    ? 280
+                    : 140,
+            },
+            apiKey: geminiKey,
+          });
 
-      // Fallback to Gemini with User's Key and Quota Fallback
-      if (!data) {
-        const geminiKey = apiKeys.gemini;
-        if (!geminiKey && !apiKeys.groq && !apiKeys.openai) {
-          setToast("Add your Gemini key in Settings > Connections");
-          setStatus("idle");
-          return;
-        }
-
-          for (const model of PRIORITY_ANSWER_MODELS) {
-            if (isModelExhausted(model)) continue;
-
-            try {
-              const result = await directGeminiGenerate({
-                model: model,
-                contents: [{ role: "user", parts: [{ text: formatUserPromptWithCharacterGuard(text, settings, prefs) }] }],
-                systemInstruction: buildSystemInstruction(settings, prefs, false),
-                generationConfig: {
-                  temperature: 0.9,
-                  maxOutputTokens:
-                    settings.responseStyle === "Detailed"
-                      ? 650
-                      : settings.responseStyle === "Balanced"
-                        ? 280
-                        : 140,
-                },
-                apiKey: geminiKey,
-              });
-
-              const replyText = result.candidates?.[0]?.content?.parts?.[0]?.text;
-              if (replyText) {
-                incrementUsage("answer");
-                data = { app: "chat", message: replyText.trim() };
-                break;
-              }
-            } catch (err: any) {
-              const errMsg = (err.message || "").toLowerCase();
-              if (errMsg.includes("quota") || errMsg.includes("limit") || errMsg.includes("429")) {
-                markModelExhausted(model);
-              }
-            }
+          const replyText = result.candidates?.[0]?.content?.parts?.[0]?.text;
+          if (replyText) {
+            incrementUsage("answer");
+            data = { app: "chat", message: replyText.trim() };
+            break;
           }
-
-        // If Gemini exhausted and Groq key exists, try Groq
-        if (!data && apiKeys.groq) {
-          try {
-            data = await callLLM("groq", text, apiKeys.groq);
-          } catch (e) {}
+        } catch (err: any) {
+          const errMsg = (err.message || "").toLowerCase();
+          if (errMsg.includes("quota") || errMsg.includes("limit") || errMsg.includes("429")) {
+            markModelExhausted(model);
+          }
         }
+      }
 
-        // If still no data
-        if (!data) {
-          showQuotaToastOnce("Quota reached, will work again tomorrow", setToast);
-          data = {
-            app: "chat",
-            message: "Gemini quota limit reached. Will work again tomorrow.",
-          };
-        }
+      if (!data) {
+        showQuotaToastOnce("Quota reached, will work again tomorrow", setToast);
+        data = {
+          app: "chat",
+          message: "Gemini quota limit reached. Will work again tomorrow.",
+        };
       }
 
       if (data.app === "chat") {
@@ -5225,7 +5127,10 @@ export function App() {
 
       try {
         const currentKey = getGeminiKey() || apiKeysRef.current.gemini || "";
-        const sanitizedKey = currentKey.replace(/["']/g, "").trim();
+        const sanitizedKey = currentKey.replace(/["'\r\n\t\s]+/g, "").trim();
+        if (!sanitizedKey) {
+          throw new Error("Add your Gemini key in Settings > Connections.");
+        }
 
         const memoryContext =
           userMemoriesRef.current.length > 0
@@ -6094,143 +5999,15 @@ export function App() {
         reader.readAsDataURL(blob);
       });
 
-      const isFastMode =
-        (settings.voiceModelMode === "fast" || (!settings.voiceModelMode && !!apiKeys.groq)) && !!apiKeys.groq;
-
-      if (isFastMode) {
-        // FAST MODE (Groq Whisper + Groq Chat Streaming, ONE Gemini TTS call at end)
-        addVoiceLog("Using FAST MODE (Groq text generation + Gemini TTS voice output)...", "info");
-        const tTransStart = Date.now();
-        const groqKey = apiKeys.groq!.split(",")[0].trim();
-
-        // 1. Groq Whisper Transcription
-        const formData = new FormData();
-        formData.append("file", blob, "speech.webm");
-        formData.append("model", "whisper-large-v3-turbo");
-        const langCode =
-          prefs.language === "auto"
-            ? navigator.language.startsWith("bn")
-              ? "bn"
-              : "bn"
-            : prefs.language.split("-")[0];
-        formData.append("language", langCode);
-
-        const transRes = await fetchWithTimeoutAndRetry(
-          "/api/groq/stt",
-          {
-            method: "POST",
-            headers: { Authorization: "Bearer " + groqKey },
-            body: formData,
-          },
-          7000,
-          1,
-        );
-
-        transcriptionTime = parseFloat(((Date.now() - tTransStart) / 1000).toFixed(2));
-
-        if (!transRes.ok || !transRes.data.text) {
-          addVoiceLog('Groq Whisper transcription error (' + transRes.status + '): ' + transRes.rawError, "error");
-          showErrorToast(transRes.status, transRes.rawError);
-          throw new Error("Groq transcription failed");
-        }
-
-        const userTranscript = transRes.data.text.trim();
-        addVoiceLog('Groq Whisper transcribed (' + transcriptionTime + 's): "' + userTranscript + '"', "success");
-
-        // 2. Groq Chat Streaming Answer (1 to 2 short sentences)
-        const tAnsStart = Date.now();
-        const history = chatHistory.slice(-6).map((m) => ({
-          role: m.role === "user" ? "user" : "assistant",
-          content: m.content,
-        }));
-
-        const chatResponse = await fetch("/api/groq/chat", {
-          method: "POST",
-          headers: {
-            "Content-Type": "application/json",
-          },
-          body: JSON.stringify({
-            apiKey: groqKey,
-            model: "llama-3.1-70b-versatile",
-            temperature: 0.9,
-            messages: [
-              {
-                role: "system",
-                content: buildSystemInstruction(settings, prefs, true),
-              },
-              ...history,
-              {
-                role: "user",
-                content: formatUserPromptWithCharacterGuard(userTranscript, settings, prefs),
-              },
-            ],
-            max_tokens: 100,
-            stream: true,
-          }),
-        });
-
-        if (!chatResponse.ok) {
-          const errData = await chatResponse.json().catch(() => ({}));
-          const rawErr = (errData.error && errData.error.message) ? errData.error.message : 'HTTP ' + chatResponse.status;
-          addVoiceLog('Groq Chat error (' + chatResponse.status + '): ' + rawErr, "error");
-          showErrorToast(chatResponse.status, rawErr);
-          throw new Error("Groq Chat failed");
-        }
-
-        // Accumulate full answer text first (1 to 2 sentences) to do ONE TTS request!
-        const reader = chatResponse.body?.getReader();
-        const decoder = new TextDecoder("utf-8");
-        let fullText = "";
-
-        if (reader) {
-          let buffer = "";
-          while (true) {
-            const { done, value } = await reader.read();
-            if (done) break;
-            buffer += decoder.decode(value, { stream: true });
-
-            const lines = buffer.split("\n");
-            buffer = lines.pop() || "";
-
-            for (const line of lines) {
-              const trimmed = line.trim();
-              if (trimmed.startsWith("data: ") && trimmed !== "data: [DONE]") {
-                try {
-                  const json = JSON.parse(trimmed.slice(6));
-                  const delta = json.choices?.[0]?.delta?.content || "";
-                  if (delta) {
-                    fullText += delta;
-                  }
-                } catch (e) {}
-              }
-            }
-          }
-        }
-
-        const finalAnswer = fullText.trim();
-        answerTime = parseFloat(((Date.now() - tAnsStart) / 1000).toFixed(2));
-        addVoiceLog('Groq answer arrived (' + answerTime + 's): "' + finalAnswer + '"', "info");
-
-        setChatHistory((prev) => [
-          ...prev,
-          { role: "user", content: userTranscript },
-          { role: "assistant", content: finalAnswer },
-        ]);
-
-        // ONE TTS request for the entire reply
-        if (finalAnswer) {
-          const tVoiceStart = Date.now();
-          await speakSentenceViaGeminiTTS(finalAnswer, key);
-          voiceTime = parseFloat(((Date.now() - tVoiceStart) / 1000).toFixed(2));
-        }
-      } else {
-        // QUALITY MODE / GEMINI PATH with Quota Fallback Order: gemini-3.8-flash-lite-tts
+      {
+        // QUALITY MODE / GEMINI PATH with Quota Fallback Order
         addVoiceLog("Using QUALITY MODE (Gemini API with smart quota fallback)...", "info");
         const tAnsStart = Date.now();
 
-        if (!key) {
-          setToast("Add your Gemini key in Settings > Connections");
-          throw new Error("Missing Gemini key");
+        const cleanKey = (key || getGeminiKey() || apiKeys.gemini || "").replace(/["'\r\n\t\s]+/g, "").trim();
+        if (!cleanKey) {
+          setToast("Add your Gemini key in Settings > Connections.");
+          throw new Error("Add your Gemini key in Settings > Connections.");
         }
 
         const history = chatHistory.slice(-6).map((m) => ({
@@ -6272,84 +6049,38 @@ export function App() {
         for (const modelName of PRIORITY_ANSWER_MODELS) {
           if (isModelExhausted(modelName)) continue;
           try {
-              const dataRes = await directGeminiGenerate({
-                model: modelName,
-                contents: payload.contents.map((c: any) => ({
-                  role: c.role,
-                  parts: c.parts.map((p: any) => ({ text: p.text }))
-                })),
-                systemInstruction: payload.system_instruction.parts[0].text,
-                generationConfig: payload.generationConfig,
-                apiKey: key,
-              });
-
-              const reply = dataRes.candidates?.[0]?.content?.parts?.[0]?.text;
-              if (reply && reply.trim()) {
-                generatedText = reply.trim();
-                chosenModel = modelName;
-                setWorkingModel(modelName);
-                localStorage.setItem("iyabd_gen_model", modelName);
-                incrementUsage("answer");
-                break;
-              }
-            } catch (err: any) {
-              const errMsg = (err.message || "").toLowerCase();
-              if (errMsg.includes("quota") || errMsg.includes("limit") || errMsg.includes("exhausted") || errMsg.includes("429")) {
-                markModelExhausted(modelName);
-                addVoiceLog('Model ' + modelName + ' hit quota limit. Marked exhausted today. Trying next model...', "info");
-              } else {
-                addVoiceLog('Model ' + modelName + ' error: ' + err.message + '. Trying next...', "info");
-              }
-            }
-          }
-
-        answerTime = parseFloat(((Date.now() - tAnsStart) / 1000).toFixed(2));
-
-        // If all Gemini models are exhausted, fall back to Groq if Groq key exists!
-        if (!generatedText && apiKeys.groq) {
-          addVoiceLog("All Gemini answer models exhausted. Falling back to Groq for text answer...", "info");
-          try {
-            const groqKey = apiKeys.groq.split(",")[0].trim();
-            const groqRes = await fetch("/api/groq/chat", {
-              method: "POST",
-              headers: {
-                "Content-Type": "application/json",
-              },
-              body: JSON.stringify({
-                apiKey: groqKey,
-                model: "llama-3.1-70b-versatile",
-                temperature: 0.9,
-                messages: [
-                  {
-                    role: "system",
-                    content: buildSystemInstruction(settings, prefs, true),
-                  },
-                  ...history.map((h) => ({
-                    role: h.role === "user" ? "user" : "assistant",
-                    content: h.parts[0]?.text || "",
-                  })),
-                  {
-                    role: "user",
-                    content: formatUserPromptWithCharacterGuard(
-                      "Answer the user in 1 to 2 short sentences.",
-                      settings,
-                      prefs,
-                    ),
-                  },
-                ],
-                max_tokens: 100,
-              }),
+            const dataRes = await directGeminiGenerate({
+              model: modelName,
+              contents: payload.contents.map((c: any) => ({
+                role: c.role,
+                parts: c.parts.map((p: any) => ({ text: p.text }))
+              })),
+              systemInstruction: payload.system_instruction.parts[0].text,
+              generationConfig: payload.generationConfig,
+              apiKey: cleanKey,
             });
 
-            if (groqRes.ok) {
-              const groqData = await groqRes.json();
-              generatedText = (groqData.choices?.[0]?.message?.content || "").trim();
-              chosenModel = "Groq (fallback)";
+            const reply = dataRes.candidates?.[0]?.content?.parts?.[0]?.text;
+            if (reply && reply.trim()) {
+              generatedText = reply.trim();
+              chosenModel = modelName;
+              setWorkingModel(modelName);
+              localStorage.setItem("iyabd_gen_model", modelName);
+              incrementUsage("answer");
+              break;
             }
-          } catch (e) {
-            console.warn("Groq text fallback failed:", e);
+          } catch (err: any) {
+            const errMsg = (err.message || "").toLowerCase();
+            if (errMsg.includes("quota") || errMsg.includes("limit") || errMsg.includes("exhausted") || errMsg.includes("429")) {
+              markModelExhausted(modelName);
+              addVoiceLog('Model ' + modelName + ' hit quota limit. Marked exhausted today. Trying next model...', "info");
+            } else {
+              addVoiceLog('Model ' + modelName + ' error: ' + err.message + '. Trying next...', "info");
+            }
           }
         }
+
+        answerTime = parseFloat(((Date.now() - tAnsStart) / 1000).toFixed(2));
 
         if (!generatedText) {
           showQuotaToastOnce("Quota reached, will work again tomorrow", setToast);
@@ -6372,7 +6103,7 @@ export function App() {
 
         // ONE TTS request for the complete 1-2 sentence reply
         const tVoiceStart = Date.now();
-        await speakSentenceViaGeminiTTS(generatedText, key);
+        await speakSentenceViaGeminiTTS(generatedText, cleanKey);
         voiceTime = parseFloat(((Date.now() - tVoiceStart) / 1000).toFixed(2));
       }
 
@@ -6420,7 +6151,7 @@ export function App() {
       };
       setConversations(prev => [newConv, ...prev]);
       
-      // Removed /api/stats/increment call for Capacitor build
+      // Static build without backend stats endpoint
     }
 
     callStartTimeRef.current = null;

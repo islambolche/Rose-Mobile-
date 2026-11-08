@@ -262,31 +262,56 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({ isOpen, onClose, o
 
   // Test Key
   const handleTestKey = async () => {
-    const key = form.geminiApiKey?.trim();
+    const key = (form.geminiApiKey || "").replace(/[\r\n\t\s"']+/g, "").trim();
     if (!key) {
-      setKeyTestState({ loading: false, result: "Please enter a key first", isOk: false });
+      setKeyTestState({ loading: false, result: "Add your Gemini key in Settings > Connections.", isOk: false });
       return;
     }
     setKeyTestState({ loading: true, result: null, isOk: false });
     try {
-      const res = await fetch(`/api/gemini/generate`, {
+      const url = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${encodeURIComponent(key)}`;
+      const res = await fetch(url, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          apiKey: key,
           contents: [{ role: "user", parts: [{ text: "hi" }] }],
-          model: "gemini-1.5-flash"
+          generationConfig: { maxOutputTokens: 10 },
         }),
       });
+      const rawText = await res.text().catch(() => "");
+      let data: any = null;
+      try {
+        data = rawText ? JSON.parse(rawText) : null;
+      } catch {
+        setKeyTestState({
+          loading: false,
+          result: `Cannot reach Gemini. Check your internet and your Gemini key. (HTTP ${res.status})`,
+          isOk: false,
+        });
+        return;
+      }
+      if (!data || typeof data !== "object") {
+        setKeyTestState({
+          loading: false,
+          result: `Cannot reach Gemini. Check your internet and your Gemini key. (HTTP ${res.status})`,
+          isOk: false,
+        });
+        return;
+      }
       if (res.ok) {
         setKeyTestState({ loading: false, result: "Key is valid and active!", isOk: true });
       } else {
-        const data = await res.json().catch(() => ({}));
-        const msg = data.error?.message || `HTTP ${res.status}`;
+        const msg = data?.error?.message
+          ? `${data.error.message} (HTTP ${res.status})`
+          : `Cannot reach Gemini. Check your internet and your Gemini key. (HTTP ${res.status})`;
         setKeyTestState({ loading: false, result: `Failed: ${msg}`, isOk: false });
       }
     } catch (err: any) {
-      setKeyTestState({ loading: false, result: `Network error: ${err.message || "Failed to reach Rose AI Server"}`, isOk: false });
+      setKeyTestState({
+        loading: false,
+        result: "Cannot reach Gemini. Check your internet and your Gemini key.",
+        isOk: false,
+      });
     }
   };
 

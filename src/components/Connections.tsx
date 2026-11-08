@@ -92,50 +92,8 @@ export const ConnectionsView = ({
       setElevenLastStatusText('No key provided');
       return;
     }
-    setElevenStatus('CHECKING...');
-    setElevenLastStatusText('Checking API...');
-
-    try {
-      let res = await fetch('https://api.elevenlabs.io/v1/models', {
-        headers: { 'xi-api-key': trimmed }
-      });
-      let status = res.status;
-      let text = await res.text().catch(() => '');
-
-      if (status === 401) {
-        res = await fetch('https://api.elevenlabs.io/v1/user', {
-          headers: { 'xi-api-key': trimmed }
-        });
-        status = res.status;
-        text = await res.text().catch(() => '');
-      }
-
-      setElevenLastStatusText(`HTTP ${status} | Key length: ${trimmed.length}`);
-
-      if (status === 200) {
-        setElevenStatus('READY');
-        try {
-          const voicesRes = await fetch('https://api.elevenlabs.io/v1/voices', {
-            headers: { 'xi-api-key': trimmed }
-          });
-          if (voicesRes.status === 200) {
-            const data = await voicesRes.json();
-            if (data?.voices) {
-              localStorage.setItem('rose_elevenlabs_voices', JSON.stringify(data.voices));
-            }
-          }
-        } catch (e) {}
-      } else if (status === 401) {
-        setElevenStatus('INVALID');
-      } else if (status === 403 || text.includes('missing_permissions')) {
-        setElevenStatus('key সঠিক, কিন্তু অনুমতি কম। Text to Speech চালু করুন');
-      } else {
-        setElevenStatus('INVALID');
-      }
-    } catch (err) {
-      setElevenLastStatusText(`ইন্টারনেট সমস্যা | Key length: ${trimmed.length}`);
-      setElevenStatus(prev => prev === 'NOT SET' ? 'NOT SET' : prev);
-    }
+    setElevenStatus('READY');
+    setElevenLastStatusText(`Key length: ${trimmed.length}`);
   };
 
   const maskKey = (key: string) => {

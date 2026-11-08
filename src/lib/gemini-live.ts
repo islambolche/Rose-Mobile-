@@ -60,48 +60,51 @@ export class GeminiLiveSession {
     this.audioChunksReceived = 0;
     this.options.onTiming?.("audioChunksReceived", 0);
 
-    const apiKey = getGeminiKey();
+    const apiKey = String(this.options.apiKey || getGeminiKey() || '').replace(/[\r\n\t\s"']+/g, '').trim();
     if (!apiKey) {
-      const errMsg = "Add your Gemini key in Settings";
+      const errMsg = "Add your Gemini key in Settings > Connections.";
       logVoiceEvent("Live WS", errMsg, "error");
       this.options.onError?.(errMsg);
       this.stop(true);
       return;
     }
 
-    const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-    const model = localStorage.getItem('voice_model') || 'gemini-2.5-flash-native-audio-preview-09-2025';
-    
-    // Construct query parameters for the server-side proxy
-    const params = new URLSearchParams({
-      assistantName: this.options.assistantName || 'Rose AI',
-      ownerName: this.options.ownerName || 'MD YOUSUF KHAN',
-      voiceName: this.options.voiceName || 'Sulafat',
-      personality: this.options.personality || 'Normal',
-      customPersonalityText: this.options.customPersonalityText || '',
-      language: this.options.language || 'bn-BD',
-      responseStyle: this.options.responseStyle || 'Balanced',
-      memoryFacts: this.options.memoryFacts || '',
-      recentSummary: this.options.recentSummary || '',
-      model: model,
-      apiKey: apiKey
-    });
+    const rawModel = (localStorage.getItem('voice_model') || this.options.model || 'gemini-2.5-flash-native-audio-preview-09-2025').replace(/^models\//, '').trim();
+    const fullModel = `models/${rawModel}`;
+    const url = `wss://generativelanguage.googleapis.com/ws/google.ai.generativelanguage.v1beta.GenerativeService.BidiGenerateContent?key=${encodeURIComponent(apiKey)}`;
 
-    const url = `${protocol}//${window.location.host}/api/live?${params.toString()}`;
+    const systemText = `তোমার নাম ${this.options.assistantName || 'Rose AI'}। ইউজারের নাম ${this.options.ownerName || 'MD YOUSUF KHAN'}। শুধু বাংলায় ছোট উত্তর দাও।`;
 
-    logVoiceEvent("Live WS", "Connecting to Rose Live Server...");
+    logVoiceEvent("Live WS", "Connecting directly to Google Gemini Live...");
     this.ws = new WebSocket(url);
 
     this.ws.onopen = () => {
-      logVoiceEvent("Live WS", "[onopen] Connected to server, waiting for setup...", "success");
-      // Setup message is no longer needed from client as server handles it
+      logVoiceEvent("Live WS", "[onopen] Connected to Gemini Live, sending setup...", "success");
+      this.ws?.send(JSON.stringify({
+        setup: {
+          model: fullModel,
+          generationConfig: {
+            responseModalities: ["AUDIO"],
+            speechConfig: {
+              voiceConfig: {
+                prebuiltVoiceConfig: {
+                  voiceName: this.options.voiceName || 'Sulafat',
+                },
+              },
+            },
+          },
+          systemInstruction: {
+            parts: [{ text: systemText }],
+          },
+        },
+      }));
     };
 
-    this.ws.onmessage = (event) => {
+    this.ws.onmessage = async (event) => {
       try {
-        const msg = JSON.parse(event.data);
+        const raw = typeof event.data === 'string' ? event.data : await (event.data as Blob).text();
+        const msg = JSON.parse(raw);
         
-        // Handle setupComplete from server
         if (msg.setupComplete) {
             logVoiceEvent("Live WS", "[onmessage] Setup complete.", "success");
             this.isConnected = true;

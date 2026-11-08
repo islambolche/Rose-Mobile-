@@ -2,15 +2,8 @@ import {
   SharedBusinessDatabase,
   DEFAULT_SHARED_BUSINESS_DATABASE,
   GeminiProfileType,
-  GeminiApiProfile,
-  BusinessOrder,
-  CustomerMessage,
-  ParcelTracking,
-  AutomationRule,
-  ActivityLog,
-  BusinessProfile,
-  FirebaseConfig,
 } from "../types/business";
+import { TEXT_MODELS, discoverAvailableFlashModels } from "./ai-service";
 
 const STORAGE_KEY = "rose_shared_business_db";
 const BROADCAST_CHANNEL_NAME = "rose_business_sync_channel";
@@ -30,7 +23,6 @@ export function loadLocalBusinessDb(): SharedBusinessDatabase {
     const raw = localStorage.getItem(STORAGE_KEY);
     if (raw) {
       const parsed = JSON.parse(raw);
-      // Migrate from unified settings if gemini profile is empty
       const legacyUnified = localStorage.getItem("rose_unified_settings");
       if (legacyUnified) {
         try {
@@ -86,7 +78,6 @@ export function saveLocalBusinessDb(db: SharedBusinessDatabase): void {
     };
     localStorage.setItem(STORAGE_KEY, JSON.stringify(updated));
 
-    // Keep active Gemini key synced to legacy keys so chat & call engine use it
     const activeKey =
       updated.activeGeminiProfile === "paid"
         ? updated.geminiProfiles.paid.key
@@ -96,7 +87,6 @@ export function saveLocalBusinessDb(db: SharedBusinessDatabase): void {
       localStorage.setItem("rose_api_keys", JSON.stringify({ gemini: activeKey }));
     }
 
-    // Broadcast change across tabs
     if (channel) {
       channel.postMessage({ type: "BUSINESS_DB_UPDATED", payload: updated });
     }
@@ -105,44 +95,17 @@ export function saveLocalBusinessDb(db: SharedBusinessDatabase): void {
   }
 }
 
-/**
- * Syncs business database with backend server, merging updates
- */
 export async function syncBusinessDbWithServer(currentDb: SharedBusinessDatabase): Promise<SharedBusinessDatabase> {
-  try {
-    const res = await fetch('/api/business/state');
-    if (!res.ok) return currentDb;
-    const data = await res.json();
-    if (data.success && data.state) {
-      // Logic for merging could go here if needed, for now just replace
-      return data.state;
-    }
-  } catch (e) {
-    console.warn("Failed to sync business DB:", e);
-  }
-  return currentDb;
+  return loadLocalBusinessDb() || currentDb;
 }
 
-/**
- * Fetch latest state from server
- */
 export async function fetchServerBusinessState(): Promise<SharedBusinessDatabase | null> {
-  try {
-    const res = await fetch('/api/business/state');
-    if (!res.ok) return null;
-    const data = await res.json();
-    return data.success ? data.state : null;
-  } catch (e) {
-    return null;
-  }
+  return loadLocalBusinessDb();
 }
 
-/**
- * Performs actual real API key validation
- */
 export async function validateGeminiApiKey(
   key: string,
-  profile: GeminiProfileType
+  _profile: GeminiProfileType
 ): Promise<{
   ok: boolean;
   statusText: string;
@@ -150,59 +113,88 @@ export async function validateGeminiApiKey(
   errorMessage?: string;
   model: string;
 }> {
-  if (!key || !key.trim()) {
+  const cleanKey = (key || "").replace(/[\r\n\t\s"']+/g, "").trim();
+  if (!cleanKey) {
     return {
       ok: false,
       statusText: "Error",
       errorCategory: "Missing Key",
-      errorMessage: "API Key cannot be empty.",
-      model: "gemini-3.8-flash",
+      errorMessage: "Add your Gemini key in Settings > Connections.",
+      model: TEXT_MODELS[0],
     };
   }
 
-  const cleanKey = key.trim();
+  const candidateModels = [...TEXT_MODELS];
+  const tried = new Set<string>();
+  let lastErr = "Cannot reach Gemini. Check your internet and your Gemini key.";
 
-  try {
-    const res = await fetch(`/api/gemini/generate`, {
+  const testModel = async (m: string) => {
+    tried.add(m);
+    const url = `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(
+      m
+    )}:generateContent?key=${encodeURIComponent(cleanKey)}`;
+    const res = await fetch(url, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
-        apiKey: cleanKey,
         contents: [{ role: "user", parts: [{ text: "hi" }] }],
-        model: "gemini-1.5-flash"
+        generationConfig: { maxOutputTokens: 10 },
       }),
     });
 
+    const rawText = await res.text().catch(() => "");
+    let data: any = null;
+    try {
+      data = rawText ? JSON.parse(rawText) : null;
+    } catch {
+      lastErr = `Cannot reach Gemini. Check your internet and your Gemini key. (HTTP ${res.status})`;
+      return null;
+    }
+    if (!data || typeof data !== "object") {
+      lastErr = `Cannot reach Gemini. Check your internet and your Gemini key. (HTTP ${res.status})`;
+      return null;
+    }
     if (res.ok) {
       return {
         ok: true,
         statusText: "Connected",
-        model: "gemini-1.5-flash",
-      };
-    } else {
-      const data = await res.json().catch(() => ({}));
-      return {
-        ok: false,
-        statusText: "Error",
-        errorCategory: "Authentication Failed",
-        errorMessage: data.error?.message || `HTTP ${res.status}`,
-        model: "gemini-1.5-flash",
+        model: m,
       };
     }
+    lastErr = data?.error?.message
+      ? `${data.error.message} (HTTP ${res.status})`
+      : `Cannot reach Gemini. Check your internet and your Gemini key. (HTTP ${res.status})`;
+    return null;
+  };
+
+  try {
+    for (const m of candidateModels) {
+      const okRes = await testModel(m);
+      if (okRes) return okRes;
+    }
+    const discovered = await discoverAvailableFlashModels(cleanKey, tried);
+    for (const dm of discovered) {
+      const okRes = await testModel(dm);
+      if (okRes) return okRes;
+    }
+    return {
+      ok: false,
+      statusText: "Error",
+      errorCategory: "Authentication Failed",
+      errorMessage: lastErr,
+      model: TEXT_MODELS[0],
+    };
   } catch (e: any) {
     return {
       ok: false,
       statusText: "Error",
       errorCategory: "Network Failure",
-      errorMessage: e.message || "Failed to contact Rose AI Server.",
-      model: "gemini-1.5-flash",
+      errorMessage: "Cannot reach Gemini. Check your internet and your Gemini key.",
+      model: TEXT_MODELS[0],
     };
   }
 }
 
-/**
- * Hook to subscribe to cross-tab / device synchronization
- */
 export function subscribeToBusinessSync(callback: (db: SharedBusinessDatabase) => void): () => void {
   if (typeof window === "undefined") return () => {};
 

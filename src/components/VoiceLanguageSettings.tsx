@@ -169,24 +169,6 @@ export const VoiceLanguageSettings: React.FC<VoiceLanguageSettingsProps> = ({
     try {
       const raw = localStorage.getItem("rose_elevenlabs_voices");
       if (raw) setElevenVoices(JSON.parse(raw));
-      const elevenKey = getElevenLabsKey();
-      if (elevenKey) {
-        fetch("https://api.elevenlabs.io/v1/voices", { headers: { "xi-api-key": elevenKey } })
-          .then(res => {
-            if (res.status === 403) {
-              setElevenPermissionError(true);
-            }
-            return res.json();
-          })
-          .then(data => {
-            if (data?.voices) {
-              setElevenVoices(data.voices);
-              localStorage.setItem("rose_elevenlabs_voices", JSON.stringify(data.voices));
-              setElevenPermissionError(false);
-            }
-          })
-          .catch(() => {});
-      }
     } catch (e) {}
   }, []);
 
@@ -270,48 +252,23 @@ export const VoiceLanguageSettings: React.FC<VoiceLanguageSettingsProps> = ({
       let base64Audio = audioCacheRef.current.get(voiceName);
 
       if (!base64Audio) {
-        if (isEleven && voiceId) {
-          const elevenKey = getElevenLabsKey();
-          const res = await fetch(`https://api.elevenlabs.io/v1/text-to-speech/${voiceId}`, {
-            method: "POST",
-            headers: {
-              "xi-api-key": elevenKey,
-              "Content-Type": "application/json",
-            },
-            body: JSON.stringify({
-              text: textToSpeak,
-              model_id: "eleven_multilingual_v2",
-            }),
-          });
-          if (res.ok) {
-            const buf = await res.arrayBuffer();
-            const bytes = new Uint8Array(buf);
-            let bin = "";
-            for (let i = 0; i < bytes.byteLength; i++) {
-              bin += String.fromCharCode(bytes[i]);
-            }
-            base64Audio = btoa(bin);
-            audioCacheRef.current.set(voiceName, base64Audio);
-          }
-        } else {
-          const apiKey = settings.geminiApiKey || localStorage.getItem("gemini_api_key") || "";
-          const model = "gemini-2.5-flash-preview-tts";
+        const apiKey = (settings.geminiApiKey || localStorage.getItem("gemini_api_key") || "").replace(/[\r\n\t\s"']+/g, "").trim();
+        const model = "gemini-2.5-flash-preview-tts";
 
-          try {
-            const res = await directGeminiTTS({
-              text: textToSpeak,
-              voiceName,
-              model,
-              apiKey,
-            });
-            if (res && res.audio) {
-              base64Audio = res.audio;
-              audioCacheRef.current.set(voiceName, res.audio);
-            }
+        try {
+          const res = await directGeminiTTS({
+            text: textToSpeak,
+            voiceName,
+            model,
+            apiKey,
+          });
+          if (res && res.audio) {
+            base64Audio = res.audio;
+            audioCacheRef.current.set(voiceName, res.audio);
+          }
           } catch (err) {
             throw err || new Error("Failed to call Gemini API. Please check your API key.");
           }
-        }
       }
 
       const binaryString = atob(base64Audio || "");
@@ -507,26 +464,31 @@ export const VoiceLanguageSettings: React.FC<VoiceLanguageSettingsProps> = ({
             <div className="p-4 bg-[#0A1628]/40 border-t border-white/5">
                 <button 
                   onClick={async () => {
-                      const key = localStorage.getItem("groq_api_keys")?.trim() || "";
-                      if (!key) { alert("Groq Key Missing"); return; }
+                      const key = (settings.geminiApiKey || localStorage.getItem("gemini_api_key") || "").replace(/[\r\n\t\s"']+/g, "").trim();
+                      if (!key) { showToast("Add your Gemini key in Settings > Connections."); return; }
                       try {
-                          const res = await fetch("/api/groq/chat", {
+                          const url = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${encodeURIComponent(key)}`;
+                          const res = await fetch(url, {
                             method: "POST",
                             headers: { "Content-Type": "application/json" },
                             body: JSON.stringify({
-                                apiKey: key.split(',')[0],
-                                model: "llama-3.3-70b-versatile",
-                                messages: [{ role: "user", content: "হাই" }],
-                                stream: false
+                                contents: [{ role: "user", parts: [{ text: "হাই" }] }],
+                                generationConfig: { maxOutputTokens: 30 }
                             })
                           });
-                          const data = await res.json();
-                          alert(`Status: ${res.status}\nResult: ${res.ok ? data.choices[0].message.content : JSON.stringify(data)}`);
-                      } catch (e: any) { alert(`Error: ${e.message}`); }
+                          const raw = await res.text().catch(() => "");
+                          let data: any = null;
+                          try { data = raw ? JSON.parse(raw) : null; } catch {}
+                          if (!data) {
+                            showToast(`Cannot reach Gemini. Check your internet and your Gemini key. (HTTP ${res.status})`);
+                            return;
+                          }
+                          showToast(`Status: ${res.status} - ${res.ok ? (data.candidates?.[0]?.content?.parts?.[0]?.text || "OK") : (data.error?.message || "Error")}`);
+                      } catch (e: any) { showToast(`Cannot reach Gemini. Check your internet and your Gemini key.`); }
                   }}
                   className="w-full py-2 bg-purple-600 rounded-lg text-xs font-bold text-white"
                 >
-                  Test Groq
+                  Test Gemini
                 </button>
             </div>
           </div>

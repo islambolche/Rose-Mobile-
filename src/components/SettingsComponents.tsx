@@ -123,16 +123,16 @@ export const testLiveVoiceModelConnection = async (
     return { ok: false, error: `Invalid model "${trimmed}"` };
   }
 
-  let apiKey = getGeminiKey();
+  let apiKey = (getGeminiKey() || "").replace(/[\r\n\t\s"']+/g, "").trim();
 
   if (!apiKey) {
-    return { ok: false, error: "Gemini API key is missing. Add your key in Connections." };
+    return { ok: false, error: "Add your Gemini key in Settings > Connections." };
   }
 
   return new Promise((resolve) => {
     let settled = false;
-    const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-    const wsUrl = `${protocol}//${window.location.host}/api/live?model=${encodeURIComponent(trimmed)}&apiKey=${encodeURIComponent(apiKey)}&minimal=1`;
+    const rawModel = trimmed.replace(/^models\//, "").trim();
+    const wsUrl = `wss://generativelanguage.googleapis.com/ws/google.ai.generativelanguage.v1beta.GenerativeService.BidiGenerateContent?key=${encodeURIComponent(apiKey)}`;
 
     let ws: WebSocket | null = null;
     const finish = (result: { ok: boolean; error?: string }) => {
@@ -158,11 +158,21 @@ export const testLiveVoiceModelConnection = async (
     try {
       ws = new WebSocket(wsUrl);
       ws.onopen = () => {
-        // Server handles setup
+        ws?.send(
+          JSON.stringify({
+            setup: {
+              model: `models/${rawModel}`,
+              generationConfig: {
+                responseModalities: ["AUDIO"],
+              },
+            },
+          })
+        );
       };
-      ws.onmessage = (event) => {
+      ws.onmessage = async (event) => {
         try {
-          const msg = JSON.parse(event.data);
+          const text = typeof event.data === "string" ? event.data : await (event.data as Blob).text();
+          const msg = JSON.parse(text);
           if (msg.error) {
             finish({ ok: false, error: String(msg.error.message || msg.error) });
             return;

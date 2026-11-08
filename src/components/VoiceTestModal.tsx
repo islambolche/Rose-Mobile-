@@ -100,8 +100,8 @@ export const VoiceTestModal: React.FC<VoiceTestModalProps> = ({ settings, onClos
     let connectedModel = "";
 
     for (const modelCandidate of LIVE_MODELS) {
-      const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-      const wsUrl = `${protocol}//${window.location.host}/api/live?model=${encodeURIComponent(modelCandidate)}&apiKey=${encodeURIComponent(apiKey)}`;
+      const cleanKey = apiKey.replace(/[\r\n\t\s"']+/g, "").trim();
+      const wsUrl = `wss://generativelanguage.googleapis.com/ws/google.ai.generativelanguage.v1beta.GenerativeService.BidiGenerateContent?key=${encodeURIComponent(cleanKey)}`;
       try {
         ws = new WebSocket(wsUrl);
         const wsPromise = new Promise<string>((resolve, reject) => {
@@ -110,12 +110,22 @@ export const VoiceTestModal: React.FC<VoiceTestModalProps> = ({ settings, onClos
           }, 5000);
 
           ws!.onopen = () => {
-            // Server handles setup
+            ws!.send(
+              JSON.stringify({
+                setup: {
+                  model: `models/${modelCandidate.replace(/^models\//, "")}`,
+                  generationConfig: {
+                    responseModalities: ["AUDIO"],
+                  },
+                },
+              })
+            );
           };
 
-          ws!.onmessage = (event) => {
+          ws!.onmessage = async (event) => {
             try {
-              const msg = JSON.parse(event.data);
+              const raw = typeof event.data === "string" ? event.data : await (event.data as Blob).text();
+              const msg = JSON.parse(raw);
               if (msg.error) {
                 clearTimeout(timeout);
                 reject(new Error(msg.error.message || JSON.stringify(msg.error)));
