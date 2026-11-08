@@ -627,6 +627,57 @@ app.post('/api/gemini/stream', async (req, res) => {
   }
 });
 
+function parseGeminiError(err: any): { message: string; status: number } {
+  let status = 500;
+  let message = "Gemini TTS request failed";
+
+  if (!err) return { message, status };
+
+  if (typeof err.status === "number" && err.status > 0) {
+    status = err.status;
+  }
+
+  const rawStr = typeof err === "string" ? err : String(err?.message || err?.bodyText || err || "");
+
+  const jsonMatch = rawStr.match(/\{[\s\S]*"error"[\s\S]*\}/);
+  if (jsonMatch) {
+    try {
+      const parsed = JSON.parse(jsonMatch[0]);
+      if (parsed?.error?.message) {
+        message = parsed.error.message;
+      }
+      if (typeof parsed?.error?.code === "number") {
+        status = parsed.error.code;
+      }
+    } catch (e) {}
+  }
+
+  if (message === "Gemini TTS request failed" && rawStr) {
+    message = rawStr
+      .replace(/^Error:\s*/i, "")
+      .replace(/^\[GoogleGenAI Error\]:\s*/i, "")
+      .replace(/^HTTP \d+:\s*/i, "")
+      .trim();
+  }
+
+  const lower = message.toLowerCase();
+  if (lower.includes("429") || lower.includes("quota") || lower.includes("resource_exhausted")) {
+    status = 429;
+    message = "Gemini API daily quota limit reached (429)";
+  } else if (lower.includes("401") || lower.includes("api key not valid") || lower.includes("unauthenticated") || lower.includes("invalid key")) {
+    status = 401;
+    message = "Gemini API key is invalid (401)";
+  } else if (lower.includes("403") || lower.includes("permission_denied") || lower.includes("forbidden")) {
+    status = 403;
+    message = "Gemini API permission denied (403)";
+  } else if (lower.includes("404") || lower.includes("not_found")) {
+    status = 404;
+    message = "Gemini TTS model not found (404)";
+  }
+
+  return { message, status };
+}
+
 app.post('/api/gemini/tts', async (req, res) => {
   try {
     const { model, text, voiceName, style, apiKey } = req.body;
@@ -635,13 +686,13 @@ app.post('/api/gemini/tts', async (req, res) => {
       : (serverSecretVault.freeKey || serverSecretVault.paidKey);
     const effectiveKey = (apiKey || activeServerKey || process.env.GEMINI_API_KEY || '').replace(/[\r\n\t\s"']+/g, '').trim();
     if (!effectiveKey) {
-      return res.status(400).json({ error: { message: 'Missing Gemini API key' }, exactError: 'Missing Gemini API key' });
+      return res.status(400).json({ error: { message: 'Missing Gemini API key', code: 400 }, exactError: 'Missing Gemini API key', status: 400 });
     }
     const client = getGenAIClient(effectiveKey);
 
     const rawText = String(text || '').trim();
     if (!rawText) {
-      return res.status(400).json({ error: { message: 'Empty text for TTS' }, exactError: 'Empty text for TTS' });
+      return res.status(400).json({ error: { message: 'Empty text for TTS', code: 400 }, exactError: 'Empty text for TTS', status: 400 });
     }
 
     // Extract optional style prefix if embedded as "Say in a ...: <transcript>"
@@ -655,16 +706,15 @@ app.post('/api/gemini/tts', async (req, res) => {
       transcript = prefixMatch[1].trim();
     }
 
-    // Explicit TTS-only transcript instruction so TTS models never try to answer questions in text
-    const ttsPrompt = styleHint
-      ? `Read the following text aloud verbatim in a ${styleHint} tone. Do not answer or generate new text, only speak the exact transcript: "${transcript}"`
-      : `Read the following text aloud verbatim. Do not answer or generate new text, only speak the exact transcript: "${transcript}"`;
+    console.log(`[Gemini TTS Server] Received request for text: "${transcript.slice(0, 30)}...", voice: ${voiceName || "Leda"}, requested model: ${model || "default"}`);
+    const ttsPrompt = transcript;
 
     const initialModels = Array.from(new Set([
       model && model.toLowerCase().includes('tts') ? model : null,
       'gemini-2.5-flash-preview-tts',
-      'gemini-3.8-flash-lite-tts',
-      'gemini-3.8-flash-tts',
+      'gemini-2.5-flash-tts',
+      'gemini-2.0-flash-preview-tts',
+      'gemini-2.0-flash-tts',
     ].filter(Boolean))) as string[];
 
     const triedModels = new Set<string>();
@@ -702,19 +752,14 @@ app.post('/api/gemini/tts', async (req, res) => {
           }
           lastErrorText = `No audio returned from ${m}`;
         } catch (err: any) {
-          const msg = String(err?.message || err || `TTS failed on ${m}`);
-          lastErrorText = msg;
-          const is404 = msg.includes('404') || msg.toLowerCase().includes('not_found') || msg.toLowerCase().includes('not found');
-          if (msg.includes('429') || msg.toLowerCase().includes('quota') || msg.toLowerCase().includes('resource_exhausted')) {
-            lastStatus = 429;
-          } else if (is404) {
-            lastStatus = 404;
-            return false; // Immediately move to next model / discovery on 404
-          } else if (msg.includes('400')) {
-            lastStatus = 400;
+          const parsed = parseGeminiError(err);
+          lastErrorText = parsed.message;
+          lastStatus = parsed.status;
+          if (parsed.status === 404) {
+            return false;
           }
           if (attempt === 0) {
-            await new Promise((r) => setTimeout(r, 350));
+            await new Promise((r) => setTimeout(r, 250));
           }
         }
       }
@@ -751,18 +796,21 @@ app.post('/api/gemini/tts', async (req, res) => {
     }
 
     if (!base64Audio) {
-      return res.status(lastStatus || 500).json({
-        error: { message: lastErrorText || 'Gemini TTS failed' },
-        exactError: lastErrorText || 'Gemini TTS failed',
+      const parsed = parseGeminiError({ message: lastErrorText, status: lastStatus });
+      return res.status(parsed.status || 500).json({
+        error: { message: parsed.message, code: parsed.status },
+        exactError: parsed.message,
+        status: parsed.status,
       });
     }
 
     res.json({ audio: base64Audio, modelUsed: workingModelUsed });
   } catch (error: any) {
-    const exactError = String(error?.message || error || 'Gemini TTS error');
-    res.status(500).json({
-      error: { message: exactError },
-      exactError,
+    const parsed = parseGeminiError(error);
+    res.status(parsed.status || 500).json({
+      error: { message: parsed.message, code: parsed.status },
+      exactError: parsed.message,
+      status: parsed.status,
     });
   }
 });

@@ -53,498 +53,591 @@ const TelegramLogo = () => (
   </svg>
 );
 
-export const ProfileView = ({ settings, prefs, setSettings, setPrefs, setCurrentView }: any) => {
-  const [isEditingName, setIsEditingName] = useState(false);
-  const [tempName, setTempName] = useState(settings.assistantName || 'Rose AI');
+export const ProfileView = ({ settings, prefs, setSettings, setPrefs, setCurrentView, setToast }: any) => {
+  const [isEditingUserName, setIsEditingUserName] = useState(false);
+  const [userNameInput, setUserNameInput] = useState('');
+
+  const handleOpenEditName = () => {
+    const currentName = settings?.ownerName || localStorage.getItem('userName') || '';
+    setUserNameInput(currentName);
+    setIsEditingUserName(true);
+  };
+
+  const handleSaveUserName = async () => {
+    const trimmed = userNameInput.trim();
+    if (!trimmed) {
+      if (setToast) setToast("অনুগ্রহ করে একটি নাম লিখুন");
+      return;
+    }
+
+    try {
+      localStorage.setItem('userName', trimmed);
+      setSettings((s: AssistantSettings) => ({ ...s, ownerName: trimmed }));
+
+      if (supabase) {
+        try {
+          const { data: { session } } = await supabase.auth.getSession();
+          if (session?.user?.id) {
+            await supabase.from('profiles').update({ full_name: trimmed, updated_at: new Date().toISOString() }).eq('id', session.user.id);
+          }
+        } catch (subErr) {
+          console.error(subErr);
+        }
+      }
+
+      if (setToast) setToast("নাম সেভ হয়েছে");
+      setIsEditingUserName(false);
+    } catch (e) {
+      console.error(e);
+      if (setToast) setToast("নাম সেভ হয়েছে");
+      setIsEditingUserName(false);
+    }
+  };
 
   return (
     <div className="fixed inset-0 z-[80] bg-[#020617] overflow-y-auto no-scrollbar flex flex-col">
-      <header className="px-5 py-6 flex items-center gap-4 shrink-0">
-        <button onClick={() => setCurrentView('settings')} className="p-2.5 bg-white/5 rounded-2xl"><ArrowLeft className="w-5 h-5 text-slate-300" /></button>
-        <h2 className="text-xl font-black italic uppercase tracking-tighter text-white">Profile</h2>
+      <header className="sticky top-0 z-20 px-5 pt-6 pb-2 bg-[#020617] flex items-center gap-4 shrink-0">
+        <button onClick={() => setCurrentView('settings')} className="p-3 bg-purple-500/10 border border-purple-500/30 rounded-2xl flex items-center justify-center text-white active:scale-95 transition-transform">
+          <ArrowLeft className="w-5 h-5 text-white" />
+        </button>
+        <div className="flex flex-col">
+          <h2 className="text-xl font-black italic uppercase tracking-tighter text-white">MD YOUSUF KHAN</h2>
+          <p className="text-[10px] text-slate-500 font-bold uppercase tracking-widest">WEB DEVELOPER</p>
+        </div>
       </header>
       
       <div className="flex flex-col items-center px-6 pt-4 pb-40">
-        <div className="w-24 h-24 rounded-full bg-gradient-to-tr from-purple-600 to-indigo-600 border-4 border-[#020617] flex items-center justify-center shadow-2xl mb-4 relative">
-          <Sparkles className="w-10 h-10 text-white" />
-          <div className="absolute inset-0 rounded-full border-2 border-purple-500/30" />
-        </div>
-        <h1 className="text-2xl font-black text-white italic tracking-tighter uppercase mb-8">{settings.ownerName || "Tell me your name"}</h1>
-
-        {/* YOU Section */}
-        <div className="w-full space-y-4 mb-8">
-          <div className="flex items-center gap-2 px-2">
-            <Sparkles className="w-4 h-4 text-purple-400" />
-            <span className="text-[10px] font-black uppercase tracking-[3px] text-slate-400">YOU</span>
-          </div>
-          <div className="bg-[#0F172A]/80 border border-purple-500/30 rounded-[2rem] overflow-hidden">
-            <button onClick={() => {
-              const newName = prompt("Enter your name:", settings.ownerName || '');
-              if (newName !== null) {
-                const trimmed = newName.trim().substring(0, 30);
-                localStorage.setItem('userName', trimmed);
-                setSettings((s: AssistantSettings) => ({ ...s, ownerName: trimmed }));
-              }
-            }} className="w-full flex items-center justify-between p-4 border-b border-white/5">
-              <div className="flex items-center gap-3"><Pencil className="w-5 h-5 text-purple-400" /><span className="text-sm font-bold text-white">Your name</span></div>
-              <div className="flex items-center gap-2"><span className="text-xs text-slate-400">{settings.ownerName || "Tell me your name"}</span><ChevronRight className="w-4 h-4 text-slate-500" /></div>
-            </button>
-            <button onClick={() => setCurrentView('privacy')} className="w-full flex items-center justify-between p-4">
-              <div className="flex items-center gap-3"><Shield className="w-5 h-5 text-purple-400" /><span className="text-sm font-bold text-white">Privacy controls</span></div>
-              <ChevronRight className="w-4 h-4 text-slate-500" />
-            </button>
-          </div>
-        </div>
-
-        {/* YOUR ASSISTANT Section */}
         <div className="w-full space-y-4">
-          <div className="flex items-center gap-2 px-2">
-            <Sparkles className="w-4 h-4 text-purple-400" />
-            <span className="text-[10px] font-black uppercase tracking-[3px] text-slate-400">YOUR ASSISTANT</span>
-          </div>
-          <div className="bg-[#0F172A]/80 border border-purple-500/30 rounded-[2rem] overflow-hidden">
-            <button onClick={() => {
-                setTempName(settings.assistantName || 'Rose AI');
-                setIsEditingName(true);
-            }} className="w-full flex items-center justify-between p-4 border-b border-white/5">
-              <div className="flex items-center gap-3"><Sparkles className="w-5 h-5 text-purple-400" /><span className="text-sm font-bold text-white">Name</span></div>
-              <div className="flex items-center gap-2"><span className="text-xs text-slate-400">{settings.assistantName || "Rose AI"}</span><ChevronRight className="w-4 h-4 text-slate-500" /></div>
-            </button>
-            <button onClick={() => setCurrentView('personality')} className="w-full flex items-center justify-between p-4 border-b border-white/5">
-              <div className="flex items-center gap-3"><Smile className="w-5 h-5 text-purple-400" /><span className="text-sm font-bold text-white">Personality</span></div>
-              <div className="flex items-center gap-2"><span className="text-xs text-slate-400">{settings.personality}</span><ChevronRight className="w-4 h-4 text-slate-500" /></div>
-            </button>
-            <button onClick={() => setCurrentView('language-list')} className="w-full flex items-center justify-between p-4 border-b border-white/5">
-              <div className="flex items-center gap-3"><Globe className="w-5 h-5 text-purple-400" /><span className="text-sm font-bold text-white">Language</span></div>
-              <div className="flex items-center gap-2"><span className="text-xs text-slate-400">{prefs.language}</span><ChevronRight className="w-4 h-4 text-slate-500" /></div>
-            </button>
-            <button onClick={() => setCurrentView('voice-list')} className="w-full flex items-center justify-between p-4">
-              <div className="flex items-center gap-3"><Volume2 className="w-5 h-5 text-purple-400" /><span className="text-sm font-bold text-white">Voice</span></div>
-              <div className="flex items-center gap-2"><span className="text-xs text-slate-400">{prefs.voiceName}</span><ChevronRight className="w-4 h-4 text-slate-500" /></div>
-            </button>
-          </div>
+          <button 
+            onClick={handleOpenEditName} 
+            className="w-full p-5 bg-[#0F172A]/80 rounded-[2rem] border border-purple-500/30 shadow-2xl flex items-center justify-between active:scale-[0.98] transition-all text-left"
+          >
+            <div className="flex items-center gap-4">
+              <Pencil className="w-6 h-6 text-purple-400" />
+              <span className="text-lg font-black uppercase tracking-wider text-white">Your name</span>
+            </div>
+            <ChevronRight className="w-5 h-5 text-slate-500" />
+          </button>
+
+          <button 
+            onClick={() => setCurrentView('privacy')} 
+            className="w-full p-5 bg-[#0F172A]/80 rounded-[2rem] border border-purple-500/30 shadow-2xl flex items-center justify-between active:scale-[0.98] transition-all text-left"
+          >
+            <div className="flex items-center gap-4">
+              <Shield className="w-6 h-6 text-purple-400" />
+              <span className="text-lg font-black uppercase tracking-wider text-white">Privacy controls</span>
+            </div>
+            <ChevronRight className="w-5 h-5 text-slate-500" />
+          </button>
         </div>
       </div>
 
-      {isEditingName && (
-        <div className="fixed inset-0 z-[100] bg-black/80 flex items-center justify-center p-6">
-            <div className="bg-[#0F172A] p-6 rounded-3xl w-full max-w-sm border border-purple-500/30">
-                <h3 className="text-lg font-bold text-white mb-4">Edit Assistant Name</h3>
-                <input 
-                    type="text" 
-                    value={tempName} 
-                    onChange={(e) => setTempName(e.target.value.substring(0, 20))}
-                    className="w-full bg-[#1e293b] text-white p-3 rounded-xl mb-4 border border-purple-500/30"
-                    placeholder="Enter name (max 20)"
-                />
-                <div className="flex gap-2">
-                    <button onClick={() => setIsEditingName(false)} className="flex-1 bg-slate-700 text-white p-3 rounded-xl">Cancel</button>
-                    <button onClick={() => {
-                        if (tempName.trim()) {
-                            setSettings((s: AssistantSettings) => ({ ...s, assistantName: tempName.trim() }));
-                            setIsEditingName(false);
-                        }
-                    }} className="flex-1 bg-purple-600 text-white p-3 rounded-xl">Save</button>
-                </div>
-                <button onClick={() => {
-                    setSettings((s: AssistantSettings) => ({ ...s, assistantName: 'Rose AI' }));
-                    setIsEditingName(false);
-                }} className="w-full mt-3 text-slate-400 text-sm font-bold uppercase underline">Reset to {settings.assistantName || "Rose"}</button>
+      {isEditingUserName && (
+        <div className="fixed inset-0 z-[100] bg-black/80 backdrop-blur-sm flex items-center justify-center p-6">
+          <div className="bg-[#0F172A] border border-purple-500/40 rounded-3xl p-6 w-full max-w-sm shadow-2xl">
+            <h3 className="text-lg font-black uppercase tracking-wider text-white mb-4">Edit Your Name</h3>
+            <p className="text-xs text-slate-400 mb-3">Rose আপনাকে যে নামে ডাকবে সেটি লিখুন:</p>
+            <input 
+              type="text" 
+              value={userNameInput} 
+              onChange={(e) => setUserNameInput(e.target.value)}
+              className="w-full bg-[#1e293b] text-white p-3.5 rounded-xl mb-5 border border-purple-500/30 focus:outline-none focus:border-purple-500 font-bold"
+              placeholder="আপনার নাম লিখুন"
+              maxLength={40}
+              autoFocus
+            />
+            <div className="flex gap-3">
+              <button 
+                onClick={() => setIsEditingUserName(false)} 
+                className="flex-1 bg-slate-800 hover:bg-slate-700 text-slate-300 font-bold p-3 rounded-xl text-sm transition-all"
+              >
+                Cancel
+              </button>
+              <button 
+                onClick={handleSaveUserName} 
+                className="flex-1 bg-purple-600 hover:bg-purple-500 text-white font-black p-3 rounded-xl text-sm uppercase tracking-wider shadow-lg shadow-purple-900/40 transition-all"
+              >
+                Save
+              </button>
             </div>
+          </div>
         </div>
       )}
     </div>
   );
 };
 
-export const PrivacyView = ({ setCurrentView, setToast }: any) => {
-  const [adminData, setAdminData] = useState<any>(() => {
+export const PrivacyView = ({ settings, prefs, setCurrentView, setToast }: any) => {
+  // 1. Microphone State
+  const [micState, setMicState] = useState<'granted' | 'denied' | 'prompt' | 'checking'>('checking');
+
+  // 2. Approximate Location State
+  const [approxLocation, setApproxLocation] = useState<boolean>(() => {
+    return localStorage.getItem('rose_approx_location_enabled') !== 'false';
+  });
+
+  // 4. Memory Facts State
+  const [memories, setMemories] = useState<any[]>(() => {
     try {
-      const saved = localStorage.getItem('iyabd_admin_profile_v3');
-      return saved ? JSON.parse(saved) : { 
-        name: 'MD YOUSUF KHAN',
-        subtitle: 'Web Developer',
-        banner: '', 
-        links: { facebook: '', youtube: '', instagram: '', tiktok: '', whatsapp: '', telegram: '', website: '' } 
-      };
-    } catch (e) {
-      return { 
-        name: 'MD YOUSUF KHAN',
-        subtitle: 'Web Developer',
-        banner: '', 
-        links: { facebook: '', youtube: '', instagram: '', tiktok: '', whatsapp: '', telegram: '', website: '' } 
-      };
+      const raw = localStorage.getItem('rose_memory_facts');
+      return raw ? JSON.parse(raw) : [];
+    } catch {
+      return [];
     }
   });
 
-  const [userEmail, setUserEmail] = useState<string | null>(null);
-  const [isLoginModalOpen, setIsLoginModalOpen] = useState(false);
-  const [loginEmail, setLoginEmail] = useState('');
-  const [loginPassword, setLoginPassword] = useState('');
-  const [showPassword, setShowPassword] = useState(false);
-  const [loginError, setLoginError] = useState<string | null>(null);
-  const [isLoggingIn, setIsLoggingIn] = useState(false);
-  const [isLoadingLinks, setIsLoadingLinks] = useState(true);
-  const [isKeyboardOpen, setIsKeyboardOpen] = useState(false);
+  // 6. Account Delete Modal States
+  const [deleteModalStep, setDeleteModalStep] = useState<0 | 1 | 2>(0);
+  const [deleteInputText, setDeleteInputText] = useState('');
 
+  // 7. Privacy Policy Modal State
+  const [showPolicyModal, setShowPolicyModal] = useState(false);
+
+  // Check Microphone Status on mount
   useEffect(() => {
-    if (!isLoginModalOpen) {
-      const bottomNav = document.querySelector('nav');
-      if (bottomNav) bottomNav.style.display = 'flex';
-      return;
-    }
-    
-    const handleResize = () => {
-      if (window.visualViewport) {
-        const isKeyboard = window.visualViewport.height < window.innerHeight * 0.8;
-        setIsKeyboardOpen(isKeyboard);
-        
-        const bottomNav = document.querySelector('nav');
-        if (bottomNav) {
-          bottomNav.style.display = isKeyboard ? 'none' : 'flex';
+    async function checkMic() {
+      if (navigator.permissions && navigator.permissions.query) {
+        try {
+          const res = await navigator.permissions.query({ name: 'microphone' as PermissionName });
+          setMicState(res.state as any);
+          res.onchange = () => setMicState(res.state as any);
+        } catch {
+          setMicState('prompt');
         }
-      }
-    };
-
-    window.visualViewport?.addEventListener('resize', handleResize);
-    handleResize();
-
-    return () => {
-      window.visualViewport?.removeEventListener('resize', handleResize);
-      const bottomNav = document.querySelector('nav');
-      if (bottomNav) bottomNav.style.display = 'flex';
-    };
-  }, [isLoginModalOpen]);
-
-  const handleInputFocus = (e: React.FocusEvent<HTMLInputElement>) => {
-    const target = e.target;
-    setTimeout(() => {
-      target.scrollIntoView({ behavior: 'smooth', block: 'center' });
-    }, 300);
-  };
-
-  useEffect(() => {
-    let channel: any;
-    let subscription: any;
-
-    async function initAuth() {
-      if (!supabase) {
-        setLoginError("Supabase keys missing in build settings");
-        return;
-      }
-      
-      try {
-        const { data: { session } } = await supabase.auth.getSession();
-        let currentEmail = session?.user?.email || null;
-        
-        if (session?.user) {
-          const { data: profile } = await supabase!.from('profiles').select('role, status').eq('id', session.user.id).single();
-          if (profile?.status === 'blocked') {
-            await supabase!.auth.signOut();
-            currentEmail = null;
-          } else {
-            // Log login
-            const sessionKey = `logged_in_view_${session.user.id}_${new Date().toISOString().slice(0, 10)}`;
-            if (!sessionStorage.getItem(sessionKey) && supabase) {
-              await supabase!.from('login_events').insert({ user_id: session.user.id, device: navigator.userAgent });
-              sessionStorage.setItem(sessionKey, 'true');
-            }
-          }
-        }
-        setUserEmail(currentEmail);
-
-        const authListener = supabase!.auth.onAuthStateChange(async (_event, session) => {
-          let email = session?.user?.email || null;
-          if (session?.user && supabase) {
-            const { data: profile } = await supabase!.from('profiles').select('role, status').eq('id', session.user.id).single();
-            if (profile?.status === 'blocked') {
-              if (supabase) await supabase.auth.signOut();
-              email = null;
-            }
-          }
-          setUserEmail(email);
-        });
-        subscription = authListener.data.subscription;
-
-        fetchLinks();
-
-        if (supabase) {
-          channel = supabase
-            .channel('profile_settings_view_changes')
-            .on('postgres_changes', { 
-              event: 'UPDATE', 
-              schema: 'public', 
-              table: 'profile_settings',
-              filter: 'id=eq.1'
-            }, (payload) => {
-              const data = payload.new;
-              setAdminData({
-                name: data.name || 'MD YOUSUF KHAN',
-                subtitle: data.subtitle || 'Web Developer',
-                banner: data.banner_url || '',
-                links: data.links || { facebook: '', youtube: '', instagram: '', tiktok: '', whatsapp: '', telegram: '', website: '', phone: '' }
-              });
-            })
-            .subscribe();
-        }
-      } catch (err) {
-        console.error("Auth init error:", err);
+      } else {
+        setMicState('prompt');
       }
     }
-    initAuth();
-
-    return () => {
-      if (subscription) subscription.unsubscribe();
-      if (supabase && channel) {
-        supabase.removeChannel(channel);
-      }
-    };
+    checkMic();
   }, []);
 
-  const fetchLinks = async () => {
-    if (!supabase) return;
-    setIsLoadingLinks(true);
+  // Request Microphone access
+  const handleRequestMic = async () => {
     try {
-      const { data, error } = await supabase
-        .from('profile_settings')
-        .select('*')
-        .eq('id', 1)
-        .single();
-      
-      if (error && error.code !== 'PGRST116') throw error;
-      
-      if (data) {
-        const mappedData = {
-          name: data.name || 'MD YOUSUF KHAN',
-          subtitle: data.subtitle || 'Web Developer',
-          banner: data.banner_url || '',
-          links: data.links || { facebook: '', youtube: '', instagram: '', tiktok: '', whatsapp: '', telegram: '', website: '', phone: '' }
-        };
-        setAdminData(mappedData);
-        localStorage.setItem('iyabd_admin_profile_v3', JSON.stringify(mappedData));
-      }
-    } catch (err) {
-      console.error("Failed to fetch settings:", err);
-    } finally {
-      setIsLoadingLinks(false);
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      stream.getTracks().forEach(t => t.stop());
+      setMicState('granted');
+      if (setToast) setToast("মাইক্রোফোন পারমিশন সচল করা হয়েছে");
+    } catch {
+      setMicState('denied');
+      if (setToast) setToast("মাইক্রোফোন পারমিশন বন্ধ আছে। ফোন সেটিংসে চেক করুন।");
     }
   };
 
-  const handleLogin = () => {
-    setLoginEmail('');
-    setLoginPassword('');
-    setLoginError(null);
-    setIsLoginModalOpen(true);
+  // Toggle Approximate Location
+  const handleToggleLocation = () => {
+    const nextVal = !approxLocation;
+    setApproxLocation(nextVal);
+    localStorage.setItem('rose_approx_location_enabled', String(nextVal));
+    if (setToast) setToast(nextVal ? "আনুমানিক লোকেশন সচল করা হয়েছে" : "আনুমানিক লোকেশন নিষ্ক্রিয় করা হয়েছে");
   };
 
-  const performLogin = async () => {
-    if (!supabase) {
-      setLoginError("Supabase keys missing in build settings");
+  // Clear Chat History
+  const handleClearChatHistory = async () => {
+    if (confirm("আপনি কি নিশ্চিত যে সমস্ত চ্যাট ইতিহাস মুছে ফেলতে চান?")) {
+      try {
+        localStorage.removeItem('iyabd_conversations');
+        localStorage.removeItem('iyabd_chat_history');
+        localStorage.removeItem('rose_chat_summary');
+        localStorage.removeItem('iyabd_action_history');
+        
+        if ('indexedDB' in window) {
+          try {
+            indexedDB.deleteDatabase('RoseDB');
+          } catch {}
+        }
+        if (setToast) setToast("সকল চ্যাট ইতিহাস মুছে ফেলা হয়েছে");
+      } catch (err) {
+        console.error(err);
+      }
+    }
+  };
+
+  // Delete Individual Memory
+  const handleDeleteSingleMemory = (id: string) => {
+    const updated = memories.filter(m => m.id !== id);
+    setMemories(updated);
+    localStorage.setItem('rose_memory_facts', JSON.stringify(updated));
+    if (setToast) setToast("মেমোরি আইটেম মুছে ফেলা হয়েছে");
+  };
+
+  // Clear All Memory
+  const handleClearAllMemory = () => {
+    if (confirm("আপনি কি নিশ্চিত যে Rose-এর মনে রাখা সমস্ত তথ্য মুছে ফেলতে চান?")) {
+      setMemories([]);
+      localStorage.setItem('rose_memory_facts', JSON.stringify([]));
+      if (setToast) setToast("সকল মেমোরি তথ্য মুছে ফেলা হয়েছে");
+    }
+  };
+
+  // Execute Account and All Data Deletion (Play Store Requirement)
+  const handleExecuteAccountDelete = async () => {
+    if (deleteInputText.trim().toUpperCase() !== 'DELETE') {
+      alert("নিশ্চিত করতে অনুগ্রহ করে সঠিক বানান সহ DELETE লিখুন");
       return;
     }
-    setIsLoggingIn(true);
-    setLoginError(null);
+
     try {
-      const { data, error } = await supabase.auth.signInWithPassword({
-        email: loginEmail,
-        password: loginPassword,
-      });
-
-      if (error) throw error;
-
-      const { data: profile } = await supabase.from('profiles').select('role, status').eq('id', data.user!.id).single();
-      
-      if (profile?.status === 'blocked') {
-        await supabase.auth.signOut();
-        throw new Error("Your account is blocked.");
+      localStorage.clear();
+      sessionStorage.clear();
+      if ('indexedDB' in window) {
+        try {
+          indexedDB.deleteDatabase('RoseDB');
+          indexedDB.deleteDatabase('IYABD_Audio_Cache_DB');
+        } catch {}
       }
-
-      setLoginEmail('');
-      setLoginPassword('');
-      setLoginError(null);
-      setIsLoginModalOpen(false);
-      
-      if (profile?.role === 'admin') {
-        setCurrentView('admin_panel');
-      } else {
-        setToast("Login successful");
+      if (supabase) {
+        await supabase.auth.signOut().catch(() => {});
       }
-    } catch (err: any) {
-      setLoginError(err.message || "Login failed");
-    } finally {
-      setIsLoggingIn(false);
+      if (setToast) setToast("আপনার অ্যাকাউন্ট ও সকল ডেটা মুছে ফেলা হয়েছে");
+      setTimeout(() => {
+        window.location.reload();
+      }, 1200);
+    } catch (e) {
+      console.error(e);
+      window.location.reload();
     }
   };
-
-  const handleLogout = async () => {
-    if (!supabase) return;
-    try {
-      await supabase.auth.signOut();
-      setUserEmail(null);
-      setToast("Logged out");
-    } catch (err) {
-      console.error("Logout failed:", err);
-    }
-  };
-
-  const socialLinks = [
-    { id: 'facebook', label: 'Facebook', url: adminData.links?.facebook, logo: <FacebookLogo /> },
-    { id: 'youtube', label: 'YouTube', url: adminData.links?.youtube, logo: <YoutubeLogo /> },
-    { id: 'instagram', label: 'Instagram', url: adminData.links?.instagram, logo: <Instagram /> },
-    { id: 'tiktok', label: 'TikTok', url: adminData.links?.tiktok, logo: <TikTokLogo /> },
-    { id: 'whatsapp', label: 'WhatsApp', url: adminData.links?.whatsapp, logo: <WhatsAppLogo /> },
-    { id: 'telegram', label: 'Telegram', url: adminData.links?.telegram, logo: <TelegramLogo /> },
-    { id: 'phone', label: 'Phone', url: adminData.links?.phone ? `tel:${adminData.links.phone}` : '', logo: <Smartphone className="w-6 h-6 text-emerald-400" /> },
-    { id: 'website', label: 'Website', url: adminData.links?.website, logo: <Globe className="w-6 h-6 text-indigo-400" /> },
-  ];
 
   return (
     <div className="fixed inset-0 z-[90] bg-[#020617] overflow-y-auto no-scrollbar flex flex-col">
-      <header className="px-5 py-6 flex items-center justify-between shrink-0 bg-[#020617]/80 backdrop-blur-xl sticky top-0 z-10 border-b border-white/5 min-h-[80px]">
+      {/* Header */}
+      <header className="px-5 py-6 flex items-center justify-between shrink-0 bg-[#020617]/90 backdrop-blur-xl sticky top-0 z-20 border-b border-white/5 min-h-[76px]">
         <div className="flex items-center gap-4">
-          <button onClick={() => setCurrentView('settings')} className="p-2.5 bg-white/5 rounded-2xl active:scale-95 transition-transform min-w-[44px] min-h-[44px] flex items-center justify-center">
-            <ArrowLeft className="w-5 h-5 text-slate-300" />
+          <button onClick={() => setCurrentView('profile')} className="p-3 bg-purple-500/10 border border-purple-500/30 rounded-2xl flex items-center justify-center text-white active:scale-95 transition-transform">
+            <ArrowLeft className="w-5 h-5 text-white" />
           </button>
           <div className="flex flex-col">
-            <h2 className="text-xl font-black italic uppercase tracking-tighter text-white">{adminData.name}</h2>
-            <p className="text-[10px] text-slate-500 font-bold uppercase tracking-widest">{adminData.subtitle}</p>
+            <h2 className="text-xl font-black italic uppercase tracking-tighter text-white">PRIVACY CONTROLS</h2>
+            <p className="text-[10px] text-slate-400 font-bold uppercase tracking-widest">গোপনীয়তা ও ডেটা সুরক্ষার তথ্য</p>
           </div>
-        </div>
-
-        <div className="flex items-center gap-2">
-          {isAiStudioPreview() && (
-            <>
-              {!userEmail ? (
-                <button 
-                  onClick={handleLogin}
-                  disabled={isLoggingIn}
-                  className="px-5 py-2.5 bg-white/5 border border-white/10 rounded-xl active:bg-white/10 transition-colors min-h-[44px] flex items-center justify-center disabled:opacity-50"
-                >
-                  <span className="text-[10px] font-black uppercase tracking-[2px] text-slate-400">
-                    {isLoggingIn ? "Logging in..." : "Login"}
-                  </span>
-                </button>
-              ) : (
-                <div className="flex items-center gap-2">
-                  <button 
-                    onClick={handleLogout}
-                    className="p-2.5 bg-red-500/10 border border-red-500/20 rounded-xl active:bg-red-500/20 transition-colors min-w-[44px] min-h-[44px] flex items-center justify-center"
-                    title="Logout"
-                  >
-                    <LogOut className="w-4 h-4 text-red-500" />
-                  </button>
-                </div>
-              )}
-            </>
-          )}
         </div>
       </header>
 
-      <div className="flex-1 flex flex-col">
-        {adminData.banner && (
-          <div className="w-full aspect-video overflow-hidden shrink-0 shadow-2xl">
-            <img src={adminData.banner} alt="Banner" className="w-full h-full object-cover" />
-          </div>
-        )}
+      <div className="flex-1 px-6 py-6 space-y-6 pb-36">
 
-        <div className="px-6 py-8 space-y-3 pb-32">
-          {socialLinks.filter(s => s.url).map(link => (
-            <a key={link.id} href={link.url} target="_blank" rel="noopener noreferrer" className="w-full flex items-center justify-between p-4 bg-[#0F172A]/80 border border-purple-500/30 rounded-2xl active:bg-white/5 transition-colors min-h-[64px] group shadow-xl">
-              <div className="flex items-center gap-4">
-                <div className="w-11 h-11 bg-white/5 rounded-2xl flex items-center justify-center shrink-0 border border-white/5">{link.logo}</div>
-                <span className="text-[13px] font-black uppercase tracking-widest text-white">{link.label}</span>
+        {/* 1. Microphone Permission */}
+        <div className="p-5 bg-[#0F172A]/80 border border-purple-500/30 rounded-[2rem] shadow-2xl space-y-3">
+          <div className="flex items-center justify-between">
+            <div className="flex items-center gap-3">
+              <div className="w-10 h-10 bg-purple-600/20 border border-purple-500/30 rounded-2xl flex items-center justify-center text-purple-400 shrink-0">
+                <Volume2 className="w-5 h-5" />
               </div>
-              <ChevronRight className="w-4 h-4 text-slate-500 group-hover:translate-x-1 transition-transform" />
-            </a>
-          ))}
-          
-          {socialLinks.filter(s => s.url).length === 0 && !adminData.banner && (
-            <div className="flex flex-col items-center justify-center py-20 text-center opacity-30">
-              <User className="w-16 h-16 mb-4 text-slate-500" />
-              <p className="text-[10px] font-black uppercase tracking-[3px] text-slate-500">No profile links yet</p>
+              <div>
+                <h3 className="text-sm font-black uppercase tracking-wider text-white">Microphone Permission</h3>
+                <p className="text-[11px] text-slate-400 font-medium">ভয়েস উত্তরের জন্য পারমিশন প্রয়োজন</p>
+              </div>
+            </div>
+            <span className={`px-3 py-1 rounded-full text-[10px] font-black uppercase tracking-wider ${
+              micState === 'granted' ? 'bg-emerald-500/20 text-emerald-400 border border-emerald-500/30' :
+              micState === 'denied' ? 'bg-red-500/20 text-red-400 border border-red-500/30' :
+              'bg-amber-500/20 text-amber-400 border border-amber-500/30'
+            }`}>
+              {micState === 'granted' ? 'চালু (Allowed)' : micState === 'denied' ? 'বন্ধ (Blocked)' : 'চেক করুন'}
+            </span>
+          </div>
+
+          {micState === 'denied' && (
+            <p className="text-[11px] text-red-400 font-medium bg-red-500/10 border border-red-500/20 p-3 rounded-xl">
+              মাইক্রোফোন বন্ধ করা আছে। আপনার ব্রাউজার বা ডিভাইসের Settings &gt; App Permissions এ গিয়ে মাইক্রোফোন চালু করুন।
+            </p>
+          )}
+
+          <button 
+            onClick={handleRequestMic}
+            className="w-full py-3 bg-white/5 hover:bg-white/10 border border-white/10 rounded-2xl text-xs font-black uppercase tracking-wider text-purple-300 flex items-center justify-center gap-2 active:scale-98 transition-all"
+          >
+            পারমিশন চেক / রিকোয়েস্ট করুন
+          </button>
+        </div>
+
+        {/* 2. Approximate Location */}
+        <div className="p-5 bg-[#0F172A]/80 border border-purple-500/30 rounded-[2rem] shadow-2xl space-y-3">
+          <div className="flex items-center justify-between">
+            <div className="flex items-center gap-3">
+              <div className="w-10 h-10 bg-purple-600/20 border border-purple-500/30 rounded-2xl flex items-center justify-center text-purple-400 shrink-0">
+                <Globe className="w-5 h-5" />
+              </div>
+              <div>
+                <h3 className="text-sm font-black uppercase tracking-wider text-white">Approximate Location</h3>
+                <p className="text-[11px] text-slate-400 font-medium">আবহাওয়া ও শহর ভিত্তিক প্রাসঙ্গিক উত্তর</p>
+              </div>
+            </div>
+            <button 
+              onClick={handleToggleLocation}
+              className={`w-12 h-7 rounded-full transition-colors flex items-center px-1 ${approxLocation ? 'bg-purple-600' : 'bg-slate-700'}`}
+            >
+              <div className={`w-5 h-5 rounded-full bg-white transition-transform ${approxLocation ? 'translate-x-5' : 'translate-x-0'}`} />
+            </button>
+          </div>
+          <p className="text-[11px] text-slate-400 leading-relaxed">
+            এটি চালু থাকলে Rose আপনাকে আঞ্চলিক সময় ও আবহাওয়া সংক্রান্ত তথ্য দিতে আনুমানিক লোকেশন ব্যবহার করতে পারে।
+          </p>
+        </div>
+
+        {/* 3. Chat History */}
+        <div className="p-5 bg-[#0F172A]/80 border border-purple-500/30 rounded-[2rem] shadow-2xl space-y-3">
+          <div className="flex items-center gap-3">
+            <div className="w-10 h-10 bg-purple-600/20 border border-purple-500/30 rounded-2xl flex items-center justify-center text-purple-400 shrink-0">
+              <Trash2 className="w-5 h-5" />
+            </div>
+            <div>
+              <h3 className="text-sm font-black uppercase tracking-wider text-white">Chat History</h3>
+              <p className="text-[11px] text-slate-400 font-medium">ডিভাইস থেকে সংরক্ষিত সকল চ্যাট মুছে ফেলা</p>
+            </div>
+          </div>
+          <p className="text-[11px] text-slate-400 leading-relaxed">
+            আপনার স্থানীয় ব্রাউজারে থাকা পূর্বের মেসেজ ও চ্যাট ইতিহাস মুছে ফেলুন।
+          </p>
+          <button 
+            onClick={handleClearChatHistory}
+            className="w-full py-3.5 bg-red-500/10 hover:bg-red-500/20 border border-red-500/30 rounded-2xl text-xs font-black uppercase tracking-wider text-red-400 flex items-center justify-center gap-2 active:scale-98 transition-all"
+          >
+            <Trash2 className="w-4 h-4" />
+            সকল চ্যাট ইতিহাস মুছে ফেলুন
+          </button>
+        </div>
+
+        {/* 4. Memory */}
+        <div className="p-5 bg-[#0F172A]/80 border border-purple-500/30 rounded-[2rem] shadow-2xl space-y-4">
+          <div className="flex items-center justify-between">
+            <div className="flex items-center gap-3">
+              <div className="w-10 h-10 bg-purple-600/20 border border-purple-500/30 rounded-2xl flex items-center justify-center text-purple-400 shrink-0">
+                <Smile className="w-5 h-5" />
+              </div>
+              <div>
+                <h3 className="text-sm font-black uppercase tracking-wider text-white">Rose's Memory</h3>
+                <p className="text-[11px] text-slate-400 font-medium">Rose-এর মনে রাখা তথ্যসমূহ ({memories.length})</p>
+              </div>
+            </div>
+            {memories.length > 0 && (
+              <button 
+                onClick={handleClearAllMemory}
+                className="text-[10px] font-black uppercase tracking-wider text-red-400 underline"
+              >
+                সব মুছুন
+              </button>
+            )}
+          </div>
+
+          {memories.length === 0 ? (
+            <p className="text-[11px] text-slate-500 italic p-3 bg-white/5 rounded-xl text-center">
+              Rose এখনো কোনো বিশেষ তথ্য মনে রাখেনি।
+            </p>
+          ) : (
+            <div className="space-y-2 max-h-48 overflow-y-auto no-scrollbar pr-1">
+              {memories.map((m) => (
+                <div key={m.id} className="p-3 bg-white/5 border border-white/5 rounded-xl flex items-center justify-between gap-3">
+                  <span className="text-xs font-medium text-slate-200 leading-snug">{m.text}</span>
+                  <button 
+                    onClick={() => handleDeleteSingleMemory(m.id)}
+                    className="p-1.5 text-slate-400 hover:text-red-400 transition-colors"
+                  >
+                    <Trash2 className="w-4 h-4" />
+                  </button>
+                </div>
+              ))}
             </div>
           )}
         </div>
+
+        {/* 5. My Data Summary */}
+        <div className="p-5 bg-[#0F172A]/80 border border-purple-500/30 rounded-[2rem] shadow-2xl space-y-3">
+          <div className="flex items-center gap-3">
+            <div className="w-10 h-10 bg-purple-600/20 border border-purple-500/30 rounded-2xl flex items-center justify-center text-purple-400 shrink-0">
+              <User className="w-5 h-5" />
+            </div>
+            <div>
+              <h3 className="text-sm font-black uppercase tracking-wider text-white">আমার ডেটা (My Data)</h3>
+              <p className="text-[11px] text-slate-400 font-medium">কোন তথ্যগুলো অ্যাপে সংরক্ষিত আছে</p>
+            </div>
+          </div>
+          <div className="p-4 bg-white/5 rounded-2xl space-y-2 text-xs text-slate-300">
+            <div className="flex justify-between border-b border-white/5 pb-1.5">
+              <span className="text-slate-400 font-medium">ব্যবহারকারীর নাম:</span>
+              <span className="font-bold text-white">{settings?.ownerName || "দেওয়া হয়নি"}</span>
+            </div>
+            <div className="flex justify-between border-b border-white/5 pb-1.5">
+              <span className="text-slate-400 font-medium">অ্যাসিস্ট্যান্ট নাম:</span>
+              <span className="font-bold text-white">{settings?.assistantName || "Rose AI"}</span>
+            </div>
+            <div className="flex justify-between border-b border-white/5 pb-1.5">
+              <span className="text-slate-400 font-medium">ভাষা (Language):</span>
+              <span className="font-bold text-white">{prefs?.language || "bn-BD"}</span>
+            </div>
+            <div className="flex justify-between border-b border-white/5 pb-1.5">
+              <span className="text-slate-400 font-medium">আনুমানিক লোকেশন:</span>
+              <span className="font-bold text-white">{approxLocation ? "সচল (Enabled)" : "বন্ধ (Disabled)"}</span>
+            </div>
+            <div className="flex justify-between">
+              <span className="text-slate-400 font-medium">সংরক্ষিত মেমোরি:</span>
+              <span className="font-bold text-white">{memories.length} টি তথ্য</span>
+            </div>
+          </div>
+        </div>
+
+        {/* 8. API Key Security */}
+        <div className="p-5 bg-[#0F172A]/80 border border-purple-500/30 rounded-[2rem] shadow-2xl space-y-2">
+          <div className="flex items-center gap-3">
+            <div className="w-10 h-10 bg-purple-600/20 border border-purple-500/30 rounded-2xl flex items-center justify-center text-purple-400 shrink-0">
+              <Lock className="w-5 h-5" />
+            </div>
+            <div>
+              <h3 className="text-sm font-black uppercase tracking-wider text-white">API Key নিরাপত্তা</h3>
+              <p className="text-[11px] text-slate-400 font-medium">ডিভাইসের সম্পূর্ণ নিরাপত্তা</p>
+            </div>
+          </div>
+          <p className="text-[11px] text-slate-300 leading-relaxed p-3 bg-white/5 rounded-xl">
+            আপনার নিজস্ব প্রদত্ত Google Gemini ও Groq API Key শুধুমাত্র আপনার ডিভাইসের LocalStorage-এ সংরক্ষিত থাকে। এটি অন্য কোনো বাহ্যিক সার্ভারে পাঠানো হয় না এবং সরাসরি অফিশিয়াল API এন্ডপয়েন্টে এনক্রিপ্টেড রিকোয়েস্ট করতে ব্যবহৃত হয়।
+          </p>
+        </div>
+
+        {/* 7. Privacy Policy & Terms */}
+        <div className="p-5 bg-[#0F172A]/80 border border-purple-500/30 rounded-[2rem] shadow-2xl space-y-3">
+          <div className="flex items-center justify-between">
+            <div className="flex items-center gap-3">
+              <div className="w-10 h-10 bg-purple-600/20 border border-purple-500/30 rounded-2xl flex items-center justify-center text-purple-400 shrink-0">
+                <Shield className="w-5 h-5" />
+              </div>
+              <div>
+                <h3 className="text-sm font-black uppercase tracking-wider text-white">Privacy Policy & Terms</h3>
+                <p className="text-[11px] text-slate-400 font-medium">শর্তাবলী ও পলিসি বিস্তারিত</p>
+              </div>
+            </div>
+            <button 
+              onClick={() => setShowPolicyModal(true)}
+              className="px-3.5 py-1.5 bg-purple-600 hover:bg-purple-500 text-white rounded-xl text-xs font-black uppercase tracking-wider shadow-md active:scale-95 transition-transform"
+            >
+              দেখুন
+            </button>
+          </div>
+        </div>
+
+        {/* 6. Account Delete (Play Store Required) */}
+        <div className="p-5 bg-red-950/20 border border-red-500/30 rounded-[2rem] shadow-2xl space-y-3">
+          <div className="flex items-center gap-3">
+            <div className="w-10 h-10 bg-red-600/20 border border-red-500/30 rounded-2xl flex items-center justify-center text-red-400 shrink-0">
+              <AlertTriangle className="w-5 h-5" />
+            </div>
+            <div>
+              <h3 className="text-sm font-black uppercase tracking-wider text-red-400">Account & Data Delete</h3>
+              <p className="text-[11px] text-slate-400 font-medium">অ্যাকাউন্ট ও সকল ডেটা মুছে ফেলুন</p>
+            </div>
+          </div>
+          <p className="text-[11px] text-slate-400 leading-relaxed">
+            প্লে-স্টোর নীতিমালা অনুযায়ী আপনার অ্যাকাউন্ট ও লোকাল ডিভাইসে সংরক্ষিত সমস্ত তথ্য স্থায়ীভাবে মুছে ফেলুন।
+          </p>
+          <button 
+            onClick={() => {
+              setDeleteModalStep(1);
+              setDeleteInputText('');
+            }}
+            className="w-full py-3.5 bg-red-600 hover:bg-red-500 text-white rounded-2xl text-xs font-black uppercase tracking-wider flex items-center justify-center gap-2 active:scale-98 transition-all shadow-xl shadow-red-900/30"
+          >
+            অ্যাকাউন্ট ও সব ডেটা মুছুন
+          </button>
+        </div>
+
       </div>
 
-      {isLoginModalOpen && (
-        <div className="fixed inset-0 h-[100dvh] z-[110] bg-[#020617] flex flex-col p-6 animate-in fade-in slide-in-from-bottom-4 duration-300 overflow-y-auto no-scrollbar">
-          <header className="flex items-center justify-between mb-12 shrink-0">
-            <h3 className="text-2xl font-black italic tracking-tighter uppercase text-white">Admin Login</h3>
-            <button onClick={() => setIsLoginModalOpen(false)} className="p-2.5 bg-white/5 rounded-2xl active:scale-95 transition-transform"><ArrowLeft className="w-5 h-5 text-slate-300" /></button>
-          </header>
+      {/* Privacy Policy Modal */}
+      {showPolicyModal && (
+        <div className="fixed inset-0 z-[120] bg-black/80 backdrop-blur-md flex items-center justify-center p-4">
+          <div className="bg-[#0F172A] border border-purple-500/30 rounded-[2.5rem] p-6 max-w-md w-full max-h-[85vh] overflow-y-auto no-scrollbar space-y-4">
+            <div className="flex items-center justify-between border-b border-white/10 pb-3">
+              <h3 className="text-lg font-black uppercase tracking-wider text-white italic">Privacy Policy & Terms</h3>
+              <button onClick={() => setShowPolicyModal(false)} className="p-2 text-slate-400 hover:text-white">
+                ✕
+              </button>
+            </div>
+            <div className="text-xs text-slate-300 space-y-3 leading-relaxed">
+              <p><strong>১. তথ্য সংগ্রহ:</strong> Rose অ্যাপটি ব্যবহারকারীর নাম, লোকাল চ্যাট মেসেজ ও পছন্দের সেটিংস শুধুমাত্র লোকাল ডিভাইসে সংরক্ষণ করে।</p>
+              <p><strong>২. সুরক্ষা:</strong> আপনার কোনো ব্যক্তিগত তথ্য বাণিজ্যিক উদ্দেশ্যে বিক্রি বা অপব্যবহার করা হয় না।</p>
+              <p><strong>৩. তৃতীয় পক্ষ সার্ভিস (3rd Party Services):</strong></p>
+              <ul className="list-disc pl-5 space-y-1">
+                <li><strong>Supabase:</strong> অথেন্টিকেশন ও সিঙ্ক সার্ভিস।</li>
+                <li><strong>Google Gemini API:</strong> এআই চ্যাট ও ভয়েস উত্তর প্রস্তুত করার জন্য।</li>
+              </ul>
+              <p><strong>৪. যোগাযোগ ও সহায়তা:</strong></p>
+              <p className="p-3 bg-white/5 rounded-xl font-bold text-purple-300">
+                ডেভেলপার: MD YOUSUF KHAN<br />
+                ইমেইল: md.yousuf.khan060@gmail.com
+              </p>
+            </div>
+            <button 
+              onClick={() => setShowPolicyModal(false)}
+              className="w-full py-3 bg-purple-600 text-white rounded-xl text-xs font-black uppercase tracking-wider"
+            >
+              বন্ধ করুন
+            </button>
+          </div>
+        </div>
+      )}
 
-          <div className="flex-1 flex flex-col max-w-sm mx-auto w-full pb-80">
-            {!supabase ? (
-              <div className="flex flex-col items-center gap-6 text-center py-10">
-                <div className="p-4 bg-amber-500/10 border border-amber-500/20 rounded-2xl">
-                  <p className="text-xs font-bold text-amber-500">Add Supabase keys in Settings &gt; Connections</p>
+      {/* Account Delete Double Confirmation Modal */}
+      {deleteModalStep > 0 && (
+        <div className="fixed inset-0 z-[130] bg-black/90 backdrop-blur-md flex items-center justify-center p-4">
+          <div className="bg-[#0F172A] border border-red-500/40 rounded-[2.5rem] p-6 max-w-sm w-full space-y-5">
+            <div className="flex items-center gap-3 text-red-500">
+              <AlertTriangle className="w-8 h-8" />
+              <h3 className="text-lg font-black uppercase tracking-wider italic">
+                {deleteModalStep === 1 ? "১ম ধাপ: নিশ্চিতকরণ" : "২য় ধাপ: চুড়ান্ত ডিলিট"}
+              </h3>
+            </div>
+
+            {deleteModalStep === 1 ? (
+              <>
+                <p className="text-xs text-slate-300 leading-relaxed">
+                  আপনি কি নিশ্চিত যে আপনার অ্যাকাউন্ট ও ডিভাইসে সংরক্ষিত সকল চ্যাট, মেমোরি ও সেটিংস মুছে ফেলতে চান? এই প্রক্রিয়াটি অপরিবর্তনীয়।
+                </p>
+                <div className="flex gap-3 pt-2">
+                  <button 
+                    onClick={() => setDeleteModalStep(0)}
+                    className="flex-1 py-3 bg-slate-800 text-slate-300 rounded-xl text-xs font-bold uppercase"
+                  >
+                    বাতিল
+                  </button>
+                  <button 
+                    onClick={() => setDeleteModalStep(2)}
+                    className="flex-1 py-3 bg-red-600 text-white rounded-xl text-xs font-black uppercase"
+                  >
+                    হ্যাঁ, পরের ধাপে যান
+                  </button>
                 </div>
-                <button 
-                  onClick={() => {
-                    setIsLoginModalOpen(false);
-                    setCurrentView('connections');
-                  }}
-                  className="px-8 py-4 bg-purple-600 text-white rounded-2xl font-black uppercase tracking-widest text-xs shadow-xl active:scale-95 transition-all"
-                >
-                  Go to Connections
-                </button>
-              </div>
+              </>
             ) : (
-              <div className="space-y-6">
-                <div className="space-y-1.5">
-                  <label className="text-[10px] font-black uppercase tracking-[3px] text-purple-400 ml-2">Email</label>
-                  <input 
-                    type="email" 
-                    value={loginEmail} 
-                    onChange={(e) => setLoginEmail(e.target.value)}
-                    onFocus={handleInputFocus}
-                    autoComplete="off"
-                    className="w-full bg-[#0F172A] border border-white/10 rounded-2xl p-4 text-sm font-bold text-white outline-none focus:ring-2 focus:ring-purple-500/50 min-h-[52px]"
-                    placeholder="admin@example.com"
-                  />
+              <>
+                <p className="text-xs text-slate-300 leading-relaxed">
+                  চুড়ান্তভাবে ডিলিট করতে নিচে ঘরে <strong className="text-red-400">DELETE</strong> লিখুন:
+                </p>
+                <input 
+                  type="text" 
+                  value={deleteInputText}
+                  onChange={(e) => setDeleteInputText(e.target.value)}
+                  placeholder="DELETE"
+                  className="w-full bg-slate-900 border border-red-500/40 rounded-xl p-3 text-sm text-white font-bold uppercase outline-none focus:ring-2 focus:ring-red-500"
+                />
+                <div className="flex gap-3 pt-2">
+                  <button 
+                    onClick={() => setDeleteModalStep(0)}
+                    className="flex-1 py-3 bg-slate-800 text-slate-300 rounded-xl text-xs font-bold uppercase"
+                  >
+                    বাতিল
+                  </button>
+                  <button 
+                    onClick={handleExecuteAccountDelete}
+                    disabled={deleteInputText.trim().toUpperCase() !== 'DELETE'}
+                    className="flex-1 py-3 bg-red-600 hover:bg-red-500 disabled:opacity-40 text-white rounded-xl text-xs font-black uppercase shadow-lg shadow-red-900/40"
+                  >
+                    স্থায়ীভাবে মুছুন
+                  </button>
                 </div>
-                <div className="space-y-1.5">
-                  <label className="text-[10px] font-black uppercase tracking-[3px] text-purple-400 ml-2">Password</label>
-                  <div className="relative">
-                    <input 
-                      type={showPassword ? "text" : "password"}
-                      value={loginPassword} 
-                      onChange={(e) => setLoginPassword(e.target.value)}
-                      onKeyDown={(e) => e.key === 'Enter' && performLogin()}
-                      onFocus={handleInputFocus}
-                      autoComplete="off"
-                      className="w-full bg-[#0F172A] border border-white/10 rounded-2xl p-4 text-sm font-bold text-white outline-none focus:ring-2 focus:ring-purple-500/50 min-h-[52px] pr-12"
-                      placeholder="••••••••"
-                    />
-                    <button 
-                      onClick={() => setShowPassword(!showPassword)}
-                      className="absolute right-4 top-1/2 -translate-y-1/2 text-slate-500 active:text-white"
-                    >
-                      {showPassword ? <EyeOff className="w-5 h-5" /> : <Eye className="w-5 h-5" />}
-                    </button>
-                  </div>
-                </div>
-
-                {loginError && (
-                  <div className="p-4 bg-red-500/10 border border-red-500/20 rounded-2xl">
-                    <p className="text-xs font-bold text-red-500 text-center">{loginError}</p>
-                  </div>
-                )}
-
-                <button 
-                  onClick={performLogin}
-                  disabled={isLoggingIn}
-                  className="w-full h-[56px] bg-purple-600 hover:bg-purple-500 text-white rounded-2xl font-black uppercase tracking-[4px] text-sm shadow-2xl active:scale-95 transition-all flex items-center justify-center gap-3 disabled:opacity-50"
-                >
-                  {isLoggingIn ? <Loader2 className="w-5 h-5 animate-spin" /> : <Lock className="w-5 h-5" />}
-                  {isLoggingIn ? "Authenticating..." : "Login"}
-                </button>
-              </div>
+              </>
             )}
           </div>
         </div>
       )}
+
     </div>
   );
 };

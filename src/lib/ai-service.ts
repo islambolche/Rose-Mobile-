@@ -1,7 +1,7 @@
 import { prepareHistory } from './ai-utils';
 import { getGeminiKey } from './geminiKey';
 
-const TEXT_MODELS = ["gemini-3.5-flash", "gemini-3.5-flash-lite", "gemini-flash-latest"];
+const TEXT_MODELS = ["gemini-2.5-flash", "gemini-2.0-flash", "gemini-1.5-flash", "gemini-2.5-flash-lite"];
 export { TEXT_MODELS };
 
 const WORKING_MODEL_STORAGE_KEY = 'working_gemini_text_model';
@@ -99,7 +99,7 @@ export const discoverAvailableFlashModels = async (
 };
 
 const GEMINI_TEXT_TIMEOUT_MS = 12000;
-const GEMINI_TTS_TIMEOUT_MS = 8000;
+const GEMINI_TTS_TIMEOUT_MS = 25000;
 
 const fetchWithSignalTimeout = async (
   input: RequestInfo | URL,
@@ -610,10 +610,11 @@ export const directGeminiTTS = async (payload: any) => {
     : `Read the following text aloud verbatim. Do not answer or generate new text, only speak the exact transcript: "${transcript}"`;
 
   const initialModels = Array.from(new Set([
-    preferredModel.includes('tts') ? preferredModel : null,
+    preferredModel && preferredModel.includes('tts') ? preferredModel : null,
     'gemini-2.5-flash-preview-tts',
-    'gemini-3.8-flash-lite-tts',
-    'gemini-3.8-flash-tts',
+    'gemini-2.5-flash-tts',
+    'gemini-2.0-flash-preview-tts',
+    'gemini-2.0-flash-tts',
   ].filter(Boolean))) as string[];
 
   const triedModels = new Set<string>();
@@ -624,17 +625,7 @@ export const directGeminiTTS = async (payload: any) => {
     const remainingMs = Math.max(1000, deadline - Date.now());
     const url = `/api/gemini/tts`;
     
-    const body = {
-      contents: [{ role: "user", parts: [{ text: ttsPrompt }] }],
-      generationConfig: {
-        responseModalities: ["AUDIO"],
-        speechConfig: {
-          voiceConfig: {
-            prebuiltVoiceConfig: { voiceName: voiceName || "Leda" },
-          },
-        },
-      },
-    };
+    console.log(`[Gemini TTS Client] Calling /api/gemini/tts with model: ${m}, voice: ${voiceName || "Leda"}, text: "${transcript.slice(0, 30)}..."`);
 
     const res = await fetchWithSignalTimeout(
       url,
@@ -655,11 +646,17 @@ export const directGeminiTTS = async (payload: any) => {
     const data = await res.json().catch(() => ({}));
     if (!res.ok) {
       lastStatus = res.status;
-      lastErrorText = data?.error?.message || `HTTP ${res.status}`;
-      throw new Error(lastErrorText);
+      lastErrorText = data?.error?.message || data?.exactError || `HTTP ${res.status}`;
+      const err: any = new Error(lastErrorText);
+      err.status = res.status;
+      err.exactError = lastErrorText;
+      err.bodyText = lastErrorText;
+      throw err;
     }
 
-    const rawB64 = data.candidates?.[0]?.content?.parts?.find((p: any) => p.inlineData)?.inlineData?.data;
+    const rawB64 =
+      data?.audio ||
+      data?.candidates?.[0]?.content?.parts?.find((p: any) => p.inlineData)?.inlineData?.data;
     if (!rawB64) throw new Error(`No audio returned from ${m}`);
 
     // Ported RIFF header stripping logic
@@ -686,7 +683,7 @@ export const directGeminiTTS = async (payload: any) => {
   const runTtsWithRetry = async () => {
     for (let attempt = 0; attempt < 2; attempt++) {
       for (const m of initialModels) {
-        if (Date.now() >= deadline) throw new Error('Gemini TTS request timed out (8s)');
+        if (Date.now() >= deadline) throw new Error('Gemini TTS request timed out (25s)');
         if (triedModels.has(m)) continue;
         triedModels.add(m);
         try {
@@ -721,7 +718,7 @@ export const directGeminiTTS = async (payload: any) => {
   return await Promise.race([
     runTtsWithRetry(),
     new Promise<any>((_, reject) =>
-      setTimeout(() => reject(new Error('Gemini TTS request timed out (8s)')), GEMINI_TTS_TIMEOUT_MS)
+      setTimeout(() => reject(new Error('Gemini TTS request timed out (25s)')), GEMINI_TTS_TIMEOUT_MS)
     ),
   ]);
 };

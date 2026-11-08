@@ -550,7 +550,7 @@ export const MobileSettingsView: React.FC<MobileSettingsViewProps> = ({
               <DatabaseSyncSettings onClose={() => setViewMode("list")} />
             )}
             {activeSection === "permissions" && (
-              <DevicePermissionsSettings onClose={() => setViewMode("list")} initialTab="permissions" />
+              <DevicePermissionsSettings onClose={() => setViewMode("list")} />
             )}
             {activeSection === "pc-control" && (
               <PcControlSettings onClose={() => setViewMode("list")} />

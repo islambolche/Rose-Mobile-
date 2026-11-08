@@ -69,33 +69,31 @@ export const PhoneControlHome = ({ settings, setSettings, setCurrentView }: any)
         <h2 className="text-xl font-black italic uppercase tracking-tighter text-white">Phone control</h2>
       </header>
       <div className="px-6 py-4 space-y-4 pb-32">
-        <div className="bg-[#0F172A]/80 border border-purple-500/30 rounded-[2.5rem] overflow-hidden shadow-2xl">
-          <button onClick={() => setCurrentView?.('quick-actions')} className="w-full flex items-center justify-between p-5 border-b border-white/5 active:bg-white/5 transition-colors text-left group">
-            <div className="flex items-center gap-3.5">
-              <div className="w-10 h-10 bg-purple-600 rounded-2xl flex items-center justify-center text-white shrink-0 shadow-lg shadow-purple-900/30">
-                <Zap className="w-5 h-5" />
-              </div>
-              <div>
-                <h4 className="text-[13px] font-black uppercase tracking-wider text-white leading-tight">Quick actions</h4>
-                <p className="text-[11px] text-slate-400 font-medium leading-tight mt-0.5">Configure device actions and shortcuts</p>
-              </div>
+        <button onClick={() => setCurrentView?.('quick-actions')} className="w-full p-5 bg-[#0F172A]/80 border border-purple-500/30 rounded-[2.5rem] shadow-2xl flex items-center justify-between active:scale-[0.98] transition-all text-left">
+          <div className="flex items-center gap-4">
+            <div className="w-12 h-12 rounded-full bg-purple-600/10 border border-purple-500/20 flex items-center justify-center text-purple-400 shrink-0">
+              <Zap className="w-6 h-6" />
             </div>
-            <ChevronRight className="w-4 h-4 text-slate-500 group-hover:translate-x-0.5 transition-transform" />
-          </button>
-          
-          <button onClick={() => setCurrentView?.('app-permissions')} className="w-full flex items-center justify-between p-5 active:bg-white/5 transition-colors text-left group">
-            <div className="flex items-center gap-3.5">
-              <div className="w-10 h-10 bg-purple-600 rounded-2xl flex items-center justify-center text-white shrink-0 shadow-lg shadow-purple-900/30">
-                <Shield className="w-5 h-5" />
-              </div>
-              <div>
-                <h4 className="text-[13px] font-black uppercase tracking-wider text-white leading-tight">App permissions</h4>
-                <p className="text-[11px] text-slate-400 font-medium leading-tight mt-0.5">Manage microphone, calls, and device access</p>
-              </div>
+            <div>
+              <h4 className="text-base font-black uppercase tracking-wider text-white leading-tight">Quick actions</h4>
+              <p className="text-[11px] text-slate-400 font-medium leading-tight mt-0.5">Configure device actions and shortcuts</p>
             </div>
-            <ChevronRight className="w-4 h-4 text-slate-500 group-hover:translate-x-0.5 transition-transform" />
-          </button>
-        </div>
+          </div>
+          <ChevronRight className="w-5 h-5 text-slate-500 shrink-0" />
+        </button>
+
+        <button onClick={() => setCurrentView?.('app-permissions')} className="w-full p-5 bg-[#0F172A]/80 border border-purple-500/30 rounded-[2.5rem] shadow-2xl flex items-center justify-between active:scale-[0.98] transition-all text-left">
+          <div className="flex items-center gap-4">
+            <div className="w-12 h-12 rounded-full bg-purple-600/10 border border-purple-500/20 flex items-center justify-center text-purple-400 shrink-0">
+              <Shield className="w-6 h-6" />
+            </div>
+            <div>
+              <h4 className="text-base font-black uppercase tracking-wider text-white leading-tight">App permissions</h4>
+              <p className="text-[11px] text-slate-400 font-medium leading-tight mt-0.5">Manage microphone, calls, and device access</p>
+            </div>
+          </div>
+          <ChevronRight className="w-5 h-5 text-slate-500 shrink-0" />
+        </button>
       </div>
     </div>
   );
