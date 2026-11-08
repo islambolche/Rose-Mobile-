@@ -85,8 +85,6 @@ import {
   PhoneErrorBoundary,
 } from "./components/PhoneControlViews";
 import { initializeSupabase, supabase } from "./lib/supabase";
-import { AuthScreen } from "./components/AuthScreen";
-import { AccessGate } from "./components/AccessGate";
 import { storage } from "./lib/storage";
 import rosePortraitImg from "./assets/images/rose_portrait_1793010994175.jpg";
 import realisticAssistantImg from "./assets/images/iyabd_realistic_assistant_1792805556831.jpg";
@@ -2145,77 +2143,6 @@ const Onboarding = ({ onComplete }: { onComplete: () => void }) => {
 export function App() {
   const [voiceConnOk, setVoiceConnOk] = useState<boolean>(true);
   const [micStatus, setMicStatus] = useState<"ok" | "blocked">("ok");
-  
-  // Auth State
-  const [user, setUser] = useState<any>(null);
-  const [userRole, setUserRole] = useState<string>('user');
-  const [profile, setProfile] = useState<any>(null);
-  const [subscription, setSubscription] = useState<any>(null);
-  const [authLoading, setAuthLoading] = useState(true);
-  const [accessState, setAccessState] = useState<"loading" | "granted" | "blocked" | "subscribe">("loading");
-  const [startupError, setStartupError] = useState<string | null>(null);
-  const [startupStep, setStartupStep] = useState("config ok");
-
-  useEffect(() => {
-    const handleError = (event: ErrorEvent | PromiseRejectionEvent) => {
-      const msg = event instanceof ErrorEvent ? event.message : "Unhandled Rejection";
-      setStartupError(msg);
-    };
-    window.addEventListener("error", handleError);
-    window.addEventListener("unhandledrejection", handleError);
-
-    // Startup timeout (8s)
-    const timeout = setTimeout(() => {
-      setAuthLoading(false);
-    }, 8000);
-
-    return () => {
-      window.removeEventListener("error", handleError);
-      window.removeEventListener("unhandledrejection", handleError);
-      clearTimeout(timeout);
-    };
-  }, []);
-
-  useEffect(() => {
-    async function initStartupSession() {
-      try {
-        setStartupStep("config ok");
-        const url = import.meta.env.VITE_SUPABASE_URL?.trim();
-        const key = import.meta.env.VITE_SUPABASE_ANON_KEY?.trim();
-        if (!url || !key) {
-          setStartupError("Supabase URL / key পাওয়া যায়নি।");
-          setAuthLoading(false);
-          return;
-        }
-
-        const sb = initializeSupabase();
-        if (!sb) {
-          setStartupError("Supabase client তৈরি করা যায়নি।");
-          setAuthLoading(false);
-          return;
-        }
-
-        setStartupStep("checking session");
-        const session = (await Promise.race([
-          sb.auth.getSession(),
-          new Promise((_, reject) => setTimeout(() => reject(new Error("Timeout")), 6000)),
-        ])) as any;
-
-        if (session?.data?.session?.user) {
-          const u = session.data.session.user;
-          setUser(u);
-          await checkAccess(u);
-        } else {
-          setAuthLoading(false);
-          setAccessState("granted");
-        }
-      } catch (e: any) {
-        setStartupError(e?.message === "Timeout" ? "Session check timeout" : e?.message || "Startup error");
-        setAuthLoading(false);
-      }
-    }
-    initStartupSession();
-  }, []);
 
   // Navigation State
   const [currentView, setCurrentView] = useState<AppView>("home");
@@ -3337,41 +3264,16 @@ export function App() {
             setUser(u);
             checkAccess(u);
           } else {
-            setAuthLoading(false);
-            setAccessState("granted");
+            // No user, continue without auth
           }
         }).catch(() => {
-          setAuthLoading(false);
-          setAccessState("granted");
         });
 
         // Supabase Auth Listener
-        const { data } = supabase.auth.onAuthStateChange(async (event, session) => {
-          const currentUser = session?.user || null;
-          if (event === 'SIGNED_OUT') {
-             setUser(null);
-             setProfile(null);
-             setSubscription(null);
-             setAccessState("granted");
-             setAuthLoading(false);
-             setIsAssistantEnabled(false);
-             setSpeakingState("idle");
-             cancelAllSpeechAndAudio(true);
-             return;
-          }
-
-          if (currentUser) {
-            setUser(currentUser);
-            await checkAccess(currentUser);
-            if (event === 'SIGNED_IN') {
-              logLogin(currentUser);
-            }
-          }
-        });
+        const { data } = supabase.auth.onAuthStateChange(async (event, session) => {});
         authSub = data?.subscription;
       } else {
-        setAuthLoading(false);
-        setAccessState("granted");
+        // No supabase client, continue without auth
       }
 
       // Load Local History and Writings
@@ -3484,48 +3386,9 @@ export function App() {
     }
   };
 
-  const checkAccess = async (u: any) => {
-    if (!supabase || !u) return;
-    try {
-      const { data: prof, error: profError } = await supabase
-        .from("profiles")
-        .select("*")
-        .eq("id", u.id)
-        .single();
-      
-      if (profError) throw profError;
-      setProfile(prof);
 
-      if (prof.status === "blocked") {
-        setAccessState("blocked");
-        setAuthLoading(false);
-        return;
-      }
 
-      const { data: sub, error: subError } = await supabase
-        .from("subscriptions")
-        .select("*")
-        .eq("user_id", u.id)
-        .order('created_at', { ascending: false })
-        .limit(1)
-        .single();
 
-      if (subError && subError.code !== 'PGRST116') throw subError;
-      setSubscription(sub);
-
-      const isSubActive = sub && sub.status === "active" && (!sub.ends_at || new Date(sub.ends_at) > new Date());
-      
-      if (!isSubActive && prof.role !== "admin") {
-        setAccessState("subscribe");
-      } else {
-        setAccessState("granted");
-      }
-    } catch (err) {
-      console.error("Access check failed:", err);
-    } finally {
-      setAuthLoading(false);
-    }
-  };
 
   const logLogin = async (u: any) => {
     if (!supabase || !u) return;
@@ -3541,13 +3404,7 @@ export function App() {
     }
   };
 
-  useEffect(() => {
-    if (!user) return;
-    const interval = setInterval(() => {
-      checkAccess(user);
-    }, 5 * 60 * 1000);
-    return () => clearInterval(interval);
-  }, [user]);
+
 
   // Persistence: Save
   useEffect(() => {
@@ -6966,44 +6823,6 @@ export function App() {
       }
     };
 
-    if (authLoading) {
-      return (
-        <div className="fixed inset-0 bg-[#020617] flex flex-col items-center justify-center z-[500] gap-4">
-          <motion.div
-            animate={{ rotate: 360 }}
-            transition={{ duration: 1, repeat: Infinity, ease: "linear" }}
-          >
-            <Loader2 className="w-12 h-12 text-purple-600" />
-          </motion.div>
-          <p className={`text-[11px] ${startupError ? "text-red-500" : "text-gray-500"}`}>
-            {startupError || startupStep}
-          </p>
-        </div>
-      );
-    }
-
-    if (!user) {
-      return (
-        <AuthScreen
-          onLoginSuccess={(u, role, initialView) => {
-            setUser(u);
-            setUserRole(role);
-            setCurrentView(initialView === "admin" ? "admin_panel" : "home");
-            checkAccess(u);
-            logLogin(u);
-          }}
-        />
-      );
-    }
-
-    if (accessState === "blocked") {
-      return <AccessGate type="blocked" onLogout={() => { setUser(null); setAccessState("granted"); }} />;
-    }
-
-    if (accessState === "subscribe") {
-      return <AccessGate type="subscribe" plan={subscription?.plan} onLogout={() => { setUser(null); setAccessState("granted"); }} />;
-    }
-
     return (
       <div
         onPointerDown={handleCharacterPointerDown}
@@ -7884,45 +7703,7 @@ export function App() {
       className="fixed inset-0 z-[70] bg-[#020617] overflow-y-auto no-scrollbar flex flex-col"
     >
       <div className="px-5 py-6 flex flex-col min-h-full pb-36">
-        {/* Top Header with Back button, Logo, Title, Subtitle and Fading Portrait on the right */}
-        <header className="relative mb-6 shrink-0 min-h-[90px] flex items-start justify-between">
-          <div className="flex items-start gap-4 z-10">
-            <button
-              onClick={() => setCurrentView("home")}
-              aria-label="Back to Home"
-              className="p-2.5 bg-purple-500/10 border border-purple-500/30 rounded-2xl flex items-center justify-center text-white active:scale-95 transition-transform mt-0.5"
-            >
-              <ArrowLeft className="w-5 h-5 text-white" />
-            </button>
-            <div className="flex flex-col">
-              <div className="flex items-center gap-2">
-                <h1 className="text-2xl font-black italic text-indigo-400 tracking-tighter uppercase leading-none">
-                  ROSE 🌹
-                </h1>
-                <div className="w-2 h-2 rounded-full bg-emerald-500 shadow-sm shadow-emerald-500/50" />
-              </div>
-              <h2 className="text-3xl font-black text-white italic tracking-tighter uppercase leading-tight mt-1">
-                Settings
-              </h2>
-              <p className="text-slate-400 text-[10px] font-bold uppercase tracking-[2px] mt-0.5">
-                Customize your AI experience
-              </p>
-            </div>
-          </div>
-
-          {/* Girl Portrait Image fading smoothly into dark background */}
-          <div className="absolute right-0 -top-4 w-36 h-40 overflow-hidden pointer-events-none rounded-bl-3xl">
-            <img
-              src={rosePortraitImg}
-              className="w-full h-full object-cover object-top opacity-85"
-              alt={settings.assistantName}
-            />
-            {/* Smooth gradient fade into #020617 background */}
-            <div className="absolute inset-0 bg-gradient-to-l from-transparent via-[#020617]/50 to-[#020617]" />
-            <div className="absolute inset-0 bg-gradient-to-t from-[#020617] via-[#020617]/25 to-transparent" />
-            <div className="absolute inset-0 bg-gradient-to-b from-[#020617]/40 via-transparent to-transparent" />
-          </div>
-        </header>
+        {/* 9 Buttons in Exact Order */}
 
         {/* 9 Buttons in Exact Order */}
         <div className="space-y-4">
@@ -7940,197 +7721,90 @@ export function App() {
                 <p className="text-[11px] font-bold text-slate-300 mt-1 uppercase tracking-wide">
                   Your Personal AI Assistant
                 </p>
-                <div className="flex items-center gap-2 mt-1.5">
-                  <span className="text-[9px] font-black uppercase tracking-wider text-purple-300 px-2.5 py-0.5 rounded-full bg-purple-500/15 border border-purple-500/30">
-                    v1.6
-                  </span>
-                  <span className="text-[9px] font-bold uppercase tracking-wider text-slate-400">
-                    MADE IN BANGLADESH 🇧🇩
-                  </span>
-                </div>
               </div>
             </div>
             <ChevronRight className="w-5 h-5 text-slate-500 shrink-0" />
           </button>
 
-
-
-          {/* AI SETTINGS SECTION */}
-          <section className="space-y-2.5 pt-2">
-            <div className="flex items-center justify-between px-2">
-              <div className="flex items-center gap-2">
-                <Sparkles className="w-3.5 h-3.5 text-purple-400" />
-                <span className="text-[10px] font-black uppercase tracking-[3px] text-slate-400">AI SETTINGS</span>
+          {/* Individual Settings Buttons */}
+          <button
+            onClick={() => setCurrentView("connections")}
+            className="w-full p-5 bg-[#0F172A]/80 rounded-[2.5rem] border border-purple-500/30 shadow-2xl flex items-center justify-between active:scale-[0.98] transition-all text-left"
+          >
+            <div className="flex items-center gap-4">
+              <div className="w-12 h-12 rounded-full bg-purple-600 border border-purple-400/30 flex items-center justify-center text-white shrink-0 shadow-lg shadow-purple-900/40">
+                <Cpu className="w-6 h-6" />
               </div>
-              <span className="text-[9px] text-slate-500 font-bold uppercase tracking-wider">
-                Configure your AI assistant
-              </span>
+              <h4 className="font-black text-lg uppercase tracking-wider text-white">CONNECTIONS</h4>
             </div>
+            <ChevronRight className="w-5 h-5 text-slate-500" />
+          </button>
 
-            <div className="bg-[#0F172A]/80 border border-purple-500/30 rounded-[2.5rem] overflow-hidden shadow-2xl divide-y divide-purple-500/10">
-              {/* 4. Connections */}
-              <button
-                onClick={() => setCurrentView("connections")}
-                className="w-full flex items-center justify-between p-4.5 active:bg-white/5 transition-colors text-left group"
-              >
-                <div className="flex items-center gap-3.5">
-                  <div className="w-10 h-10 bg-purple-600 rounded-2xl flex items-center justify-center text-white shrink-0 shadow-lg shadow-purple-900/30">
-                    <Cpu className="w-5 h-5" />
-                  </div>
-                  <div>
-                    <h4 className="text-[13px] font-black uppercase tracking-wider text-white leading-tight">
-                      Connections
-                    </h4>
-                    <p className="text-[11px] text-slate-400 font-medium leading-tight mt-0.5">Gemini and Groq keys</p>
-                  </div>
-                </div>
-                <div className="flex items-center gap-2 shrink-0">
-                  <span className="text-[9px] px-2.5 py-1 rounded-full font-black border uppercase bg-orange-500/15 text-orange-400 border-orange-500/30 tracking-wider">
-                    Add a key
-                  </span>
-                  <ChevronRight className="w-4 h-4 text-slate-500 group-hover:translate-x-0.5 transition-transform" />
-                </div>
-              </button>
-
-              {/* 4.5 Live Voice Model */}
-              <button
-                onClick={() => setCurrentView("live-model")}
-                className="w-full flex items-center justify-between p-4.5 active:bg-white/5 transition-colors text-left group"
-              >
-                <div className="flex items-center gap-3.5">
-                  <div className="w-10 h-10 bg-indigo-600 rounded-2xl flex items-center justify-center text-white shrink-0 shadow-lg shadow-indigo-900/30">
-                    <Mic className="w-5 h-5" />
-                  </div>
-                  <div>
-                    <h4 className="text-[13px] font-black uppercase tracking-wider text-white leading-tight">
-                      Live Voice Model
-                    </h4>
-                    <p className="text-[11px] text-slate-400 font-medium leading-tight mt-0.5">
-                      {localStorage.getItem('voice_model') || 'Default'}
-                    </p>
-                  </div>
-                </div>
-                <ChevronRight className="w-4 h-4 text-slate-500 group-hover:translate-x-0.5 transition-transform" />
-              </button>
-
-              {/* 5. Voice & language */}
-              <button
-                onClick={() => setCurrentView("voice")}
-                className="w-full flex items-center justify-between p-4.5 active:bg-white/5 transition-colors text-left group"
-              >
-                <div className="flex items-center gap-3.5">
-                  <div className="w-10 h-10 bg-purple-600 rounded-2xl flex items-center justify-center text-white shrink-0 shadow-lg shadow-purple-900/30">
-                    <Volume2 className="w-5 h-5" />
-                  </div>
-                  <div>
-                    <h4 className="text-[13px] font-black uppercase tracking-wider text-white leading-tight">
-                      Voice & language
-                    </h4>
-                    <p className="text-[11px] text-slate-400 font-medium leading-tight mt-0.5">
-                      {(prefs.voiceName || "Sulafat") + ' · ' + (LANGUAGES.find((l) => l.id === prefs.language)?.label.split(" ")[0] || "Auto") + ' · ' + prefs.speechSpeed.toFixed(1) + 'x'}
-                    </p>
-                  </div>
-                </div>
-                <ChevronRight className="w-4 h-4 text-slate-500 group-hover:translate-x-0.5 transition-transform" />
-              </button>
-
-              {/* 6. Chats & memory */}
-              <button
-                onClick={() => setCurrentView("memory")}
-                className="w-full flex items-center justify-between p-4.5 active:bg-white/5 transition-colors text-left group"
-              >
-                <div className="flex items-center gap-3.5">
-                  <div className="w-10 h-10 bg-purple-600 rounded-2xl flex items-center justify-center text-white shrink-0 shadow-lg shadow-purple-900/30">
-                    <Database className="w-5 h-5" />
-                  </div>
-                  <div>
-                    <h4 className="text-[13px] font-black uppercase tracking-wider text-white leading-tight">
-                      Chats & memory
-                    </h4>
-                    <p className="text-[11px] text-slate-400 font-medium leading-tight mt-0.5">
-                      {`${conversations.length} chats · ${userMemories.length} memories`}
-                    </p>
-                  </div>
-                </div>
-                <ChevronRight className="w-4 h-4 text-slate-500 group-hover:translate-x-0.5 transition-transform" />
-              </button>
-
-              {profile?.role === 'admin' && (
-                <button
-                  onClick={() => setCurrentView("admin_panel")}
-                  className="w-full flex items-center justify-between p-4.5 active:bg-white/5 transition-colors text-left group"
-                >
-                  <div className="flex items-center gap-3.5">
-                    <div className="w-10 h-10 bg-indigo-600 rounded-2xl flex items-center justify-center text-white shrink-0 shadow-lg shadow-indigo-900/30">
-                      <Shield className="w-5 h-5" />
-                    </div>
-                    <div>
-                      <h4 className="text-[13px] font-black uppercase tracking-wider text-white leading-tight">
-                        User Management
-                      </h4>
-                      <p className="text-[11px] text-slate-400 font-medium leading-tight mt-0.5">Admin Panel</p>
-                    </div>
-                  </div>
-                  <ChevronRight className="w-4 h-4 text-slate-500 group-hover:translate-x-0.5 transition-transform" />
-                </button>
-              )}
-            </div>
-          </section>
-
-          {/* APP SETTINGS SECTION */}
-          <section className="space-y-2.5 pt-2">
-            <div className="flex items-center justify-between px-2">
-              <div className="flex items-center gap-2">
-                <Settings className="w-3.5 h-3.5 text-purple-400" />
-                <span className="text-[10px] font-black uppercase tracking-[3px] text-slate-400">APP SETTINGS</span>
+          <button
+            onClick={() => setCurrentView("live-model")}
+            className="w-full p-5 bg-[#0F172A]/80 rounded-[2.5rem] border border-purple-500/30 shadow-2xl flex items-center justify-between active:scale-[0.98] transition-all text-left"
+          >
+            <div className="flex items-center gap-4">
+              <div className="w-12 h-12 rounded-full bg-indigo-600 border border-indigo-400/30 flex items-center justify-center text-white shrink-0 shadow-lg shadow-indigo-900/40">
+                <Mic className="w-6 h-6" />
               </div>
-              <span className="text-[9px] text-slate-500 font-bold uppercase tracking-wider">
-                Appearance and behavior
-              </span>
+              <h4 className="font-black text-lg uppercase tracking-wider text-white">LIVE VOICE MODEL</h4>
             </div>
+            <ChevronRight className="w-5 h-5 text-slate-500" />
+          </button>
 
-            <div className="bg-[#0F172A]/80 border border-purple-500/30 rounded-[2.5rem] overflow-hidden shadow-2xl divide-y divide-purple-500/10">
-              {/* 7. Look & feel */}
-              <button
-                onClick={() => setCurrentView("look")}
-                className="w-full flex items-center justify-between p-4.5 active:bg-white/5 transition-colors text-left group"
-              >
-                <div className="flex items-center gap-3.5">
-                  <div className="w-10 h-10 bg-purple-600 rounded-2xl flex items-center justify-center text-white shrink-0 shadow-lg shadow-purple-900/30">
-                    <Palette className="w-5 h-5" />
-                  </div>
-                  <div>
-                    <h4 className="text-[13px] font-black uppercase tracking-wider text-white leading-tight">
-                      Look & feel
-                    </h4>
-                    <p className="text-[11px] text-slate-400 font-medium leading-tight mt-0.5">System · Classic orb</p>
-                  </div>
-                </div>
-                <ChevronRight className="w-4 h-4 text-slate-500 group-hover:translate-x-0.5 transition-transform" />
-              </button>
-
-              {/* 8. Phone control */}
-              <button
-                onClick={() => setCurrentView("phone")}
-                className="w-full flex items-center justify-between p-4.5 active:bg-white/5 transition-colors text-left group"
-              >
-                <div className="flex items-center gap-3.5">
-                  <div className="w-10 h-10 bg-purple-600 rounded-2xl flex items-center justify-center text-white shrink-0 shadow-lg shadow-purple-900/30">
-                    <Smartphone className="w-5 h-5" />
-                  </div>
-                  <div>
-                    <h4 className="text-[13px] font-black uppercase tracking-wider text-white leading-tight">
-                      Phone control
-                    </h4>
-                    <p className="text-[11px] text-slate-400 font-medium leading-tight mt-0.5">
-                      Quick actions and permissions
-                    </p>
-                  </div>
-                </div>
-                <ChevronRight className="w-4 h-4 text-slate-500 group-hover:translate-x-0.5 transition-transform" />
-              </button>
+          <button
+            onClick={() => setCurrentView("voice")}
+            className="w-full p-5 bg-[#0F172A]/80 rounded-[2.5rem] border border-purple-500/30 shadow-2xl flex items-center justify-between active:scale-[0.98] transition-all text-left"
+          >
+            <div className="flex items-center gap-4">
+              <div className="w-12 h-12 rounded-full bg-purple-600 border border-purple-400/30 flex items-center justify-center text-white shrink-0 shadow-lg shadow-purple-900/40">
+                <Volume2 className="w-6 h-6" />
+              </div>
+              <h4 className="font-black text-lg uppercase tracking-wider text-white">VOICE & LANGUAGE</h4>
             </div>
-          </section>
+            <ChevronRight className="w-5 h-5 text-slate-500" />
+          </button>
+
+          <button
+            onClick={() => setCurrentView("memory")}
+            className="w-full p-5 bg-[#0F172A]/80 rounded-[2.5rem] border border-purple-500/30 shadow-2xl flex items-center justify-between active:scale-[0.98] transition-all text-left"
+          >
+            <div className="flex items-center gap-4">
+              <div className="w-12 h-12 rounded-full bg-purple-600 border border-purple-400/30 flex items-center justify-center text-white shrink-0 shadow-lg shadow-purple-900/40">
+                <Database className="w-6 h-6" />
+              </div>
+              <h4 className="font-black text-lg uppercase tracking-wider text-white">CHATS & MEMORY</h4>
+            </div>
+            <ChevronRight className="w-5 h-5 text-slate-500" />
+          </button>
+
+          <button
+            onClick={() => setCurrentView("look")}
+            className="w-full p-5 bg-[#0F172A]/80 rounded-[2.5rem] border border-purple-500/30 shadow-2xl flex items-center justify-between active:scale-[0.98] transition-all text-left"
+          >
+            <div className="flex items-center gap-4">
+              <div className="w-12 h-12 rounded-full bg-purple-600 border border-purple-400/30 flex items-center justify-center text-white shrink-0 shadow-lg shadow-purple-900/40">
+                <Palette className="w-6 h-6" />
+              </div>
+              <h4 className="font-black text-lg uppercase tracking-wider text-white">LOOK & FEEL</h4>
+            </div>
+            <ChevronRight className="w-5 h-5 text-slate-500" />
+          </button>
+
+          <button
+            onClick={() => setCurrentView("phone")}
+            className="w-full p-5 bg-[#0F172A]/80 rounded-[2.5rem] border border-purple-500/30 shadow-2xl flex items-center justify-between active:scale-[0.98] transition-all text-left"
+          >
+            <div className="flex items-center gap-4">
+              <div className="w-12 h-12 rounded-full bg-purple-600 border border-purple-400/30 flex items-center justify-center text-white shrink-0 shadow-lg shadow-purple-900/40">
+                <Smartphone className="w-6 h-6" />
+              </div>
+              <h4 className="font-black text-lg uppercase tracking-wider text-white">PHONE CONTROL</h4>
+            </div>
+            <ChevronRight className="w-5 h-5 text-slate-500" />
+          </button>
+        </div>
 
           {/* ABOUT SECTION */}
           <section className="space-y-2.5 pt-2">
@@ -8201,14 +7875,7 @@ export function App() {
               </button>
             </div>
           </section>
-
-          {/* Footer */}
-          <footer className="pt-4 pb-6 text-center opacity-40 shrink-0">
-            <p className="text-[9px] font-black uppercase tracking-[4px]">{settings.assistantName} Assistant • v1.6</p>
-            <p className="text-[8px] mt-1 font-black uppercase tracking-[3px]">MADE IN BANGLADESH 🇧🇩</p>
-          </footer>
         </div>
-      </div>
     </motion.div>
   );
 
@@ -10177,7 +9844,7 @@ export function App() {
               setToast={setToast}
             />
           )}
-          {currentView === "admin_panel" && (userRole === 'admin' ? <AdminPanelView setCurrentView={setCurrentView} setToast={setToast} /> : <div className="p-4 text-center text-red-500">Access denied</div>)}
+          {currentView === "admin_panel" && <AdminPanelView setCurrentView={setCurrentView} setToast={setToast} />}
           {currentView === "connections" && (
             <ConnectionsView
               apiKeys={apiKeys}
@@ -10887,7 +10554,7 @@ export function App() {
       </AnimatePresence>
 
       {/* Bottom Navigation - Always Visible */}
-      {user && (
+      {true && (
         <nav className="h-20 bg-[#020617]/95 backdrop-blur-3xl border-t border-white/5 px-8 flex items-center justify-between z-[100] shrink-0">
           <button
             onClick={() => {
@@ -11078,6 +10745,9 @@ export function App() {
           </>
         )}
       </AnimatePresence>
+      <div className="relative z-10">
+        {/* Existing application content here */}
+      </div>
     </div>
   );
 }

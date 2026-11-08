@@ -1,0 +1,224 @@
+  const renderSettings = () => (
+    <motion.div
+      key="settings"
+      initial={{ x: "100%" }}
+      animate={{ x: 0 }}
+      exit={{ x: "100%" }}
+      className="fixed inset-0 z-[70] bg-[#020617] overflow-y-auto no-scrollbar flex flex-col"
+    >
+      <div className="px-5 py-6 flex flex-col min-h-full pb-36">
+        {/* Top Header with Back button, Logo, Title, Subtitle and Fading Portrait on the right */}
+        <header className="relative mb-6 shrink-0 min-h-[90px] flex items-start justify-between">
+          <div className="flex items-start gap-4 z-10">
+            <button
+              onClick={() => setCurrentView("home")}
+              aria-label="Back to Home"
+              className="p-2.5 bg-purple-500/10 border border-purple-500/30 rounded-2xl flex items-center justify-center text-white active:scale-95 transition-transform mt-0.5"
+            >
+              <ArrowLeft className="w-5 h-5 text-white" />
+            </button>
+            <div className="flex flex-col">
+              <div className="flex items-center gap-2">
+                <h1 className="text-2xl font-black italic text-indigo-400 tracking-tighter uppercase leading-none">
+                  ROSE 🌹
+                </h1>
+                <div className="w-2 h-2 rounded-full bg-emerald-500 shadow-sm shadow-emerald-500/50" />
+              </div>
+              <h2 className="text-3xl font-black text-white italic tracking-tighter uppercase leading-tight mt-1">
+                Settings
+              </h2>
+              <p className="text-slate-400 text-[10px] font-bold uppercase tracking-[2px] mt-0.5">
+                Customize your AI experience
+              </p>
+            </div>
+          </div>
+
+          {/* Girl Portrait Image fading smoothly into dark background */}
+          <div className="absolute right-0 -top-4 w-36 h-40 overflow-hidden pointer-events-none rounded-bl-3xl">
+            <img
+              src={rosePortraitImg}
+              className="w-full h-full object-cover object-top opacity-85"
+              alt={settings.assistantName}
+            />
+            {/* Smooth gradient fade into #020617 background */}
+            <div className="absolute inset-0 bg-gradient-to-l from-transparent via-[#020617]/50 to-[#020617]" />
+            <div className="absolute inset-0 bg-gradient-to-t from-[#020617] via-[#020617]/25 to-transparent" />
+            <div className="absolute inset-0 bg-gradient-to-b from-[#020617]/40 via-transparent to-transparent" />
+          </div>
+        </header>
+
+        {/* 9 Buttons in Exact Order */}
+        <div className="space-y-4">
+          {/* 1. App Card */}
+          <button
+            onClick={() => setCurrentView("profile")}
+            className="w-full p-5 bg-[#0F172A]/80 rounded-[2.5rem] border border-purple-500/30 shadow-2xl flex items-center justify-between active:scale-[0.98] transition-all text-left"
+          >
+            <div className="flex items-center gap-4">
+              <div className="w-12 h-12 rounded-full bg-gradient-to-tr from-purple-600 to-indigo-600 border border-purple-400/30 flex items-center justify-center text-white shrink-0 shadow-lg shadow-purple-900/40">
+                <Sparkles className="w-6 h-6 text-white" />
+              </div>
+              <div>
+                <h3 className="font-black text-xl leading-none text-white tracking-wider">{settings.assistantName}</h3>
+                <p className="text-[11px] font-bold text-slate-300 mt-1 uppercase tracking-wide">
+                  Your Personal AI Assistant
+                </p>
+              </div>
+            </div>
+            <ChevronRight className="w-5 h-5 text-slate-500 shrink-0" />
+          </button>
+
+          {/* Individual Settings Buttons */}
+          <button
+            onClick={() => setCurrentView("connections")}
+            className="w-full p-5 bg-[#0F172A]/80 rounded-[2.5rem] border border-purple-500/30 shadow-2xl flex items-center justify-between active:scale-[0.98] transition-all text-left"
+          >
+            <div className="flex items-center gap-4">
+              <div className="w-12 h-12 rounded-full bg-purple-600 border border-purple-400/30 flex items-center justify-center text-white shrink-0 shadow-lg shadow-purple-900/40">
+                <Cpu className="w-6 h-6" />
+              </div>
+              <h4 className="font-black text-lg uppercase tracking-wider text-white">CONNECTIONS</h4>
+            </div>
+            <ChevronRight className="w-5 h-5 text-slate-500" />
+          </button>
+
+          <button
+            onClick={() => setCurrentView("live-model")}
+            className="w-full p-5 bg-[#0F172A]/80 rounded-[2.5rem] border border-purple-500/30 shadow-2xl flex items-center justify-between active:scale-[0.98] transition-all text-left"
+          >
+            <div className="flex items-center gap-4">
+              <div className="w-12 h-12 rounded-full bg-indigo-600 border border-indigo-400/30 flex items-center justify-center text-white shrink-0 shadow-lg shadow-indigo-900/40">
+                <Mic className="w-6 h-6" />
+              </div>
+              <h4 className="font-black text-lg uppercase tracking-wider text-white">LIVE VOICE MODEL</h4>
+            </div>
+            <ChevronRight className="w-5 h-5 text-slate-500" />
+          </button>
+
+          <button
+            onClick={() => setCurrentView("voice")}
+            className="w-full p-5 bg-[#0F172A]/80 rounded-[2.5rem] border border-purple-500/30 shadow-2xl flex items-center justify-between active:scale-[0.98] transition-all text-left"
+          >
+            <div className="flex items-center gap-4">
+              <div className="w-12 h-12 rounded-full bg-purple-600 border border-purple-400/30 flex items-center justify-center text-white shrink-0 shadow-lg shadow-purple-900/40">
+                <Volume2 className="w-6 h-6" />
+              </div>
+              <h4 className="font-black text-lg uppercase tracking-wider text-white">VOICE & LANGUAGE</h4>
+            </div>
+            <ChevronRight className="w-5 h-5 text-slate-500" />
+          </button>
+
+          <button
+            onClick={() => setCurrentView("memory")}
+            className="w-full p-5 bg-[#0F172A]/80 rounded-[2.5rem] border border-purple-500/30 shadow-2xl flex items-center justify-between active:scale-[0.98] transition-all text-left"
+          >
+            <div className="flex items-center gap-4">
+              <div className="w-12 h-12 rounded-full bg-purple-600 border border-purple-400/30 flex items-center justify-center text-white shrink-0 shadow-lg shadow-purple-900/40">
+                <Database className="w-6 h-6" />
+              </div>
+              <h4 className="font-black text-lg uppercase tracking-wider text-white">CHATS & MEMORY</h4>
+            </div>
+            <ChevronRight className="w-5 h-5 text-slate-500" />
+          </button>
+
+          <button
+            onClick={() => setCurrentView("look")}
+            className="w-full p-5 bg-[#0F172A]/80 rounded-[2.5rem] border border-purple-500/30 shadow-2xl flex items-center justify-between active:scale-[0.98] transition-all text-left"
+          >
+            <div className="flex items-center gap-4">
+              <div className="w-12 h-12 rounded-full bg-purple-600 border border-purple-400/30 flex items-center justify-center text-white shrink-0 shadow-lg shadow-purple-900/40">
+                <Palette className="w-6 h-6" />
+              </div>
+              <h4 className="font-black text-lg uppercase tracking-wider text-white">LOOK & FEEL</h4>
+            </div>
+            <ChevronRight className="w-5 h-5 text-slate-500" />
+          </button>
+
+          <button
+            onClick={() => setCurrentView("phone")}
+            className="w-full p-5 bg-[#0F172A]/80 rounded-[2.5rem] border border-purple-500/30 shadow-2xl flex items-center justify-between active:scale-[0.98] transition-all text-left"
+          >
+            <div className="flex items-center gap-4">
+              <div className="w-12 h-12 rounded-full bg-purple-600 border border-purple-400/30 flex items-center justify-center text-white shrink-0 shadow-lg shadow-purple-900/40">
+                <Smartphone className="w-6 h-6" />
+              </div>
+              <h4 className="font-black text-lg uppercase tracking-wider text-white">PHONE CONTROL</h4>
+            </div>
+            <ChevronRight className="w-5 h-5 text-slate-500" />
+          </button>
+        </div>
+
+          {/* ABOUT SECTION */}
+          <section className="space-y-2.5 pt-2">
+            <div className="flex items-center justify-between px-2">
+              <div className="flex items-center gap-2">
+                <Info className="w-3.5 h-3.5 text-purple-400" />
+                <span className="text-[10px] font-black uppercase tracking-[3px] text-slate-400">ABOUT</span>
+              </div>
+              <span className="text-[9px] text-slate-500 font-bold uppercase tracking-wider">
+                App information and support
+              </span>
+            </div>
+
+            <div className="bg-[#0F172A]/80 border border-purple-500/30 rounded-[2.5rem] overflow-hidden shadow-2xl">
+              <button
+                onClick={() => {
+                  setDeveloperFrom("settings");
+                  setCurrentView("developer");
+                }}
+                className="w-full flex items-center justify-between p-4.5 active:bg-white/5 active:scale-[0.99] transition-all text-left group"
+              >
+                <div className="flex items-center gap-3.5">
+                  <div className="w-10 h-10 bg-purple-600 rounded-2xl flex items-center justify-center text-white shrink-0 shadow-lg shadow-purple-900/30">
+                    <User className="w-5 h-5" />
+                  </div>
+                  <div>
+                    <h4 className="text-[13px] font-black uppercase tracking-wider text-white leading-tight">
+                      {profileSettings.name}
+                    </h4>
+                    <p className="text-[11px] text-slate-400 font-medium leading-tight mt-0.5">
+                      {profileSettings.subtitle}
+                    </p>
+                  </div>
+                </div>
+                <ChevronRight className="w-4 h-4 text-slate-500 group-hover:translate-x-0.5 transition-transform" />
+              </button>
+            </div>
+          </section>
+
+          {/* SESSION SECTION */}
+          <section className="space-y-2.5 pt-2 text-red-400">
+            <div className="flex items-center justify-between px-2">
+              <div className="flex items-center gap-2">
+                <Lock className="w-3.5 h-3.5 text-red-500" />
+                <span className="text-[10px] font-black uppercase tracking-[3px] text-slate-400">SESSION</span>
+              </div>
+            </div>
+
+            <div className="bg-[#0F172A]/80 border border-red-500/20 rounded-[2.5rem] overflow-hidden shadow-2xl">
+              <button
+                onClick={handleLogout}
+                className="w-full flex items-center justify-between p-5 active:bg-red-500/10 active:scale-[0.99] transition-all text-left group"
+              >
+                <div className="flex items-center gap-3.5">
+                  <div className="w-10 h-10 bg-red-600/10 rounded-2xl flex items-center justify-center text-red-500 shrink-0 shadow-lg border border-red-500/20">
+                    <LogOut className="w-5 h-5" />
+                  </div>
+                  <div>
+                    <h4 className="text-[13px] font-black uppercase tracking-wider text-red-500 leading-tight">
+                      Sign Out
+                    </h4>
+                    <p className="text-[11px] text-slate-500 font-medium leading-tight mt-0.5">
+                      Log out of your account
+                    </p>
+                  </div>
+                </div>
+                <ChevronRight className="w-4 h-4 text-slate-700" />
+              </button>
+            </div>
+          </section>
+        </div>
+      </div>
+    </motion.div>
+  );
+
