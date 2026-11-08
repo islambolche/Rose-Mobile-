@@ -1,5 +1,6 @@
 import React, { useState, useEffect } from "react";
 import { ArrowLeft, Loader2, Check, X, Eye, EyeOff, Database, Cpu, RefreshCw, Key } from "lucide-react";
+import { supabase } from "../lib/supabase";
 import { createClient } from "@supabase/supabase-js";
 
 interface DatabaseSyncSettingsProps {
@@ -29,8 +30,6 @@ export const DatabaseSyncSettings: React.FC<DatabaseSyncSettingsProps> = ({ onCl
   const [errorMessage, setErrorMessage] = useState("");
   const [user, setUser] = useState<any>(null);
 
-  const supabase = supabaseUrl && supabaseKey ? createClient(supabaseUrl, supabaseKey) : null;
-
   useEffect(() => {
     if (supabase) {
       supabase.auth.getSession().then(({ data }) => {
@@ -38,7 +37,7 @@ export const DatabaseSyncSettings: React.FC<DatabaseSyncSettingsProps> = ({ onCl
         setConnectionStatus("connected");
       });
     }
-  }, [supabase]);
+  }, []);
 
   const handleTestConnection = async () => {
     if (!supabaseUrl.startsWith("https://")) {
@@ -53,12 +52,14 @@ export const DatabaseSyncSettings: React.FC<DatabaseSyncSettingsProps> = ({ onCl
     }
     setConnectionStatus("connecting");
     try {
-        const { error } = await createClient(supabaseUrl, supabaseKey).auth.getSession();
+        const tempClient = createClient(supabaseUrl, supabaseKey);
+        const { error } = await tempClient.auth.getSession();
         if (error) throw error;
         localStorage.setItem("supabase_url", supabaseUrl);
         localStorage.setItem("supabase_key", supabaseKey);
         setConnectionStatus("connected");
         setErrorMessage("");
+        window.location.reload();
     } catch (e: any) {
         setConnectionStatus("error");
         setErrorMessage(e.message || "Failed to connect");
