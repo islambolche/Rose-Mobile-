@@ -6958,6 +6958,8 @@ export function App() {
 
   // ... rest of the file
 
+  // ... rest of the file
+
   if (authLoading) {
     return (
       <div className="fixed inset-0 bg-[#020617] flex flex-col items-center justify-center z-[500] gap-4">
@@ -6974,6 +6976,7 @@ export function App() {
     );
   }
 
+  // We are guaranteed to be past hooks here
   if (!user) {
     return <AuthScreen onLoginSuccess={(u, role, initialView) => {
       setUser(u);
