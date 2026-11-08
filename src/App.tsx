@@ -2153,6 +2153,69 @@ export function App() {
   const [subscription, setSubscription] = useState<any>(null);
   const [authLoading, setAuthLoading] = useState(true);
   const [accessState, setAccessState] = useState<"loading" | "granted" | "blocked" | "subscribe">("loading");
+  const [startupError, setStartupError] = useState<string | null>(null);
+  const [startupStep, setStartupStep] = useState("config ok");
+
+  useEffect(() => {
+    const handleError = (event: ErrorEvent | PromiseRejectionEvent) => {
+      const msg = event instanceof ErrorEvent ? event.message : "Unhandled Rejection";
+      setStartupError(msg);
+    };
+    window.addEventListener("error", handleError);
+    window.addEventListener("unhandledrejection", handleError);
+
+    // Startup timeout (8s)
+    const timeout = setTimeout(() => {
+      setAuthLoading(false);
+    }, 8000);
+
+    return () => {
+      window.removeEventListener("error", handleError);
+      window.removeEventListener("unhandledrejection", handleError);
+      clearTimeout(timeout);
+    };
+  }, []);
+
+  useEffect(() => {
+    async function initStartupSession() {
+      try {
+        setStartupStep("config ok");
+        const url = import.meta.env.VITE_SUPABASE_URL?.trim();
+        const key = import.meta.env.VITE_SUPABASE_ANON_KEY?.trim();
+        if (!url || !key) {
+          setStartupError("Supabase URL / key পাওয়া যায়নি।");
+          setAuthLoading(false);
+          return;
+        }
+
+        const sb = initializeSupabase();
+        if (!sb) {
+          setStartupError("Supabase client তৈরি করা যায়নি।");
+          setAuthLoading(false);
+          return;
+        }
+
+        setStartupStep("checking session");
+        const session = (await Promise.race([
+          sb.auth.getSession(),
+          new Promise((_, reject) => setTimeout(() => reject(new Error("Timeout")), 6000)),
+        ])) as any;
+
+        if (session?.data?.session?.user) {
+          const u = session.data.session.user;
+          setUser(u);
+          await checkAccess(u);
+        } else {
+          setAuthLoading(false);
+          setAccessState("granted");
+        }
+      } catch (e: any) {
+        setStartupError(e?.message === "Timeout" ? "Session check timeout" : e?.message || "Startup error");
+        setAuthLoading(false);
+      }
+    }
+    initStartupSession();
+  }, []);
 
   // Navigation State
   const [currentView, setCurrentView] = useState<AppView>("home");
@@ -3266,40 +3329,50 @@ export function App() {
       }
 
       // Initial Session Check
-      supabase!.auth.getSession().then(({ data: { session } }) => {
-        if (session?.user) {
-          const u = session.user;
-          setUser(u);
-          checkAccess(u);
-        } else {
+      let authSub: any = null;
+      if (supabase) {
+        supabase.auth.getSession().then(({ data: { session } }) => {
+          if (session?.user) {
+            const u = session.user;
+            setUser(u);
+            checkAccess(u);
+          } else {
+            setAuthLoading(false);
+            setAccessState("granted");
+          }
+        }).catch(() => {
           setAuthLoading(false);
           setAccessState("granted");
-        }
-      });
+        });
 
-      // Supabase Auth Listener
-      const { data: { subscription: authSub } } = supabase!.auth.onAuthStateChange(async (event, session) => {
-        const currentUser = session?.user || null;
-        if (event === 'SIGNED_OUT') {
-           setUser(null);
-           setProfile(null);
-           setSubscription(null);
-           setAccessState("granted");
-           setAuthLoading(false);
-           setIsAssistantEnabled(false);
-           setSpeakingState("idle");
-           cancelAllSpeechAndAudio(true);
-           return;
-        }
-
-        if (currentUser) {
-          setUser(currentUser);
-          await checkAccess(currentUser);
-          if (event === 'SIGNED_IN') {
-            logLogin(currentUser);
+        // Supabase Auth Listener
+        const { data } = supabase.auth.onAuthStateChange(async (event, session) => {
+          const currentUser = session?.user || null;
+          if (event === 'SIGNED_OUT') {
+             setUser(null);
+             setProfile(null);
+             setSubscription(null);
+             setAccessState("granted");
+             setAuthLoading(false);
+             setIsAssistantEnabled(false);
+             setSpeakingState("idle");
+             cancelAllSpeechAndAudio(true);
+             return;
           }
-        }
-      });
+
+          if (currentUser) {
+            setUser(currentUser);
+            await checkAccess(currentUser);
+            if (event === 'SIGNED_IN') {
+              logLogin(currentUser);
+            }
+          }
+        });
+        authSub = data?.subscription;
+      } else {
+        setAuthLoading(false);
+        setAccessState("granted");
+      }
 
       // Load Local History and Writings
       try {
@@ -3313,7 +3386,7 @@ export function App() {
 
       // Load Profile Settings
       try {
-        const { data, error } = await (supabase?.from("profile_settings").select("*").eq("id", 1).single() as any);
+        const { data, error } = (await (supabase?.from("profile_settings").select("*").eq("id", 1).single() as any)) || {};
         if (data && !error) {
           const mappedData = {
             name: data.name || "MD YOUSUF KHAN",
@@ -3366,14 +3439,14 @@ export function App() {
           .subscribe();
         
         return () => {
-          authSub.unsubscribe();
+          authSub?.unsubscribe();
           if (channel) supabase?.removeChannel(channel);
         };
       } catch (err) {
         console.error("Failed to fetch settings in App:", err);
       }
 
-      return () => authSub.unsubscribe();
+      return () => authSub?.unsubscribe();
     }
     init();
   }, []);
@@ -6893,109 +6966,45 @@ export function App() {
       }
     };
 
-  const [startupError, setStartupError] = useState<string | null>(null);
-  const [startupStep, setStartupStep] = useState("config ok");
-
-  useEffect(() => {
-    const handleError = (event: ErrorEvent | PromiseRejectionEvent) => {
-        const msg = event instanceof ErrorEvent ? event.message : "Unhandled Rejection";
-        setStartupError(msg);
-    };
-    window.addEventListener("error", handleError);
-    window.addEventListener("unhandledrejection", handleError);
-    
-    // Startup timeout (8s)
-    const timeout = setTimeout(() => {
-        setAuthLoading(false);
-    }, 8000);
-
-    return () => {
-        window.removeEventListener("error", handleError);
-        window.removeEventListener("unhandledrejection", handleError);
-        clearTimeout(timeout);
-    };
-  }, []);
-
-  useEffect(() => {
-    let channel: any;
-    async function init() {
-      try {
-        setStartupStep("config ok");
-        // Safe check
-        const url = import.meta.env.VITE_SUPABASE_URL?.trim();
-        const key = import.meta.env.VITE_SUPABASE_ANON_KEY?.trim();
-        if (!url || !key) {
-           setStartupError("Supabase URL / key পাওয়া যায়নি।");
-           setAuthLoading(false);
-           return;
-        }
-
-        initializeSupabase();
-        
-        setStartupStep("checking session");
-        // Timeout for session check (6s)
-        const session = await Promise.race([
-            supabase!.auth.getSession(),
-            new Promise((_, reject) => setTimeout(() => reject(new Error("Timeout")), 6000))
-        ]) as any;
-
-        if (session.data?.session?.user) {
-          const u = session.data.session.user;
-          setUser(u);
-          await checkAccess(u);
-        } else {
-          setAuthLoading(false);
-          setAccessState("granted");
-        }
-      } catch (e: any) {
-        setStartupError(e.message === "Timeout" ? "Session check timeout" : e.message);
-        setAuthLoading(false);
-      }
-    }
-    init();
-    // ... rest of init logic (load settings, etc)
-  }, []);
-
-  // ... rest of the file
-
-  // ... rest of the file
-
-  if (authLoading) {
-    return (
-      <div className="fixed inset-0 bg-[#020617] flex flex-col items-center justify-center z-[500] gap-4">
-        <motion.div
-          animate={{ rotate: 360 }}
-          transition={{ duration: 1, repeat: Infinity, ease: "linear" }}
-        >
-          <Loader2 className="w-12 h-12 text-purple-600" />
-        </motion.div>
-        <p className={`text-[11px] ${startupError ? "text-red-500" : "text-gray-500"}`}>
+    if (authLoading) {
+      return (
+        <div className="fixed inset-0 bg-[#020617] flex flex-col items-center justify-center z-[500] gap-4">
+          <motion.div
+            animate={{ rotate: 360 }}
+            transition={{ duration: 1, repeat: Infinity, ease: "linear" }}
+          >
+            <Loader2 className="w-12 h-12 text-purple-600" />
+          </motion.div>
+          <p className={`text-[11px] ${startupError ? "text-red-500" : "text-gray-500"}`}>
             {startupError || startupStep}
-        </p>
-      </div>
-    );
-  }
+          </p>
+        </div>
+      );
+    }
 
-  // We are guaranteed to be past hooks here
-  if (!user) {
-    return <AuthScreen onLoginSuccess={(u, role, initialView) => {
-      setUser(u);
-      setUserRole(role);
-      setCurrentView(initialView === "admin" ? "admin_panel" : "home");
-      checkAccess(u);
-      logLogin(u);
-    }} />;
-  }
+    if (!user) {
+      return (
+        <AuthScreen
+          onLoginSuccess={(u, role, initialView) => {
+            setUser(u);
+            setUserRole(role);
+            setCurrentView(initialView === "admin" ? "admin_panel" : "home");
+            checkAccess(u);
+            logLogin(u);
+          }}
+        />
+      );
+    }
 
-  if (accessState === "blocked") {
-    return <AccessGate type="blocked" onLogout={() => { setUser(null); setAccessState("granted"); }} />;
-  }
+    if (accessState === "blocked") {
+      return <AccessGate type="blocked" onLogout={() => { setUser(null); setAccessState("granted"); }} />;
+    }
 
-  if (accessState === "subscribe") {
-    return <AccessGate type="subscribe" plan={subscription?.plan} onLogout={() => { setUser(null); setAccessState("granted"); }} />;
-  }
+    if (accessState === "subscribe") {
+      return <AccessGate type="subscribe" plan={subscription?.plan} onLogout={() => { setUser(null); setAccessState("granted"); }} />;
+    }
 
-  return (
+    return (
       <div
         onPointerDown={handleCharacterPointerDown}
         onPointerUp={handleCharacterPointerEnd}
@@ -9885,7 +9894,6 @@ export function App() {
     />
   );
 
-
   return (
     <div
       className={'fixed inset-0 bg-[#020617] text-white font-sans flex flex-col overflow-hidden transition-all duration-500 ' + (!settings.masterAccess ? "grayscale contrast-75" : "")}
@@ -11073,6 +11081,4 @@ export function App() {
     </div>
   );
 }
-
-
 export default App;
