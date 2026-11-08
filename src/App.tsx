@@ -4680,6 +4680,7 @@ export function App() {
           role: "system",
           text: "Mic heard nothing",
         });
+        sess.turnHandled = true;
       }
     };
 
@@ -7815,9 +7816,22 @@ export function App() {
     const isThinking = speakingState === "thinking" || sessionState === "THINKING";
     const hasInterim = interimSpeechText.trim().length > 0;
     return (
-      <div className="absolute inset-0 flex flex-col overflow-hidden w-full bg-[#020617]">
-        {/* Header */}
-        <div className="px-5 py-3 border-b border-white/5 flex items-center justify-between shrink-0 bg-[#020617]/90 backdrop-blur-md">
+      <div className="relative flex-1 min-h-0 flex flex-col overflow-hidden w-full bg-[#020617]">
+        {/* Layer 0: Fixed background image with dark overlay */}
+        <div className="absolute inset-0 z-0 pointer-events-none select-none overflow-hidden">
+          <img
+            src={rosePortraitImg}
+            alt="Rose"
+            className="w-full h-full object-cover object-center"
+          />
+          <div
+            className="absolute inset-0"
+            style={{ backgroundColor: "rgba(3,6,20,0.88)" }}
+          />
+        </div>
+
+        {/* Layer 2: Header */}
+        <div className="relative z-[2] px-5 py-3 border-b border-white/5 flex items-center justify-between shrink-0 bg-[#020617]/90 backdrop-blur-md">
           <div className="w-8" />
           <div className="flex flex-col items-center justify-center">
             <div className="flex items-center justify-center gap-2">
@@ -7839,13 +7853,17 @@ export function App() {
           </div>
         </div>
 
-        {/* Message list */}
-        <div className="flex-1 min-h-0 overflow-y-auto px-4 py-4 space-y-4 no-scrollbar">
+        {/* Layer 1: Message list container */}
+        <div
+          ref={chatEndRef}
+          className="relative z-[1] flex-1 min-h-0 overflow-y-auto space-y-4 no-scrollbar"
+          style={{ padding: "12px 14px" }}
+        >
           {chatHistory.length === 0 && !hasInterim && !isThinking ? (
             <div className="h-64 flex flex-col items-center justify-center text-center opacity-70 px-4">
-              <MessageSquare className="w-12 h-12 text-slate-700 mb-3" />
+              <MessageSquare className="w-12 h-12 text-slate-600 mb-3" />
               <p className="text-sm font-black uppercase text-white tracking-wider">No messages yet</p>
-              <p className="text-[11px] text-slate-500 font-medium mt-1">
+              <p className="text-[11px] text-slate-400 font-medium mt-1">
                 Type a message below or tap the orb to talk with Rose.
               </p>
             </div>
@@ -7853,15 +7871,23 @@ export function App() {
             <>
               {chatHistory.map((msg, idx) => {
                 const msgText = String(msg.text ?? msg.content ?? "");
-                if (msg.role === "system") {
+                const isSystem = msg.role === "system" || (msg as any).isError || msgText.toLowerCase().includes("gemini error") || msgText === "Mic heard nothing";
+                const timeStr = msg.time || (msg.timestamp ? (typeof msg.timestamp === 'string' ? msg.timestamp : new Date(msg.timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })) : "");
+
+                if (isSystem) {
                   return (
                     <div
                       key={msg.id || idx}
-                      className="flex w-full justify-center my-1"
+                      className="flex flex-col w-full items-center my-1"
                     >
-                      <div className="max-w-[90%] px-3 py-1.5 rounded-xl bg-rose-950/80 border border-rose-500/40 text-rose-300 text-[11px] font-semibold text-center shadow-sm break-words">
+                      <div className="max-w-[90%] px-4 py-2.5 rounded-2xl bg-rose-950/90 border border-rose-500/50 text-rose-200 text-xs font-semibold text-center shadow-lg break-words">
                         {msgText}
                       </div>
+                      {timeStr && (
+                        <span className="text-[10px] text-slate-400 font-medium mt-1">
+                          {timeStr}
+                        </span>
+                      )}
                     </div>
                   );
                 }
@@ -7870,79 +7896,92 @@ export function App() {
                 return (
                   <div
                     key={msg.id || idx}
-                    className={"flex w-full " + (isUser ? "justify-end" : "justify-start")}
+                    className={"flex flex-col w-full " + (isUser ? "items-end" : "items-start")}
                   >
-                    {!isUser && (
-                      <div className="w-7 h-7 rounded-full bg-[#0F172A] border border-rose-500/30 flex items-center justify-center mr-2 mt-1 shrink-0 shadow-md">
-                        {renderRoseFlowerSvg("w-4 h-4")}
-                      </div>
-                    )}
-                    <div
-                      className={
-                        "max-w-[82%] sm:max-w-[75%] px-4 py-3 text-xs font-medium leading-relaxed shadow-lg " +
-                        (isUser
-                          ? "bg-purple-600 border border-purple-400/40 text-white rounded-2xl rounded-tr-sm"
-                          : "bg-[#0F172A] border border-purple-500/25 text-slate-100 rounded-2xl rounded-tl-sm whitespace-pre-wrap")
-                      }
-                    >
-                      {renderMessageContent(msgText)}
-                      {msg.actionConfirmation && (
-                        <div className="mt-3 p-3 bg-purple-950/60 border border-purple-500/30 rounded-xl space-y-2">
-                          <div className="flex items-center justify-between">
-                            <span className="text-[10px] font-black uppercase tracking-wider text-purple-300">
-                              {msg.actionConfirmation.type === 'call' ? 'Call' : msg.actionConfirmation.type === 'sms' ? 'SMS' : 'WhatsApp'} Confirmation
-                            </span>
-                            <span className={`text-[9px] font-black uppercase tracking-wider ${
-                              msg.actionConfirmation.status === 'confirmed' ? 'text-emerald-400' :
-                              msg.actionConfirmation.status === 'cancelled' ? 'text-rose-400' : 'text-amber-400'
-                            }`}>
-                              {msg.actionConfirmation.status === 'confirmed' ? 'Sent' :
-                               msg.actionConfirmation.status === 'cancelled' ? 'Cancelled' : 'Pending'}
-                            </span>
-                          </div>
-                          <p className="text-xs font-bold text-white leading-snug">
-                            {msg.actionConfirmation.cardPrompt}
-                          </p>
-                          {msg.actionConfirmation.status === 'pending' && (
-                            <div className="flex items-center gap-2 pt-1">
-                              <button
-                                onClick={() => handleConfirmPendingAction(msg.actionConfirmation)}
-                                className="flex-1 py-1.5 px-3 bg-purple-600 hover:bg-purple-500 text-white rounded-lg text-xs font-black uppercase tracking-wider active:scale-95 transition-all shadow-md flex items-center justify-center gap-1.5"
-                              >
-                                <Check className="w-3.5 h-3.5" />
-                                {msg.actionConfirmation.type === 'call' ? 'Call' : 'Send'}
-                              </button>
-                              <button
-                                onClick={() => handleCancelPendingAction(msg.actionConfirmation)}
-                                className="flex-1 py-1.5 px-3 bg-white/10 hover:bg-white/15 text-slate-300 rounded-lg text-xs font-bold uppercase tracking-wider active:scale-95 transition-all flex items-center justify-center gap-1.5"
-                              >
-                                <X className="w-3.5 h-3.5" />
-                                Cancel
-                              </button>
-                            </div>
-                          )}
+                    <div className={"flex items-end gap-2 w-full " + (isUser ? "justify-end" : "justify-start")}>
+                      {!isUser && (
+                        <div className="w-7 h-7 rounded-full bg-[#0F172A] border border-purple-500/30 flex items-center justify-center shrink-0 shadow-md mb-1">
+                          {renderRoseFlowerSvg("w-4 h-4")}
                         </div>
                       )}
+                      <div
+                        className={
+                          "max-w-[82%] px-4 py-3 text-[15px] font-medium leading-relaxed shadow-lg " +
+                          (isUser
+                            ? "bg-gradient-to-r from-purple-600 to-indigo-600 text-white rounded-2xl rounded-tr-sm"
+                            : "bg-[#0F172A]/85 backdrop-blur-md border border-purple-500/25 text-white rounded-2xl rounded-tl-sm whitespace-pre-wrap")
+                        }
+                      >
+                        {renderMessageContent(msgText)}
+                        {msg.actionConfirmation && (
+                          <div className="mt-3 p-3 bg-purple-950/60 border border-purple-500/30 rounded-xl space-y-2 text-xs">
+                            <div className="flex items-center justify-between">
+                              <span className="text-[10px] font-black uppercase tracking-wider text-purple-300">
+                                {msg.actionConfirmation.type === 'call' ? 'Call' : msg.actionConfirmation.type === 'sms' ? 'SMS' : 'WhatsApp'} Confirmation
+                              </span>
+                              <span className={`text-[9px] font-black uppercase tracking-wider ${
+                                msg.actionConfirmation.status === 'confirmed' ? 'text-emerald-400' :
+                                msg.actionConfirmation.status === 'cancelled' ? 'text-rose-400' : 'text-amber-400'
+                              }`}>
+                                {msg.actionConfirmation.status === 'confirmed' ? 'Sent' :
+                                 msg.actionConfirmation.status === 'cancelled' ? 'Cancelled' : 'Pending'}
+                              </span>
+                            </div>
+                            <p className="text-xs font-bold text-white leading-snug">
+                              {msg.actionConfirmation.cardPrompt}
+                            </p>
+                            {msg.actionConfirmation.status === 'pending' && (
+                              <div className="flex items-center gap-2 pt-1">
+                                <button
+                                  onClick={() => handleConfirmPendingAction(msg.actionConfirmation)}
+                                  className="flex-1 py-1.5 px-3 bg-purple-600 hover:bg-purple-500 text-white rounded-lg text-xs font-black uppercase tracking-wider active:scale-95 transition-all shadow-md flex items-center justify-center gap-1.5"
+                                >
+                                  <Check className="w-3.5 h-3.5" />
+                                  {msg.actionConfirmation.type === 'call' ? 'Call' : 'Send'}
+                                </button>
+                                <button
+                                  onClick={() => handleCancelPendingAction(msg.actionConfirmation)}
+                                  className="flex-1 py-1.5 px-3 bg-white/10 hover:bg-white/15 text-slate-300 rounded-lg text-xs font-bold uppercase tracking-wider active:scale-95 transition-all flex items-center justify-center gap-1.5"
+                                >
+                                  <X className="w-3.5 h-3.5" />
+                                  Cancel
+                                </button>
+                              </div>
+                            )}
+                          </div>
+                        )}
+                      </div>
                     </div>
+                    {timeStr && (
+                      <span className={"text-[10px] text-slate-400 font-medium mt-1 px-1 " + (isUser ? "text-right pr-1" : "text-left pl-9")}>
+                        {timeStr}
+                      </span>
+                    )}
                   </div>
                 );
               })}
 
+              {/* Temporary interim speech recognition text in gray bubble */}
               {hasInterim && (
-                <div className="flex w-full justify-end">
-                  <div className="max-w-[82%] sm:max-w-[75%] px-4 py-3 text-xs font-medium leading-relaxed shadow-md bg-slate-700/75 border border-slate-500/40 text-slate-200 italic rounded-2xl rounded-tr-sm animate-pulse">
-                    {interimSpeechText}
+                <div className="flex flex-col w-full items-end">
+                  <div className="flex justify-end w-full">
+                    <div className="max-w-[82%] px-4 py-3 text-[15px] font-medium leading-relaxed shadow-md bg-slate-700/80 border border-slate-500/40 text-slate-200 italic rounded-2xl rounded-tr-sm animate-pulse">
+                      {interimSpeechText}
+                    </div>
                   </div>
                 </div>
               )}
 
+              {/* Rose is thinking state */}
               {isThinking && (
-                <div className="flex w-full justify-start items-center">
-                  <div className="w-7 h-7 rounded-full bg-[#0F172A] border border-rose-500/30 flex items-center justify-center mr-2 shrink-0 shadow-md">
-                    {renderRoseFlowerSvg("w-4 h-4")}
-                  </div>
-                  <div className="bg-[#0F172A] border border-purple-500/25 text-purple-300 rounded-2xl rounded-tl-sm px-4 py-2.5 text-xs font-semibold italic animate-pulse shadow-lg">
-                    Rose is thinking...
+                <div className="flex flex-col w-full items-start">
+                  <div className="flex items-center gap-2">
+                    <div className="w-7 h-7 rounded-full bg-[#0F172A] border border-purple-500/30 flex items-center justify-center shrink-0 shadow-md">
+                      {renderRoseFlowerSvg("w-4 h-4")}
+                    </div>
+                    <div className="bg-[#0F172A]/85 backdrop-blur-md border border-purple-500/25 text-purple-300 rounded-2xl rounded-tl-sm px-4 py-2.5 text-xs font-semibold italic animate-pulse shadow-lg">
+                      Rose is thinking...
+                    </div>
                   </div>
                 </div>
               )}
@@ -7951,8 +7990,8 @@ export function App() {
           <div ref={chatEndRef} />
         </div>
 
-        {/* Text Input Footer */}
-        <div className="px-3 pt-2 pb-2 border-t border-white/5 bg-[#0F172A]/90 backdrop-blur-md shrink-0 flex items-center gap-2">
+        {/* Layer 2: Text Input Footer */}
+        <div className="relative z-[2] px-3 pt-2 pb-2 border-t border-white/5 bg-[#0F172A]/90 backdrop-blur-md shrink-0 flex items-center gap-2">
           <input
             type="text"
             value={inputText}
