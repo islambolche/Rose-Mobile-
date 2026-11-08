@@ -1,0 +1,8 @@
+{
+	"appId": "com.yousuf.roseai",
+	"appName": "Rose AI",
+	"webDir": "dist",
+	"server": {
+		"androidScheme": "https"
+	}
+}

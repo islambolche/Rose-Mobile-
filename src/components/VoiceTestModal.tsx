@@ -228,7 +228,7 @@ export const VoiceTestModal: React.FC<VoiceTestModalProps> = ({ settings, onClos
 
   const getFullReportText = () => {
     return [
-      "=== ROSE VOICE PIPELINE DIAGNOSTIC REPORT ===",
+      "=== Rose AI VOICE PIPELINE DIAGNOSTIC REPORT ===",
       `Timestamp: ${new Date().toISOString()}`,
       `Selected Model: ${settings.liveVoiceModel || 'gemini-2.5-flash-native-audio-preview-12-2025'}`,
       `Language: ${settings.language}`,

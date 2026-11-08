@@ -42,7 +42,7 @@ export const ChatView = ({
                         <div key={m.id || idx} className={`flex flex-col ${isUser ? "items-end" : "items-start"}`}>
                             <div className="flex items-center gap-1.5 mb-1 px-1">
                                 <span className="text-[8px] font-bold text-slate-500 uppercase tracking-wider">
-                                    {isUser ? "YOU" : settings.assistantName || "ROSE"}
+                                    {isUser ? "YOU" : settings.assistantName || "Rose AI"}
                                 </span>
                                 {timeStr && <span className="text-[7.5px] text-slate-600">{timeStr}</span>}
                                 {m.source && <span className="text-[7px] font-black uppercase text-orange-400/80 px-1 bg-orange-950/40 rounded border border-orange-500/20">{m.source}</span>}

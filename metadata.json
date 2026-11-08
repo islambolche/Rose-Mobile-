@@ -1,6 +1,6 @@
 {
-  "name": "ROSE",
-  "description": "Premium personal AI assistant for MD YOUSUF KHAN. Modern, secure, and intelligent.",
+  "name": "Rose AI",
+  "description": "রোজ এআই, আপনার ব্যক্তিগত বাংলা ভয়েস সহকারী।",
   "requestFramePermissions": ["microphone", "camera"],
   "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
 }

@@ -17,7 +17,7 @@ export const TranscriptBox: React.FC<TranscriptBoxProps> = ({
   chatHistory,
   interimUserText,
   interimRoseText,
-  assistantName = 'ROSE',
+  assistantName = 'Rose AI',
   onClearHistory,
   onDeleteMessage,
   onCopyMessage,
@@ -147,7 +147,7 @@ export const TranscriptBox: React.FC<TranscriptBoxProps> = ({
                 >
                   <div className="flex items-center gap-1.5 mb-0.5 px-0.5">
                     <span className={`text-[7.5px] font-bold uppercase tracking-widest ${isUser ? 'text-slate-500' : 'text-slate-400 font-black'}`}>
-                      {isUser ? 'YOU' : 'ROSE'}
+                      {isUser ? 'YOU' : 'Rose AI'}
                     </span>
                     {timeDisplay && <span className="text-[7px] text-slate-600 font-mono">{timeDisplay}</span>}
                     {m.source && (
@@ -207,11 +207,11 @@ export const TranscriptBox: React.FC<TranscriptBoxProps> = ({
               </div>
             )}
 
-            {/* Live Interim Rose Transcript (dark gray bubble on left labeled ROSE (REPLYING...)) */}
+            {/* Live Interim Rose Transcript (dark gray bubble on left labeled Rose AI (REPLYING...)) */}
             {interimRoseText && (
               <div className="flex flex-col items-start opacity-90 animate-pulse">
                 <span className="text-[7.5px] font-black text-slate-300 uppercase tracking-widest mb-0.5">
-                  ROSE (REPLYING...)
+                  Rose AI (REPLYING...)
                 </span>
                 <div className="max-w-[85%] px-3 py-1.5 rounded-2xl text-[11px] font-medium bg-slate-800 border border-white/20 text-slate-200 rounded-bl-none shadow-md">
                   {interimRoseText}

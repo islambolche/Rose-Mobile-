@@ -124,7 +124,7 @@ const INITIAL_PERMISSIONS: AppPermission[] = [
 ];
 
 const DEFAULT_SETTINGS: AssistantSettings = {
-  assistantName: "ROSE",
+  assistantName: "Rose AI",
   ownerName: OWNER_NAME,
   masterAccess: true,
   permissions: INITIAL_PERMISSIONS,
@@ -831,7 +831,7 @@ const buildSystemInstruction = (
   currentPrefs: UserPreferences,
   forVoice: boolean = false,
 ): string => {
-  const assistantName = currentSettings.assistantName || "ROSE";
+  const assistantName = currentSettings.assistantName || "Rose AI";
   const ownerName = currentSettings.ownerName || OWNER_NAME;
   const { label, prompt } = getActivePersonalityDetails(currentSettings, currentPrefs);
   const personalityId = currentSettings.personality || label;
@@ -6893,15 +6893,83 @@ export function App() {
       }
     };
 
-    if (authLoading) {
+  const [startupError, setStartupError] = useState<string | null>(null);
+  const [startupStep, setStartupStep] = useState("config ok");
+
+  useEffect(() => {
+    const handleError = (event: ErrorEvent | PromiseRejectionEvent) => {
+        const msg = event instanceof ErrorEvent ? event.message : "Unhandled Rejection";
+        setStartupError(msg);
+    };
+    window.addEventListener("error", handleError);
+    window.addEventListener("unhandledrejection", handleError);
+    
+    // Startup timeout (8s)
+    const timeout = setTimeout(() => {
+        setAuthLoading(false);
+    }, 8000);
+
+    return () => {
+        window.removeEventListener("error", handleError);
+        window.removeEventListener("unhandledrejection", handleError);
+        clearTimeout(timeout);
+    };
+  }, []);
+
+  useEffect(() => {
+    let channel: any;
+    async function init() {
+      try {
+        setStartupStep("config ok");
+        // Safe check
+        const url = import.meta.env.VITE_SUPABASE_URL?.trim();
+        const key = import.meta.env.VITE_SUPABASE_ANON_KEY?.trim();
+        if (!url || !key) {
+           setStartupError("Supabase URL / key পাওয়া যায়নি।");
+           setAuthLoading(false);
+           return;
+        }
+
+        initializeSupabase();
+        
+        setStartupStep("checking session");
+        // Timeout for session check (6s)
+        const session = await Promise.race([
+            supabase!.auth.getSession(),
+            new Promise((_, reject) => setTimeout(() => reject(new Error("Timeout")), 6000))
+        ]) as any;
+
+        if (session.data?.session?.user) {
+          const u = session.data.session.user;
+          setUser(u);
+          await checkAccess(u);
+        } else {
+          setAuthLoading(false);
+          setAccessState("granted");
+        }
+      } catch (e: any) {
+        setStartupError(e.message === "Timeout" ? "Session check timeout" : e.message);
+        setAuthLoading(false);
+      }
+    }
+    init();
+    // ... rest of init logic (load settings, etc)
+  }, []);
+
+  // ... rest of the file
+
+  if (authLoading) {
     return (
-      <div className="fixed inset-0 bg-[#020617] flex items-center justify-center z-[500]">
+      <div className="fixed inset-0 bg-[#020617] flex flex-col items-center justify-center z-[500] gap-4">
         <motion.div
           animate={{ rotate: 360 }}
           transition={{ duration: 1, repeat: Infinity, ease: "linear" }}
         >
           <Loader2 className="w-12 h-12 text-purple-600" />
         </motion.div>
+        <p className={`text-[11px] ${startupError ? "text-red-500" : "text-gray-500"}`}>
+            {startupError || startupStep}
+        </p>
       </div>
     );
   }

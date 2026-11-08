@@ -55,7 +55,7 @@ const TelegramLogo = () => (
 
 export const ProfileView = ({ settings, prefs, setSettings, setPrefs, setCurrentView }: any) => {
   const [isEditingName, setIsEditingName] = useState(false);
-  const [tempName, setTempName] = useState(settings.assistantName || 'ROSE');
+  const [tempName, setTempName] = useState(settings.assistantName || 'Rose AI');
 
   return (
     <div className="fixed inset-0 z-[80] bg-[#020617] overflow-y-auto no-scrollbar flex flex-col">
@@ -104,11 +104,11 @@ export const ProfileView = ({ settings, prefs, setSettings, setPrefs, setCurrent
           </div>
           <div className="bg-[#0F172A]/80 border border-purple-500/30 rounded-[2rem] overflow-hidden">
             <button onClick={() => {
-                setTempName(settings.assistantName || 'ROSE');
+                setTempName(settings.assistantName || 'Rose AI');
                 setIsEditingName(true);
             }} className="w-full flex items-center justify-between p-4 border-b border-white/5">
               <div className="flex items-center gap-3"><Sparkles className="w-5 h-5 text-purple-400" /><span className="text-sm font-bold text-white">Name</span></div>
-              <div className="flex items-center gap-2"><span className="text-xs text-slate-400">{settings.assistantName || "ROSE"}</span><ChevronRight className="w-4 h-4 text-slate-500" /></div>
+              <div className="flex items-center gap-2"><span className="text-xs text-slate-400">{settings.assistantName || "Rose AI"}</span><ChevronRight className="w-4 h-4 text-slate-500" /></div>
             </button>
             <button onClick={() => setCurrentView('personality')} className="w-full flex items-center justify-between p-4 border-b border-white/5">
               <div className="flex items-center gap-3"><Smile className="w-5 h-5 text-purple-400" /><span className="text-sm font-bold text-white">Personality</span></div>
@@ -147,7 +147,7 @@ export const ProfileView = ({ settings, prefs, setSettings, setPrefs, setCurrent
                     }} className="flex-1 bg-purple-600 text-white p-3 rounded-xl">Save</button>
                 </div>
                 <button onClick={() => {
-                    setSettings((s: AssistantSettings) => ({ ...s, assistantName: 'ROSE' }));
+                    setSettings((s: AssistantSettings) => ({ ...s, assistantName: 'Rose AI' }));
                     setIsEditingName(false);
                 }} className="w-full mt-3 text-slate-400 text-sm font-bold uppercase underline">Reset to {settings.assistantName || "Rose"}</button>
             </div>

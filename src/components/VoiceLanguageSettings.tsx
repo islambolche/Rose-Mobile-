@@ -485,7 +485,7 @@ export const VoiceLanguageSettings: React.FC<VoiceLanguageSettingsProps> = ({
                 </div>
                 <div>
                   <h3 className="text-sm font-bold text-white tracking-wide">Assistant name</h3>
-                  <p className="text-[11px] text-slate-400 font-medium uppercase tracking-widest mt-0.5">ROSE</p>
+                  <p className="text-[11px] text-slate-400 font-medium uppercase tracking-widest mt-0.5">Rose AI</p>
                 </div>
               </div>
             </div>

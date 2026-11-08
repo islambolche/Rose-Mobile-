@@ -133,7 +133,7 @@ export const AuthScreen: React.FC<AuthScreenProps> = ({ onLoginSuccess }) => {
 
       <div className="relative z-[2] px-4 pb-[calc(env(safe-area-inset-bottom)+20px)] flex flex-col gap-[12px] h-[42vh] justify-end">
         <div className="flex items-end justify-between mb-2" style={{ textShadow: '0 2px 10px rgba(0,0,0,0.6)' }}>
-            <h1 className="text-[32px] font-bold text-white leading-none">ROSE</h1>
+            <h1 className="text-[32px] font-bold text-white leading-none">Rose AI</h1>
             <div className="text-right">
                 <p className="text-[13px] font-bold text-white leading-none">MD YOUSUF KHAN</p>
                 <p className="text-[11px] text-slate-400 tracking-[0.1em] leading-none mt-1">Web Developer</p>

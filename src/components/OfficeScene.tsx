@@ -180,7 +180,7 @@ export const OfficeScene = ({
           <div className="w-8 h-8 rounded-xl bg-purple-600/20 border border-purple-500/40 flex items-center justify-center text-purple-300 font-black italic">
             R
           </div>
-          <h1 className="text-base font-black italic tracking-wider uppercase text-white">ROSE</h1>
+          <h1 className="text-base font-black italic tracking-wider uppercase text-white">Rose AI</h1>
         </div>
 
         <div className="flex items-center gap-4">

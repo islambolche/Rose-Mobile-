@@ -100,7 +100,7 @@ const isThoughtOrReasoning = (text: string): boolean => {
 // Gemini Live API Bridge
 wss.on('connection', async (clientWs, req) => {
   const url = new URL(req.url || '', `http://${req.headers.host}`);
-  const assistantName = url.searchParams.get('assistantName') || 'ROSE';
+  const assistantName = url.searchParams.get('assistantName') || 'Rose AI';
   const ownerName = url.searchParams.get('ownerName') || 'MD YOUSUF KHAN';
   const rawVoiceName = url.searchParams.get('voiceName') || 'Sulafat';
   

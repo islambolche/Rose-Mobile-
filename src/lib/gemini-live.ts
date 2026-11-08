@@ -74,7 +74,7 @@ export class GeminiLiveSession {
     
     // Construct query parameters for the server-side proxy
     const params = new URLSearchParams({
-      assistantName: this.options.assistantName || 'ROSE',
+      assistantName: this.options.assistantName || 'Rose AI',
       ownerName: this.options.ownerName || 'MD YOUSUF KHAN',
       voiceName: this.options.voiceName || 'Sulafat',
       personality: this.options.personality || 'Normal',
