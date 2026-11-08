@@ -269,20 +269,24 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({ isOpen, onClose, o
     }
     setKeyTestState({ loading: true, result: null, isOk: false });
     try {
-      const res = await fetch("/api/test-gemini", {
+      const res = await fetch(`/api/gemini/generate`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ key, profile: "free" }),
+        body: JSON.stringify({
+          apiKey: key,
+          contents: [{ role: "user", parts: [{ text: "hi" }] }],
+          model: "gemini-1.5-flash"
+        }),
       });
       if (res.ok) {
         setKeyTestState({ loading: false, result: "Key is valid and active!", isOk: true });
       } else {
         const data = await res.json().catch(() => ({}));
-        const msg = data.errorMessage || data.error?.message || `HTTP ${res.status}`;
+        const msg = data.error?.message || `HTTP ${res.status}`;
         setKeyTestState({ loading: false, result: `Failed: ${msg}`, isOk: false });
       }
     } catch (err: any) {
-      setKeyTestState({ loading: false, result: `Network error: ${err.message || "Failed to reach server"}`, isOk: false });
+      setKeyTestState({ loading: false, result: `Network error: ${err.message || "Failed to reach Rose AI Server"}`, isOk: false });
     }
   };
 
@@ -853,9 +857,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({ isOpen, onClose, o
                       </a>
                     </div>
 
-                    <div className="text-xs text-slate-300 bg-black/40 border border-cyan-500/20 rounded-xl p-3 leading-relaxed font-medium">
-                      <p className="text-[11px] font-bold text-cyan-400 mb-0.5">১. বাটনে চাপ দিন ২. Create API key চাপুন ৩. কপি করে নিচের ঘরে বসান</p>
-                    </div>
+
 
                     <div className="space-y-2">
                       <div className="flex flex-col sm:flex-row gap-2">
@@ -883,17 +885,9 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({ isOpen, onClose, o
                         <div className="flex gap-2 shrink-0">
                           <button
                             onClick={() => handleSaveCard("gemini")}
-                            className="px-4 py-2.5 bg-gradient-to-r from-emerald-600 to-teal-600 hover:from-emerald-500 hover:to-teal-500 text-white rounded-xl text-xs font-black uppercase tracking-wider shadow-lg active:scale-95 transition-all flex items-center gap-1.5"
+                            className="w-full py-2.5 bg-gradient-to-r from-emerald-600 to-teal-600 hover:from-emerald-500 hover:to-teal-500 text-white rounded-xl text-xs font-black uppercase tracking-wider shadow-lg active:scale-95 transition-all flex items-center gap-1.5"
                           >
                             <Check className="w-3.5 h-3.5" /> Save
-                          </button>
-
-                          <button
-                            onClick={handleTestKey}
-                            disabled={keyTestState.loading || !form.geminiApiKey}
-                            className="px-4 py-2.5 bg-cyan-500/20 hover:bg-cyan-500/30 disabled:opacity-40 border border-cyan-400/50 rounded-xl text-xs font-black uppercase tracking-wider text-cyan-300 active:scale-95 transition-all flex items-center gap-1.5"
-                          >
-                            {keyTestState.loading ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : "Test key"}
                           </button>
                         </div>
                       </div>

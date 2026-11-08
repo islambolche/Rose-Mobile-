@@ -97,11 +97,20 @@ export const OnboardingFlow: React.FC<OnboardingFlowProps> = ({ onComplete }) =>
       setNotifStatus("Skipped");
     }
 
-    Permissions.savePermissionToMap("contacts", "Needs Android app");
-    Permissions.savePermissionToMap("phoneCalls", "Needs Android app");
+    // 3. Phone calls: browser dialer is ready
+    Permissions.savePermissionToMap("phoneCalls", "Allowed");
+
+    if (Permissions.hasContactsApi()) {
+      const count = Permissions.getSavedContactsCount();
+      Permissions.savePermissionToMap("contacts", count > 0 ? "Allowed" : "Off");
+    } else {
+      Permissions.savePermissionToMap("contacts", "Needs Android app");
+    }
     Permissions.savePermissionToMap("notificationAccess", "Needs Android app");
 
-    finishOnboarding();
+    setTimeout(() => {
+      finishOnboarding();
+    }, 1500);
   };
 
   // Touch Swipe handlers

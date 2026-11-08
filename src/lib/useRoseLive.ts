@@ -52,7 +52,7 @@ export function useRoseLive(getOpts: () => Opts) {
       const s = R.current;
       const o = getOpts();
       const apiKey = o.apiKey;
-      const debugPath = `/api/live?assistantName=${encodeURIComponent("ROSE")}&voiceName=${encodeURIComponent(o.voiceName)}&apiKey=[HIDDEN]`;
+      const debugPath = `wss://generativelanguage.googleapis.com/...`;
       
       if (!apiKey) { 
         const e = new Error("Please add your Gemini API key in Settings."); 
@@ -60,13 +60,9 @@ export function useRoseLive(getOpts: () => Opts) {
       }
       
       const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-      const wsUrl = `${protocol}//${window.location.host}/api/live?` +
-        `assistantName=${encodeURIComponent("ROSE")}&` +
-        `voiceName=${encodeURIComponent(o.voiceName)}&` +
-        `model=${encodeURIComponent(o.model)}&` +
-        `apiKey=${encodeURIComponent(apiKey)}`;
+      const wsUrl = `${protocol}//${window.location.host}/api/live?model=${encodeURIComponent(o.model)}&apiKey=${encodeURIComponent(apiKey)}&voiceName=${encodeURIComponent(o.voiceName || 'Sulafat')}&systemInstruction=${encodeURIComponent(o.systemInstruction)}`;
 
-      console.log(`[Live] Key found: yes (length ${apiKey.length}), Connect path: ${debugPath}`);
+      console.log(`[Live] Connecting to server via ${wsUrl}`);
       
       const ws = new WebSocket(wsUrl);
       let ready = false;
@@ -81,6 +77,11 @@ export function useRoseLive(getOpts: () => Opts) {
         close: () => { try { ws.close(); } catch {} },
       };
       
+      ws.onopen = () => {
+        // Setup is handled by the server
+        console.log("[Live] WebSocket connected to server");
+      };
+
       ws.onmessage = async (ev: MessageEvent) => {
         try {
           const m = JSON.parse(typeof ev.data === "string" ? ev.data : await (ev.data as Blob).text());
@@ -90,13 +91,21 @@ export function useRoseLive(getOpts: () => Opts) {
             setStatus("listening"); resolve(); return;
           }
           
-          if (m.audio) { s.recvN++; setRecv(s.recvN); play(m.audio); }
-          if (m.transcription) {
-            if (m.transcription.role === 'user') o.onUserText?.(m.transcription.text);
-            else o.onRoseText?.(m.transcription.text);
+          if (m.serverContent) {
+            const content = m.serverContent;
+            if (content.modelTurn) {
+              for (const part of content.modelTurn.parts || []) {
+                if (part.inlineData) { s.recvN++; setRecv(s.recvN); play(part.inlineData.data); }
+                if (part.text) o.onRoseText?.(part.text);
+              }
+            }
+            if (content.inputTranscription) {
+              o.onUserText?.(content.inputTranscription.text);
+            }
+            if (content.turnComplete) o.onTurnComplete?.();
           }
-          if (m.turnComplete) o.onTurnComplete?.();
-          if (m.error) setError(m.error);
+
+          if (m.error) setError(m.error.message || JSON.stringify(m.error));
         } catch (err: any) { setError("Parse error: " + String(err?.message || err)); }
       };
       
@@ -147,7 +156,9 @@ export function useRoseLive(getOpts: () => Opts) {
         }
         try {
           s.session.sendRealtimeInput({
-            audio: { data: b64FromBytes(new Uint8Array(out.buffer)), mimeType: "audio/pcm;rate=16000" },
+            realtime_input: {
+              media_chunks: [{ data: b64FromBytes(new Uint8Array(out.buffer)), mime_type: "audio/pcm;rate=16000" }]
+            }
           });
           s.sentN++; if (s.sentN % 5 === 0) setSent(s.sentN);
         } catch (err: any) { setError(String(err?.message || err)); }

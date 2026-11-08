@@ -31,13 +31,13 @@ export async function getReply(
 
   try {
     if (actualProvider === 'groq') {
-      const res = await fetch("https://api.groq.com/openai/v1/chat/completions", {
+      const res = await fetch("/api/groq/chat", {
         method: "POST",
         headers: {
-          "Authorization": `Bearer ${usedKey}`,
           "Content-Type": "application/json"
         },
         body: JSON.stringify({
+          apiKey: usedKey,
           model: finalModel,
           messages: [{ role: "system", content: systemInstruction }, ...messages.map(m => ({ role: m.role === 'user' ? 'user' : 'assistant', content: m.text }))],
           stream: true,
@@ -80,39 +80,17 @@ export async function getReply(
       return fullText;
     } else {
       // Gemini
-      const res = await fetch("/api/gemini/generate", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
+      const { directGeminiStream } = await import("./ai-service");
+      const result = await directGeminiStream(
+        {
           model: finalModel,
-          contents: prepareHistory(messages, systemInstruction),
+          contents: messages,
           systemInstruction: systemInstruction,
-          apiKey: usedKey,
-          stream: true
-        })
-      });
-
-      if (!res.ok) {
-        const errorText = await res.text();
-        console.error(`Gemini Error (${res.status}): ${errorText}`);
-        throw new Error("মডেল পাওয়া যায়নি। Settings > AI Model-এ মডেল বদলান।");
-      }
-
-      // Handle streaming for Gemini
-      const reader = res.body?.getReader();
-      const decoder = new TextDecoder();
-      let fullText = "";
-
-      if (reader) {
-        while (true) {
-          const { done, value } = await reader.read();
-          if (done) break;
-          const chunk = decoder.decode(value, { stream: true });
-          fullText += chunk;
-          onToken(chunk);
-        }
-      }
-      return fullText;
+          apiKey: usedKey
+        },
+        onToken
+      );
+      return result.text;
     }
   } catch (e: any) {
     console.error(e);

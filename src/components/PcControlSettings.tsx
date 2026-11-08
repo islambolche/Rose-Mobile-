@@ -27,7 +27,7 @@ import {
   Eye,
   Info
 } from "lucide-react";
-import { getSupabaseClient } from "../lib/supabase";
+import { supabase } from "../lib/supabase";
 import { logActivity } from "../lib/activityLog";
 
 interface PcControlSettingsProps {
@@ -203,15 +203,14 @@ export const PcControlSettings: React.FC<PcControlSettingsProps> = ({ onClose })
 
   // 1. Initial Load & Supabase Authentication check
   useEffect(() => {
-    const sb = getSupabaseClient();
-    if (sb) {
-      sb.auth.getSession().then(({ data }) => {
+    if (supabase) {
+      supabase.auth.getSession().then(({ data }) => {
         if (data.session?.user) {
           setUser(data.session.user);
           setSupabaseConnected(true);
-          fetchDevices(sb, data.session.user.id);
-          fetchCommands(sb, data.session.user.id);
-          fetchAgentTasks(sb, data.session.user.id);
+          fetchDevices(supabase, data.session.user.id);
+          fetchCommands(supabase, data.session.user.id);
+          fetchAgentTasks(supabase, data.session.user.id);
         } else {
           setSupabaseConnected(false);
         }
@@ -223,13 +222,11 @@ export const PcControlSettings: React.FC<PcControlSettingsProps> = ({ onClose })
 
   // Poll for devices & commands updates every 10 seconds if Supabase connected
   useEffect(() => {
-    if (!supabaseConnected || !user) return;
-    const sb = getSupabaseClient();
-    if (!sb) return;
+    if (!supabaseConnected || !user || !supabase) return;
 
     const interval = setInterval(() => {
-      fetchDevices(sb, user.id);
-      fetchCommands(sb, user.id);
+      fetchDevices(supabase, user.id);
+      fetchCommands(supabase, user.id);
     }, 10000);
 
     return () => clearInterval(interval);
@@ -267,7 +264,7 @@ export const PcControlSettings: React.FC<PcControlSettingsProps> = ({ onClose })
   }, [allowedFolders, fullDiskAccess, blockedActions]);
 
   const syncDeviceConfig = async () => {
-    const sb = getSupabaseClient();
+    const sb = supabase;
     if (!sb || !user) return;
     try {
       await sb.from("pc_devices").update({
@@ -340,7 +337,7 @@ export const PcControlSettings: React.FC<PcControlSettingsProps> = ({ onClose })
 
   const generatePairCode = async () => {
     if (!supabaseConnected || !user) return;
-    const sb = getSupabaseClient();
+    const sb = supabase;
     if (!sb) return;
 
     setIsPairing(true);
@@ -376,7 +373,7 @@ export const PcControlSettings: React.FC<PcControlSettingsProps> = ({ onClose })
   const handleRenameDevice = async (deviceId: string, oldName: string) => {
     const newName = prompt("Enter new PC name:", oldName);
     if (!newName || newName === oldName) return;
-    const sb = getSupabaseClient();
+    const sb = supabase;
     if (!sb || !user) return;
     await sb.from("pc_devices").update({ name: newName }).eq("id", deviceId);
     fetchDevices(sb, user.id);
@@ -385,7 +382,7 @@ export const PcControlSettings: React.FC<PcControlSettingsProps> = ({ onClose })
 
   const handleRemoveDevice = async (deviceId: string) => {
     if (!confirm("Are you sure you want to remove this PC?")) return;
-    const sb = getSupabaseClient();
+    const sb = supabase;
     if (!sb || !user) return;
     await sb.from("pc_devices").delete().eq("id", deviceId);
     fetchDevices(sb, user.id);
@@ -424,7 +421,7 @@ export const PcControlSettings: React.FC<PcControlSettingsProps> = ({ onClose })
       osc.stop(ctx.currentTime + 0.3);
     } catch {}
 
-    const sb = getSupabaseClient();
+    const sb = supabase;
     if (sb && user) {
       await sb
         .from("pc_commands")
@@ -549,7 +546,7 @@ export const PcControlSettings: React.FC<PcControlSettingsProps> = ({ onClose })
   };
 
   const dispatchCommand = async (cmdObj: any) => {
-    const sb = getSupabaseClient();
+    const sb = supabase;
     setExecutingCommand(true);
 
     const onlineDevice = devices.find((d) => d.paired);
@@ -593,7 +590,7 @@ export const PcControlSettings: React.FC<PcControlSettingsProps> = ({ onClose })
 
   const handleAssignTask = async (agentName: string) => {
     if (!newTaskTitle.trim()) return;
-    const sb = getSupabaseClient();
+    const sb = supabase;
     const newTask = {
       user_id: user?.id,
       agent: agentName,

@@ -64,9 +64,7 @@ export const discoverAvailableFlashModels = async (
   if (!apiKey) return [];
   try {
     const res = await fetch(
-      `https://generativelanguage.googleapis.com/v1beta/models?key=${encodeURIComponent(
-        apiKey
-      )}`
+      `/api/gemini/models?apiKey=${encodeURIComponent(apiKey)}`
     );
     if (!res.ok) return [];
     const data = await res.json();
@@ -131,7 +129,9 @@ const callGeminiTextEndpoint = async (params: {
   contents: any[];
   systemInstruction?: string;
   generationConfig?: any;
-  apiKey: string;
+  apiKey?: string;
+  tools?: any[];
+  toolConfig?: any;
   timeoutMs?: number;
 }) => {
   const {
@@ -140,8 +140,12 @@ const callGeminiTextEndpoint = async (params: {
     systemInstruction,
     generationConfig,
     apiKey,
+    tools,
+    toolConfig,
     timeoutMs = GEMINI_TEXT_TIMEOUT_MS,
   } = params;
+
+  if (!apiKey) throw new Error('Add your Gemini key in Settings');
 
   const mergedGenConfig: any = {
     maxOutputTokens: 150,
@@ -149,85 +153,49 @@ const callGeminiTextEndpoint = async (params: {
     ...(generationConfig || {}),
   };
 
-  let res: Response | null = null;
-  let usedDirectFallback = false;
-
-  try {
-    res = await fetchWithSignalTimeout(
-      '/api/gemini/generate',
-      {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          model,
-          contents,
-          systemInstruction,
-          generationConfig: mergedGenConfig,
-          apiKey,
-        }),
-      },
-      timeoutMs
-    );
-
-    const contentType = res.headers.get('content-type') || '';
-    if (res.status === 404 && contentType.includes('text/html') && apiKey) {
-      usedDirectFallback = true;
-    }
-  } catch (networkErr: any) {
-    if (String(networkErr?.message || '').includes('timed out')) {
-      throw networkErr;
-    }
-    if (apiKey) {
-      usedDirectFallback = true;
-    } else {
-      throw networkErr;
-    }
-  }
-
-  if (usedDirectFallback && apiKey) {
-    const directBody: any = {
-      contents,
-      generationConfig: mergedGenConfig,
+  const directBody: any = {
+    contents,
+    generationConfig: mergedGenConfig,
+  };
+  if (systemInstruction && String(systemInstruction).trim().length > 0) {
+    directBody.systemInstruction = {
+      parts: [{ text: String(systemInstruction).trim() }],
     };
-    if (systemInstruction && String(systemInstruction).trim().length > 0) {
-      directBody.systemInstruction = {
-        parts: [{ text: String(systemInstruction).trim() }],
-      };
-    }
-    const url = `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(
-      model
-    )}:generateContent?key=${encodeURIComponent(apiKey)}`;
-
-    res = await fetchWithSignalTimeout(
-      url,
-      {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(directBody),
-      },
-      timeoutMs
-    );
-
-    if (res.status === 400 && directBody.generationConfig?.thinkingConfig) {
-      const errTxt = await res.clone().text().catch(() => '');
-      if (errTxt.toLowerCase().includes('thinking')) {
-        const { thinkingConfig, ...restGen } = directBody.generationConfig;
-        directBody.generationConfig = restGen;
-        res = await fetchWithSignalTimeout(
-          url,
-          {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify(directBody),
-          },
-          timeoutMs
-        );
-      }
+  }
+  if (tools && Array.isArray(tools) && tools.length > 0) {
+    directBody.tools = tools;
+    if (toolConfig) {
+      directBody.toolConfig = toolConfig;
     }
   }
 
-  if (!res) {
-    throw new Error('No response from Gemini endpoint');
+  const url = `/api/gemini/generate`;
+
+  let res = await fetchWithSignalTimeout(
+    url,
+    {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ ...directBody, model, apiKey }),
+    },
+    timeoutMs
+  );
+
+  if (res.status === 400 && directBody.generationConfig?.thinkingConfig) {
+    const errTxt = await res.clone().text().catch(() => '');
+    if (errTxt.toLowerCase().includes('thinking')) {
+      const { thinkingConfig, ...restGen } = directBody.generationConfig;
+      directBody.generationConfig = restGen;
+      res = await fetchWithSignalTimeout(
+        url,
+        {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ ...directBody, model, apiKey }),
+        },
+        timeoutMs
+      );
+    }
   }
 
   const rawBodyText = await res.text().catch(() => '');
@@ -270,91 +238,51 @@ const callGeminiStreamEndpoint = async (params: {
     timeoutMs = GEMINI_TEXT_TIMEOUT_MS,
   } = params;
 
+  if (!apiKey) throw new Error('Add your Gemini key in Settings');
+
   const mergedGenConfig: any = {
     maxOutputTokens: 150,
     thinkingConfig: { thinkingBudget: 0 },
     ...(generationConfig || {}),
   };
 
-  let res: Response | null = null;
-  let usedDirectFallback = false;
-
-  try {
-    res = await fetchWithSignalTimeout(
-      '/api/gemini/stream',
-      {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          model,
-          contents,
-          systemInstruction,
-          generationConfig: mergedGenConfig,
-          apiKey,
-        }),
-      },
-      timeoutMs
-    );
-
-    const contentType = res.headers.get('content-type') || '';
-    if (res.status === 404 && contentType.includes('text/html') && apiKey) {
-      usedDirectFallback = true;
-    }
-  } catch (networkErr: any) {
-    if (String(networkErr?.message || '').includes('timed out')) {
-      throw networkErr;
-    }
-    if (apiKey) {
-      usedDirectFallback = true;
-    } else {
-      throw networkErr;
-    }
-  }
-
-  if (usedDirectFallback && apiKey) {
-    const directBody: any = {
-      contents,
-      generationConfig: mergedGenConfig,
+  const directBody: any = {
+    contents,
+    generationConfig: mergedGenConfig,
+  };
+  if (systemInstruction && String(systemInstruction).trim().length > 0) {
+    directBody.systemInstruction = {
+      parts: [{ text: String(systemInstruction).trim() }],
     };
-    if (systemInstruction && String(systemInstruction).trim().length > 0) {
-      directBody.systemInstruction = {
-        parts: [{ text: String(systemInstruction).trim() }],
-      };
-    }
-    const url = `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(
-      model
-    )}:streamGenerateContent?alt=sse&key=${encodeURIComponent(apiKey)}`;
-
-    res = await fetchWithSignalTimeout(
-      url,
-      {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(directBody),
-      },
-      timeoutMs
-    );
-
-    if (res.status === 400 && directBody.generationConfig?.thinkingConfig) {
-      const errTxt = await res.clone().text().catch(() => '');
-      if (errTxt.toLowerCase().includes('thinking')) {
-        const { thinkingConfig, ...restGen } = directBody.generationConfig;
-        directBody.generationConfig = restGen;
-        res = await fetchWithSignalTimeout(
-          url,
-          {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify(directBody),
-          },
-          timeoutMs
-        );
-      }
-    }
   }
 
-  if (!res) {
-    throw new Error('No response from Gemini streaming endpoint');
+  const url = `/api/gemini/stream`;
+
+  let res = await fetchWithSignalTimeout(
+    url,
+    {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ ...directBody, model, apiKey }),
+    },
+    timeoutMs
+  );
+
+  if (res.status === 400 && directBody.generationConfig?.thinkingConfig) {
+    const errTxt = await res.clone().text().catch(() => '');
+    if (errTxt.toLowerCase().includes('thinking')) {
+      const { thinkingConfig, ...restGen } = directBody.generationConfig;
+      directBody.generationConfig = restGen;
+      res = await fetchWithSignalTimeout(
+        url,
+        {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ ...directBody, model, apiKey }),
+        },
+        timeoutMs
+      );
+    }
   }
 
   if (!res.ok) {
@@ -634,7 +562,7 @@ export const discoverAvailableTtsModels = async (apiKey: string): Promise<string
   if (!cleanKey) return [];
   try {
     const res = await fetchWithSignalTimeout(
-      `https://generativelanguage.googleapis.com/v1beta/models?key=${encodeURIComponent(cleanKey)}`,
+      `/api/gemini/models?apiKey=${encodeURIComponent(cleanKey)}`,
       { method: 'GET' },
       3000
     );
@@ -664,80 +592,130 @@ export const directGeminiTTS = async (payload: any) => {
   const preferredModel = getSavedWorkingTtsModel() || model || 'gemini-2.5-flash-preview-tts';
   const deadline = Date.now() + GEMINI_TTS_TIMEOUT_MS;
 
-  const callServerTts = async (targetModel: string) => {
+  const rawText = String(text || '').trim();
+  if (!rawText) throw new Error('Empty text for TTS');
+
+  let styleHint = String(style || '').trim();
+  let transcript = rawText;
+  const prefixMatch = rawText.match(/^Say in [a-zA-Z0-9\s,()'-]+:\s*([\s\S]+)$/i);
+  if (prefixMatch && prefixMatch[1]) {
+    if (!styleHint) {
+      styleHint = rawText.slice(0, rawText.indexOf(':')).replace(/^Say in (a |an )?/i, '').trim();
+    }
+    transcript = prefixMatch[1].trim();
+  }
+
+  const ttsPrompt = styleHint
+    ? `Read the following text aloud verbatim in a ${styleHint} tone. Do not answer or generate new text, only speak the exact transcript: "${transcript}"`
+    : `Read the following text aloud verbatim. Do not answer or generate new text, only speak the exact transcript: "${transcript}"`;
+
+  const initialModels = Array.from(new Set([
+    preferredModel.includes('tts') ? preferredModel : null,
+    'gemini-2.5-flash-preview-tts',
+    'gemini-3.8-flash-lite-tts',
+    'gemini-3.8-flash-tts',
+  ].filter(Boolean))) as string[];
+
+  const triedModels = new Set<string>();
+  let lastErrorText = '';
+  let lastStatus = 500;
+
+  const callDirectTts = async (m: string) => {
     const remainingMs = Math.max(1000, deadline - Date.now());
+    const url = `/api/gemini/tts`;
+    
+    const body = {
+      contents: [{ role: "user", parts: [{ text: ttsPrompt }] }],
+      generationConfig: {
+        responseModalities: ["AUDIO"],
+        speechConfig: {
+          voiceConfig: {
+            prebuiltVoiceConfig: { voiceName: voiceName || "Leda" },
+          },
+        },
+      },
+    };
+
     const res = await fetchWithSignalTimeout(
-      '/api/gemini/tts',
+      url,
       {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          model: targetModel,
-          text,
-          voiceName: voiceName || 'Leda',
-          style,
+          text: transcript,
+          voiceName: voiceName || "Leda",
+          style: styleHint,
           apiKey: cleanKey,
+          model: m
         }),
       },
       remainingMs
     );
 
     const data = await res.json().catch(() => ({}));
-    if (!res.ok || !data?.audio) {
-      const exactErr =
-        data?.exactError ||
-        data?.error?.message ||
-        (typeof data?.error === 'string' ? data.error : '') ||
-        `HTTP ${res.status}`;
-      const err: any = new Error(exactErr);
-      err.status = res.status;
-      throw err;
+    if (!res.ok) {
+      lastStatus = res.status;
+      lastErrorText = data?.error?.message || `HTTP ${res.status}`;
+      throw new Error(lastErrorText);
     }
 
-    if (data.modelUsed) {
-      saveWorkingTtsModel(data.modelUsed);
-    } else if (targetModel) {
-      saveWorkingTtsModel(targetModel);
-    }
-    return data;
+    const rawB64 = data.candidates?.[0]?.content?.parts?.find((p: any) => p.inlineData)?.inlineData?.data;
+    if (!rawB64) throw new Error(`No audio returned from ${m}`);
+
+    // Ported RIFF header stripping logic
+    let processedB64 = rawB64;
+    try {
+      const binary = atob(rawB64);
+      if (binary.length > 44 && binary.slice(0, 4) === 'RIFF') {
+        const bytes = new Uint8Array(binary.length - 44);
+        for (let i = 44; i < binary.length; i++) {
+          bytes[i - 44] = binary.charCodeAt(i);
+        }
+        let binaryString = '';
+        for (let i = 0; i < bytes.length; i++) {
+          binaryString += String.fromCharCode(bytes[i]);
+        }
+        processedB64 = btoa(binaryString);
+      }
+    } catch (e) {}
+
+    saveWorkingTtsModel(m);
+    return { audio: processedB64, modelUsed: m };
   };
 
   const runTtsWithRetry = async () => {
-    let lastErr: any = null;
     for (let attempt = 0; attempt < 2; attempt++) {
-      if (Date.now() >= deadline) {
-        throw new Error('Gemini TTS request timed out (8s)');
-      }
-      try {
-        return await callServerTts(preferredModel);
-      } catch (err: any) {
-        lastErr = err;
-        if (Date.now() >= deadline) break;
-        const errMsg = String(err?.message || '').toLowerCase();
-        if (
-          err?.status === 404 ||
-          errMsg.includes('404') ||
-          errMsg.includes('not_found') ||
-          errMsg.includes('not found')
-        ) {
-          const discovered = await discoverAvailableTtsModels(cleanKey);
-          for (const dm of discovered) {
-            if (Date.now() >= deadline) break;
-            try {
-              const resData = await callServerTts(dm);
-              saveWorkingTtsModel(dm);
-              return resData;
-            } catch (dErr: any) {
-              lastErr = dErr;
-            }
+      for (const m of initialModels) {
+        if (Date.now() >= deadline) throw new Error('Gemini TTS request timed out (8s)');
+        if (triedModels.has(m)) continue;
+        triedModels.add(m);
+        try {
+          return await callDirectTts(m);
+        } catch (err: any) {
+          if (err.message.includes('404')) {
+             // Continue to next model or discovery
+          } else {
+             // For other errors, maybe retry same model or move on
           }
         }
-        if (attempt === 0 && Date.now() + 250 < deadline) {
-          await new Promise((r) => setTimeout(r, 250));
-        }
+      }
+
+      // If we are here, initial models failed, try discovery
+      const discovered = await discoverAvailableTtsModels(cleanKey);
+      for (const dm of discovered) {
+        if (Date.now() >= deadline) break;
+        if (triedModels.has(dm)) continue;
+        triedModels.add(dm);
+        try {
+          return await callDirectTts(dm);
+        } catch (e) {}
+      }
+
+      if (attempt === 0 && Date.now() + 250 < deadline) {
+        await new Promise((r) => setTimeout(r, 250));
       }
     }
-    throw lastErr || new Error('Gemini TTS request failed');
+    throw new Error(lastErrorText || 'Gemini TTS request failed');
   };
 
   return await Promise.race([
@@ -747,5 +725,6 @@ export const directGeminiTTS = async (payload: any) => {
     ),
   ]);
 };
+
 
 

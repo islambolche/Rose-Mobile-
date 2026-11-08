@@ -41,13 +41,6 @@ export const VoiceTestModal: React.FC<VoiceTestModalProps> = ({ settings, onClos
     // STEP 1: Gemini API Key
     updateStep(1, "running");
     let apiKey = settings.geminiApiKey || localStorage.getItem("gemini_api_key") || "";
-    if (!apiKey) {
-      try {
-        const res = await fetch("/api/keys/get-live-token");
-        const data = await res.json();
-        apiKey = data.token || "";
-      } catch (e) {}
-    }
 
     if (apiKey && apiKey.length > 10) {
       updateStep(1, "pass", `Key found (${apiKey.slice(0, 6)}...${apiKey.slice(-4)})`);
@@ -99,15 +92,15 @@ export const VoiceTestModal: React.FC<VoiceTestModalProps> = ({ settings, onClos
     // STEP 4: Gemini Live WebSocket Connection & Probing
     updateStep(4, "running");
     const LIVE_MODELS = [
-      "gemini-3.8-live",
-      "gemini-2.5-flash-native-audio-preview-12-2025"
+      "gemini-2.5-flash-native-audio-preview-12-2025",
+      "gemini-2.0-flash-live-001"
     ];
-    const protocol = window.location.protocol === "https:" ? "wss:" : "ws:";
     let ws: WebSocket | null = null;
     let wsSuccess = false;
     let connectedModel = "";
 
     for (const modelCandidate of LIVE_MODELS) {
+      const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
       const wsUrl = `${protocol}//${window.location.host}/api/live?model=${encodeURIComponent(modelCandidate)}&apiKey=${encodeURIComponent(apiKey)}`;
       try {
         ws = new WebSocket(wsUrl);
@@ -116,15 +109,19 @@ export const VoiceTestModal: React.FC<VoiceTestModalProps> = ({ settings, onClos
             reject(new Error("Timeout (5s)"));
           }, 5000);
 
+          ws!.onopen = () => {
+            // Server handles setup
+          };
+
           ws!.onmessage = (event) => {
             try {
               const msg = JSON.parse(event.data);
               if (msg.error) {
                 clearTimeout(timeout);
-                reject(new Error(msg.error));
-              } else if (msg.connected || msg.setupComplete) {
+                reject(new Error(msg.error.message || JSON.stringify(msg.error)));
+              } else if (msg.setupComplete) {
                 clearTimeout(timeout);
-                resolve(msg.model || modelCandidate);
+                resolve(modelCandidate);
               }
             } catch (e) {}
           };

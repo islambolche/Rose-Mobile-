@@ -74,7 +74,7 @@ export const HomeScreenV4 = ({
         <div style={{ fontSize: '11px', color: '#8b8cff', padding: '0 10px' }}>
             Session: {live.status} | sent: {live.sent} | received: {live.recv} | 
             Key: {getGeminiKey() ? `yes (len ${getGeminiKey().length})` : 'no'} | 
-            Path: /api/live
+            Path: Google API (Direct)
         </div>
         {live.error && <div style={{ color: 'red', fontSize: '11px', padding: '5px' }}>{live.error}</div>}
 

@@ -510,10 +510,11 @@ export const VoiceLanguageSettings: React.FC<VoiceLanguageSettingsProps> = ({
                       const key = localStorage.getItem("groq_api_keys")?.trim() || "";
                       if (!key) { alert("Groq Key Missing"); return; }
                       try {
-                          const res = await fetch("https://api.groq.com/openai/v1/chat/completions", {
+                          const res = await fetch("/api/groq/chat", {
                             method: "POST",
-                            headers: { "Authorization": `Bearer ${key.split(',')[0]}`, "Content-Type": "application/json" },
+                            headers: { "Content-Type": "application/json" },
                             body: JSON.stringify({
+                                apiKey: key.split(',')[0],
                                 model: "llama-3.3-70b-versatile",
                                 messages: [{ role: "user", content: "হাই" }],
                                 stream: false

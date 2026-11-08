@@ -110,39 +110,17 @@ export function saveLocalBusinessDb(db: SharedBusinessDatabase): void {
  */
 export async function syncBusinessDbWithServer(currentDb: SharedBusinessDatabase): Promise<SharedBusinessDatabase> {
   try {
-    const res = await fetch("/api/business/sync", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(currentDb),
-    });
-
-    if (res.ok) {
-      const contentType = res.headers.get("content-type");
-      if (contentType && contentType.includes("application/json")) {
-        const data = await res.json();
-        if (data && data.state) {
-          const merged: SharedBusinessDatabase = {
-            ...currentDb,
-            ...data.state,
-            syncStatus: "synced",
-            lastSyncedAt: new Date().toISOString(),
-          };
-          saveLocalBusinessDb(merged);
-          return merged;
-        }
-      }
+    const res = await fetch('/api/business/state');
+    if (!res.ok) return currentDb;
+    const data = await res.json();
+    if (data.success && data.state) {
+      // Logic for merging could go here if needed, for now just replace
+      return data.state;
     }
   } catch (e) {
-    // Server unavailable or offline, mark status but keep local data pristine
+    console.warn("Failed to sync business DB:", e);
   }
-
-  const offlineDb: SharedBusinessDatabase = {
-    ...currentDb,
-    syncStatus: "offline",
-    lastSyncedAt: new Date().toISOString(),
-  };
-  saveLocalBusinessDb(offlineDb);
-  return offlineDb;
+  return currentDb;
 }
 
 /**
@@ -150,20 +128,13 @@ export async function syncBusinessDbWithServer(currentDb: SharedBusinessDatabase
  */
 export async function fetchServerBusinessState(): Promise<SharedBusinessDatabase | null> {
   try {
-    const res = await fetch("/api/business/state");
-    if (res.ok) {
-      const contentType = res.headers.get("content-type");
-      if (contentType && contentType.includes("application/json")) {
-        const data = await res.json();
-        if (data && data.state) {
-          return data.state;
-        }
-      }
-    }
+    const res = await fetch('/api/business/state');
+    if (!res.ok) return null;
+    const data = await res.json();
+    return data.success ? data.state : null;
   } catch (e) {
-    // Offline
+    return null;
   }
-  return null;
 }
 
 /**
@@ -191,47 +162,40 @@ export async function validateGeminiApiKey(
 
   const cleanKey = key.trim();
 
-  // Try server proxy first to keep key private
   try {
-    const res = await fetch("/api/test-gemini", {
+    const res = await fetch(`/api/gemini/generate`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ key: cleanKey, profile }),
+      body: JSON.stringify({
+        apiKey: cleanKey,
+        contents: [{ role: "user", parts: [{ text: "hi" }] }],
+        model: "gemini-1.5-flash"
+      }),
     });
 
     if (res.ok) {
-      const contentType = res.headers.get("content-type");
-      if (contentType && contentType.includes("application/json")) {
-        const data = await res.json();
-        return {
-          ok: true,
-          statusText: "Connected",
-          model: data.model || "gemini-3.8-flash",
-        };
-      } else {
-        return { ok: false, statusText: "Error", errorMessage: "Invalid response from server", model: "gemini-3.8-flash" };
-      }
+      return {
+        ok: true,
+        statusText: "Connected",
+        model: "gemini-1.5-flash",
+      };
     } else {
-      let data = {};
-      const contentType = res.headers.get("content-type");
-      if (contentType && contentType.includes("application/json")) {
-        data = await res.json().catch(() => ({}));
-      }
+      const data = await res.json().catch(() => ({}));
       return {
         ok: false,
         statusText: "Error",
-        errorCategory: (data as any).errorCategory || "Authentication Failed",
-        errorMessage: (data as any).errorMessage || (data as any).error || `HTTP ${res.status}`,
-        model: "gemini-3.8-flash",
+        errorCategory: "Authentication Failed",
+        errorMessage: data.error?.message || `HTTP ${res.status}`,
+        model: "gemini-1.5-flash",
       };
     }
   } catch (e: any) {
     return {
       ok: false,
       statusText: "Error",
-      errorCategory: "Network / Proxy Failure",
-      errorMessage: e.message || "Failed to contact server for key validation.",
-      model: "gemini-3.8-flash",
+      errorCategory: "Network Failure",
+      errorMessage: e.message || "Failed to contact Rose AI Server.",
+      model: "gemini-1.5-flash",
     };
   }
 }

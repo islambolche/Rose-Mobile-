@@ -375,7 +375,7 @@ app.get('/api/gemini/models', async (req, res) => {
 
 app.post('/api/gemini/generate', async (req, res) => {
   try {
-    const { model, contents, systemInstruction, generationConfig, apiKey } = req.body;
+    const { model, contents, systemInstruction, generationConfig, apiKey, tools, toolConfig } = req.body;
     const cleanUserKey =
       typeof apiKey === 'string'
         ? apiKey.replace(/[\r\n\t\s"']+/g, '').trim()
@@ -439,6 +439,13 @@ app.post('/api/gemini/generate', async (req, res) => {
       };
     }
 
+    if (tools && Array.isArray(tools) && tools.length > 0) {
+      requestBody.tools = tools;
+      if (toolConfig) {
+        requestBody.toolConfig = toolConfig;
+      }
+    }
+
     const url = `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(
       modelToUse
     )}:generateContent?key=${encodeURIComponent(effectiveKey)}`;
@@ -492,7 +499,7 @@ app.post('/api/gemini/generate', async (req, res) => {
 
 app.post('/api/gemini/stream', async (req, res) => {
   try {
-    const { model, contents, systemInstruction, generationConfig, apiKey } = req.body;
+    const { model, contents, systemInstruction, generationConfig, apiKey, tools, toolConfig } = req.body;
     const cleanUserKey =
       typeof apiKey === 'string'
         ? apiKey.replace(/[\r\n\t\s"']+/g, '').trim()
@@ -548,6 +555,13 @@ app.post('/api/gemini/stream', async (req, res) => {
       requestBody.systemInstruction = {
         parts: [{ text: String(systemInstruction).trim() }],
       };
+    }
+
+    if (tools && Array.isArray(tools) && tools.length > 0) {
+      requestBody.tools = tools;
+      if (toolConfig) {
+        requestBody.toolConfig = toolConfig;
+      }
     }
 
     const url = `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(
@@ -753,9 +767,40 @@ app.post('/api/gemini/tts', async (req, res) => {
   }
 });
 
+app.post('/api/groq/stt', async (req, res) => {
+  try {
+    const apiKey = req.headers['authorization']?.replace('Bearer ', '') || serverSecretVault.groqKeys.split(',')[0];
+    if (!apiKey) {
+      return res.status(401).json({ error: "No Groq API key" });
+    }
+
+    // Since we are proxying multipart/form-data, we need to handle it carefully.
+    // However, if the client sends the blob, we can just pipe it or use a simpler approach.
+    // For now, let's assume we use a library or handle the raw body if possible.
+    // Actually, a simpler way is to use express-fileupload or similar if we had it.
+    // Given the constraints, I'll try to use a more manual approach with fetch.
+    
+    const response = await fetch("https://api.groq.com/openai/v1/audio/transcriptions", {
+      method: "POST",
+      headers: {
+        "Authorization": `Bearer ${apiKey}`,
+        "Content-Type": req.headers['content-type'] as string
+      },
+      body: req // Pipe the request body
+    } as any);
+
+    const data = await response.json();
+    res.status(response.status).json(data);
+  } catch (error: any) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
 app.post('/api/groq/chat', async (req, res) => {
   try {
-    const { messages, model, apiKey } = req.body;
+    const { messages, model, apiKey: bodyApiKey, stream } = req.body;
+    const authHeaderKey = req.headers['authorization']?.replace('Bearer ', '');
+    const apiKey = bodyApiKey || authHeaderKey;
     const rawKeys = apiKey || serverSecretVault.groqKeys;
     const keysToTry = rawKeys.split(',').map((k: string) => k.trim()).filter(Boolean);
 
@@ -773,13 +818,31 @@ app.post('/api/groq/chat', async (req, res) => {
           },
           body: JSON.stringify({
             model: model || 'llama-3.1-70b-versatile',
-            messages
+            messages,
+            stream: stream || false
           })
         });
 
         if (groqRes.ok) {
-          const data = await groqRes.json();
-          return res.json(data);
+          if (stream) {
+            res.setHeader('Content-Type', 'text/event-stream');
+            res.setHeader('Cache-Control', 'no-cache');
+            res.setHeader('Connection', 'keep-alive');
+
+            const reader = groqRes.body?.getReader();
+            const decoder = new TextDecoder();
+            if (reader) {
+              while (true) {
+                const { done, value } = await reader.read();
+                if (done) break;
+                res.write(decoder.decode(value, { stream: true }));
+              }
+            }
+            return res.end();
+          } else {
+            const data = await groqRes.json();
+            return res.json(data);
+          }
         }
 
         const errorData = await groqRes.json().catch(() => ({}));
@@ -789,7 +852,6 @@ app.post('/api/groq/chat', async (req, res) => {
           continue; // Try next key
         }
 
-        // If it's a 401/403, and we have more keys, try them too
         if (groqRes.status === 401 || groqRes.status === 403) {
           continue;
         }

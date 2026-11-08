@@ -55,6 +55,7 @@ import {
   saveLocalBusinessDb,
   validateGeminiApiKey,
 } from "../lib/businessSync";
+import { getGeminiKey } from "../lib/geminiKey";
 import { logActivity } from "../lib/activityLog";
 
 interface MobileSettingsViewProps {
@@ -190,54 +191,42 @@ export const MobileSettingsView: React.FC<MobileSettingsViewProps> = ({
       return;
     }
     setIsSaving(profile);
-    try {
-      const res = await fetch("/api/business/save-key", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ profile, key: cleanKey, model: target.model }),
-      });
-      if (res.ok) {
-        const data = await res.json();
-        updateDatabase((prev) => ({
-          ...prev,
-          geminiProfiles: {
-            ...prev.geminiProfiles,
-            [profile]: { ...prev.geminiProfiles[profile], ...data.profile, key: "" },
+    
+    // Simulate server behavior locally for Capacitor build
+    setTimeout(() => {
+      updateDatabase((prev) => ({
+        ...prev,
+        geminiProfiles: {
+          ...prev.geminiProfiles,
+          [profile]: { 
+            ...prev.geminiProfiles[profile], 
+            status: "connected",
+            hasKey: true,
+            maskedKey: cleanKey.slice(0, 6) + "..." + cleanKey.slice(-4),
+            key: cleanKey // In local mode we keep the key
           },
-        }));
-        notify(`${profile === "free" ? "Free" : "Paid"} API key saved securely!`);
-      } else {
-        const err = await res.json().catch(() => ({}));
-        notify(err.message || "Failed to save API key.");
-      }
-    } catch (e) {
-      notify("Network error saving API key.");
-    } finally {
+        },
+      }));
       setIsSaving(null);
-    }
+      notify(`${profile === "free" ? "Free" : "Paid"} API key saved locally!`);
+    }, 500);
   };
 
   const handleClearKey = async (profile: GeminiProfileType) => {
-    try {
-      const res = await fetch("/api/business/clear-key", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ profile }),
-      });
-      if (res.ok) {
-        const data = await res.json();
-        updateDatabase((prev) => ({
-          ...prev,
-          geminiProfiles: {
-            ...prev.geminiProfiles,
-            [profile]: { ...data.profile, key: "" },
-          },
-        }));
-        notify(`${profile === "free" ? "Free" : "Paid"} API key removed.`);
-      }
-    } catch (e) {
-      notify("Failed to clear key.");
-    }
+    updateDatabase((prev) => ({
+      ...prev,
+      geminiProfiles: {
+        ...prev.geminiProfiles,
+        [profile]: { 
+          ...prev.geminiProfiles[profile],
+          status: "disconnected",
+          hasKey: false,
+          maskedKey: "",
+          key: ""
+        },
+      },
+    }));
+    notify(`${profile === "free" ? "Free" : "Paid"} API key removed.`);
   };
 
   return (
@@ -298,17 +287,11 @@ export const MobileSettingsView: React.FC<MobileSettingsViewProps> = ({
                   </div>
                   {sec.id === 'connections' && (
                     <div className={`px-3 py-1.5 rounded-xl text-[9px] font-black uppercase mr-1 transition-transform ${
-                      (() => {
-                        const keys = JSON.parse(localStorage.getItem('rose_api_keys') || '{}');
-                        return (localStorage.getItem('gemini_api_key') || keys.gemini) && (localStorage.getItem('groq_api_keys') || keys.groq);
-                      })() 
+                      (getGeminiKey() && localStorage.getItem('groq_api_keys'))
                       ? 'bg-emerald-500/10 border border-emerald-500/30 text-emerald-400' 
                       : 'bg-purple-500/10 border border-purple-500/30 text-purple-400'
                     }`}>
-                      {(() => {
-                        const keys = JSON.parse(localStorage.getItem('rose_api_keys') || '{}');
-                        return (localStorage.getItem('gemini_api_key') || keys.gemini) && (localStorage.getItem('groq_api_keys') || keys.groq) ? 'READY' : 'ADD A KEY';
-                      })()}
+                      {(getGeminiKey() && localStorage.getItem('groq_api_keys')) ? 'READY' : 'ADD A KEY'}
                     </div>
                   )}
                   <ChevronRight className="w-5 h-5 text-slate-600 group-hover:text-emerald-400" />
@@ -362,8 +345,7 @@ export const MobileSettingsView: React.FC<MobileSettingsViewProps> = ({
                     </button>
                   </div>
                   <div className="flex gap-2">
-                    <button onClick={() => handleSaveKey('free')} className="flex-1 py-3 bg-emerald-600 rounded-2xl text-[10px] font-black uppercase text-white shadow-lg">Save Key</button>
-                    <button onClick={() => handleTestKey('free')} className="px-5 py-3 bg-white/5 border border-white/10 rounded-2xl text-[10px] font-black uppercase text-emerald-400">Test</button>
+                    <button onClick={() => handleSaveKey('free')} className="w-full py-3 bg-emerald-600 rounded-2xl text-[10px] font-black uppercase text-white shadow-lg">Save Free Key</button>
                   </div>
                 </div>
 
@@ -394,8 +376,7 @@ export const MobileSettingsView: React.FC<MobileSettingsViewProps> = ({
                     </button>
                   </div>
                   <div className="flex gap-2">
-                    <button onClick={() => handleSaveKey('paid')} className="flex-1 py-3 bg-teal-600 rounded-2xl text-[10px] font-black uppercase text-white shadow-lg">Save Key</button>
-                    <button onClick={() => handleTestKey('paid')} className="px-5 py-3 bg-white/5 border border-white/10 rounded-2xl text-[10px] font-black uppercase text-teal-400">Test</button>
+                    <button onClick={() => handleSaveKey('paid')} className="w-full py-3 bg-teal-600 rounded-2xl text-[10px] font-black uppercase text-white shadow-lg">Save Paid Key</button>
                   </div>
                 </div>
               </div>

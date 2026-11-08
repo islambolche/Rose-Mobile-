@@ -62,7 +62,7 @@ export class GeminiLiveSession {
 
     const apiKey = getGeminiKey();
     if (!apiKey) {
-      const errMsg = "Gemini API key is missing. Add your key in Connections.";
+      const errMsg = "Add your Gemini key in Settings";
       logVoiceEvent("Live WS", errMsg, "error");
       this.options.onError?.(errMsg);
       this.stop(true);
@@ -71,28 +71,37 @@ export class GeminiLiveSession {
 
     const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
     const model = localStorage.getItem('voice_model') || 'gemini-2.5-flash-native-audio-preview-09-2025';
-    const url = `${protocol}//${window.location.host}/api/live?` +
-      `assistantName=${encodeURIComponent(this.options.assistantName || 'ROSE')}&` +
-      `ownerName=${encodeURIComponent(this.options.ownerName || 'MD YOUSUF KHAN')}&` +
-      `voiceName=${encodeURIComponent(this.options.voiceName || 'Sulafat')}&` +
-      `language=${encodeURIComponent(this.options.language || 'bn-BD')}&` +
-      `model=${encodeURIComponent(model)}&` +
-      `personality=${encodeURIComponent(this.options.personality || 'Normal')}&` +
-      `responseStyle=${encodeURIComponent(this.options.responseStyle || 'Balanced')}&` +
-      `memoryFacts=${encodeURIComponent(this.options.memoryFacts || '')}&` +
-      `recentSummary=${encodeURIComponent(this.options.recentSummary || '')}&` +
-      `apiKey=${encodeURIComponent(apiKey)}`;
+    
+    // Construct query parameters for the server-side proxy
+    const params = new URLSearchParams({
+      assistantName: this.options.assistantName || 'ROSE',
+      ownerName: this.options.ownerName || 'MD YOUSUF KHAN',
+      voiceName: this.options.voiceName || 'Sulafat',
+      personality: this.options.personality || 'Normal',
+      customPersonalityText: this.options.customPersonalityText || '',
+      language: this.options.language || 'bn-BD',
+      responseStyle: this.options.responseStyle || 'Balanced',
+      memoryFacts: this.options.memoryFacts || '',
+      recentSummary: this.options.recentSummary || '',
+      model: model,
+      apiKey: apiKey
+    });
 
-    logVoiceEvent("Live WS", "Connecting to server live bridge...");
+    const url = `${protocol}//${window.location.host}/api/live?${params.toString()}`;
+
+    logVoiceEvent("Live WS", "Connecting to Rose Live Server...");
     this.ws = new WebSocket(url);
 
     this.ws.onopen = () => {
-      logVoiceEvent("Live WS", "[onopen] Connected, awaiting setupComplete...", "success");
+      logVoiceEvent("Live WS", "[onopen] Connected to server, waiting for setup...", "success");
+      // Setup message is no longer needed from client as server handles it
     };
 
     this.ws.onmessage = (event) => {
       try {
         const msg = JSON.parse(event.data);
+        
+        // Handle setupComplete from server
         if (msg.setupComplete) {
             logVoiceEvent("Live WS", "[onmessage] Setup complete.", "success");
             this.isConnected = true;
@@ -100,35 +109,55 @@ export class GeminiLiveSession {
             this.startMicCapture(micStart);
             return;
         }
-        if (msg.error) {
-          logVoiceEvent("Live WS", `[onmessage] Server error: ${msg.error}`, "error");
-          this.options.onError?.(msg.error, { reason: msg.error });
-        }
-        if (msg.transcription) {
-          this.options.onTranscription?.(msg.transcription.role, msg.transcription.text, msg.transcription.isFinal);
-        }
-        if (msg.audio) {
-          this.audioChunksReceived++;
-          if (this.audioChunksReceived === 1) {
-            this.firstAudioChunkReceivedTime = Date.now();
-            if (this.speechEndTime > 0) {
-              this.options.onTiming?.("speechEnd_to_firstAudio", this.firstAudioChunkReceivedTime - this.speechEndTime);
+
+        if (msg.serverContent) {
+          const content = msg.serverContent;
+          
+          if (content.inputTranscription) {
+            this.options.onTranscription?.('user', content.inputTranscription.text, content.inputTranscription.isFinal);
+          }
+
+          if (content.modelTurn) {
+            const parts = content.modelTurn.parts || [];
+            for (const part of parts) {
+              if (part.inlineData) {
+                this.audioChunksReceived++;
+                if (this.audioChunksReceived === 1) {
+                  this.firstAudioChunkReceivedTime = Date.now();
+                }
+                this.updateState('speaking');
+                this.playPcmAudio(part.inlineData.data);
+              }
+              if (part.text) {
+                this.options.onTranscription?.('assistant', part.text, false);
+              }
             }
           }
-          this.updateState('speaking');
-          this.playPcmAudio(msg.audio);
+
+          if (content.interrupted) {
+            this.stopAllAudioPlayback();
+            this.updateState('listening');
+            this.options.onInterrupted?.();
+          }
+
+          if (content.turnComplete) {
+            this.scheduleReturnToListening();
+            this.options.onTurnComplete?.();
+          }
         }
-        if (msg.interrupted) {
-          this.stopAllAudioPlayback();
-          this.updateState('listening');
-          this.options.onInterrupted?.();
+
+        if (msg.toolCall) {
+          const toolCall = msg.toolCall;
+          if (toolCall.functionCalls) {
+            for (const call of toolCall.functionCalls) {
+              this.options.onAction?.(call.name, call.args, call.id);
+            }
+          }
         }
-        if (msg.turnComplete) {
-          this.scheduleReturnToListening();
-          this.options.onTurnComplete?.();
-        }
-        if (msg.action) {
-          this.options.onAction?.(msg.action, msg.payload, msg.id);
+
+        if (msg.error) {
+          logVoiceEvent("Live WS", `[onmessage] Error: ${msg.error.message || msg.error}`, "error");
+          this.options.onError?.(msg.error.message || "Gemini Live error");
         }
       } catch (e) {}
     };

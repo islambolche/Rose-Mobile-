@@ -52,75 +52,37 @@ export const ConnectionsView = ({
   });
 
   const [showKey, setShowKey] = useState<Record<string, boolean>>({});
-  const [savedStatus, setSavedStatus] = useState<Record<string, boolean>>({});
+  const [savedStatus, setSavedStatus] = useState<Record<string, string>>({});
   const [elevenStatus, setElevenStatus] = useState<string>('NOT SET');
   const [elevenLastStatusText, setElevenLastStatusText] = useState<string>('Not verified');
   const [elevenKeyLength, setElevenKeyLength] = useState<number>(0);
-  const [isTestingGemini, setIsTestingGemini] = useState<boolean>(false);
-  const [geminiTestOutput, setGeminiTestOutput] = useState<{ ok: boolean; text: string } | null>(null);
 
   useEffect(() => {
-    try {
-      setTypedKeys({ 
-        gemini: getGeminiKey(), 
-        groq: localStorage.getItem('groq_api_keys') || '', 
-        elevenlabs: (localStorage.getItem('elevenlabs_api_key') || '').trim() 
-      });
-      const eleven = (localStorage.getItem('elevenlabs_api_key') || '').replace(/[\r\n\t\s]+/g, "").trim();
-      setElevenKeyLength(eleven.length);
-      if (eleven) {
-        verifyElevenLabsKey(eleven);
+    const loadKeys = async () => {
+      try {
+        const { storage } = await import('../lib/storage');
+        const { initGeminiKey } = await import('../lib/geminiKey');
+        
+        const g = await initGeminiKey();
+        const gr = await storage.get('groq_api_keys') || '';
+        const e = await storage.get('elevenlabs_api_key') || '';
+
+        setTypedKeys({ 
+          gemini: g, 
+          groq: gr, 
+          elevenlabs: e
+        });
+        
+        setElevenKeyLength(e.length);
+        if (e) {
+          verifyElevenLabsKey(e);
+        }
+      } catch (err) {
+        console.error('Failed to load keys', err);
       }
-    } catch (e) {
-      console.error('Failed to load keys', e);
-    }
+    };
+    loadKeys();
   }, []);
-
-  const handleTestGeminiKey = async () => {
-    const key = String(typedKeys.gemini || getGeminiKey() || '')
-      .replace(/[\r\n\t\s"']+/g, '')
-      .trim();
-    if (key) {
-      localStorage.setItem('gemini_api_key', key);
-      setGeminiKey(key);
-      if (setApiKeys) {
-        setApiKeys((prev: any) => ({ ...prev, gemini: key }));
-      }
-    }
-
-    setIsTestingGemini(true);
-    setGeminiTestOutput(null);
-
-    try {
-      const data = await directGeminiGenerate({
-        model: TEXT_MODELS[0],
-        contents: [{ role: 'user', parts: [{ text: 'Hi' }] }],
-        apiKey: key,
-      });
-
-      const reply =
-        data?.candidates?.[0]?.content?.parts?.[0]?.text ||
-        data?.text ||
-        '';
-      const modelUsed =
-        data?.modelUsed || getSavedWorkingTextModel() || TEXT_MODELS[0];
-
-      setGeminiTestOutput({
-        ok: true,
-        text: `OK (${modelUsed}): ${String(reply).trim()}`,
-      });
-    } catch (err: any) {
-      const exactBody =
-        err?.bodyText ||
-        (err?.message ? String(err.message) : String(err));
-      setGeminiTestOutput({
-        ok: false,
-        text: exactBody,
-      });
-    } finally {
-      setIsTestingGemini(false);
-    }
-  };
 
   const verifyElevenLabsKey = async (rawKey: string) => {
     const trimmed = rawKey.replace(/[\r\n\t\s]+/g, "").trim();
@@ -141,7 +103,6 @@ export const ConnectionsView = ({
       let text = await res.text().catch(() => '');
 
       if (status === 401) {
-        // Try /v1/user
         res = await fetch('https://api.elevenlabs.io/v1/user', {
           headers: { 'xi-api-key': trimmed }
         });
@@ -153,7 +114,6 @@ export const ConnectionsView = ({
 
       if (status === 200) {
         setElevenStatus('READY');
-        // Fetch voices in background
         try {
           const voicesRes = await fetch('https://api.elevenlabs.io/v1/voices', {
             headers: { 'xi-api-key': trimmed }
@@ -173,27 +133,44 @@ export const ConnectionsView = ({
         setElevenStatus('INVALID');
       }
     } catch (err) {
-      // Network error -> keep previous status and show "ইন্টারনেট সমস্যা"
       setElevenLastStatusText(`ইন্টারনেট সমস্যা | Key length: ${trimmed.length}`);
       setElevenStatus(prev => prev === 'NOT SET' ? 'NOT SET' : prev);
     }
   };
 
+  const maskKey = (key: string) => {
+    if (!key) return '';
+    if (key.length <= 8) return '****' + key.slice(-2);
+    return key.slice(0, 4) + '...' + key.slice(-4);
+  };
+
   const handleSave = async (id: 'gemini' | 'groq' | 'elevenlabs') => {
-    const key = typedKeys[id].replace(/[\r\n\t\s]+/g, "").trim();
+    const rawVal = typedKeys[id] || '';
+    const key = rawVal.replace(/[\r\n\t\s]+/g, "").trim();
+    
+    if (!key) return; // Do not overwrite with empty
+
     try {
-      localStorage.setItem(PROVIDERS.find(p => p.id === id)?.storageKey || '', key);
+      const { storage } = await import('../lib/storage');
+      const provider = PROVIDERS.find(p => p.id === id);
+      if (!provider) return;
+
       if (id === 'gemini') {
-        setGeminiKey(key);
+        const { setGeminiKey } = await import('../lib/geminiKey');
+        await setGeminiKey(key);
         if (setApiKeys) {
           setApiKeys((prev: any) => ({ ...prev, gemini: key }));
         }
+      } else {
+        await storage.set(provider.storageKey, key);
       }
+
       if (id === 'elevenlabs') {
         await verifyElevenLabsKey(key);
       }
-      setSavedStatus(prev => ({ ...prev, [id]: true }));
-      setTimeout(() => setSavedStatus(prev => ({ ...prev, [id]: false })), 2000);
+      
+      setSavedStatus(prev => ({ ...prev, [id]: maskKey(key) }));
+      setTimeout(() => setSavedStatus(prev => ({ ...prev, [id]: '' })), 3000);
     } catch (e) {
       console.error('Failed to save key', e);
     }
@@ -206,16 +183,6 @@ export const ConnectionsView = ({
         if (text) {
           const trimmed = text.replace(/[\r\n\t\s]+/g, "").trim();
           setTypedKeys(prev => ({ ...prev, [id]: trimmed }));
-          localStorage.setItem(PROVIDERS.find(p => p.id === id)?.storageKey || '', trimmed);
-          if (id === 'gemini') {
-            setGeminiKey(trimmed);
-            if (setApiKeys) {
-              setApiKeys((prev: any) => ({ ...prev, gemini: trimmed }));
-            }
-          }
-          if (id === 'elevenlabs') {
-            await verifyElevenLabsKey(trimmed);
-          }
           return;
         }
       }
@@ -249,14 +216,7 @@ export const ConnectionsView = ({
         return (
           <div className="flex items-center gap-1.5 px-3 py-1 bg-red-500/10 border border-red-500/30 rounded-full">
             <XCircle className="w-3 h-3 text-red-400" />
-            <span className="text-[10px] font-black uppercase tracking-widest text-red-400">Key সঠিক নয়, নতুন key বসান</span>
-          </div>
-        );
-      } else if (elevenStatus.includes('অনুমতি')) {
-        return (
-          <div className="flex items-center gap-1.5 px-3 py-1 bg-amber-500/10 border border-amber-500/30 rounded-full max-w-xs">
-            <AlertTriangle className="w-3 h-3 text-amber-400 shrink-0" />
-            <span className="text-[9px] font-bold text-amber-300 truncate">{elevenStatus}</span>
+            <span className="text-[10px] font-black uppercase tracking-widest text-red-400">Invalid</span>
           </div>
         );
       }
@@ -278,8 +238,8 @@ export const ConnectionsView = ({
         );
     }
     return (
-        <div className="flex items-center gap-1.5 px-3 py-1 bg-white/5 border border-white/10 rounded-full">
-          <span className="text-[10px] font-black uppercase tracking-widest text-slate-500">Add a key</span>
+        <div className="flex items-center gap-1.5 px-3 py-1 bg-purple-500/10 border border-purple-500/30 rounded-full">
+          <span className="text-[10px] font-black uppercase tracking-widest text-purple-400">Add a key</span>
         </div>
     );
   };
@@ -306,7 +266,7 @@ export const ConnectionsView = ({
         </div>
       </header>
 
-      <div className="flex-1 overflow-y-auto no-scrollbar p-5 space-y-5 pb-32">
+      <div className="flex-1 overflow-y-auto no-scrollbar p-5 space-y-4 pb-32">
         {PROVIDERS.map((p) => (
           <div key={p.id} className="bg-[#0A1628]/80 border border-purple-500/20 rounded-[2rem] p-6 space-y-4">
             <div className="flex items-start justify-between gap-3">
@@ -330,32 +290,9 @@ export const ConnectionsView = ({
                 id={`key-input-${p.id}`}
                 type={showKey[p.id] ? "text" : "password"}
                 value={typedKeys[p.id] || ''}
-                onChange={async (e) => {
+                onChange={(e) => {
                   const val = e.target.value;
-                  const cleaned = val.replace(/[\r\n\t\s]+/g, "").trim();
                   setTypedKeys(prev => ({ ...prev, [p.id]: val }));
-                  localStorage.setItem(p.storageKey, cleaned);
-                  if (p.id === 'gemini') {
-                    setGeminiKey(cleaned);
-                    if (setApiKeys) {
-                      setApiKeys((prev: any) => ({ ...prev, gemini: cleaned }));
-                    }
-                  }
-                  if (p.id === 'elevenlabs') {
-                    await verifyElevenLabsKey(cleaned);
-                  }
-                }}
-                onBlur={async () => {
-                  const cleaned = (typedKeys[p.id] || "").replace(/[\r\n\t\s]+/g, "").trim();
-                  if (p.id === 'gemini') {
-                    setGeminiKey(cleaned);
-                    if (setApiKeys) {
-                      setApiKeys((prev: any) => ({ ...prev, gemini: cleaned }));
-                    }
-                  }
-                  if (p.id === 'elevenlabs') {
-                    await verifyElevenLabsKey(cleaned);
-                  }
                 }}
                 placeholder={p.placeholder}
                 className="w-full bg-black/40 border border-white/5 rounded-2xl pl-11 pr-24 py-4 text-xs text-white outline-none focus:border-purple-500/50 font-mono transition-all"
@@ -376,59 +313,27 @@ export const ConnectionsView = ({
               </div>
             </div>
 
-            {p.id === 'elevenlabs' && (
-              <p className="text-[10px] text-slate-400 font-mono px-1">
-                Status: {elevenLastStatusText} | Key length: {elevenKeyLength}
-              </p>
-            )}
+            <div className="flex flex-col gap-2">
+              <button 
+                  onClick={() => window.open(p.link, "_blank", "noopener,noreferrer")}
+                  className="w-full h-[48px] bg-[#161f33] rounded-2xl border border-purple-500/30 text-purple-400 font-black uppercase text-[11px] tracking-widest flex items-center justify-center gap-2 active:scale-[0.98] transition-all"
+              >
+                  Get Key <ExternalLink className="w-3.5 h-3.5" />
+              </button>
 
-            <button 
-                onClick={() => window.open(p.link, "_blank", "noopener,noreferrer")}
-                className="w-full h-[52px] bg-[#161f33] rounded-full border border-purple-500/30 text-purple-400 font-black uppercase text-[11px] tracking-widest flex items-center justify-center gap-2 active:scale-[0.98] transition-all"
-            >
-                Get Key <ExternalLink className="w-3.5 h-3.5" />
-            </button>
-            <p className="text-[11px] text-slate-500 px-1">{p.hint}</p>
-
-            <button 
-                onClick={() => handleSave(p.id)}
-                className="w-full h-[52px] bg-purple-600 rounded-full text-[11px] font-black uppercase tracking-widest text-white shadow-lg shadow-purple-500/20 active:scale-[0.98] transition-all flex items-center justify-center gap-2"
-            >
-                {savedStatus[p.id] ? 'Saved' : `Save ${p.id === 'gemini' ? 'Gemini' : p.id === 'groq' ? 'Groq' : 'ElevenLabs'} Key`}
-            </button>
-
-            {p.id === 'gemini' && (
-              <div className="space-y-3 pt-1">
-                <button
-                  type="button"
-                  onClick={handleTestGeminiKey}
-                  disabled={isTestingGemini}
-                  className="w-full h-[46px] bg-indigo-600/20 hover:bg-indigo-600/30 border border-indigo-400/40 rounded-full text-[11px] font-black uppercase tracking-widest text-indigo-300 active:scale-[0.98] transition-all flex items-center justify-center gap-2 disabled:opacity-50"
-                >
-                  {isTestingGemini ? (
-                    <>
-                      <Loader2 className="w-4 h-4 animate-spin" />
-                      Testing...
-                    </>
-                  ) : (
-                    'TEST'
+              <button 
+                  onClick={() => handleSave(p.id)}
+                  className="w-full h-[52px] bg-purple-600 rounded-2xl text-[11px] font-black uppercase tracking-widest text-white shadow-lg shadow-purple-500/20 active:scale-[0.98] transition-all flex flex-col items-center justify-center gap-0"
+              >
+                  <span className="flex items-center gap-2">
+                    {savedStatus[p.id] ? <Check className="w-4 h-4" /> : null}
+                    {savedStatus[p.id] ? 'Saved' : `Save ${p.id === 'gemini' ? 'Gemini' : p.id === 'groq' ? 'Groq' : 'ElevenLabs'} Key`}
+                  </span>
+                  {savedStatus[p.id] && (
+                    <span className="text-[9px] opacity-70 font-mono">{savedStatus[p.id]}</span>
                   )}
-                </button>
-
-                {geminiTestOutput && (
-                  <div
-                    className={
-                      'w-full rounded-2xl px-4 py-3 text-xs font-mono break-words border ' +
-                      (geminiTestOutput.ok
-                        ? 'bg-emerald-950/70 border-emerald-500/40 text-emerald-300'
-                        : 'bg-rose-950/80 border-rose-500/40 text-rose-300')
-                    }
-                  >
-                    {geminiTestOutput.text}
-                  </div>
-                )}
-              </div>
-            )}
+              </button>
+            </div>
           </div>
         ))}
       </div>

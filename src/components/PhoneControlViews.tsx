@@ -22,8 +22,8 @@ const INITIAL_PERMISSIONS: PermissionItem[] = [
   { id: 'microphone', name: 'Microphone', subtitle: 'Required for voice commands', icon: Mic, status: 'Off', type: 'runtime' },
   { id: 'headphones', name: 'Headphones/Bluetooth', subtitle: 'Connect to audio devices', icon: Bluetooth, status: 'Needs Android app', type: 'runtime' },
   { id: 'notifications', name: 'Notifications', subtitle: 'Send alerts and updates', icon: Bell, status: 'Off', type: 'runtime' },
-  { id: 'phoneCalls', name: 'Phone & Calls', subtitle: 'Call phone, state, and answers', icon: PhoneCall, status: 'Needs Android app', type: 'runtime' },
-  { id: 'contacts', name: 'Contacts', subtitle: 'Lookup names and numbers', icon: Users, status: 'Needs Android app', type: 'runtime' },
+  { id: 'phoneCalls', name: 'Phone & Calls', subtitle: 'No permission needed · Opens dialer', icon: PhoneCall, status: 'Allowed', type: 'runtime' },
+  { id: 'contacts', name: 'Contacts', subtitle: 'Lookup names and numbers for voice actions', icon: Users, status: Permissions.hasContactsApi() ? (Permissions.getSavedContactsCount() > 0 ? 'Allowed' : 'Off') : 'Needs Android app', type: 'runtime' },
   { id: 'sms', name: 'SMS', subtitle: 'Send and read text messages', icon: Mail, status: 'Needs Android app', type: 'runtime' },
   { id: 'location', name: 'Location', subtitle: 'Map and geofencing support', icon: MapPin, status: 'Off', type: 'runtime' },
   { id: 'mediaFiles', name: 'Photos/Media/Files', subtitle: 'Access images and documents', icon: ImageIcon, status: 'Needs Android app', type: 'runtime' },
@@ -157,6 +157,20 @@ export const AppPermissionsView = ({ setCurrentView, setToast }: any) => {
 
     setPermissions(prev => {
       const updated = prev.map(p => {
+        if (p.id === 'phoneCalls') {
+          return { ...p, status: 'Allowed' as const, subtitle: 'No permission needed · Opens dialer' };
+        }
+        if (p.id === 'contacts') {
+          if (!Permissions.hasContactsApi() && !isAndroid) {
+            return { ...p, status: 'Needs Android app' as const, subtitle: 'Android app required' };
+          }
+          const cnt = Permissions.getSavedContactsCount();
+          return {
+            ...p,
+            status: cnt > 0 ? ('Allowed' as const) : ('Off' as const),
+            subtitle: cnt > 0 ? `${cnt} contacts saved for voice actions` : 'Tap to pick contacts for voice actions',
+          };
+        }
         if (!isAndroid && Permissions.ANDROID_ONLY_IDS.includes(p.id as any)) {
           return { ...p, status: 'Needs Android app' as const };
         }
@@ -208,6 +222,52 @@ export const AppPermissionsView = ({ setCurrentView, setToast }: any) => {
     }
 
     // In Browser:
+    if (perm.id === 'phoneCalls') {
+      setToast?.("Phone calls are ready via browser dialer");
+      updateSingle('phoneCalls', 'Allowed');
+      return;
+    }
+
+    if (perm.id === 'contacts') {
+      if (Permissions.hasContactsApi()) {
+        try {
+          const selected = await (navigator as any).contacts.select(['name', 'tel'], { multiple: true });
+          if (selected && selected.length > 0) {
+            const count = Permissions.saveContactsFromPicker(selected);
+            setToast?.(`${count} contacts saved for voice actions`);
+            checkStatuses();
+          }
+        } catch (e) {
+          console.warn("Contact picker cancelled or error:", e);
+        }
+      } else {
+        setToast?.("Contacts lookup requires native Android app");
+      }
+      return;
+    }
+
+    if (perm.id === 'notifications') {
+      const isIframe = typeof window !== 'undefined' && window.self !== window.top;
+      if (isIframe) {
+        setToast?.("Open the app link in a new Chrome tab to allow notifications");
+      } else {
+        setToast?.("Requesting notification permission...");
+      }
+      if (typeof Notification !== 'undefined') {
+        try {
+          const res = await Notification.requestPermission();
+          const st = res === 'granted' ? 'Allowed' : 'Skipped';
+          updateSingle(perm.id, st);
+          setToast?.(st === 'Allowed' ? "Notifications allowed" : "Notifications skipped");
+          return;
+        } catch (e) {}
+      }
+      const res = await Permissions.requestNotificationsWithTimeout(8000);
+      updateSingle(perm.id, res);
+      setToast?.(res === 'Allowed' ? "Notifications allowed" : "Notifications skipped");
+      return;
+    }
+
     if (perm.status === 'Needs Android app' || Permissions.ANDROID_ONLY_IDS.includes(perm.id as any)) {
       setToast?.(`${perm.name} requires the native Android app`);
       return;
@@ -218,11 +278,6 @@ export const AppPermissionsView = ({ setCurrentView, setToast }: any) => {
       const res = await Permissions.requestMicrophoneWithTimeout(8000);
       updateSingle(perm.id, res);
       setToast?.(res === 'Allowed' ? "Microphone allowed" : "Microphone skipped");
-    } else if (perm.id === 'notifications') {
-      setToast?.("Requesting notification permission...");
-      const res = await Permissions.requestNotificationsWithTimeout(8000);
-      updateSingle(perm.id, res);
-      setToast?.(res === 'Allowed' ? "Notifications allowed" : "Notifications skipped");
     } else if (perm.id === 'camera') {
       setToast?.("Requesting camera permission...");
       const res = await Permissions.requestCameraWithTimeout(8000);
@@ -255,6 +310,8 @@ export const AppPermissionsView = ({ setCurrentView, setToast }: any) => {
       let st: 'Allowed' | 'Skipped' | 'Needs Android app' | 'Off' = p.status;
       if (p.id === 'microphone') st = micRes;
       else if (p.id === 'notifications') st = notifRes;
+      else if (p.id === 'phoneCalls') st = 'Allowed';
+      else if (p.id === 'contacts') st = Permissions.hasContactsApi() ? (Permissions.getSavedContactsCount() > 0 ? 'Allowed' : 'Off') : 'Needs Android app';
       else if (p.id === 'camera') st = camRes;
       else if (p.id === 'location') st = locRes;
       else if (Permissions.ANDROID_ONLY_IDS.includes(p.id as any)) st = 'Needs Android app';
@@ -291,6 +348,26 @@ export const AppPermissionsView = ({ setCurrentView, setToast }: any) => {
             if (isHidden) {
               badgeText = 'HIDDEN';
               badgeClass = 'text-slate-500';
+            } else if (perm.id === 'phoneCalls') {
+              badgeText = 'READY (opens dialer)';
+              badgeClass = 'text-emerald-400 text-[8px] bg-emerald-950/60 border border-emerald-500/30 px-2 py-0.5 rounded-full font-bold';
+            } else if (perm.id === 'contacts') {
+              if (Permissions.hasContactsApi()) {
+                const count = Permissions.getSavedContactsCount();
+                if (count > 0) {
+                  badgeText = `${count} CONTACTS SAVED`;
+                  badgeClass = 'text-emerald-400 text-[8px] bg-emerald-950/60 border border-emerald-500/30 px-2 py-0.5 rounded-full font-bold';
+                } else {
+                  badgeText = 'PICK CONTACT';
+                  badgeClass = 'text-purple-300 text-[8px] bg-purple-600/60 border border-purple-500/40 px-2 py-0.5 rounded-full font-bold';
+                }
+              } else {
+                badgeText = 'NEEDS ANDROID APP';
+                badgeClass = 'text-purple-400 text-[8px] bg-purple-950/60 border border-purple-500/30 px-2 py-0.5 rounded-full font-bold';
+              }
+            } else if (perm.id === 'notifications' && isSkipped) {
+              badgeText = 'TAP TO RETRY';
+              badgeClass = 'text-amber-400 text-[8px] bg-amber-950/60 border border-amber-500/30 px-2 py-0.5 rounded-full font-bold';
             } else if (isAllowed) {
               badgeText = 'ALLOWED';
               badgeClass = 'text-emerald-400';

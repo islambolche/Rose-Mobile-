@@ -165,69 +165,46 @@ export const DesktopSettingsView: React.FC<DesktopSettingsViewProps> = ({
       notify("Please enter an API key.");
       return;
     }
+    const cleanKey = target.key.trim();
 
     setIsSaving(profile);
-    try {
-      const res = await fetch("/api/business/save-key", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          profile,
-          key: target.key.trim(),
-          model: target.model
-        }),
-      });
-
-      if (res.ok) {
-        const data = await res.json();
-        updateDatabase((prev) => ({
-          ...prev,
-          geminiProfiles: {
-            ...prev.geminiProfiles,
-            [profile]: {
-              ...prev.geminiProfiles[profile],
-              ...data.profile,
-              key: "",
-            },
+    // Local save for Capacitor build
+    setTimeout(() => {
+      updateDatabase((prev) => ({
+        ...prev,
+        geminiProfiles: {
+          ...prev.geminiProfiles,
+          [profile]: {
+            ...prev.geminiProfiles[profile],
+            status: "connected",
+            hasKey: true,
+            maskedKey: cleanKey.slice(0, 6) + "..." + cleanKey.slice(-4),
+            key: cleanKey,
+            verificationStatus: "VERIFIED"
           },
-        }));
-        notify(`${profile === "free" ? "Free" : "Paid"} API key saved securely!`);
-      } else {
-        const err = await res.json().catch(() => ({}));
-        notify(err.message || "Failed to save API key.");
-      }
-    } catch (e) {
-      notify("Network error.");
-    } finally {
+        },
+      }));
       setIsSaving(null);
-    }
+      notify(`${profile === "free" ? "Free" : "Paid"} API key saved locally!`);
+    }, 500);
   };
 
   const handleClearKey = async (profile: GeminiProfileType) => {
-    try {
-      const res = await fetch("/api/business/clear-key", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ profile }),
-      });
-
-      if (res.ok) {
-        const data = await res.json();
-        updateDatabase((prev) => ({
-          ...prev,
-          geminiProfiles: {
-            ...prev.geminiProfiles,
-            [profile]: {
-              ...data.profile,
-              key: "",
-            },
-          },
-        }));
-        notify(`${profile === "free" ? "Free" : "Paid"} API key removed.`);
-      }
-    } catch (e) {
-      notify("Error clearing key.");
-    }
+    updateDatabase((prev) => ({
+      ...prev,
+      geminiProfiles: {
+        ...prev.geminiProfiles,
+        [profile]: {
+          ...prev.geminiProfiles[profile],
+          status: "disconnected",
+          hasKey: false,
+          maskedKey: "",
+          key: "",
+          verificationStatus: "NOT_CONFIGURED"
+        },
+      },
+    }));
+    notify(`${profile === "free" ? "Free" : "Paid"} API key removed.`);
   };
 
   // Filter sections by search query
@@ -473,22 +450,21 @@ export const DesktopSettingsView: React.FC<DesktopSettingsViewProps> = ({
                       onClick={async () => {
                         const keys = db.groq?.keys;
                         if (!keys) return;
-                        setIsSaving("free" as any); // Reusing isSaving state
-                        try {
-                          const res = await fetch("/api/business/save-groq", {
-                            method: "POST",
-                            headers: { "Content-Type": "application/json" },
-                            body: JSON.stringify({ keys }),
-                          });
-                          if (res.ok) {
-                            const data = await res.json();
-                            updateDatabase((prev) => ({
-                              ...prev,
-                              groq: { ...prev.groq, verificationStatus: "VERIFIED", status: "connected", keys: "" }
-                            }));
-                            notify("Groq keys saved successfully!");
-                          }
-                        } catch (e) {} finally { setIsSaving(null); }
+                        setIsSaving("free" as any);
+                        setTimeout(() => {
+                          updateDatabase((prev) => ({
+                            ...prev,
+                            groq: { 
+                              ...prev.groq, 
+                              verificationStatus: "VERIFIED", 
+                              status: "connected", 
+                              keys: keys,
+                              maskedKeys: keys.split(',').map(k => k.trim().slice(0, 4) + '...').join(', ')
+                            }
+                          }));
+                          notify("Groq keys saved locally!");
+                          setIsSaving(null);
+                        }, 500);
                       }}
                       disabled={isSaving === "free" || !db.groq?.keys}
                       className="flex-1 py-2.5 bg-purple-600 hover:bg-purple-500 disabled:opacity-50 text-white rounded-xl text-[10px] font-black uppercase tracking-widest active:scale-95 transition-all flex items-center justify-center gap-1.5"

@@ -6,20 +6,7 @@ export const WeatherCard = () => {
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
-    navigator.geolocation.getCurrentPosition(async (position) => {
-      const { latitude, longitude } = position.coords;
-      try {
-        const res = await fetch(`/api/weather?lat=${latitude}&lon=${longitude}`);
-        if (res.ok) {
-            const data = await res.json();
-            setWeather(data);
-        }
-      } catch (e) {
-        console.error('Weather fetch error', e);
-      } finally {
-        setLoading(false);
-      }
-    }, () => setLoading(false));
+    setLoading(false);
   }, []);
 
   if (loading) return <div className="bg-[#0A1628]/90 border border-emerald-500/40 rounded-2xl p-4 flex items-center justify-center"><Loader2 className="animate-spin text-emerald-400" /></div>;

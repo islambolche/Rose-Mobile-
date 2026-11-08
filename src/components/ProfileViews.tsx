@@ -1,4 +1,5 @@
 import React, { useState, useEffect } from 'react';
+import { motion, AnimatePresence } from 'framer-motion';
 import { 
   ArrowLeft, Sparkles, ChevronRight, User, Shield, Smile, Globe, Volume2, Pencil, Trash2, 
   ToggleRight, ToggleLeft, Facebook, Youtube, Instagram, MessageCircle, Send, Image as ImageIcon,
@@ -7,7 +8,7 @@ import {
 import { AssistantSettings, UserPreferences } from '../types';
 import { supabase } from '../lib/supabase';
 
-const ADMIN_EMAIL = "islambolche@gmail.com";
+// ADMIN_EMAIL constant removed in favor of DB roles
 
 const isAiStudioPreview = () => {
   if (typeof window === 'undefined') return false;
@@ -234,23 +235,34 @@ export const PrivacyView = ({ setCurrentView, setToast }: any) => {
       
       try {
         const { data: { session } } = await supabase.auth.getSession();
-        const initialEmail = session?.user?.email || null;
+        let currentEmail = session?.user?.email || null;
         
-        if (initialEmail && initialEmail !== ADMIN_EMAIL) {
-          await supabase.auth.signOut();
-          setUserEmail(null);
-        } else {
-          setUserEmail(initialEmail);
-        }
-
-        const authListener = supabase.auth.onAuthStateChange(async (_event, session) => {
-          const email = session?.user?.email || null;
-          if (email && email !== ADMIN_EMAIL) {
-            if (supabase) await supabase.auth.signOut();
-            setUserEmail(null);
+        if (session?.user) {
+          const { data: profile } = await supabase!.from('profiles').select('role, status').eq('id', session.user.id).single();
+          if (profile?.status === 'blocked') {
+            await supabase!.auth.signOut();
+            currentEmail = null;
           } else {
-            setUserEmail(email);
+            // Log login
+            const sessionKey = `logged_in_view_${session.user.id}_${new Date().toISOString().slice(0, 10)}`;
+            if (!sessionStorage.getItem(sessionKey) && supabase) {
+              await supabase!.from('login_events').insert({ user_id: session.user.id, device: navigator.userAgent });
+              sessionStorage.setItem(sessionKey, 'true');
+            }
           }
+        }
+        setUserEmail(currentEmail);
+
+        const authListener = supabase!.auth.onAuthStateChange(async (_event, session) => {
+          let email = session?.user?.email || null;
+          if (session?.user && supabase) {
+            const { data: profile } = await supabase!.from('profiles').select('role, status').eq('id', session.user.id).single();
+            if (profile?.status === 'blocked') {
+              if (supabase) await supabase.auth.signOut();
+              email = null;
+            }
+          }
+          setUserEmail(email);
         });
         subscription = authListener.data.subscription;
 
@@ -340,16 +352,23 @@ export const PrivacyView = ({ setCurrentView, setToast }: any) => {
 
       if (error) throw error;
 
-      if (data.user?.email !== ADMIN_EMAIL) {
+      const { data: profile } = await supabase.from('profiles').select('role, status').eq('id', data.user!.id).single();
+      
+      if (profile?.status === 'blocked') {
         await supabase.auth.signOut();
-        throw new Error("Access Denied: Only admin can login.");
+        throw new Error("Your account is blocked.");
       }
 
       setLoginEmail('');
       setLoginPassword('');
       setLoginError(null);
       setIsLoginModalOpen(false);
-      setCurrentView('admin_panel');
+      
+      if (profile?.role === 'admin') {
+        setCurrentView('admin_panel');
+      } else {
+        setToast("Login successful");
+      }
     } catch (err: any) {
       setLoginError(err.message || "Login failed");
     } finally {
@@ -405,14 +424,8 @@ export const PrivacyView = ({ setCurrentView, setToast }: any) => {
                     {isLoggingIn ? "Logging in..." : "Login"}
                   </span>
                 </button>
-              ) : userEmail === ADMIN_EMAIL ? (
+              ) : (
                 <div className="flex items-center gap-2">
-                  <button 
-                    onClick={() => setCurrentView('admin_panel')}
-                    className="px-5 py-2.5 bg-purple-600/20 border border-purple-500/30 rounded-xl active:bg-purple-600/30 transition-colors min-h-[44px] flex items-center justify-center"
-                  >
-                    <span className="text-[10px] font-black uppercase tracking-[3px] text-purple-400">ADMIN</span>
-                  </button>
                   <button 
                     onClick={handleLogout}
                     className="p-2.5 bg-red-500/10 border border-red-500/20 rounded-xl active:bg-red-500/20 transition-colors min-w-[44px] min-h-[44px] flex items-center justify-center"
@@ -421,7 +434,7 @@ export const PrivacyView = ({ setCurrentView, setToast }: any) => {
                     <LogOut className="w-4 h-4 text-red-500" />
                   </button>
                 </div>
-              ) : null}
+              )}
             </>
           )}
         </div>
@@ -536,7 +549,7 @@ export const PrivacyView = ({ setCurrentView, setToast }: any) => {
   );
 };
 
-export const AdminPanelView = ({ setCurrentView, setToast }: any) => {
+export const AdminProfileSettingsView = ({ setCurrentView, setToast }: any) => {
   const [adminData, setAdminData] = useState<any>({ 
     name: 'MD YOUSUF KHAN',
     subtitle: 'Web Developer',
@@ -553,7 +566,12 @@ export const AdminPanelView = ({ setCurrentView, setToast }: any) => {
         return;
       }
       const { data: { session } } = await supabase.auth.getSession();
-      if (!session || session.user.email !== ADMIN_EMAIL) {
+      if (!session) {
+        setCurrentView('privacy');
+        return;
+      }
+      const { data: profile } = await supabase.from('profiles').select('role').eq('id', session.user.id).single();
+      if (profile?.role !== 'admin') {
         setCurrentView('privacy');
         return;
       }
@@ -662,7 +680,7 @@ export const AdminPanelView = ({ setCurrentView, setToast }: any) => {
           <button onClick={() => setCurrentView('privacy')} className="p-2.5 bg-white/5 rounded-2xl active:scale-95 transition-transform min-w-[44px] min-h-[44px] flex items-center justify-center">
             <ArrowLeft className="w-5 h-5 text-slate-300" />
           </button>
-          <h3 className="text-xl font-black italic tracking-tighter uppercase text-white">Admin Panel</h3>
+          <h3 className="text-xl font-black italic tracking-tighter uppercase text-white">Profile Admin</h3>
         </div>
         <button onClick={handleLogout} className="p-2.5 bg-red-500/10 border border-red-500/20 rounded-xl active:bg-red-500/20 transition-colors min-w-[44px] min-h-[44px] flex items-center justify-center">
           <LogOut className="w-4 h-4 text-red-500" />
@@ -670,7 +688,6 @@ export const AdminPanelView = ({ setCurrentView, setToast }: any) => {
       </header>
 
       <div className="px-6 py-8 space-y-8 pb-32">
-        {/* Banner Section */}
         <div className="space-y-4">
           <label className="text-[10px] font-black uppercase tracking-[3px] text-purple-400 ml-2">Banner Image (16:9)</label>
           <div className="relative aspect-video bg-white/5 rounded-[2rem] border border-white/10 overflow-hidden group shadow-inner">
@@ -696,7 +713,6 @@ export const AdminPanelView = ({ setCurrentView, setToast }: any) => {
           )}
         </div>
 
-        {/* Profile Section */}
         <div className="space-y-4">
           <div className="space-y-1.5">
             <label className="text-[10px] font-black uppercase tracking-[3px] text-purple-400 ml-2">Display Name</label>
@@ -718,7 +734,6 @@ export const AdminPanelView = ({ setCurrentView, setToast }: any) => {
           </div>
         </div>
 
-        {/* Social Links Section */}
         <div className="space-y-5">
           <label className="text-[10px] font-black uppercase tracking-[3px] text-purple-400 ml-2">Social Links</label>
           {['Facebook', 'YouTube', 'Instagram', 'TikTok', 'WhatsApp', 'Telegram', 'Phone', 'Website'].map(key => (
@@ -749,6 +764,318 @@ export const AdminPanelView = ({ setCurrentView, setToast }: any) => {
           {isSaving ? "Saving..." : "Save & Publish"}
         </button>
       </div>
+    </div>
+  );
+};
+
+export const AdminPanelView = ({ setCurrentView, setToast }: any) => {
+  const [users, setUsers] = useState<any[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [searchTerm, setSearchTerm] = useState("");
+  const [selectedUser, setSelectedUser] = useState<any>(null);
+  const [loginHistory, setLoginHistory] = useState<any[]>([]);
+  const [stats, setStats] = useState({ total: 0, active: 0, blocked: 0, new: 0 });
+  const [isPerformingAction, setIsPerformingAction] = useState(false);
+
+  useEffect(() => {
+    fetchUsers();
+    fetchStats();
+  }, []);
+
+  const fetchUsers = async () => {
+    if (!supabase) return;
+    setLoading(true);
+    try {
+      const { data, error } = await supabase
+        .from('profiles')
+        .select(`
+          *,
+          subscriptions (*)
+        `)
+        .order('created_at', { ascending: false });
+      
+      if (error) throw error;
+      setUsers(data || []);
+    } catch (err: any) {
+      setToast("Failed to fetch users: " + err.message);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const fetchStats = async () => {
+    if (!supabase) return;
+    try {
+      const { data: totalData } = await supabase.from('profiles').select('id', { count: 'exact' });
+      const { data: blockedData } = await supabase.from('profiles').select('id', { count: 'exact' }).eq('status', 'blocked');
+      const { data: activeSubs } = await supabase.from('subscriptions').select('id', { count: 'exact' }).eq('status', 'active');
+      
+      const oneWeekAgo = new Date();
+      oneWeekAgo.setDate(oneWeekAgo.getDate() - 7);
+      const { data: newData } = await supabase.from('profiles').select('id', { count: 'exact' }).gt('created_at', oneWeekAgo.toISOString());
+
+      setStats({
+        total: (totalData as any)?.length || 0,
+        blocked: (blockedData as any)?.length || 0,
+        active: (activeSubs as any)?.length || 0,
+        new: (newData as any)?.length || 0
+      });
+    } catch (err) {}
+  };
+
+  const fetchUserHistory = async (userId: string) => {
+    if (!supabase) return;
+    try {
+      const { data, error } = await supabase
+        .from('login_events')
+        .select('*')
+        .eq('user_id', userId)
+        .order('created_at', { ascending: false })
+        .limit(20);
+      
+      if (error) throw error;
+      setLoginHistory(data || []);
+    } catch (err) {}
+  };
+
+  const adminAction = async (action: string, payload: any) => {
+    if (!supabase) return;
+    setIsPerformingAction(true);
+    try {
+      const { data, error } = await supabase.functions.invoke('admin-action', {
+        body: { action, ...payload }
+      });
+
+      if (error) throw error;
+      
+      setToast(`Action successful: ${action}`);
+      fetchUsers();
+      fetchStats();
+      if (selectedUser && selectedUser.id === payload.userId) {
+         // Refresh selected user if needed
+      }
+    } catch (err: any) {
+      setToast("Action failed: " + err.message);
+    } finally {
+      setIsPerformingAction(false);
+    }
+  };
+
+  const filteredUsers = users.filter(u => 
+    u.full_name?.toLowerCase().includes(searchTerm.toLowerCase()) ||
+    u.email?.toLowerCase().includes(searchTerm.toLowerCase()) ||
+    u.phone?.toLowerCase().includes(searchTerm.toLowerCase())
+  );
+
+  return (
+    <div className="fixed inset-0 z-[100] bg-[#020617] overflow-y-auto flex flex-col no-scrollbar">
+      <header className="px-5 py-6 flex items-center justify-between shrink-0 bg-[#020617]/80 backdrop-blur-xl sticky top-0 z-10 border-b border-white/5 min-h-[80px]">
+        <div className="flex items-center gap-4">
+          <button onClick={() => setCurrentView('settings')} className="p-2.5 bg-white/5 rounded-2xl active:scale-95 transition-transform min-w-[44px] min-h-[44px] flex items-center justify-center">
+            <ArrowLeft className="w-5 h-5 text-slate-300" />
+          </button>
+          <h3 className="text-xl font-black italic tracking-tighter uppercase text-white">User Management</h3>
+        </div>
+        <button onClick={() => setCurrentView('privacy')} className="p-2.5 bg-white/5 rounded-2xl active:scale-95 transition-transform min-w-[44px] min-h-[44px] flex items-center justify-center">
+           <Shield className="w-5 h-5 text-purple-400" />
+        </button>
+      </header>
+
+      <div className="px-6 py-8 space-y-8 pb-32">
+        {/* Stats Grid */}
+        <div className="grid grid-cols-2 gap-3">
+          {[
+            { label: 'Total Users', value: stats.total, color: 'text-white' },
+            { label: 'Active Subs', value: stats.active, color: 'text-emerald-400' },
+            { label: 'Blocked', value: stats.blocked, color: 'text-red-400' },
+            { label: 'New This Week', value: stats.new, color: 'text-purple-400' },
+          ].map((s, i) => (
+            <div key={i} className="bg-[#0F172A] border border-white/5 p-4 rounded-2xl">
+              <span className="text-[9px] font-black uppercase tracking-widest text-slate-500">{s.label}</span>
+              <p className={`text-2xl font-black italic ${s.color} mt-1`}>{s.value}</p>
+            </div>
+          ))}
+        </div>
+
+        {/* Search */}
+        <div className="relative">
+          <input 
+            type="text" 
+            placeholder="Search name, email or phone..."
+            value={searchTerm}
+            onChange={(e) => setSearchTerm(e.target.value)}
+            className="w-full bg-[#0F172A] border border-white/5 rounded-2xl p-4 text-sm font-bold text-white outline-none focus:ring-1 focus:ring-purple-500/50"
+          />
+        </div>
+
+        {/* Users List */}
+        <div className="space-y-3">
+          {loading ? (
+            <div className="flex flex-col items-center py-10 gap-3">
+               <Loader2 className="w-8 h-8 text-purple-600 animate-spin" />
+               <span className="text-[10px] font-bold text-slate-500 uppercase tracking-widest">Loading Users...</span>
+            </div>
+          ) : filteredUsers.map(user => {
+            const sub = user.subscriptions?.[0];
+            const isSubActive = sub && sub.status === 'active' && (!sub.ends_at || new Date(sub.ends_at) > new Date());
+            
+            return (
+              <div 
+                key={user.id} 
+                onClick={() => {
+                  setSelectedUser(user);
+                  fetchUserHistory(user.id);
+                }}
+                className={`w-full p-4 bg-[#0F172A]/80 border ${user.status === 'blocked' ? 'border-red-500/30' : 'border-white/5'} rounded-2xl active:bg-white/5 transition-colors text-left flex items-center justify-between group`}
+              >
+                <div className="flex items-center gap-4 overflow-hidden">
+                  <div className={`w-10 h-10 rounded-full flex items-center justify-center shrink-0 ${user.status === 'blocked' ? 'bg-red-500/10' : 'bg-purple-600/10'}`}>
+                    <User className={`w-5 h-5 ${user.status === 'blocked' ? 'text-red-500' : 'text-purple-400'}`} />
+                  </div>
+                  <div className="overflow-hidden">
+                    <h4 className="text-sm font-black text-white truncate">{user.full_name || 'Anonymous'}</h4>
+                    <p className="text-[10px] text-slate-500 font-bold truncate uppercase">{user.email}</p>
+                    <div className="flex items-center gap-2 mt-1">
+                       <span className={`text-[8px] font-black uppercase px-1.5 py-0.5 rounded ${user.status === 'blocked' ? 'bg-red-500/20 text-red-400' : 'bg-emerald-500/20 text-emerald-400'}`}>
+                         {user.status}
+                       </span>
+                       {isSubActive && (
+                         <span className="text-[8px] font-black uppercase px-1.5 py-0.5 rounded bg-amber-500/20 text-amber-400">
+                           Premium
+                         </span>
+                       )}
+                    </div>
+                  </div>
+                </div>
+                <ChevronRight className="w-4 h-4 text-slate-700 group-hover:text-slate-400 transition-colors" />
+              </div>
+            );
+          })}
+        </div>
+      </div>
+
+      {/* User Details Modal */}
+      <AnimatePresence>
+        {selectedUser && (
+          <div className="fixed inset-0 z-[150] flex flex-col bg-[#020617] animate-in slide-in-from-right duration-300">
+            <header className="px-5 py-6 flex items-center gap-4 shrink-0 bg-[#020617]/80 backdrop-blur-xl border-b border-white/5">
+              <button onClick={() => setSelectedUser(null)} className="p-2.5 bg-white/5 rounded-2xl"><ArrowLeft className="w-5 h-5 text-slate-300" /></button>
+              <div>
+                <h3 className="text-xl font-black italic tracking-tighter uppercase text-white">{selectedUser.full_name || 'User Details'}</h3>
+                <p className="text-[10px] text-slate-500 font-bold uppercase tracking-widest">{selectedUser.email}</p>
+              </div>
+            </header>
+
+            <div className="flex-1 overflow-y-auto p-6 space-y-8 pb-40">
+              {/* Profile Info */}
+              <div className="grid grid-cols-2 gap-4">
+                <div className="bg-[#0F172A] p-4 rounded-2xl border border-white/5">
+                  <span className="text-[9px] font-black uppercase tracking-widest text-slate-500">Phone</span>
+                  <p className="text-sm font-bold text-white mt-1">{selectedUser.phone || 'N/A'}</p>
+                </div>
+                <div className="bg-[#0F172A] p-4 rounded-2xl border border-white/5">
+                  <span className="text-[9px] font-black uppercase tracking-widest text-slate-500">Joined</span>
+                  <p className="text-sm font-bold text-white mt-1">{new Date(selectedUser.created_at).toLocaleDateString()}</p>
+                </div>
+              </div>
+
+              {/* Subscription Controls */}
+              <div className="space-y-4">
+                <h5 className="text-[10px] font-black uppercase tracking-[3px] text-purple-400 ml-2">Subscription</h5>
+                <div className="bg-[#0F172A] p-6 rounded-3xl border border-white/5 space-y-6">
+                  <div className="flex items-center justify-between">
+                    <div>
+                      <p className="text-xs font-bold text-slate-400">Current Status</p>
+                      <p className="text-lg font-black uppercase text-white">{selectedUser.subscriptions?.[0]?.status || 'None'}</p>
+                    </div>
+                    {selectedUser.subscriptions?.[0]?.ends_at && (
+                      <div className="text-right">
+                        <p className="text-xs font-bold text-slate-400">Expires</p>
+                        <p className="text-sm font-black text-amber-400">{new Date(selectedUser.subscriptions[0].ends_at).toLocaleDateString()}</p>
+                      </div>
+                    )}
+                  </div>
+
+                  <div className="grid grid-cols-3 gap-2">
+                    {[30, 90, 365].map(days => (
+                      <button 
+                        key={days}
+                        onClick={() => adminAction('activate_subscription', { userId: selectedUser.id, days })}
+                        disabled={isPerformingAction}
+                        className="py-3 bg-purple-600/10 border border-purple-500/30 rounded-xl text-[10px] font-black uppercase tracking-widest text-purple-400 hover:bg-purple-600 hover:text-white transition-all disabled:opacity-50"
+                      >
+                        +{days} Days
+                      </button>
+                    ))}
+                  </div>
+                  <button 
+                    onClick={() => adminAction('deactivate_subscription', { userId: selectedUser.id })}
+                    disabled={isPerformingAction}
+                    className="w-full py-3 bg-red-500/10 border border-red-500/20 rounded-xl text-[10px] font-black uppercase tracking-widest text-red-400 hover:bg-red-500 hover:text-white transition-all disabled:opacity-50"
+                  >
+                    Deactivate Subscription
+                  </button>
+                </div>
+              </div>
+
+              {/* Access Controls */}
+              <div className="space-y-4">
+                <h5 className="text-[10px] font-black uppercase tracking-[3px] text-red-400 ml-2">Danger Zone</h5>
+                <div className="flex gap-3">
+                  <button 
+                    onClick={() => adminAction(selectedUser.status === 'blocked' ? 'unblock_user' : 'block_user', { userId: selectedUser.id })}
+                    disabled={isPerformingAction}
+                    className={`flex-1 py-4 rounded-2xl font-black uppercase tracking-widest text-[10px] transition-all disabled:opacity-50 ${selectedUser.status === 'blocked' ? 'bg-emerald-600 text-white' : 'bg-red-600 text-white'}`}
+                  >
+                    {selectedUser.status === 'blocked' ? 'Unblock User' : 'Block User'}
+                  </button>
+                  <button 
+                    onClick={() => adminAction('force_logout', { userId: selectedUser.id })}
+                    disabled={isPerformingAction}
+                    className="flex-1 py-4 bg-white/5 border border-white/10 rounded-2xl font-black uppercase tracking-widest text-[10px] text-slate-400 disabled:opacity-50"
+                  >
+                    Force Logout
+                  </button>
+                </div>
+                <button 
+                  onClick={() => {
+                    if (window.confirm("ARE YOU SURE? This will permanently delete the user and all their data.")) {
+                      adminAction('delete_user', { userId: selectedUser.id });
+                    }
+                  }}
+                  disabled={isPerformingAction}
+                  className="w-full py-4 bg-red-950/30 border border-red-500/20 rounded-2xl font-black uppercase tracking-widest text-[10px] text-red-500 disabled:opacity-50"
+                >
+                  Delete User Account
+                </button>
+              </div>
+
+              {/* Login History */}
+              <div className="space-y-4">
+                <h5 className="text-[10px] font-black uppercase tracking-[3px] text-slate-500 ml-2">Recent Logins</h5>
+                <div className="space-y-2">
+                  {loginHistory.map((log, i) => (
+                    <div key={i} className="p-4 bg-[#0F172A] border border-white/5 rounded-2xl flex items-center justify-between gap-4">
+                      <div className="overflow-hidden">
+                        <p className="text-xs font-bold text-white truncate">{log.device || 'Unknown Device'}</p>
+                        <p className="text-[9px] text-slate-500 font-bold uppercase mt-1">
+                          {log.ip || 'No IP'} • {log.city || 'Unknown City'}, {log.country || ''}
+                        </p>
+                      </div>
+                      <span className="text-[9px] font-black text-slate-600 shrink-0 uppercase">
+                        {new Date(log.created_at).toLocaleString([], { dateStyle: 'short', timeStyle: 'short' })}
+                      </span>
+                    </div>
+                  ))}
+                  {loginHistory.length === 0 && (
+                    <p className="text-center py-10 text-[10px] font-bold text-slate-600 uppercase tracking-widest">No history records</p>
+                  )}
+                </div>
+              </div>
+            </div>
+          </div>
+        )}
+      </AnimatePresence>
     </div>
   );
 };

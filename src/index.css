@@ -79,3 +79,17 @@
   }
 }
 
+
+@layer base {
+  ::selection { background: rgba(139,92,246,0.5); color: #fff; }
+  input:-webkit-autofill,
+  input:-webkit-autofill:hover,
+  input:-webkit-autofill:focus,
+  input:-webkit-autofill:active {
+    -webkit-box-shadow: 0 0 0 1000px rgba(10,14,30,0.85) inset !important;
+    -webkit-text-fill-color: #ffffff !important;
+    caret-color: #ffffff;
+    border-radius: 999px;
+    transition: background-color 9999s ease-in-out 0s;
+  }
+}

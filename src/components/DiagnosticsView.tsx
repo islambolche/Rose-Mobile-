@@ -81,9 +81,8 @@ export const DiagnosticsView: React.FC<DiagnosticsViewProps> = ({
 
     try {
       // 1. Connecting
-      const protocol = window.location.protocol === "https:" ? "wss:" : "ws:";
-      const host = window.location.host;
-      const wsUrl = `${protocol}//${host}/api/live?minimal=1&apiKey=${encodeURIComponent(key)}`;
+      const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+      const wsUrl = `${protocol}//${window.location.host}/api/live?apiKey=${encodeURIComponent(key)}&minimal=1`;
       
       ws = new WebSocket(wsUrl);
 
@@ -98,11 +97,14 @@ export const DiagnosticsView: React.FC<DiagnosticsViewProps> = ({
 
       ws.onopen = async () => {
         clearTimeout(timeout);
-        updateStep(0, 'done');
-        updateStep(1, 'loading');
+        // Server handles setup
+      };
+
+      ws.onmessage = async (event) => {
+        const data = JSON.parse(event.data);
         
-        // 2. Opened
-        setTimeout(async () => {
+        if (data.setupComplete) {
+          updateStep(0, 'done');
           updateStep(1, 'done');
           updateStep(2, 'loading');
 
@@ -113,10 +115,13 @@ export const DiagnosticsView: React.FC<DiagnosticsViewProps> = ({
             updateStep(3, 'loading');
 
             // 4. Send dummy audio
-            // Just send a small silent buffer to trigger model
             const silentBuffer = new Int16Array(1600).buffer; 
             const base64Audio = btoa(String.fromCharCode(...new Uint8Array(silentBuffer)));
-            ws?.send(JSON.stringify({ audio: base64Audio }));
+            ws?.send(JSON.stringify({ 
+              realtime_input: { 
+                media_chunks: [{ data: base64Audio, mime_type: "audio/pcm;rate=16000" }] 
+              } 
+            }));
             
             updateStep(3, 'done');
             updateStep(4, 'loading');
@@ -126,20 +131,18 @@ export const DiagnosticsView: React.FC<DiagnosticsViewProps> = ({
             ws?.close();
             setIsTesting(false);
           }
-        }, 500);
-      };
+        }
 
-      ws.onmessage = (event) => {
-        const data = JSON.parse(event.data);
-        if (data.audio) {
+        if (data.serverContent?.modelTurn) {
           updateStep(4, 'done');
           setTestResult('PASS');
           ws?.close();
           setIsTesting(false);
         }
+
         if (data.error) {
-          const currentIdx = steps.findIndex(s => s.status === 'loading');
-          if (currentIdx !== -1) updateStep(currentIdx, 'error', data.error);
+          const currentIdx = steps.findIndex(s => s.status === 'loading' || s.status === 'pending');
+          if (currentIdx !== -1) updateStep(currentIdx, 'error', data.error.message || JSON.stringify(data.error));
           setTestResult('FAIL');
           ws?.close();
           setIsTesting(false);

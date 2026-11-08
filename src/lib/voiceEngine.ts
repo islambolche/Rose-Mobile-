@@ -127,7 +127,7 @@ export const getFriendlyErrorMessage = (rawError: any): string => {
     return "Server busy, retrying";
   }
 
-  return "Add your Gemini key in Settings > Connections";
+  return "Add your Gemini key in Settings";
 };
 
 // Helper: Fetch with 7s timeout and 1-time retry for transient errors
@@ -213,7 +213,7 @@ export async function generateVoiceAnswer(payload: {
   if (!groqKey) console.log("GROQ KEY MISSING");
 
   if (!userKey || !userKey.trim()) {
-    const errorMsg = "Add your Gemini key in Settings > Connections";
+    const errorMsg = "Add your Gemini key in Settings";
     logVoiceEvent("Answer Step", errorMsg, "error");
     throw new Error(errorMsg);
   }
@@ -251,7 +251,7 @@ export async function generateVoiceAnswer(payload: {
      try {
        const controller = new AbortController();
        const timeoutId = setTimeout(() => controller.abort(), 15000);
-       const res = await fetch("https://api.groq.com/openai/v1/chat/completions", {
+       const res = await fetch("/api/groq/chat", {
          method: "POST",
          headers: { "Authorization": `Bearer ${groqKey.trim().split(',')[0]}`, "Content-Type": "application/json" },
          body: JSON.stringify({
@@ -292,16 +292,19 @@ export async function generateVoiceAnswer(payload: {
       try {
         if (attempts > 1) await new Promise(r => setTimeout(r, 1000));
         
-        const res = await fetchWithTimeoutAndRetry("/api/gemini/generate", {
+        const url = `/api/gemini/generate`;
+        
+        const body = {
+          contents: history,
+          systemInstruction: strictSystemInstruction,
+          model: modelCandidate,
+          apiKey: apiKey
+        };
+
+        const res = await fetchWithTimeoutAndRetry(url, {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            model: modelCandidate,
-            contents: history,
-            systemInstruction: strictSystemInstruction,
-            generationConfig: { maxOutputTokens: 150, temperature: 0.7 },
-            apiKey,
-          }),
+          body: JSON.stringify(body),
         }, 7000);
 
         const data = await res.json();
@@ -353,6 +356,23 @@ export const PERSONALITY_TTS_PROMPT_PREFIX: Record<string, string> = {
   "Calm guide": "Say in a calm, peaceful, soothing voice: ",
   "Normal": "Say in a sweet, soft, natural voice: ",
 };
+
+async function discoverTtsModelsDirect(apiKey: string): Promise<string[]> {
+  try {
+    const res = await fetch(`/api/gemini/models?apiKey=${encodeURIComponent(apiKey)}`);
+    if (!res.ok) return [];
+    const data = await res.json();
+    return (data?.models || [])
+      .filter((m: any) => {
+        const name = String(m?.name || '').replace(/^models\//, '');
+        const methods: string[] = m?.supportedGenerationMethods || [];
+        return name.toLowerCase().includes('tts') && methods.includes('generateContent');
+      })
+      .map((m: any) => String(m.name).replace(/^models\//, ''));
+  } catch (e) {
+    return [];
+  }
+}
 
 // Generate Voice TTS Step with IndexedDB Caching and Quota Fallbacks
 export async function generateVoiceTTS(payload: {
@@ -427,7 +447,7 @@ export async function generateVoiceTTS(payload: {
     return {
       modelUsed: "none",
       useBrowserSynth: false,
-      quotaExhaustedNotice: "Add your Gemini key in Settings > Connections",
+      quotaExhaustedNotice: "Add your Gemini key in Settings",
     };
   }
 
@@ -457,20 +477,18 @@ export async function generateVoiceTTS(payload: {
 
   for (const ttsModelCandidate of candidateTTSModels) {
     try {
-      const res = await fetchWithTimeoutAndRetry(
-        "/api/gemini/tts",
-        {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            model: ttsModelCandidate,
-            text: formattedText,
-            voiceName,
-            apiKey,
-          }),
-        },
-        5000
-      );
+      const url = `/api/gemini/tts`;
+      
+      const res = await fetchWithTimeoutAndRetry(url, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          text: formattedText,
+          voiceName: voiceName || "Leda",
+          apiKey: apiKey,
+          model: ttsModelCandidate
+        }),
+      }, 5000);
 
       if (!res.ok) {
         const errData = await res.json().catch(() => ({}));
@@ -485,17 +503,30 @@ export async function generateVoiceTTS(payload: {
       const data = await res.json();
       const ttsMs = Date.now() - ttsStartTime;
 
-      if (data && data.audio) {
+      const rawAudio = data.candidates?.[0]?.content?.parts?.find((p: any) => p.inlineData)?.inlineData?.data;
+
+      if (rawAudio) {
+        // Strip RIFF header if present
+        let processedB64 = rawAudio;
+        try {
+          const binary = atob(rawAudio);
+          if (binary.length > 44 && binary.slice(0, 4) === 'RIFF') {
+            const bytes = new Uint8Array(binary.length - 44);
+            for (let i = 44; i < binary.length; i++) bytes[i - 44] = binary.charCodeAt(i);
+            let binaryString = '';
+            for (let i = 0; i < bytes.length; i++) binaryString += String.fromCharCode(bytes[i]);
+            processedB64 = btoa(binaryString);
+          }
+        } catch (e) {}
+
         incrementTTSCalls();
         activeCachedTTSModel = ttsModelCandidate;
         localStorage.setItem("cached_tts_model", ttsModelCandidate);
         
-        // Save to IndexedDB cache
-        await saveCachedAudio(formattedText, voiceName, data.audio);
-
+        await saveCachedAudio(formattedText, voiceName, processedB64);
         logVoiceEvent("TTS Active", `Generated TTS in ${ttsMs}ms using ${ttsModelCandidate}`, "success");
         return {
-          audioBase64: data.audio,
+          audioBase64: processedB64,
           modelUsed: ttsModelCandidate,
           useBrowserSynth: false,
           ttsMs,

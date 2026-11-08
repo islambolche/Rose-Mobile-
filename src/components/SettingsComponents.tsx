@@ -124,17 +124,6 @@ export const testLiveVoiceModelConnection = async (
   }
 
   let apiKey = getGeminiKey();
-  if (!apiKey) {
-    try {
-      const tokenRes = await fetch("/api/keys/get-live-token");
-      if (tokenRes.ok) {
-        const tokenData = await tokenRes.json();
-        if (tokenData?.token) {
-          apiKey = String(tokenData.token).trim();
-        }
-      }
-    } catch (e) {}
-  }
 
   if (!apiKey) {
     return { ok: false, error: "Gemini API key is missing. Add your key in Connections." };
@@ -142,12 +131,8 @@ export const testLiveVoiceModelConnection = async (
 
   return new Promise((resolve) => {
     let settled = false;
-    const protocol = window.location.protocol === "https:" ? "wss:" : "ws:";
-    const wsUrl =
-      `${protocol}//${window.location.host}/api/live?` +
-      `model=${encodeURIComponent(trimmed)}&` +
-      `apiKey=${encodeURIComponent(apiKey)}&` +
-      `minimal=1`;
+    const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+    const wsUrl = `${protocol}//${window.location.host}/api/live?model=${encodeURIComponent(trimmed)}&apiKey=${encodeURIComponent(apiKey)}&minimal=1`;
 
     let ws: WebSocket | null = null;
     const finish = (result: { ok: boolean; error?: string }) => {
@@ -172,19 +157,17 @@ export const testLiveVoiceModelConnection = async (
 
     try {
       ws = new WebSocket(wsUrl);
+      ws.onopen = () => {
+        // Server handles setup
+      };
       ws.onmessage = (event) => {
         try {
           const msg = JSON.parse(event.data);
           if (msg.error) {
-            finish({ ok: false, error: String(msg.error) });
+            finish({ ok: false, error: String(msg.error.message || msg.error) });
             return;
           }
           if (msg.setupComplete) {
-            // If server fell back to default model because targetModel failed
-            if (msg.model && msg.model !== trimmed) {
-              finish({ ok: false, error: `Model "${trimmed}" failed to connect` });
-              return;
-            }
             finish({ ok: true });
           }
         } catch (e) {}

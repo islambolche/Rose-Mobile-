@@ -20,7 +20,12 @@ export async function askAI(messages: Message[], apiKeys: ApiKeys, modelId?: str
   const model = modelId || 'gemini-3.5-flash';
   const provider = getModelRoute(model);
   const key = apiKeys[provider as keyof ApiKeys];
-  const providerUrl = provider === 'groq' ? '/api/groq/chat' : '/api/gemini/generate';
+  const providerObj = PROVIDERS.find(p => p.id === provider) || PROVIDERS[0];
+  let providerUrl = providerObj.url;
+
+  if (provider === 'gemini') {
+    providerUrl = providerObj.url;
+  }
 
   if (!key && provider === 'groq') {
     // Fallback to gemini if groq key is missing
@@ -53,7 +58,6 @@ async function callProvider(providerId: string, baseUrl: string, key: string, me
     'Content-Type': 'application/json',
   };
   
-  // Only add Auth header if not using our proxy (gemini/groq)
   if (providerId !== 'gemini' && providerId !== 'groq') {
     headers['Authorization'] = `Bearer ${key}`;
   }
@@ -133,10 +137,22 @@ function formatPayload(providerId: string, messages: Message[], key?: string, mo
   if (providerId === 'gemini') {
     const systemInstruction = messages.find(m => m.role === 'system')?.content || "";
     return {
+      model: modelId || 'gemini-3.5-flash',
+      apiKey: key,
       systemInstruction,
       contents: prepareHistory(messages.map(m => ({ role: m.role, text: m.content })), systemInstruction),
-      apiKey: key,
-      model: modelId || "gemini-3.8-flash",
+      generationConfig: {
+        maxOutputTokens: 1000,
+        temperature: 0.7,
+      }
+    };
+  }
+  
+  if (providerId === 'groq') {
+    return {
+      model: modelId || 'llama-3.1-70b-versatile',
+      messages,
+      apiKey: key
     };
   }
 
