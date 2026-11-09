@@ -103,6 +103,29 @@ export const ConnectionsView = ({
   };
 
   const [testResult, setTestResult] = useState<Record<string, { loading?: boolean; text?: string; ok?: boolean }>>({});
+  const [speedTestResult, setSpeedTestResult] = useState<{ loading?: boolean; lines?: Array<{ model: string; text: string; ok: boolean }> }>({});
+
+  const handleSpeedTest = async () => {
+    const rawVal = typedKeys['gemini'] || getGeminiKey() || '';
+    const key = rawVal.replace(/[\r\n\t\s]+/g, "").trim();
+    if (!key) {
+      setSpeedTestResult({ loading: false, lines: [{ model: 'gemini', text: 'Add your key first', ok: false }] });
+      return;
+    }
+    setSpeedTestResult({ loading: true, lines: [] });
+    try {
+      const { runGeminiSpeedTest } = await import('../lib/ai-service');
+      const finalLines = await runGeminiSpeedTest(key, (progressLines) => {
+        setSpeedTestResult({ loading: true, lines: progressLines });
+      });
+      setSpeedTestResult({ loading: false, lines: finalLines });
+    } catch (err: any) {
+      setSpeedTestResult({
+        loading: false,
+        lines: [{ model: 'gemini', text: err?.message || 'Speed test failed', ok: false }],
+      });
+    }
+  };
 
   const handleTest = async (id: string) => {
     const rawVal = typedKeys[id] || '';
@@ -327,16 +350,45 @@ export const ConnectionsView = ({
                 <button 
                   onClick={() => handleTest(p.id)}
                   disabled={testResult[p.id]?.loading}
-                  className="px-4 h-[48px] bg-purple-500/10 hover:bg-purple-500/20 border border-purple-500/30 text-purple-300 font-black uppercase text-[11px] tracking-widest rounded-2xl active:scale-[0.98] transition-all flex items-center justify-center gap-1.5 shrink-0"
+                  className="px-3.5 h-[48px] bg-purple-500/10 hover:bg-purple-500/20 border border-purple-500/30 text-purple-300 font-black uppercase text-[11px] tracking-widest rounded-2xl active:scale-[0.98] transition-all flex items-center justify-center gap-1.5 shrink-0"
                 >
                   {testResult[p.id]?.loading ? <Loader2 className="w-4 h-4 animate-spin" /> : <Sparkles className="w-3.5 h-3.5" />}
                   Test
                 </button>
+                {p.id === 'gemini' && (
+                  <button
+                    onClick={handleSpeedTest}
+                    disabled={speedTestResult.loading}
+                    className="px-3.5 h-[48px] bg-indigo-500/10 hover:bg-indigo-500/20 border border-indigo-500/30 text-indigo-300 font-black uppercase text-[11px] tracking-widest rounded-2xl active:scale-[0.98] transition-all flex items-center justify-center gap-1.5 shrink-0"
+                  >
+                    {speedTestResult.loading ? <Loader2 className="w-4 h-4 animate-spin" /> : null}
+                    Speed test
+                  </button>
+                )}
               </div>
 
               {testResult[p.id]?.text && (
                 <div className={`p-3 rounded-2xl border text-[11px] font-mono break-words ${testResult[p.id]?.ok ? 'bg-emerald-500/10 border-emerald-500/30 text-emerald-300' : 'bg-rose-500/10 border-rose-500/30 text-rose-300'}`}>
                   {testResult[p.id]?.text}
+                </div>
+              )}
+
+              {p.id === 'gemini' && (speedTestResult.loading || (speedTestResult.lines && speedTestResult.lines.length > 0)) && (
+                <div className="p-3 rounded-2xl border border-white/10 bg-black/40 text-[11px] font-mono space-y-1">
+                  {speedTestResult.lines?.map((item) => (
+                    <div
+                      key={item.model}
+                      className={`break-words ${item.ok ? 'text-emerald-300' : 'text-rose-300'}`}
+                    >
+                      {item.text}
+                    </div>
+                  ))}
+                  {speedTestResult.loading && (
+                    <div className="text-slate-400 text-[10px] flex items-center gap-1.5">
+                      <Loader2 className="w-3 h-3 animate-spin" />
+                      Testing models...
+                    </div>
+                  )}
                 </div>
               )}
 

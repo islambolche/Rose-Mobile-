@@ -77,6 +77,7 @@ import { Developer, LiveModelSettings } from "./components/SettingsComponents";
 import { LiveVoiceBars } from "./components/LiveVoiceBars";
 import { getGeminiKey, setGeminiKey, initGeminiKey } from "./lib/geminiKey";
 import { ProfileView, PrivacyView, AdminPanelView, AdminProfileSettingsView } from "./components/ProfileViews";
+import { AccessGate } from "./components/AccessGate";
 import { ConnectionsView } from "./components/Connections";
 import { APP_NAVIGATION_KNOWLEDGE } from "./lib/appKnowledge";
 import {
@@ -90,7 +91,7 @@ import { storage } from "./lib/storage";
 import rosePortraitImg from "./assets/images/rose_portrait_1793010994175.jpg";
 import realisticAssistantImg from "./assets/images/iyabd_realistic_assistant_1792805556831.jpg";
 import * as Permissions from "./lib/permissions";
-import { directGeminiGenerate, directGeminiStream, directGeminiTTS, formatGeminiErrorForUI, TEXT_MODELS, getSavedWorkingTextModel } from "./lib/ai-service";
+import { directGeminiGenerate, directGeminiStream, directGeminiTTS, formatGeminiErrorForUI, TEXT_MODELS, getSavedWorkingTextModel, discoverAvailableFlashModels } from "./lib/ai-service";
 import {
   GEMINI_PHONE_TOOLS,
   browserPhoneBridge,
@@ -2117,6 +2118,10 @@ const Onboarding = ({ onComplete }: { onComplete: () => void }) => {
   };
 
   const allowAll = async () => {
+    try {
+      localStorage.setItem("onboardingDone", "true");
+    } catch (e) {}
+
     setIsAllowing(true);
 
     // 1. Microphone (with 8-sec timeout)
@@ -2127,7 +2132,7 @@ const Onboarding = ({ onComplete }: { onComplete: () => void }) => {
       setMicStatus("Skipped");
     }
 
-    // 2. Notifications (only if 'Notification' in window, called directly in click handler with 8-sec timeout)
+    // 2. Notifications (with 8-sec timeout)
     try {
       if (isIframe) {
         setNotifIframeNotice("Open the app link in a new Chrome tab to allow notifications");
@@ -2154,18 +2159,14 @@ const Onboarding = ({ onComplete }: { onComplete: () => void }) => {
 
     setIsAllowing(false);
     setAllowAllDone(true);
+    proceedToHome();
+  };
 
+  const handleSkip = () => {
     try {
       localStorage.setItem("onboardingDone", "true");
     } catch (e) {}
 
-    // 1. Automatically go to Home page after 1.5 seconds
-    autoAdvanceTimerRef.current = setTimeout(() => {
-      proceedToHome();
-    }, 1500);
-  };
-
-  const handleSkip = () => {
     Permissions.savePermissionToMap("phoneCalls", "Allowed");
     if (!hasContactsApi) {
       Permissions.savePermissionToMap("contacts", "Needs Android app");
@@ -2532,6 +2533,7 @@ export function App() {
   }, [chatHistory]);
 
   const [interimSpeechText, setInterimSpeechText] = useState<string>("");
+  const [thinkingSeconds, setThinkingSeconds] = useState<number>(0);
 
   const pushSharedMessage = useCallback(
     (msg: {
@@ -2540,6 +2542,7 @@ export function App() {
       text: string;
       time?: string;
       debugLine?: string;
+      retryText?: string;
     }) => {
       const cleanText = String(msg.text ?? "").trim();
       if (!cleanText) return;
@@ -2558,6 +2561,7 @@ export function App() {
         content: cleanText,
         time: nowTime,
         ...(msg.debugLine ? { debugLine: msg.debugLine } : {}),
+        ...(msg.retryText ? { retryText: msg.retryText } : {}),
       };
 
       setChatHistory((prev) => {
@@ -5237,24 +5241,29 @@ export function App() {
         const payload = {
           contents: historyWithoutSystem,
           systemInstruction: systemInst,
-          tools: GEMINI_PHONE_TOOLS,
           generationConfig: {
             maxOutputTokens: targetMaxTokens,
-            thinkingConfig: { thinkingBudget: 0 },
+            temperature: 0.7,
           },
           apiKey: sanitizedKey,
         };
 
-        // Stream response so text appears immediately as it arrives; each request has its own 15s timeout and the chain may take up to 40s
-        const geminiRes: any = await directGeminiStream(payload, (deltaText: string) => {
-          if (speechTokenRef.current !== turnToken) return;
-          fullAccumulatedText += deltaText;
-          sentenceBuffer += deltaText;
+        const geminiRes: any = await directGeminiGenerate(payload);
+        if (speechTokenRef.current !== turnToken) return;
+
+        const fullReplyText =
+          geminiRes?.text ||
+          geminiRes?.candidates?.[0]?.content?.parts
+            ?.map((p: any) => p?.text || "")
+            .join("")
+            .trim() ||
+          "";
+        if (fullReplyText) {
+          fullAccumulatedText = fullReplyText;
+          sentenceBuffer = fullReplyText;
           updateSharedRoseBubble(fullAccumulatedText);
           extractCompletedSentences();
-        });
-
-        if (speechTokenRef.current !== turnToken) return;
+        }
 
         const candidates = geminiRes?.candidates || [];
         const parts = candidates[0]?.content?.parts || [];
@@ -5347,6 +5356,7 @@ export function App() {
             role: "system",
             text: bengaliMessage,
             debugLine,
+            retryText: userText,
           });
         }
       } finally {
@@ -7565,8 +7575,24 @@ export function App() {
     processVoiceInputWithGemini(text, true);
   };
 
+  const isThinkingActive =
+    speakingState === "thinking" || sessionState === "THINKING" || status === "processing";
+
+  useEffect(() => {
+    if (!isThinkingActive) {
+      setThinkingSeconds(0);
+      return;
+    }
+    setThinkingSeconds(0);
+    const interval = setInterval(() => {
+      setThinkingSeconds((prev) => prev + 1);
+    }, 1000);
+    return () => clearInterval(interval);
+  }, [isThinkingActive]);
+
   const renderChat = () => {
-    const isThinking = speakingState === "thinking" || sessionState === "THINKING";
+    const isThinking =
+      speakingState === "thinking" || sessionState === "THINKING" || status === "processing";
     const hasInterim = interimSpeechText.trim().length > 0;
     return (
       <div className="relative flex-1 min-h-0 flex flex-col overflow-hidden w-full bg-[#020617]">
@@ -7628,16 +7654,46 @@ export function App() {
                 const timeStr = msg.time || (msg.timestamp ? (typeof msg.timestamp === 'string' ? msg.timestamp : new Date(msg.timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })) : "");
 
                 if (isSystem) {
+                  const fallbackUserMsg = chatHistory
+                    .slice(0, idx)
+                    .reverse()
+                    .find((m) => m.role === "user");
+                  const retryTargetText = String(
+                    (msg as any).retryText ||
+                      fallbackUserMsg?.text ||
+                      fallbackUserMsg?.content ||
+                      ""
+                  ).trim();
+
                   return (
                     <div
                       key={msg.id || idx}
                       className="flex flex-col w-full items-center my-1"
                     >
-                      <div className="max-w-[90%] px-4 py-2.5 rounded-2xl bg-rose-950/90 border border-rose-500/50 text-rose-200 text-xs font-semibold text-center shadow-lg break-words">
-                        {msgText}
+                      <div className="max-w-[90%] px-4 py-2.5 rounded-2xl bg-rose-950/90 border border-rose-500/50 text-rose-200 text-xs font-semibold text-center shadow-lg break-words flex flex-col items-center gap-1.5">
+                        <span>{msgText}</span>
+                        {retryTargetText && (
+                          <button
+                            type="button"
+                            onClick={() => {
+                              setChatHistory((prev) => {
+                                const next = prev.filter((item, i) =>
+                                  msg.id ? item.id !== msg.id : i !== idx
+                                );
+                                chatHistoryRef.current = next;
+                                return next;
+                              });
+                              processVoiceInputWithGemini(retryTargetText, true);
+                            }}
+                            className="inline-flex items-center gap-1 px-2.5 py-1 rounded-lg bg-rose-500/20 hover:bg-rose-500/35 border border-rose-400/40 text-rose-100 text-[10px] font-bold uppercase tracking-wider active:scale-95 transition-all"
+                          >
+                            <RotateCcw className="w-3 h-3" />
+                            Retry
+                          </button>
+                        )}
                       </div>
                       {(msg as any).debugLine && (
-                        <div className="max-w-[92%] text-[10px] text-slate-400 font-mono text-center mt-1 break-words px-2">
+                        <div className="max-w-[92%] text-[10px] text-slate-400 font-mono text-center mt-1 break-words px-2 whitespace-pre-line">
                           {(msg as any).debugLine}
                         </div>
                       )}
@@ -7738,7 +7794,7 @@ export function App() {
                       {renderRoseFlowerSvg("w-4 h-4")}
                     </div>
                     <div className="bg-[#0F172A]/85 backdrop-blur-md border border-purple-500/25 text-purple-300 rounded-2xl rounded-tl-sm px-4 py-2.5 text-xs font-semibold italic animate-pulse shadow-lg">
-                      Rose is thinking...
+                      Rose is thinking... ({thinkingSeconds}s)
                     </div>
                   </div>
                 </div>

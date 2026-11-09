@@ -17,7 +17,20 @@ export const ChatView = ({
     isThinking: boolean
 }) => {
     const [inputText, setInputText] = useState("");
+    const [thinkingSeconds, setThinkingSeconds] = useState(0);
     const scrollRef = useRef<HTMLDivElement>(null);
+
+    useEffect(() => {
+        if (!isThinking) {
+            setThinkingSeconds(0);
+            return;
+        }
+        setThinkingSeconds(0);
+        const timer = setInterval(() => {
+            setThinkingSeconds((prev) => prev + 1);
+        }, 1000);
+        return () => clearInterval(timer);
+    }, [isThinking]);
 
     useEffect(() => {
         if (scrollRef.current) {
@@ -61,11 +74,27 @@ export const ChatView = ({
                     const timeStr = m.time || (m.timestamp ? (typeof m.timestamp === 'string' ? m.timestamp : new Date(m.timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })) : "");
 
                     if (isSystem) {
+                        const fallbackUser = chatHistory.slice(0, idx).reverse().find((u) => u.role === "user" || (u as any).sender === "user");
+                        const retryText = String((m as any).retryText || fallbackUser?.text || fallbackUser?.content || "").trim();
                         return (
                             <div key={m.id || idx} className="flex flex-col w-full items-center my-1">
-                                <div className="max-w-[90%] px-4 py-2.5 rounded-2xl bg-rose-950/90 border border-rose-500/50 text-rose-200 text-xs font-semibold text-center shadow-lg break-words">
-                                    {textContent}
+                                <div className="max-w-[90%] px-4 py-2.5 rounded-2xl bg-rose-950/90 border border-rose-500/50 text-rose-200 text-xs font-semibold text-center shadow-lg break-words flex flex-col items-center gap-1.5">
+                                    <span>{textContent}</span>
+                                    {retryText && (
+                                        <button
+                                            type="button"
+                                            onClick={() => processCommand(retryText)}
+                                            className="inline-flex items-center gap-1 px-2.5 py-1 rounded-lg bg-rose-500/20 hover:bg-rose-500/35 border border-rose-400/40 text-rose-100 text-[10px] font-bold uppercase tracking-wider active:scale-95 transition-all"
+                                        >
+                                            Retry
+                                        </button>
+                                    )}
                                 </div>
+                                {(m as any).debugLine && (
+                                    <div className="max-w-[92%] text-[10px] text-slate-400 font-mono text-center mt-1 break-words px-2 whitespace-pre-line">
+                                        {(m as any).debugLine}
+                                    </div>
+                                )}
                                 {timeStr && (
                                     <span className="text-[10px] text-slate-400 font-medium mt-1">{timeStr}</span>
                                 )}
@@ -105,7 +134,7 @@ export const ChatView = ({
                                 <span className="text-xs">🌹</span>
                             </div>
                             <div className="bg-[#0F172A]/85 backdrop-blur-md border border-purple-500/25 text-purple-300 rounded-2xl rounded-tl-sm px-4 py-2.5 text-xs font-semibold italic animate-pulse shadow-lg">
-                                Rose is thinking...
+                                Rose is thinking... ({thinkingSeconds}s)
                             </div>
                         </div>
                     </div>

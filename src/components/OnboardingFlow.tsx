@@ -84,6 +84,10 @@ export const OnboardingFlow: React.FC<OnboardingFlowProps> = ({ onComplete }) =>
   // Handle "Allow All" - must never block, 8s timeouts, always finishes onboarding
   const handleAllowAll = async () => {
     try {
+      localStorage.setItem("onboardingDone", "true");
+    } catch (e) {}
+
+    try {
       const micRes = await Permissions.requestMicrophoneWithTimeout(8000);
       setMicStatus(micRes);
     } catch (e) {
@@ -108,9 +112,7 @@ export const OnboardingFlow: React.FC<OnboardingFlowProps> = ({ onComplete }) =>
     }
     Permissions.savePermissionToMap("notificationAccess", "Needs Android app");
 
-    setTimeout(() => {
-      finishOnboarding();
-    }, 1500);
+    finishOnboarding();
   };
 
   // Touch Swipe handlers

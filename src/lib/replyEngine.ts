@@ -1,4 +1,4 @@
-import { directGeminiStream, TEXT_MODELS } from "./ai-service";
+import { directGeminiGenerate, TEXT_MODELS } from "./ai-service";
 import { getGeminiKey } from "./geminiKey";
 
 export async function getReply(
@@ -18,16 +18,17 @@ export async function getReply(
   const finalModel = model && model.startsWith("gemini") ? model : TEXT_MODELS[0];
 
   try {
-    const result = await directGeminiStream(
-      {
-        model: finalModel,
-        contents: messages,
-        systemInstruction: systemInstruction,
-        apiKey: cleanKey,
-      },
-      onToken
-    );
-    return result.text;
+    const result = await directGeminiGenerate({
+      model: finalModel,
+      contents: messages,
+      systemInstruction: systemInstruction,
+      apiKey: cleanKey,
+    });
+    const text = result.text || result?.candidates?.[0]?.content?.parts?.map((p: any) => p?.text || "").join("").trim() || "";
+    if (text && onToken) {
+      onToken(text);
+    }
+    return text;
   } catch (e: any) {
     console.error(e);
     throw new Error(

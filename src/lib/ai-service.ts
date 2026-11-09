@@ -1,15 +1,45 @@
 import { prepareHistory, extractLastUserText } from './ai-utils';
 import { getGeminiKey } from './geminiKey';
 
-const TEXT_MODELS = ["gemini-2.5-flash", "gemini-2.0-flash", "gemini-1.5-flash", "gemini-2.5-flash-lite"];
+const TEXT_MODELS = [
+  'gemini-flash-lite-latest',
+  'gemini-flash-latest',
+  'gemini-2.5-flash-lite',
+  'gemini-2.5-flash',
+  'gemini-2.0-flash',
+];
 export { TEXT_MODELS };
 
 const WORKING_MODEL_STORAGE_KEY = 'working_gemini_text_model';
+const WORKING_MODEL_TIME_STORAGE_KEY = 'working_gemini_text_model_ms';
+const WORKING_MODEL_RESET_FLAG = 'working_gemini_text_model_reset_v3';
 
-export const GEMINI_PER_REQUEST_TIMEOUT_MS = 15000;
-export const GEMINI_TOTAL_CHAIN_TIMEOUT_MS = 40000;
+export const MAX_FAST_WORKING_MODEL_MS = 8000;
+export const GEMINI_HEDGE_DELAY_MS = 5000;
+export const GEMINI_PER_REQUEST_TIMEOUT_MS = 25000;
+export const GEMINI_TOTAL_CHAIN_TIMEOUT_MS = 25000;
 const GEMINI_TTS_PER_REQUEST_TIMEOUT_MS = 15000;
 const GEMINI_TTS_TOTAL_CHAIN_TIMEOUT_MS = 40000;
+
+export interface GeminiAttemptLog {
+  model: string;
+  status: string | number;
+  seconds: string;
+  error?: string;
+}
+
+const ensureOneTimeWorkingModelReset = () => {
+  try {
+    if (typeof window === 'undefined') return;
+    if (localStorage.getItem(WORKING_MODEL_RESET_FLAG) !== 'true') {
+      localStorage.removeItem(WORKING_MODEL_STORAGE_KEY);
+      localStorage.removeItem(WORKING_MODEL_TIME_STORAGE_KEY);
+      localStorage.setItem(WORKING_MODEL_RESET_FLAG, 'true');
+    }
+  } catch (e) {}
+};
+
+ensureOneTimeWorkingModelReset();
 
 export const sanitizeOutApiKey = (text: string, apiKey?: string): string => {
   if (!text) return '';
@@ -52,7 +82,7 @@ export const formatGeminiErrorForUI = (
     err?.elapsedSeconds !== undefined
       ? String(err.elapsedSeconds)
       : isTimeout
-        ? '15.0'
+        ? '25.0'
         : '0.0';
 
   let rawGoogleMsg = String(
@@ -75,7 +105,13 @@ export const formatGeminiErrorForUI = (
     .replace(/\s+/g, ' ')
     .trim();
 
-  const debugLine = `model: ${modelName} | status: ${statusVal} | time: ${timeSec}s | ${sanitizedFullText}`;
+  const attempts: GeminiAttemptLog[] = Array.isArray(err?.attempts) ? err.attempts : [];
+  const debugLine =
+    attempts.length > 0
+      ? attempts
+          .map((a) => `${a.model} | ${a.status} | ${String(a.seconds).replace(/s$/i, '')}s`)
+          .join('\n')
+      : `${modelName} | ${statusVal} | ${String(timeSec).replace(/s$/i, '')}s`;
 
   if (/Add your Gemini key in Settings/i.test(sanitizedFullText)) {
     return {
@@ -132,7 +168,7 @@ export const formatGeminiErrorForUI = (
   }
 
   return {
-    bengaliMessage: 'অনুরোধের গড়নে সমস্যা, অ্যাপ নিজে ঠিক করার চেষ্টা করছে',
+    bengaliMessage: 'নেটওয়ার্ক ধীর বা মডেল ব্যস্ত',
     debugLine,
   };
 };
@@ -154,25 +190,45 @@ const isDeprecatedOrLiveModel = (modelName?: string): boolean => {
 export const getSavedWorkingTextModel = (): string | null => {
   try {
     if (typeof window === 'undefined') return null;
+    ensureOneTimeWorkingModelReset();
     const saved = (localStorage.getItem(WORKING_MODEL_STORAGE_KEY) || '')
       .replace(/^models\//, '')
       .trim();
-    if (saved && !isDeprecatedOrLiveModel(saved)) {
-      return saved;
-    }
-    if (saved && isDeprecatedOrLiveModel(saved)) {
+    if (!saved) return null;
+
+    if (isDeprecatedOrLiveModel(saved)) {
       localStorage.removeItem(WORKING_MODEL_STORAGE_KEY);
+      localStorage.removeItem(WORKING_MODEL_TIME_STORAGE_KEY);
+      return null;
     }
+
+    const savedMsRaw = localStorage.getItem(WORKING_MODEL_TIME_STORAGE_KEY);
+    const savedMs = savedMsRaw !== null ? Number(savedMsRaw) : NaN;
+    if (isNaN(savedMs) || savedMs >= MAX_FAST_WORKING_MODEL_MS) {
+      localStorage.removeItem(WORKING_MODEL_STORAGE_KEY);
+      localStorage.removeItem(WORKING_MODEL_TIME_STORAGE_KEY);
+      return null;
+    }
+
+    return saved;
   } catch (e) {}
   return null;
 };
 
-export const saveWorkingTextModel = (modelName: string) => {
+export const saveWorkingTextModel = (modelName: string, elapsedMs?: number) => {
   try {
     if (typeof window === 'undefined') return;
+    ensureOneTimeWorkingModelReset();
     const clean = modelName.replace(/^models\//, '').trim();
-    if (clean && !isDeprecatedOrLiveModel(clean)) {
-      localStorage.setItem(WORKING_MODEL_STORAGE_KEY, clean);
+    if (!clean || isDeprecatedOrLiveModel(clean)) return;
+
+    if (elapsedMs !== undefined) {
+      if (elapsedMs < MAX_FAST_WORKING_MODEL_MS) {
+        localStorage.setItem(WORKING_MODEL_STORAGE_KEY, clean);
+        localStorage.setItem(WORKING_MODEL_TIME_STORAGE_KEY, String(Math.round(elapsedMs)));
+      } else {
+        clearWorkingTextModelIfMatches(clean);
+      }
     }
   } catch (e) {}
 };
@@ -181,8 +237,9 @@ const clearWorkingTextModelIfMatches = (failedModel: string) => {
   try {
     if (typeof window === 'undefined') return;
     const current = localStorage.getItem(WORKING_MODEL_STORAGE_KEY);
-    if (current && current.replace(/^models\//, '').trim() === failedModel) {
+    if (current && current.replace(/^models\//, '').trim() === failedModel.replace(/^models\//, '').trim()) {
       localStorage.removeItem(WORKING_MODEL_STORAGE_KEY);
+      localStorage.removeItem(WORKING_MODEL_TIME_STORAGE_KEY);
     }
   } catch (e) {}
 };
@@ -206,10 +263,12 @@ const storeMinimalBodyForModel = (modelName: string) => {
 };
 
 const isRetryableModelStatus = (status: any): boolean => {
+  if (status === 'timeout' || status === 'network_error') return true;
   const code = Number(status);
   return (
     code === 400 ||
     code === 404 ||
+    code === 408 ||
     code === 429 ||
     code === 500 ||
     code === 502 ||
@@ -296,21 +355,49 @@ const fetchWithSignalTimeout = async (
   timeoutMs: number,
   modelName = TEXT_MODELS[0],
   reqStartTime = Date.now(),
-  cleanKey = ''
+  cleanKey = '',
+  externalSignal?: AbortSignal
 ): Promise<Response> => {
   const controller = new AbortController();
+  const onExternalAbort = () => {
+    try {
+      controller.abort(externalSignal?.reason || 'aborted');
+    } catch (e) {
+      controller.abort();
+    }
+  };
+
+  if (externalSignal) {
+    if (externalSignal.aborted) {
+      onExternalAbort();
+    } else {
+      externalSignal.addEventListener('abort', onExternalAbort, { once: true });
+    }
+  }
+
   const timer = setTimeout(() => {
     try {
+      controller.abort('timeout');
+    } catch (e) {
       controller.abort();
-    } catch (e) {}
+    }
   }, timeoutMs);
+
   try {
     return await fetch(input, { ...init, signal: controller.signal });
   } catch (err: any) {
     const elapsedSeconds = ((Date.now() - reqStartTime) / 1000).toFixed(1);
-    if (err?.name === 'AbortError') {
+    const reason = controller.signal.reason || externalSignal?.reason;
+    if (reason === 'hedged_winner') {
+      const cancelErr: any = new Error('Cancelled because another model replied first');
+      cancelErr.isHedgedCancel = true;
+      cancelErr.modelName = modelName;
+      cancelErr.elapsedSeconds = elapsedSeconds;
+      throw cancelErr;
+    }
+    if (err?.name === 'AbortError' || reason === 'timeout' || reason === 'overall_timeout') {
       const timeoutSec = Math.round(timeoutMs / 1000);
-      const tErr: any = new Error(`Request timed out after ${timeoutSec}s`);
+      const tErr: any = new Error(`Request timed out after ${elapsedSeconds}s`);
       tErr.isTimeout = true;
       tErr.status = 'timeout';
       tErr.modelName = modelName;
@@ -332,6 +419,9 @@ const fetchWithSignalTimeout = async (
     throw netErr;
   } finally {
     clearTimeout(timer);
+    if (externalSignal) {
+      externalSignal.removeEventListener('abort', onExternalAbort);
+    }
   }
 };
 
@@ -339,13 +429,12 @@ const buildBodyForRequest = (
   contents: any[],
   systemInstruction?: any,
   generationConfig?: any,
-  tools?: any[],
-  toolConfig?: any,
   isMinimal = false
 ) => {
-  const sysText = typeof systemInstruction === 'string'
-    ? systemInstruction
-    : (systemInstruction as any)?.parts?.[0]?.text || '';
+  const sysText =
+    typeof systemInstruction === 'string'
+      ? systemInstruction
+      : (systemInstruction as any)?.parts?.[0]?.text || '';
 
   if (isMinimal) {
     const lastUserText = extractLastUserText(contents);
@@ -381,13 +470,6 @@ const buildBodyForRequest = (
     };
   }
 
-  if (tools && Array.isArray(tools) && tools.length > 0) {
-    body.tools = tools;
-    if (toolConfig) {
-      body.toolConfig = toolConfig;
-    }
-  }
-
   return body;
 };
 
@@ -397,9 +479,8 @@ const callGeminiTextEndpoint = async (params: {
   systemInstruction?: string;
   generationConfig?: any;
   apiKey?: string;
-  tools?: any[];
-  toolConfig?: any;
   timeoutMs?: number;
+  signal?: AbortSignal;
 }) => {
   const {
     model,
@@ -407,9 +488,8 @@ const callGeminiTextEndpoint = async (params: {
     systemInstruction,
     generationConfig,
     apiKey,
-    tools,
-    toolConfig,
     timeoutMs = GEMINI_PER_REQUEST_TIMEOUT_MS,
+    signal,
   } = params;
 
   const cleanKey = String(apiKey || getGeminiKey() || '')
@@ -430,7 +510,12 @@ const callGeminiTextEndpoint = async (params: {
   }
 
   const startMinimal = isMinimalBodyStoredForModel(cleanModel);
-  let directBody = buildBodyForRequest(contents, systemInstruction, generationConfig, tools, toolConfig, startMinimal);
+  const directBody = buildBodyForRequest(
+    contents,
+    systemInstruction,
+    generationConfig,
+    startMinimal
+  );
 
   const url = `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(cleanModel)}:generateContent?key=${encodeURIComponent(cleanKey)}`;
   const reqStartTime = Date.now();
@@ -446,12 +531,19 @@ const callGeminiTextEndpoint = async (params: {
     perReqTimeout,
     cleanModel,
     reqStartTime,
-    cleanKey
+    cleanKey,
+    signal
   );
 
   // AUTO-RETRY ON 400: if standard request failed with 400 invalid argument, retry once with minimal body
-  if (res.status === 400 && !startMinimal) {
-    const minimalBody = buildBodyForRequest(contents, systemInstruction, generationConfig, tools, toolConfig, true);
+  if (res.status === 400 && !startMinimal && !signal?.aborted) {
+    const minimalBody = buildBodyForRequest(
+      contents,
+      systemInstruction,
+      generationConfig,
+      true
+    );
+    const remainingMs = Math.max(2000, perReqTimeout - (Date.now() - reqStartTime));
     const retryRes = await fetchWithSignalTimeout(
       url,
       {
@@ -459,20 +551,20 @@ const callGeminiTextEndpoint = async (params: {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(minimalBody),
       },
-      perReqTimeout,
+      remainingMs,
       cleanModel,
       reqStartTime,
-      cleanKey
+      cleanKey,
+      signal
     );
     if (retryRes.ok) {
       storeMinimalBodyForModel(cleanModel);
-      res = retryRes;
-    } else {
-      res = retryRes;
     }
+    res = retryRes;
   }
 
-  const elapsedSeconds = ((Date.now() - reqStartTime) / 1000).toFixed(1);
+  const elapsedMs = Date.now() - reqStartTime;
+  const elapsedSeconds = (elapsedMs / 1000).toFixed(1);
   const rawBodyText = await res.text().catch(() => '');
 
   let parsed: any = null;
@@ -518,235 +610,32 @@ const callGeminiTextEndpoint = async (params: {
     throw err;
   }
 
-  if (startMinimal || res.ok) {
-    storeMinimalBodyForModel(cleanModel);
-  }
+  const replyText =
+    parsed?.candidates?.[0]?.content?.parts
+      ?.map((p: any) => p?.text || '')
+      .join('')
+      .trim() || '';
 
-  return { ...parsed, modelUsed: cleanModel };
-};
-
-const callGeminiStreamEndpoint = async (params: {
-  model: string;
-  contents: any[];
-  systemInstruction?: string;
-  generationConfig?: any;
-  apiKey: string;
-  tools?: any[];
-  toolConfig?: any;
-  onTextChunk: (deltaText: string) => void;
-  timeoutMs?: number;
-}) => {
-  const {
-    model,
-    contents,
-    systemInstruction,
-    generationConfig,
-    apiKey,
-    tools,
-    toolConfig,
-    onTextChunk,
-    timeoutMs = GEMINI_PER_REQUEST_TIMEOUT_MS,
-  } = params;
-
-  const cleanKey = String(apiKey || getGeminiKey() || '')
-    .replace(/[\r\n\t\s"']+/g, '')
-    .trim();
-  const cleanModel =
-    String(model || TEXT_MODELS[0]).replace(/^models\//, '').trim() || TEXT_MODELS[0];
-
-  if (!cleanKey) {
-    const missingErr: any = new Error('Add your Gemini key in Settings > Connections.');
-    missingErr.bodyText = 'Add your Gemini key in Settings > Connections.';
-    missingErr.googleMessage = 'Add your Gemini key in Settings > Connections.';
-    missingErr.modelName = cleanModel;
-    missingErr.status = 400;
-    missingErr.elapsedSeconds = '0.0';
-    throw missingErr;
-  }
-
-  const startMinimal = isMinimalBodyStoredForModel(cleanModel);
-  let directBody = buildBodyForRequest(contents, systemInstruction, generationConfig, tools, toolConfig, startMinimal);
-
-  const url = `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(cleanModel)}:streamGenerateContent?alt=sse&key=${encodeURIComponent(cleanKey)}`;
-  const reqStartTime = Date.now();
-  const perReqTimeout = Math.min(GEMINI_PER_REQUEST_TIMEOUT_MS, Math.max(1000, timeoutMs));
-
-  let res = await fetchWithSignalTimeout(
-    url,
-    {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(directBody),
-    },
-    perReqTimeout,
-    cleanModel,
-    reqStartTime,
-    cleanKey
-  );
-
-  // AUTO-RETRY ON 400: if stream request returned 400, retry once with minimal body
-  if (res.status === 400 && !startMinimal) {
-    const minimalBody = buildBodyForRequest(contents, systemInstruction, generationConfig, tools, toolConfig, true);
-    const retryRes = await fetchWithSignalTimeout(
-      url,
-      {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(minimalBody),
-      },
-      perReqTimeout,
-      cleanModel,
-      reqStartTime,
-      cleanKey
-    );
-    if (retryRes.ok) {
-      storeMinimalBodyForModel(cleanModel);
-      res = retryRes;
-    } else {
-      res = retryRes;
-    }
-  }
-
-  if (!res.ok) {
-    const elapsedSeconds = ((Date.now() - reqStartTime) / 1000).toFixed(1);
-    const rawBodyText = await res.text().catch(() => '');
-    let parsed: any = null;
-    try {
-      parsed = rawBodyText ? JSON.parse(rawBodyText) : null;
-      if (Array.isArray(parsed) && parsed[0]) parsed = parsed[0];
-    } catch {}
-    const rawGoogleErr = sanitizeOutApiKey(
-      parsed?.error?.message || rawBodyText || `HTTP ${res.status}`,
-      cleanKey
-    );
-    const googleErrMsg = parsed?.error?.message
-      ? `${rawGoogleErr} (HTTP ${res.status})`
-      : `Cannot reach Gemini. Check your internet and your Gemini key. (HTTP ${res.status})`;
-    const err: any = new Error(googleErrMsg);
-    err.status = res.status;
-    err.modelName = cleanModel;
-    err.elapsedSeconds = elapsedSeconds;
-    err.googleMessage = rawGoogleErr;
-    err.errorDetails = parsed?.error?.details;
-    err.bodyText = googleErrMsg;
-    throw err;
-  }
-
-  let fullText = '';
-  const collectedParts: any[] = [];
-
-  const processParsedChunk = (chunkObj: any) => {
-    const parts = chunkObj?.candidates?.[0]?.content?.parts;
-    if (Array.isArray(parts)) {
-      for (const p of parts) {
-        if (typeof p?.text === 'string' && p.text) {
-          fullText += p.text;
-          collectedParts.push(p);
-          onTextChunk(p.text);
-        } else if (p?.functionCall) {
-          collectedParts.push(p);
-        }
-      }
-    }
-  };
-
-  if (res.body && typeof res.body.getReader === 'function') {
-    const reader = res.body.getReader();
-    const decoder = new TextDecoder('utf-8');
-    let buffer = '';
-
-    while (true) {
-      const readPromise = reader.read();
-      const timeoutPromise = new Promise<never>((_, reject) => {
-        setTimeout(() => {
-          try {
-            reader.cancel();
-          } catch {}
-          const tErr: any = new Error('Request timed out after 15s');
-          tErr.isTimeout = true;
-          tErr.status = 'timeout';
-          tErr.modelName = cleanModel;
-          tErr.elapsedSeconds = ((Date.now() - reqStartTime) / 1000).toFixed(1);
-          tErr.googleMessage = 'Request timed out after 15s';
-          tErr.bodyText = 'Request timed out after 15s';
-          reject(tErr);
-        }, GEMINI_PER_REQUEST_TIMEOUT_MS);
-      });
-
-      const { done, value } = await Promise.race([readPromise, timeoutPromise]);
-      if (done) break;
-      buffer += decoder.decode(value, { stream: true });
-
-      const lines = buffer.split(/\r?\n/);
-      buffer = lines.pop() || '';
-
-      for (const line of lines) {
-        const trimmed = line.trim();
-        if (!trimmed.startsWith('data:')) continue;
-        const dataStr = trimmed.slice(5).trim();
-        if (!dataStr || dataStr === '[DONE]') continue;
-        try {
-          const parsedChunk = JSON.parse(dataStr);
-          processParsedChunk(parsedChunk);
-        } catch {}
-      }
-    }
-
-    if (buffer.trim().startsWith('data:')) {
-      const dataStr = buffer.trim().slice(5).trim();
-      if (dataStr && dataStr !== '[DONE]') {
-        try {
-          processParsedChunk(JSON.parse(dataStr));
-        } catch {}
-      }
-    }
-  } else {
-    const rawText = await res.text().catch(() => '');
-    const lines = rawText.split(/\r?\n/);
-    let parsedAny = false;
-    for (const line of lines) {
-      const trimmed = line.trim();
-      if (trimmed.startsWith('data:')) {
-        const dataStr = trimmed.slice(5).trim();
-        if (dataStr && dataStr !== '[DONE]') {
-          try {
-            processParsedChunk(JSON.parse(dataStr));
-            parsedAny = true;
-          } catch {}
-        }
-      }
-    }
-    if (!parsedAny && rawText.trim()) {
-      try {
-        const fallbackJson = JSON.parse(rawText);
-        if (Array.isArray(fallbackJson)) {
-          fallbackJson.forEach(processParsedChunk);
-        } else {
-          processParsedChunk(fallbackJson);
-        }
-      } catch {}
-    }
+  if (!replyText && !parsed?.candidates?.[0]?.content?.parts?.some((p: any) => p?.functionCall)) {
+    const emptyErr: any = new Error(`Empty reply from ${cleanModel}`);
+    emptyErr.status = 'empty';
+    emptyErr.modelName = cleanModel;
+    emptyErr.elapsedSeconds = elapsedSeconds;
+    emptyErr.googleMessage = 'Empty reply received from Gemini';
+    throw emptyErr;
   }
 
   return {
-    text: fullText,
+    ...parsed,
+    text: replyText,
     modelUsed: cleanModel,
-    candidates: [
-      {
-        content: {
-          parts:
-            collectedParts.length > 0
-              ? collectedParts
-              : [{ text: fullText }],
-        },
-      },
-    ],
+    elapsedMs,
+    elapsedSeconds,
   };
 };
 
 export const directGeminiGenerate = async (payload: any) => {
-  const { contents, systemInstruction, generationConfig, apiKey, tools, toolConfig, model } =
-    payload || {};
+  const { contents, systemInstruction, generationConfig, apiKey, model } = payload || {};
 
   const cleanKey = String(apiKey || getGeminiKey() || '')
     .replace(/[\r\n\t\s"']+/g, '')
@@ -759,6 +648,13 @@ export const directGeminiGenerate = async (payload: any) => {
     missingErr.modelName = getSavedWorkingTextModel() || TEXT_MODELS[0];
     missingErr.status = 400;
     missingErr.elapsedSeconds = '0.0';
+    missingErr.attempts = [
+      {
+        model: missingErr.modelName,
+        status: 'missing_key',
+        seconds: '0.0',
+      },
+    ];
     throw missingErr;
   }
 
@@ -775,19 +671,29 @@ export const directGeminiGenerate = async (payload: any) => {
     ? normalizedContents
     : prepareHistory(normalizedContents);
 
-  const deadline = Date.now() + GEMINI_TOTAL_CHAIN_TIMEOUT_MS;
+  const overallStart = Date.now();
+  const deadline = overallStart + GEMINI_TOTAL_CHAIN_TIMEOUT_MS;
   const initialModels = buildOrderedModelList(model);
 
   const triedModels = new Set<string>();
+  const attempts: GeminiAttemptLog[] = [];
   let lastError: any = null;
-  let allFailedWithRetryableStatus = true;
 
-  for (const candidateModel of initialModels) {
-    const remainingChainMs = deadline - Date.now();
-    if (remainingChainMs <= 0) {
-      break;
+  const overallController = new AbortController();
+  const overallTimer = setTimeout(() => {
+    try {
+      overallController.abort('overall_timeout');
+    } catch (e) {
+      overallController.abort();
     }
-    const perReqTimeoutMs = Math.min(GEMINI_PER_REQUEST_TIMEOUT_MS, remainingChainMs);
+  }, GEMINI_TOTAL_CHAIN_TIMEOUT_MS);
+
+  const runSingleAttempt = async (
+    candidateModel: string,
+    parentSignal: AbortSignal
+  ): Promise<any> => {
+    const remainingMs = Math.max(1000, deadline - Date.now());
+    const attemptStart = Date.now();
     triedModels.add(candidateModel);
     try {
       const result = await callGeminiTextEndpoint({
@@ -796,155 +702,279 @@ export const directGeminiGenerate = async (payload: any) => {
         systemInstruction,
         generationConfig,
         apiKey: cleanKey,
-        tools,
-        toolConfig,
-        timeoutMs: perReqTimeoutMs,
+        timeoutMs: remainingMs,
+        signal: parentSignal,
       });
-      saveWorkingTextModel(candidateModel);
+      saveWorkingTextModel(candidateModel, result.elapsedMs);
       return result;
     } catch (err: any) {
+      if (err?.isHedgedCancel) {
+        throw err;
+      }
+      const elapsedSec =
+        err?.elapsedSeconds || ((Date.now() - attemptStart) / 1000).toFixed(1);
+      const statusStr = err?.isTimeout
+        ? 'timeout'
+        : err?.status !== undefined
+          ? String(err.status)
+          : 'error';
+      attempts.push({
+        model: candidateModel,
+        status: statusStr,
+        seconds: String(elapsedSec).replace(/s$/i, ''),
+        error: err?.googleMessage || err?.message,
+      });
       lastError = err;
       clearWorkingTextModelIfMatches(candidateModel);
-      if (!isRetryableModelStatus(err?.status)) {
-        allFailedWithRetryableStatus = false;
-        break;
-      }
-      if (Date.now() >= deadline) break;
+      throw err;
     }
-  }
+  };
 
-  if (allFailedWithRetryableStatus && Date.now() < deadline) {
-    const discoveredModels = await discoverAvailableFlashModels(cleanKey, triedModels);
-    for (const discoveredModel of discoveredModels) {
-      const remainingChainMs = deadline - Date.now();
-      if (remainingChainMs <= 0) break;
-      const perReqTimeoutMs = Math.min(GEMINI_PER_REQUEST_TIMEOUT_MS, remainingChainMs);
-      triedModels.add(discoveredModel);
+  try {
+    // Hedge race between first and second model (5s head start for first model)
+    if (initialModels.length >= 2) {
+      const firstModel = initialModels[0];
+      const secondModel = initialModels[1];
+
+      const ctrl1 = new AbortController();
+      const ctrl2 = new AbortController();
+
+      const onOverallAbort = () => {
+        try {
+          ctrl1.abort('overall_timeout');
+        } catch (e) {}
+        try {
+          ctrl2.abort('overall_timeout');
+        } catch (e) {}
+      };
+      overallController.signal.addEventListener('abort', onOverallAbort, { once: true });
+
+      const raceResult = await new Promise<any>((resolve, reject) => {
+        let settled = false;
+        let secondStarted = false;
+        let pendingCount = 1;
+        let hedgeTimer: any = null;
+
+        const startSecond = () => {
+          if (settled || secondStarted || Date.now() >= deadline || overallController.signal.aborted) {
+            if (pendingCount === 0 && !settled) {
+              settled = true;
+              reject(lastError || new Error('Gemini request failed'));
+            }
+            return;
+          }
+          // Do not start second model if first failed due to invalid API key (401/403)
+          if (lastError && (lastError.status === 401 || lastError.status === 403)) {
+            if (pendingCount === 0 && !settled) {
+              settled = true;
+              reject(lastError);
+            }
+            return;
+          }
+          secondStarted = true;
+          pendingCount++;
+          runSingleAttempt(secondModel, ctrl2.signal)
+            .then((res) => {
+              if (settled) return;
+              settled = true;
+              if (hedgeTimer) clearTimeout(hedgeTimer);
+              try {
+                ctrl1.abort('hedged_winner');
+              } catch (e) {}
+              resolve(res);
+            })
+            .catch(() => {
+              pendingCount--;
+              if (pendingCount === 0 && !settled) {
+                settled = true;
+                if (hedgeTimer) clearTimeout(hedgeTimer);
+                reject(lastError || new Error('Gemini request failed'));
+              }
+            });
+        };
+
+        hedgeTimer = setTimeout(() => {
+          startSecond();
+        }, GEMINI_HEDGE_DELAY_MS);
+
+        runSingleAttempt(firstModel, ctrl1.signal)
+          .then((res) => {
+            if (settled) return;
+            settled = true;
+            if (hedgeTimer) clearTimeout(hedgeTimer);
+            try {
+              ctrl2.abort('hedged_winner');
+            } catch (e) {}
+            resolve(res);
+          })
+          .catch(() => {
+            pendingCount--;
+            if (hedgeTimer) {
+              clearTimeout(hedgeTimer);
+              hedgeTimer = null;
+            }
+            if (!secondStarted) {
+              startSecond();
+            } else if (pendingCount === 0 && !settled) {
+              settled = true;
+              reject(lastError || new Error('Gemini request failed'));
+            }
+          });
+      }).finally(() => {
+        overallController.signal.removeEventListener('abort', onOverallAbort);
+      });
+
+      return raceResult;
+    } else if (initialModels.length === 1) {
+      return await runSingleAttempt(initialModels[0], overallController.signal);
+    }
+  } catch (raceErr: any) {
+    // If key is invalid (401/403), do not try further models
+    if (lastError && (lastError.status === 401 || lastError.status === 403)) {
+      lastError.attempts = attempts;
+      throw lastError;
+    }
+
+    // Try remaining models sequentially if time remains within 25s
+    const remainingModels = initialModels.slice(2);
+    for (const nextModel of remainingModels) {
+      if (Date.now() >= deadline || overallController.signal.aborted) break;
       try {
-        const result = await callGeminiTextEndpoint({
-          model: discoveredModel,
-          contents: preparedContents,
-          systemInstruction,
-          generationConfig,
-          apiKey: cleanKey,
-          tools,
-          toolConfig,
-          timeoutMs: perReqTimeoutMs,
-        });
-        saveWorkingTextModel(discoveredModel);
-        return result;
+        return await runSingleAttempt(nextModel, overallController.signal);
       } catch (err: any) {
-        lastError = err;
         if (!isRetryableModelStatus(err?.status)) break;
-        if (Date.now() >= deadline) break;
       }
     }
+
+    // Only run model discovery if all static models failed and time remains
+    if (Date.now() + 2000 < deadline && !overallController.signal.aborted) {
+      const discovered = await discoverAvailableFlashModels(cleanKey, triedModels);
+      for (const dm of discovered) {
+        if (Date.now() >= deadline || overallController.signal.aborted) break;
+        try {
+          return await runSingleAttempt(dm, overallController.signal);
+        } catch (err: any) {
+          if (!isRetryableModelStatus(err?.status)) break;
+        }
+      }
+    }
+  } finally {
+    clearTimeout(overallTimer);
   }
 
-  throw lastError || new Error('Cannot reach Gemini. Check your internet and your Gemini key.');
+  const finalErr: any =
+    lastError || new Error('Cannot reach Gemini. Check your internet and your Gemini key.');
+  finalErr.attempts = attempts;
+  throw finalErr;
 };
 
+// Non-streaming fallback for any legacy callers of directGeminiStream
 export const directGeminiStream = async (
   payload: any,
-  onTextChunk: (deltaText: string) => void
+  onTextChunk?: (deltaText: string) => void
 ) => {
-  const { contents, systemInstruction, generationConfig, apiKey, tools, toolConfig, model } =
-    payload || {};
+  const res = await directGeminiGenerate(payload);
+  const fullText =
+    res?.text ||
+    res?.candidates?.[0]?.content?.parts
+      ?.map((p: any) => p?.text || '')
+      .join('')
+      .trim() ||
+    '';
+  if (fullText && typeof onTextChunk === 'function') {
+    onTextChunk(fullText);
+  }
+  return {
+    ...res,
+    text: fullText,
+  };
+};
 
+export const runGeminiSpeedTest = async (
+  apiKey?: string,
+  onProgress?: (results: Array<{ model: string; text: string; ok: boolean; ms?: number }>) => void
+): Promise<Array<{ model: string; text: string; ok: boolean; ms?: number }>> => {
   const cleanKey = String(apiKey || getGeminiKey() || '')
     .replace(/[\r\n\t\s"']+/g, '')
     .trim();
 
   if (!cleanKey) {
-    const missingErr: any = new Error('Add your Gemini key in Settings > Connections.');
-    missingErr.bodyText = 'Add your Gemini key in Settings > Connections.';
-    missingErr.googleMessage = 'Add your Gemini key in Settings > Connections.';
-    missingErr.modelName = getSavedWorkingTextModel() || TEXT_MODELS[0];
-    missingErr.status = 400;
-    missingErr.elapsedSeconds = '0.0';
-    throw missingErr;
+    return [{ model: 'gemini', text: 'Add your key first', ok: false }];
   }
 
-  const normalizedContents = Array.isArray(contents) ? contents : [];
-  const hasRichParts = normalizedContents.some(
-    (c: any) =>
-      Array.isArray(c?.parts) &&
-      c.parts.some(
-        (p: any) => p?.inlineData || p?.inline_data || p?.functionCall || p?.functionResponse
-      )
-  );
+  const results: Array<{ model: string; text: string; ok: boolean; ms?: number }> = [];
+  let fastestModel: string | null = null;
+  let fastestMs = Infinity;
 
-  const preparedContents = hasRichParts
-    ? normalizedContents
-    : prepareHistory(normalizedContents);
-
-  const deadline = Date.now() + GEMINI_TOTAL_CHAIN_TIMEOUT_MS;
-  const initialModels = buildOrderedModelList(model);
-
-  const triedModels = new Set<string>();
-  let lastError: any = null;
-  let allFailedWithRetryableStatus = true;
-
-  for (const candidateModel of initialModels) {
-    const remainingChainMs = deadline - Date.now();
-    if (remainingChainMs <= 0) break;
-    const perReqTimeoutMs = Math.min(GEMINI_PER_REQUEST_TIMEOUT_MS, remainingChainMs);
-    triedModels.add(candidateModel);
+  for (const model of TEXT_MODELS) {
+    const start = Date.now();
     try {
-      const result = await callGeminiStreamEndpoint({
-        model: candidateModel,
-        contents: preparedContents,
-        systemInstruction,
-        generationConfig,
-        apiKey: cleanKey,
-        tools,
-        toolConfig,
-        onTextChunk,
-        timeoutMs: perReqTimeoutMs,
-      });
-      saveWorkingTextModel(candidateModel);
-      return result;
-    } catch (err: any) {
-      lastError = err;
-      clearWorkingTextModelIfMatches(candidateModel);
-      if (!isRetryableModelStatus(err?.status)) {
-        allFailedWithRetryableStatus = false;
-        break;
-      }
-      if (Date.now() >= deadline) break;
-    }
-  }
-
-  if (allFailedWithRetryableStatus && Date.now() < deadline) {
-    const discoveredModels = await discoverAvailableFlashModels(cleanKey, triedModels);
-    for (const discoveredModel of discoveredModels) {
-      const remainingChainMs = deadline - Date.now();
-      if (remainingChainMs <= 0) break;
-      const perReqTimeoutMs = Math.min(GEMINI_PER_REQUEST_TIMEOUT_MS, remainingChainMs);
-      triedModels.add(discoveredModel);
+      const url = `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(model)}:generateContent?key=${encodeURIComponent(cleanKey)}`;
+      const res = await fetchWithSignalTimeout(
+        url,
+        {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            contents: [{ role: 'user', parts: [{ text: 'Hi' }] }],
+            generationConfig: { maxOutputTokens: 10 },
+          }),
+        },
+        12000,
+        model,
+        start,
+        cleanKey
+      );
+      const elapsedMs = Date.now() - start;
+      const sec = (elapsedMs / 1000).toFixed(2);
+      const rawText = await res.text().catch(() => '');
+      let parsed: any = null;
       try {
-        const result = await callGeminiStreamEndpoint({
-          model: discoveredModel,
-          contents: preparedContents,
-          systemInstruction,
-          generationConfig,
-          apiKey: cleanKey,
-          tools,
-          toolConfig,
-          onTextChunk,
-          timeoutMs: perReqTimeoutMs,
+        parsed = rawText ? JSON.parse(rawText) : null;
+      } catch {}
+
+      if (res.ok && parsed?.candidates?.[0]?.content?.parts?.[0]?.text) {
+        results.push({
+          model,
+          text: `${model}: ${sec} seconds`,
+          ok: true,
+          ms: elapsedMs,
         });
-        saveWorkingTextModel(discoveredModel);
-        return result;
-      } catch (err: any) {
-        lastError = err;
-        if (!isRetryableModelStatus(err?.status)) break;
-        if (Date.now() >= deadline) break;
+        if (elapsedMs < fastestMs) {
+          fastestMs = elapsedMs;
+          fastestModel = model;
+        }
+      } else {
+        const errMsg = parsed?.error?.message
+          ? `${parsed.error.message} (HTTP ${res.status})`
+          : `HTTP ${res.status}`;
+        results.push({
+          model,
+          text: `${model}: ${sanitizeOutApiKey(errMsg, cleanKey)}`,
+          ok: false,
+        });
       }
+    } catch (err: any) {
+      const sec = ((Date.now() - start) / 1000).toFixed(1);
+      const msg = err?.isTimeout
+        ? `timeout (${sec}s)`
+        : sanitizeOutApiKey(err?.message || 'error', cleanKey);
+      results.push({
+        model,
+        text: `${model}: ${msg}`,
+        ok: false,
+      });
+    }
+    if (onProgress) {
+      onProgress([...results]);
     }
   }
 
-  throw lastError || new Error('Cannot reach Gemini. Check your internet and your Gemini key.');
+  if (fastestModel && fastestMs < MAX_FAST_WORKING_MODEL_MS) {
+    saveWorkingTextModel(fastestModel, fastestMs);
+  }
+
+  return results;
 };
 
 const WORKING_TTS_MODEL_STORAGE_KEY = 'working_gemini_tts_model';
