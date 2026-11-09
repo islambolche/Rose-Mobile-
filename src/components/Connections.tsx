@@ -102,6 +102,51 @@ export const ConnectionsView = ({
     return key.slice(0, 4) + '...' + key.slice(-4);
   };
 
+  const [testResult, setTestResult] = useState<Record<string, { loading?: boolean; text?: string; ok?: boolean }>>({});
+
+  const handleTest = async (id: string) => {
+    const rawVal = typedKeys[id] || '';
+    const key = rawVal.replace(/[\r\n\t\s]+/g, "").trim();
+    if (!key) {
+      setTestResult(prev => ({ ...prev, [id]: { text: 'Add your key first', ok: false } }));
+      return;
+    }
+
+    if (id !== 'gemini') {
+      setTestResult(prev => ({ ...prev, [id]: { text: 'Key saved', ok: true } }));
+      return;
+    }
+
+    setTestResult(prev => ({ ...prev, [id]: { loading: true } }));
+    const model = getSavedWorkingTextModel() || TEXT_MODELS[0];
+    try {
+      const url = `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(model)}:generateContent?key=${encodeURIComponent(key)}`;
+      const res = await fetch(url, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          contents: [{ role: 'user', parts: [{ text: 'Hi' }] }],
+        }),
+      });
+      const rawText = await res.text().catch(() => '');
+      let parsed: any = null;
+      try { parsed = rawText ? JSON.parse(rawText) : null; } catch {}
+
+      if (res.ok && parsed?.candidates?.[0]?.content?.parts?.[0]?.text) {
+        const reply = parsed.candidates[0].content.parts[0].text.trim();
+        const msg = `OK (${model}): ${reply}`;
+        setTestResult(prev => ({ ...prev, [id]: { loading: false, text: msg, ok: true } }));
+      } else {
+        const { sanitizeOutApiKey } = await import('../lib/ai-service');
+        const rawErr = parsed?.error?.message ? `${parsed.error.message} (HTTP ${res.status})` : (rawText.slice(0, 150) || `HTTP ${res.status}`);
+        setTestResult(prev => ({ ...prev, [id]: { loading: false, text: sanitizeOutApiKey(rawErr, key), ok: false } }));
+      }
+    } catch (err: any) {
+      const { sanitizeOutApiKey } = await import('../lib/ai-service');
+      setTestResult(prev => ({ ...prev, [id]: { loading: false, text: sanitizeOutApiKey(err?.message || 'Cannot reach Gemini', key), ok: false } }));
+    }
+  };
+
   const handleSave = async (id: 'gemini' | 'groq' | 'elevenlabs') => {
     const rawVal = typedKeys[id] || '';
     const key = rawVal.replace(/[\r\n\t\s]+/g, "").trim();
@@ -272,12 +317,28 @@ export const ConnectionsView = ({
             </div>
 
             <div className="flex flex-col gap-2">
-              <button 
+              <div className="flex items-center gap-2">
+                <button 
                   onClick={() => window.open(p.link, "_blank", "noopener,noreferrer")}
-                  className="w-full h-[48px] bg-[#161f33] rounded-2xl border border-purple-500/30 text-purple-400 font-black uppercase text-[11px] tracking-widest flex items-center justify-center gap-2 active:scale-[0.98] transition-all"
-              >
+                  className="flex-1 h-[48px] bg-[#161f33] rounded-2xl border border-purple-500/30 text-purple-400 font-black uppercase text-[11px] tracking-widest flex items-center justify-center gap-2 active:scale-[0.98] transition-all"
+                >
                   Get Key <ExternalLink className="w-3.5 h-3.5" />
-              </button>
+                </button>
+                <button 
+                  onClick={() => handleTest(p.id)}
+                  disabled={testResult[p.id]?.loading}
+                  className="px-4 h-[48px] bg-purple-500/10 hover:bg-purple-500/20 border border-purple-500/30 text-purple-300 font-black uppercase text-[11px] tracking-widest rounded-2xl active:scale-[0.98] transition-all flex items-center justify-center gap-1.5 shrink-0"
+                >
+                  {testResult[p.id]?.loading ? <Loader2 className="w-4 h-4 animate-spin" /> : <Sparkles className="w-3.5 h-3.5" />}
+                  Test
+                </button>
+              </div>
+
+              {testResult[p.id]?.text && (
+                <div className={`p-3 rounded-2xl border text-[11px] font-mono break-words ${testResult[p.id]?.ok ? 'bg-emerald-500/10 border-emerald-500/30 text-emerald-300' : 'bg-rose-500/10 border-rose-500/30 text-rose-300'}`}>
+                  {testResult[p.id]?.text}
+                </div>
+              )}
 
               <button 
                   onClick={() => handleSave(p.id)}

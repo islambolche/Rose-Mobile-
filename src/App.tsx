@@ -90,7 +90,7 @@ import { storage } from "./lib/storage";
 import rosePortraitImg from "./assets/images/rose_portrait_1793010994175.jpg";
 import realisticAssistantImg from "./assets/images/iyabd_realistic_assistant_1792805556831.jpg";
 import * as Permissions from "./lib/permissions";
-import { directGeminiGenerate, directGeminiStream, directGeminiTTS, formatGeminiErrorForUI, TEXT_MODELS } from "./lib/ai-service";
+import { directGeminiGenerate, directGeminiStream, directGeminiTTS, formatGeminiErrorForUI, TEXT_MODELS, getSavedWorkingTextModel } from "./lib/ai-service";
 import {
   GEMINI_PHONE_TOOLS,
   browserPhoneBridge,
@@ -3943,7 +3943,8 @@ export function App() {
         const timeoutId = setTimeout(() => controller.abort(), 10000); // 10s timeout
 
         try {
-          const url = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${encodeURIComponent(cleanKey)}`;
+          const testModel = getSavedWorkingTextModel() || TEXT_MODELS[0];
+          const url = `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(testModel)}:generateContent?key=${encodeURIComponent(cleanKey)}`;
           const body = {
             contents: [{ role: "user", parts: [{ text: "hi" }] }],
             generationConfig: { maxOutputTokens: 5 }

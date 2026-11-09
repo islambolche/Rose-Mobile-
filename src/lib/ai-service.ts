@@ -1,4 +1,4 @@
-import { prepareHistory } from './ai-utils';
+import { prepareHistory, extractLastUserText } from './ai-utils';
 import { getGeminiKey } from './geminiKey';
 
 const TEXT_MODELS = ["gemini-2.5-flash", "gemini-2.0-flash", "gemini-1.5-flash", "gemini-2.5-flash-lite"];
@@ -35,32 +35,18 @@ export const formatGeminiErrorForUI = (
     .replace(/^models\//, '')
     .trim();
 
-  const rawMsg = sanitizeOutApiKey(
-    String(
-      err?.googleMessage ||
-        err?.bodyText ||
-        err?.message ||
-        err ||
-        'Gemini request failed'
-    ),
-    apiKey
-  )
-    .replace(/\s+/g, ' ')
-    .trim();
-
   const isTimeout =
     Boolean(err?.isTimeout) ||
     err?.status === 'timeout' ||
-    /timed?\s*out|timeout|aborted/i.test(rawMsg);
+    /timed?\s*out|timeout|aborted/i.test(
+      String(err?.googleMessage || err?.message || '')
+    );
 
   const statusVal = isTimeout
     ? 'timeout'
     : err?.status !== undefined && err?.status !== null && err?.status !== ''
       ? String(err.status)
-      : (() => {
-          const m = rawMsg.match(/\b(400|401|403|404|429|500|502|503|504)\b/);
-          return m ? m[1] : 'error';
-        })();
+      : 'error';
 
   const timeSec =
     err?.elapsedSeconds !== undefined
@@ -69,16 +55,43 @@ export const formatGeminiErrorForUI = (
         ? '15.0'
         : '0.0';
 
-  const cleanGoogleErr = rawMsg
-    .replace(/\s*\(HTTP\s+\d+\)\s*$/i, '')
-    .trim()
-    .slice(0, 120);
+  let rawGoogleMsg = String(
+    err?.googleMessage || err?.bodyText || err?.message || err || 'Gemini request failed'
+  ).trim();
 
-  const debugLine = `model: ${modelName} | status: ${statusVal} | time: ${timeSec}s | ${cleanGoogleErr || 'Request failed'}`;
+  if (err?.errorDetails) {
+    try {
+      const detailsStr =
+        typeof err.errorDetails === 'string'
+          ? err.errorDetails
+          : JSON.stringify(err.errorDetails);
+      if (detailsStr && !rawGoogleMsg.includes(detailsStr)) {
+        rawGoogleMsg += ' | details: ' + detailsStr;
+      }
+    } catch (e) {}
+  }
 
-  if (/Add your Gemini key in Settings/i.test(rawMsg)) {
+  const sanitizedFullText = sanitizeOutApiKey(rawGoogleMsg, apiKey)
+    .replace(/\s+/g, ' ')
+    .trim();
+
+  const debugLine = `model: ${modelName} | status: ${statusVal} | time: ${timeSec}s | ${sanitizedFullText}`;
+
+  if (/Add your Gemini key in Settings/i.test(sanitizedFullText)) {
     return {
       bengaliMessage: 'Add your Gemini key in Settings > Connections.',
+      debugLine,
+    };
+  }
+
+  const isKeyError =
+    statusVal === '401' ||
+    statusVal === '403' ||
+    /API key|api_key|key_invalid|invalid_key/i.test(sanitizedFullText);
+
+  if (isKeyError) {
+    return {
+      bengaliMessage: 'Gemini key ভুল বা বন্ধ, Settings → Connections-এ নতুন key দিন',
       debugLine,
     };
   }
@@ -86,7 +99,7 @@ export const formatGeminiErrorForUI = (
   const numStatus = Number(statusVal);
   if (
     numStatus === 429 ||
-    /\b429\b|quota|resource_exhausted|rate\s*limit/i.test(rawMsg)
+    /\b429\b|quota|resource_exhausted|rate\s*limit/i.test(sanitizedFullText)
   ) {
     return {
       bengaliMessage: 'Gemini key-র ফ্রি সীমা শেষ, কিছুক্ষণ পরে চেষ্টা করুন',
@@ -95,42 +108,31 @@ export const formatGeminiErrorForUI = (
   }
 
   if (
-    (numStatus === 400 || numStatus === 401 || numStatus === 403) &&
-    /api\s*key|api_key|key\s*not\s*valid|invalid\s*argument|unauthenticated|permission_denied/i.test(
-      rawMsg
-    )
+    numStatus === 400 ||
+    /\b400\b|invalid\s*argument|invalid_argument/i.test(sanitizedFullText)
   ) {
     return {
-      bengaliMessage:
-        'Gemini key ভুল বা বন্ধ, Settings → Connections-এ নতুন key দিন',
+      bengaliMessage: 'অনুরোধের গড়নে সমস্যা, অ্যাপ নিজে ঠিক করার চেষ্টা করছে',
       debugLine,
     };
   }
 
-  if (isTimeout) {
-    return {
-      bengaliMessage: 'নেটওয়ার্ক ধীর বা মডেল ব্যস্ত',
-      debugLine,
-    };
-  }
-
-  if (numStatus === 404 || /\b404\b|not\s*found|not_found/i.test(rawMsg)) {
+  if (numStatus === 404 || /\b404\b|not\s*found|not_found/i.test(sanitizedFullText)) {
     return {
       bengaliMessage: 'মডেলের নাম পুরনো, অ্যাপ নতুন মডেল খুঁজছে',
       debugLine,
     };
   }
 
-  if (numStatus === 400 || numStatus === 401 || numStatus === 403) {
+  if (isTimeout || statusVal === 'timeout') {
     return {
-      bengaliMessage:
-        'Gemini key ভুল বা বন্ধ, Settings → Connections-এ নতুন key দিন',
+      bengaliMessage: 'নেটওয়ার্ক ধীর বা মডেল ব্যস্ত',
       debugLine,
     };
   }
 
   return {
-    bengaliMessage: cleanGoogleErr || 'নেটওয়ার্ক ধীর বা মডেল ব্যস্ত',
+    bengaliMessage: 'অনুরোধের গড়নে সমস্যা, অ্যাপ নিজে ঠিক করার চেষ্টা করছে',
     debugLine,
   };
 };
@@ -185,9 +187,35 @@ const clearWorkingTextModelIfMatches = (failedModel: string) => {
   } catch (e) {}
 };
 
+const isMinimalBodyStoredForModel = (modelName: string): boolean => {
+  try {
+    if (typeof window === 'undefined') return false;
+    const clean = modelName.replace(/^models\//, '').trim();
+    return localStorage.getItem(`use_minimal_body_${clean}`) === 'true';
+  } catch (e) {
+    return false;
+  }
+};
+
+const storeMinimalBodyForModel = (modelName: string) => {
+  try {
+    if (typeof window === 'undefined') return;
+    const clean = modelName.replace(/^models\//, '').trim();
+    localStorage.setItem(`use_minimal_body_${clean}`, 'true');
+  } catch (e) {}
+};
+
 const isRetryableModelStatus = (status: any): boolean => {
   const code = Number(status);
-  return code === 404 || code === 429 || code === 500 || code === 503;
+  return (
+    code === 400 ||
+    code === 404 ||
+    code === 429 ||
+    code === 500 ||
+    code === 502 ||
+    code === 503 ||
+    code === 504
+  );
 };
 
 const buildOrderedModelList = (requestedModel?: string): string[] => {
@@ -307,6 +335,62 @@ const fetchWithSignalTimeout = async (
   }
 };
 
+const buildBodyForRequest = (
+  contents: any[],
+  systemInstruction?: any,
+  generationConfig?: any,
+  tools?: any[],
+  toolConfig?: any,
+  isMinimal = false
+) => {
+  const sysText = typeof systemInstruction === 'string'
+    ? systemInstruction
+    : (systemInstruction as any)?.parts?.[0]?.text || '';
+
+  if (isMinimal) {
+    const lastUserText = extractLastUserText(contents);
+    const body: any = {
+      contents: [{ role: 'user', parts: [{ text: lastUserText }] }],
+      generationConfig: {
+        maxOutputTokens: generationConfig?.maxOutputTokens ?? 150,
+      },
+    };
+    if (sysText.trim()) {
+      body.systemInstruction = {
+        parts: [{ text: sysText.trim() }],
+      };
+    }
+    return body;
+  }
+
+  const genConfig: any = {
+    maxOutputTokens: generationConfig?.maxOutputTokens ?? 150,
+  };
+  if (generationConfig?.temperature !== undefined) {
+    genConfig.temperature = generationConfig.temperature;
+  }
+
+  const body: any = {
+    contents: prepareHistory(contents),
+    generationConfig: genConfig,
+  };
+
+  if (sysText.trim()) {
+    body.systemInstruction = {
+      parts: [{ text: sysText.trim() }],
+    };
+  }
+
+  if (tools && Array.isArray(tools) && tools.length > 0) {
+    body.tools = tools;
+    if (toolConfig) {
+      body.toolConfig = toolConfig;
+    }
+  }
+
+  return body;
+};
+
 const callGeminiTextEndpoint = async (params: {
   model: string;
   contents: any[];
@@ -345,30 +429,8 @@ const callGeminiTextEndpoint = async (params: {
     throw missingErr;
   }
 
-  const mergedGenConfig: any = {
-    maxOutputTokens: 150,
-    thinkingConfig: { thinkingBudget: 0 },
-    ...(generationConfig || {}),
-  };
-  if (!mergedGenConfig.thinkingConfig) {
-    mergedGenConfig.thinkingConfig = { thinkingBudget: 0 };
-  }
-
-  const directBody: any = {
-    contents,
-    generationConfig: mergedGenConfig,
-  };
-  if (systemInstruction && String(systemInstruction).trim().length > 0) {
-    directBody.systemInstruction = {
-      parts: [{ text: String(systemInstruction).trim() }],
-    };
-  }
-  if (tools && Array.isArray(tools) && tools.length > 0) {
-    directBody.tools = tools;
-    if (toolConfig) {
-      directBody.toolConfig = toolConfig;
-    }
-  }
+  const startMinimal = isMinimalBodyStoredForModel(cleanModel);
+  let directBody = buildBodyForRequest(contents, systemInstruction, generationConfig, tools, toolConfig, startMinimal);
 
   const url = `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(cleanModel)}:generateContent?key=${encodeURIComponent(cleanKey)}`;
   const reqStartTime = Date.now();
@@ -387,23 +449,26 @@ const callGeminiTextEndpoint = async (params: {
     cleanKey
   );
 
-  if (res.status === 400 && directBody.generationConfig?.thinkingConfig) {
-    const errTxt = await res.clone().text().catch(() => '');
-    if (errTxt.toLowerCase().includes('thinking')) {
-      const { thinkingConfig, ...restGen } = directBody.generationConfig;
-      directBody.generationConfig = restGen;
-      res = await fetchWithSignalTimeout(
-        url,
-        {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify(directBody),
-        },
-        GEMINI_PER_REQUEST_TIMEOUT_MS,
-        cleanModel,
-        Date.now(),
-        cleanKey
-      );
+  // AUTO-RETRY ON 400: if standard request failed with 400 invalid argument, retry once with minimal body
+  if (res.status === 400 && !startMinimal) {
+    const minimalBody = buildBodyForRequest(contents, systemInstruction, generationConfig, tools, toolConfig, true);
+    const retryRes = await fetchWithSignalTimeout(
+      url,
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(minimalBody),
+      },
+      perReqTimeout,
+      cleanModel,
+      reqStartTime,
+      cleanKey
+    );
+    if (retryRes.ok) {
+      storeMinimalBodyForModel(cleanModel);
+      res = retryRes;
+    } else {
+      res = retryRes;
     }
   }
 
@@ -419,7 +484,7 @@ const callGeminiTextEndpoint = async (params: {
     err.status = res.status;
     err.modelName = cleanModel;
     err.elapsedSeconds = elapsedSeconds;
-    err.googleMessage = sanitizeOutApiKey(rawBodyText.slice(0, 120) || msg, cleanKey);
+    err.googleMessage = sanitizeOutApiKey(rawBodyText || msg, cleanKey);
     err.bodyText = msg;
     throw err;
   }
@@ -448,8 +513,13 @@ const callGeminiTextEndpoint = async (params: {
     err.modelName = cleanModel;
     err.elapsedSeconds = elapsedSeconds;
     err.googleMessage = rawGoogleErr;
+    err.errorDetails = parsed?.error?.details;
     err.bodyText = googleErrMsg;
     throw err;
+  }
+
+  if (startMinimal || res.ok) {
+    storeMinimalBodyForModel(cleanModel);
   }
 
   return { ...parsed, modelUsed: cleanModel };
@@ -494,30 +564,8 @@ const callGeminiStreamEndpoint = async (params: {
     throw missingErr;
   }
 
-  const mergedGenConfig: any = {
-    maxOutputTokens: 150,
-    thinkingConfig: { thinkingBudget: 0 },
-    ...(generationConfig || {}),
-  };
-  if (!mergedGenConfig.thinkingConfig) {
-    mergedGenConfig.thinkingConfig = { thinkingBudget: 0 };
-  }
-
-  const directBody: any = {
-    contents,
-    generationConfig: mergedGenConfig,
-  };
-  if (systemInstruction && String(systemInstruction).trim().length > 0) {
-    directBody.systemInstruction = {
-      parts: [{ text: String(systemInstruction).trim() }],
-    };
-  }
-  if (tools && Array.isArray(tools) && tools.length > 0) {
-    directBody.tools = tools;
-    if (toolConfig) {
-      directBody.toolConfig = toolConfig;
-    }
-  }
+  const startMinimal = isMinimalBodyStoredForModel(cleanModel);
+  let directBody = buildBodyForRequest(contents, systemInstruction, generationConfig, tools, toolConfig, startMinimal);
 
   const url = `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(cleanModel)}:streamGenerateContent?alt=sse&key=${encodeURIComponent(cleanKey)}`;
   const reqStartTime = Date.now();
@@ -536,23 +584,26 @@ const callGeminiStreamEndpoint = async (params: {
     cleanKey
   );
 
-  if (res.status === 400 && directBody.generationConfig?.thinkingConfig) {
-    const errTxt = await res.clone().text().catch(() => '');
-    if (errTxt.toLowerCase().includes('thinking')) {
-      const { thinkingConfig, ...restGen } = directBody.generationConfig;
-      directBody.generationConfig = restGen;
-      res = await fetchWithSignalTimeout(
-        url,
-        {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify(directBody),
-        },
-        GEMINI_PER_REQUEST_TIMEOUT_MS,
-        cleanModel,
-        Date.now(),
-        cleanKey
-      );
+  // AUTO-RETRY ON 400: if stream request returned 400, retry once with minimal body
+  if (res.status === 400 && !startMinimal) {
+    const minimalBody = buildBodyForRequest(contents, systemInstruction, generationConfig, tools, toolConfig, true);
+    const retryRes = await fetchWithSignalTimeout(
+      url,
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(minimalBody),
+      },
+      perReqTimeout,
+      cleanModel,
+      reqStartTime,
+      cleanKey
+    );
+    if (retryRes.ok) {
+      storeMinimalBodyForModel(cleanModel);
+      res = retryRes;
+    } else {
+      res = retryRes;
     }
   }
 
@@ -565,7 +616,7 @@ const callGeminiStreamEndpoint = async (params: {
       if (Array.isArray(parsed) && parsed[0]) parsed = parsed[0];
     } catch {}
     const rawGoogleErr = sanitizeOutApiKey(
-      parsed?.error?.message || rawBodyText.slice(0, 120) || `HTTP ${res.status}`,
+      parsed?.error?.message || rawBodyText || `HTTP ${res.status}`,
       cleanKey
     );
     const googleErrMsg = parsed?.error?.message
@@ -576,6 +627,7 @@ const callGeminiStreamEndpoint = async (params: {
     err.modelName = cleanModel;
     err.elapsedSeconds = elapsedSeconds;
     err.googleMessage = rawGoogleErr;
+    err.errorDetails = parsed?.error?.details;
     err.bodyText = googleErrMsg;
     throw err;
   }
@@ -710,7 +762,7 @@ export const directGeminiGenerate = async (payload: any) => {
     throw missingErr;
   }
 
-  const normalizedContents = Array.isArray(contents) ? contents.slice(-8) : [];
+  const normalizedContents = Array.isArray(contents) ? contents : [];
   const hasRichParts = normalizedContents.some(
     (c: any) =>
       Array.isArray(c?.parts) &&
@@ -721,13 +773,7 @@ export const directGeminiGenerate = async (payload: any) => {
 
   const preparedContents = hasRichParts
     ? normalizedContents
-    : prepareHistory(
-        normalizedContents.map((c: any) => ({
-          role: c.role,
-          text: c?.parts?.[0]?.text ?? c?.text ?? '',
-        })),
-        systemInstruction || ''
-      );
+    : prepareHistory(normalizedContents);
 
   const deadline = Date.now() + GEMINI_TOTAL_CHAIN_TIMEOUT_MS;
   const initialModels = buildOrderedModelList(model);
@@ -819,7 +865,7 @@ export const directGeminiStream = async (
     throw missingErr;
   }
 
-  const normalizedContents = Array.isArray(contents) ? contents.slice(-8) : [];
+  const normalizedContents = Array.isArray(contents) ? contents : [];
   const hasRichParts = normalizedContents.some(
     (c: any) =>
       Array.isArray(c?.parts) &&
@@ -830,13 +876,7 @@ export const directGeminiStream = async (
 
   const preparedContents = hasRichParts
     ? normalizedContents
-    : prepareHistory(
-        normalizedContents.map((c: any) => ({
-          role: c.role,
-          text: c?.parts?.[0]?.text ?? c?.text ?? '',
-        })),
-        systemInstruction || ''
-      );
+    : prepareHistory(normalizedContents);
 
   const deadline = Date.now() + GEMINI_TOTAL_CHAIN_TIMEOUT_MS;
   const initialModels = buildOrderedModelList(model);
@@ -1045,7 +1085,7 @@ export const directGeminiTTS = async (payload: any) => {
       err.status = res.status;
       err.modelName = cleanModel;
       err.elapsedSeconds = elapsedSeconds;
-      err.googleMessage = sanitizeOutApiKey(rawBodyText.slice(0, 120) || msg, cleanKey);
+      err.googleMessage = sanitizeOutApiKey(rawBodyText || msg, cleanKey);
       err.exactError = msg;
       err.bodyText = msg;
       throw err;
@@ -1076,6 +1116,7 @@ export const directGeminiTTS = async (payload: any) => {
       err.modelName = cleanModel;
       err.elapsedSeconds = elapsedSeconds;
       err.googleMessage = rawGoogleErr;
+      err.errorDetails = data?.error?.details;
       err.exactError = errText;
       err.bodyText = errText;
       throw err;

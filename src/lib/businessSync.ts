@@ -3,7 +3,7 @@ import {
   DEFAULT_SHARED_BUSINESS_DATABASE,
   GeminiProfileType,
 } from "../types/business";
-import { TEXT_MODELS, discoverAvailableFlashModels } from "./ai-service";
+import { TEXT_MODELS, discoverAvailableFlashModels, getSavedWorkingTextModel, sanitizeOutApiKey } from "./ai-service";
 
 const STORAGE_KEY = "rose_shared_business_db";
 const BROADCAST_CHANNEL_NAME = "rose_business_sync_channel";
@@ -124,7 +124,10 @@ export async function validateGeminiApiKey(
     };
   }
 
-  const candidateModels = [...TEXT_MODELS];
+  const savedWorking = getSavedWorkingTextModel();
+  const candidateModels = savedWorking
+    ? [savedWorking, ...TEXT_MODELS.filter((m) => m !== savedWorking)]
+    : [...TEXT_MODELS];
   const tried = new Set<string>();
   let lastErr = "Cannot reach Gemini. Check your internet and your Gemini key.";
 
@@ -181,7 +184,7 @@ export async function validateGeminiApiKey(
       ok: false,
       statusText: "Error",
       errorCategory: "Authentication Failed",
-      errorMessage: lastErr,
+      errorMessage: sanitizeOutApiKey(lastErr, cleanKey),
       model: TEXT_MODELS[0],
     };
   } catch (e: any) {

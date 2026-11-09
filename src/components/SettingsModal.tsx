@@ -39,6 +39,7 @@ import {
   EmotionStyle,
 } from "../types/settings";
 import { CREATOR_PROFILE } from "../lib/creator-profile";
+import { getSavedWorkingTextModel, TEXT_MODELS, sanitizeOutApiKey } from "../lib/ai-service";
 
 interface SettingsModalProps {
   isOpen: boolean;
@@ -269,7 +270,8 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({ isOpen, onClose, o
     }
     setKeyTestState({ loading: true, result: null, isOk: false });
     try {
-      const url = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${encodeURIComponent(key)}`;
+      const model = getSavedWorkingTextModel() || TEXT_MODELS[0];
+      const url = `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(model)}:generateContent?key=${encodeURIComponent(key)}`;
       const res = await fetch(url, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -299,17 +301,17 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({ isOpen, onClose, o
         return;
       }
       if (res.ok) {
-        setKeyTestState({ loading: false, result: "Key is valid and active!", isOk: true });
+        setKeyTestState({ loading: false, result: `OK (${model}): Key is valid and active!`, isOk: true });
       } else {
         const msg = data?.error?.message
           ? `${data.error.message} (HTTP ${res.status})`
           : `Cannot reach Gemini. Check your internet and your Gemini key. (HTTP ${res.status})`;
-        setKeyTestState({ loading: false, result: `Failed: ${msg}`, isOk: false });
+        setKeyTestState({ loading: false, result: `Failed: ${sanitizeOutApiKey(msg, key)}`, isOk: false });
       }
     } catch (err: any) {
       setKeyTestState({
         loading: false,
-        result: "Cannot reach Gemini. Check your internet and your Gemini key.",
+        result: sanitizeOutApiKey(err?.message || "Cannot reach Gemini. Check your internet and your Gemini key.", key),
         isOk: false,
       });
     }
