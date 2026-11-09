@@ -23,6 +23,7 @@ import { motion, AnimatePresence } from 'framer-motion';
 import { getGeminiKey, setGeminiKey, initGeminiKey } from '../lib/geminiKey';
 import { storage } from '../lib/storage';
 import { openInExternalBrowser } from '../lib/phoneActions';
+import { PhoneControl } from '../lib/phoneControl';
 import {
   ChatEngineId,
   KeyStatus,
@@ -273,7 +274,13 @@ export const ConnectionsView = ({
     }
   };
 
-  const handleGetKey = (url: string) => {
+  const handleGetKey = async (url: string) => {
+    // Try native intent via PhoneControl first
+    const result = await PhoneControl.openUrl({ url });
+    if (result && result.opened) {
+      return;
+    }
+    // Fallback
     openInExternalBrowser(url);
   };
 
