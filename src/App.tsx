@@ -332,18 +332,10 @@ export interface VoicePreset {
   speed: number;
   pitch: number;
   sampleLine: string;
+  gender: 'female' | 'male';
 }
 
 export const VOICE_PRESETS: VoicePreset[] = [
-  {
-    voiceName: "Leda",
-    label: "Leda (Youthful)",
-    tone: "Youthful",
-    personalityPrompt: "cheerful, playful, friendly girl, light humor.",
-    speed: 1.1,
-    pitch: 1.3,
-    sampleLine: "হ্যালো! আমি রোজ, তোমার হাসিখুশি ও চঞ্চল বন্ধু! আজ কী মজার কথা বলব বলো?",
-  },
   {
     voiceName: "Kore",
     label: "Kore (Firm)",
@@ -352,6 +344,7 @@ export const VOICE_PRESETS: VoicePreset[] = [
     speed: 1.05,
     pitch: 1.05,
     sampleLine: "হ্যালো, আমি রোজ। বলুন, আজ কীভাবে আপনাকে সাহায্য করতে পারি।",
+    gender: 'female'
   },
   {
     voiceName: "Aoede",
@@ -361,15 +354,17 @@ export const VOICE_PRESETS: VoicePreset[] = [
     speed: 0.95,
     pitch: 1.15,
     sampleLine: "হ্যালো, আমি রোজ। শান্ত মনে বলুন, আমি আপনার কথা শুনছি।",
+    gender: 'female'
   },
   {
-    voiceName: "Puck",
-    label: "Puck (Upbeat)",
-    tone: "Upbeat",
-    personalityPrompt: "energetic, funny, motivating.",
-    speed: 1.15,
-    pitch: 1.25,
-    sampleLine: "হেই! আমি রোজ! চলো আজ দারুণ কিছু করে ফেলি, তুমি নিশ্চয়ই পারবে!",
+    voiceName: "Leda",
+    label: "Leda (Youthful)",
+    tone: "Youthful",
+    personalityPrompt: "cheerful, playful, friendly girl, light humor.",
+    speed: 1.1,
+    pitch: 1.3,
+    sampleLine: "হ্যালো! আমি রোজ, তোমার হাসিখুশি ও চঞ্চল বন্ধু! আজ কী মজার কথা বলব বলো?",
+    gender: 'female'
   },
   {
     voiceName: "Zephyr",
@@ -379,69 +374,7 @@ export const VOICE_PRESETS: VoicePreset[] = [
     speed: 1.12,
     pitch: 1.35,
     sampleLine: "হ্যালো! আমি রোজ! তোমার দিনটা কেমন কাটছে? আমার সাথে সব গল্প করো!",
-  },
-  {
-    voiceName: "Sulafat",
-    label: "Sulafat (Warm)",
-    tone: "Warm",
-    personalityPrompt: "warm, caring, affectionate, polite.",
-    speed: 1.1,
-    pitch: 1.2,
-    sampleLine: "আসসালামু আলাইকুম, আমি রোজ। আপনাকে কীভাবে সাহায্য করতে পারি?",
-  },
-  {
-    voiceName: "Vindemiatrix",
-    label: "Vindemiatrix (Gentle)",
-    tone: "Gentle",
-    personalityPrompt: "gentle, patient, soothing, kind-hearted.",
-    speed: 0.95,
-    pitch: 1.18,
-    sampleLine: "হ্যালো, আমি রোজ। ধীরেসুস্থে বলুন, আমি সবটা বুঝিয়ে দিচ্ছি।",
-  },
-  {
-    voiceName: "Achernar",
-    label: "Achernar (Soft)",
-    tone: "Soft",
-    personalityPrompt: "soft, dreamy, poetic, empathetic.",
-    speed: 0.98,
-    pitch: 1.22,
-    sampleLine: "হ্যালো, আমি রোজ। চলো আজ সুন্দর একটা গল্পের মতো কথা বলি।",
-  },
-  {
-    voiceName: "Callirrhoe",
-    label: "Callirrhoe (Easy-going)",
-    tone: "Easy-going",
-    personalityPrompt: "easy-going, casual, chill, supportive friend.",
-    speed: 1.05,
-    pitch: 1.18,
-    sampleLine: "হ্যালো বন্ধু! আমি রোজ, কোনো চিন্তা নেই, বলো কী খবর?",
-  },
-  {
-    voiceName: "Despina",
-    label: "Despina (Smooth)",
-    tone: "Smooth",
-    personalityPrompt: "smooth, graceful, composed, polite.",
-    speed: 1.0,
-    pitch: 1.15,
-    sampleLine: "শুভ দিন, আমি রোজ। আপনার জন্য কী করতে পারি বলুন।",
-  },
-  {
-    voiceName: "Laomedeia",
-    label: "Laomedeia (Upbeat)",
-    tone: "Upbeat",
-    personalityPrompt: "lively, witty, cheerful, humorous.",
-    speed: 1.12,
-    pitch: 1.28,
-    sampleLine: "হ্যালো! আমি রোজ, সবসময় হাসিমুখে থাকো! বলো কী সাহায্য লাগবে?",
-  },
-  {
-    voiceName: "Erinome",
-    label: "Erinome (Clear)",
-    tone: "Clear",
-    personalityPrompt: "clear, analytical, precise, smart.",
-    speed: 1.08,
-    pitch: 1.12,
-    sampleLine: "হ্যালো, আমি রোজ। আপনার যেকোনো প্রশ্ন বা সমস্যার স্পষ্ট সমাধান দিতে প্রস্তুত।",
+    gender: 'female'
   },
   {
     voiceName: "Autonoe",
@@ -451,6 +384,57 @@ export const VOICE_PRESETS: VoicePreset[] = [
     speed: 1.1,
     pitch: 1.3,
     sampleLine: "হ্যালো! আমি রোজ, আজকের দিনটা দারুণ কাটুক তোমার!",
+    gender: 'female'
+  },
+  {
+    voiceName: "Callirrhoe",
+    label: "Callirrhoe (Easy-going)",
+    tone: "Easy-going",
+    personalityPrompt: "easy-going, casual, chill, supportive friend.",
+    speed: 1.05,
+    pitch: 1.18,
+    sampleLine: "হ্যালো বন্ধু! আমি রোজ, কোনো চিন্তা নেই, বলো কী খবর?",
+    gender: 'female'
+  },
+  {
+    voiceName: "Despina",
+    label: "Despina (Smooth)",
+    tone: "Smooth",
+    personalityPrompt: "smooth, graceful, composed, polite.",
+    speed: 1.0,
+    pitch: 1.15,
+    sampleLine: "শুভ দিন, আমি রোজ। আপনার জন্য কী করতে পারি বলুন।",
+    gender: 'female'
+  },
+  {
+    voiceName: "Erinome",
+    label: "Erinome (Clear)",
+    tone: "Clear",
+    personalityPrompt: "clear, analytical, precise, smart.",
+    speed: 1.08,
+    pitch: 1.12,
+    sampleLine: "হ্যালো, আমি রোজ। আপনার যেকোনো প্রশ্ন বা সমস্যার স্পষ্ট সমাধান দিতে প্রস্তুত।",
+    gender: 'female'
+  },
+  {
+    voiceName: "Laomedeia",
+    label: "Laomedeia (Upbeat)",
+    tone: "Upbeat",
+    personalityPrompt: "lively, witty, cheerful, humorous.",
+    speed: 1.12,
+    pitch: 1.28,
+    sampleLine: "হ্যালো! আমি রোজ, সবসময় হাসিমুখে থাকো! বলো কী সাহায্য লাগবে?",
+    gender: 'female'
+  },
+  {
+    voiceName: "Achernar",
+    label: "Achernar (Soft)",
+    tone: "Soft",
+    personalityPrompt: "soft, dreamy, poetic, empathetic.",
+    speed: 0.98,
+    pitch: 1.22,
+    sampleLine: "হ্যালো, আমি রোজ। চলো আজ সুন্দর একটা গল্পের মতো কথা বলি।",
+    gender: 'female'
   },
   {
     voiceName: "Gacrux",
@@ -460,6 +444,7 @@ export const VOICE_PRESETS: VoicePreset[] = [
     speed: 0.96,
     pitch: 1.08,
     sampleLine: "হ্যালো, আমি রোজ। ঠান্ডা মাথায় বলুন, আমরা একসাথে সমাধান খুঁজে নেব।",
+    gender: 'female'
   },
   {
     voiceName: "Pulcherrima",
@@ -469,45 +454,88 @@ export const VOICE_PRESETS: VoicePreset[] = [
     speed: 1.1,
     pitch: 1.2,
     sampleLine: "হ্যালো! আমি রোজ, বলুন আজ আমরা কোন কাজটা সবার আগে করব?",
+    gender: 'female'
   },
+  {
+    voiceName: "Vindemiatrix",
+    label: "Vindemiatrix (Gentle)",
+    tone: "Gentle",
+    personalityPrompt: "gentle, patient, soothing, kind-hearted.",
+    speed: 0.95,
+    pitch: 1.18,
+    sampleLine: "হ্যালো, আমি রোজ। ধীরেসুস্থে বলুন, আমি সবটা বুঝিয়ে দিচ্ছি।",
+    gender: 'female'
+  },
+  {
+    voiceName: "Sulafat",
+    label: "Sulafat (Warm)",
+    tone: "Warm",
+    personalityPrompt: "warm, caring, affectionate, polite.",
+    speed: 1.1,
+    pitch: 1.2,
+    sampleLine: "আসসালামু আলাইকুম, আমি রোজ। আপনাকে কীভাবে সাহায্য করতে পারি?",
+    gender: 'female'
+  },
+  {
+    voiceName: "Puck",
+    label: "Puck (Upbeat)",
+    tone: "Upbeat",
+    personalityPrompt: "energetic, funny, motivating.",
+    speed: 1.15,
+    pitch: 1.25,
+    sampleLine: "হেই! আমি রোজ! চলো আজ দারুণ কিছু করে ফেলি, তুমি নিশ্চয়ই পারবে!",
+    gender: 'male'
+  },
+  {
+    voiceName: "Charon",
+    label: "Charon (Deep)",
+    tone: "Deep",
+    personalityPrompt: "deep, calm, steady.",
+    speed: 1.0,
+    pitch: 0.9,
+    sampleLine: "হ্যালো, আমি রোজ। শান্তভাবে আপনার প্রশ্নটি করুন।",
+    gender: 'male'
+  },
+  {
+    voiceName: "Fenrir",
+    label: "Fenrir (Rugged)",
+    tone: "Rugged",
+    personalityPrompt: "strong, direct, mature.",
+    speed: 1.0,
+    pitch: 0.85,
+    sampleLine: "হ্যালো। কোনো সমস্যা? আমি সাহায্য করতে পারি।",
+    gender: 'male'
+  },
+  {
+    voiceName: "Orus",
+    label: "Orus (Solid)",
+    tone: "Solid",
+    personalityPrompt: "solid, reliable, friendly.",
+    speed: 1.0,
+    pitch: 0.95,
+    sampleLine: "হ্যালো বন্ধু! চলো কাজ শুরু করি।",
+    gender: 'male'
+  }
 ];
 
-const HIDDEN_MALE_VOICE_NAMES = new Set([
-  "Puck",
-  "Charon",
-  "Fenrir",
-  "Orus",
-  "Algenib",
-  "Alnilam",
-  "Enceladus",
-  "Iapetus",
-  "Umbriel",
-  "Algieba",
-  "Schedar",
-  "Achird",
-  "Sadachbia",
-  "Sadaltager",
-  "Rasalgethi",
-  "Zubenelgenubi",
-]);
-
 export const FEMALE_VOICE_PRESETS: VoicePreset[] = VOICE_PRESETS.filter(
-  (p) => !HIDDEN_MALE_VOICE_NAMES.has(p.voiceName)
+  (p) => p.gender === 'female'
 );
 
 const getVoicePreset = (voiceName?: string): VoicePreset => {
-  if (voiceName && !HIDDEN_MALE_VOICE_NAMES.has(voiceName)) {
-    const found = FEMALE_VOICE_PRESETS.find(
+  if (voiceName) {
+    const found = VOICE_PRESETS.find(
       (p) =>
         p.voiceName.toLowerCase() === voiceName.toLowerCase() ||
         p.label.toLowerCase() === voiceName.toLowerCase()
     );
     if (found) return found;
   }
-  return FEMALE_VOICE_PRESETS[0] || VOICE_PRESETS[0];
+  // Default to Kore (female) as requested
+  return VOICE_PRESETS.find(v => v.voiceName === 'Kore') || VOICE_PRESETS[0];
 };
 
-const GEMINI_VOICES = FEMALE_VOICE_PRESETS.map((p) => ({
+const GEMINI_VOICES = VOICE_PRESETS.map((p) => ({
   id: p.voiceName,
   name: p.voiceName,
   label: p.label,
@@ -516,6 +544,7 @@ const GEMINI_VOICES = FEMALE_VOICE_PRESETS.map((p) => ({
   speed: p.speed,
   pitch: p.pitch,
   sampleLine: p.sampleLine,
+  gender: p.gender
 }));
 
 interface PersonalityConfig {
@@ -2422,10 +2451,9 @@ export function App() {
         const parsed = JSON.parse(saved);
         const safeVoiceName =
           parsed.voiceName &&
-          FEMALE_VOICE_IDS.includes(parsed.voiceName) &&
-          !HIDDEN_MALE_VOICE_NAMES.has(parsed.voiceName)
+          VOICE_PRESETS.some(v => v.voiceName === parsed.voiceName)
             ? parsed.voiceName
-            : "Leda";
+            : "Kore";
         return {
           ...DEFAULT_PREFS,
           ...parsed,
@@ -2434,8 +2462,34 @@ export function App() {
         };
       }
     } catch (e) {}
-    return DEFAULT_PREFS;
+    return { ...DEFAULT_PREFS, voiceName: "Kore" };
   });
+
+  const [onlyFemaleVoices, setOnlyFemaleVoices] = useState<boolean>(() => {
+    try {
+      const saved = localStorage.getItem("iyabd_only_female_voices");
+      return saved !== null ? saved === "true" : true;
+    } catch (e) {
+      return true;
+    }
+  });
+
+  const [micTestActive, setMicTestActive] = useState(false);
+  const [micTestResult, setMicTestResult] = useState<{
+    maxVol: number;
+    sampleRate: number;
+    trackState: string;
+    message: string;
+  } | null>(null);
+  const [micTestVolume, setMicTestVolume] = useState(0);
+
+  useEffect(() => {
+    const currentVoice = VOICE_PRESETS.find(v => v.voiceName === prefs.voiceName);
+    if (currentVoice && currentVoice.gender === 'male' && onlyFemaleVoices) {
+       setPrefs(prev => ({ ...prev, voiceName: 'Kore' }));
+       setToast("শুধুমাত্র নারী কণ্ঠ সচল আছে। ডিফল্ট হিসেবে Kore কণ্ঠ সেট করা হয়েছে।");
+    }
+  }, [onlyFemaleVoices]);
   const [apiKeys, setApiKeys] = useState<ApiKeys>(() => {
     const savedGemini = getGeminiKey();
     try {
@@ -3208,10 +3262,16 @@ export function App() {
     return () => cancelAnimationFrame(animFrame);
   }, [isAssistantEnabled]);
 
+  const inputVolumeRef = useRef<number>(0);
+  const outputVolumeRef = useRef<number>(0);
+
   useEffect(() => {
     let animId: number;
     const updateCallOrb = () => {
-      const activeAnalyser = outputAnalyserRef.current || currentAnalyserRef.current;
+      const state = sessionStateRef.current;
+      const isRoseSpeaking = state === "SPEAKING" || state === "GREETING";
+      
+      const activeAnalyser = isRoseSpeaking ? outputAnalyserRef.current : (currentAnalyserRef.current || analyserRef.current);
       let vol = 0;
       if (activeAnalyser) {
         const dataArray = new Uint8Array(activeAnalyser.frequencyBinCount);
@@ -3219,6 +3279,15 @@ export function App() {
         let sum = 0;
         for (let i = 0; i < dataArray.length; i++) sum += dataArray[i];
         vol = sum / (dataArray.length * 255);
+      }
+
+      // Update refs for OrbSphere internal canvas drawing
+      if (isRoseSpeaking) {
+        outputVolumeRef.current = vol;
+        inputVolumeRef.current = 0;
+      } else {
+        inputVolumeRef.current = vol;
+        outputVolumeRef.current = 0;
       }
 
       if (callOrbWrapperRef.current) {
@@ -9570,6 +9639,120 @@ export function App() {
             </button>
           </div>
 
+          {/* MIC TEST CARD */}
+          <div className="w-full p-5 bg-[#0F172A]/80 rounded-[2.5rem] border border-purple-500/30 shadow-2xl space-y-4">
+            <div className="flex items-center justify-between">
+              <div className="flex items-center gap-4">
+                <div className="w-12 h-12 rounded-full bg-purple-600/10 border border-purple-500/20 flex items-center justify-center text-purple-400 shrink-0">
+                  <Mic className="w-6 h-6" />
+                </div>
+                <div>
+                  <h4 className="text-base font-black uppercase tracking-wider text-white leading-none mb-1">
+                    Mic Test
+                  </h4>
+                  <p className="text-[10px] text-slate-400 font-bold uppercase tracking-widest">
+                    Check if your microphone is working
+                  </p>
+                </div>
+              </div>
+              <button
+                disabled={micTestActive}
+                onClick={async () => {
+                  try {
+                    setMicTestActive(true);
+                    setMicTestResult(null);
+                    setMicTestVolume(0);
+                    
+                    const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+                    const track = stream.getAudioTracks()[0];
+                    const audioCtx = new (window.AudioContext || (window as any).webkitAudioContext)();
+                    await audioCtx.resume();
+                    
+                    const source = audioCtx.createMediaStreamSource(stream);
+                    const analyser = audioCtx.createAnalyser();
+                    analyser.fftSize = 256;
+                    source.connect(analyser);
+                    
+                    const dataArray = new Uint8Array(analyser.frequencyBinCount);
+                    let maxVol = 0;
+                    const startTime = Date.now();
+                    
+                    const check = () => {
+                      if (Date.now() - startTime > 5000) {
+                         const finalMax = maxVol;
+                         setMicTestActive(false);
+                         stream.getTracks().forEach(t => t.stop());
+                         audioCtx.close();
+                         
+                         setMicTestResult({
+                           maxVol: finalMax,
+                           sampleRate: audioCtx.sampleRate,
+                           trackState: track.readyState,
+                           message: finalMax > 5 ? `মাইক ঠিক আছে (সর্বোচ্চ আওয়াজ: ${finalMax.toFixed(0)})` : "কোনো আওয়াজ ধরা পড়েনি"
+                         });
+                         return;
+                      }
+                      
+                      analyser.getByteFrequencyData(dataArray);
+                      const currentVol = dataArray.reduce((a, b) => a + b, 0) / dataArray.length;
+                      if (currentVol > maxVol) maxVol = currentVol;
+                      setMicTestVolume(currentVol);
+                      
+                      if (viewRef.current === 'voice') {
+                         requestAnimationFrame(check);
+                      } else {
+                         stream.getTracks().forEach(t => t.stop());
+                         audioCtx.close();
+                         setMicTestActive(false);
+                      }
+                    };
+                    
+                    check();
+                  } catch (e: any) {
+                    setMicTestActive(false);
+                    setMicTestResult({
+                      maxVol: 0,
+                      sampleRate: 0,
+                      trackState: 'error',
+                      message: "মাইক অনুমতি নেই"
+                    });
+                  }
+                }}
+                className={'px-4 py-2 rounded-xl text-[10px] font-black uppercase tracking-wider transition-all ' + (micTestActive ? "bg-slate-700 text-slate-400" : "bg-purple-600 text-white shadow-lg active:scale-95")}
+              >
+                {micTestActive ? "Testing..." : "Start Test"}
+              </button>
+            </div>
+            
+            {micTestActive && (
+              <div className="space-y-2">
+                <div className="flex justify-between items-center px-1">
+                  <span className="text-[10px] font-bold text-slate-400 uppercase">Live Volume</span>
+                  <span className="text-[10px] font-mono text-purple-400">{micTestVolume.toFixed(0)}</span>
+                </div>
+                <div className="w-full h-2 bg-black/40 rounded-full overflow-hidden">
+                  <motion.div 
+                    className="h-full bg-purple-500"
+                    initial={{ width: 0 }}
+                    animate={{ width: `${Math.min(100, micTestVolume * 2)}%` }}
+                  />
+                </div>
+              </div>
+            )}
+            
+            {micTestResult && (
+              <div className="p-4 bg-black/40 rounded-2xl border border-white/5 space-y-1">
+                <p className={'text-xs font-bold ' + (micTestResult.maxVol > 5 ? "text-teal-400" : "text-red-400")}>
+                  {micTestResult.message}
+                </p>
+                <div className="flex gap-3 text-[9px] font-bold text-slate-500 uppercase tracking-tight">
+                  <span>Sample Rate: {micTestResult.sampleRate}Hz</span>
+                  <span>Track: {micTestResult.trackState}</span>
+                </div>
+              </div>
+            )}
+          </div>
+
           {/* 14. Always listening Card */}
           <div className="w-full p-5 bg-[#0F172A]/80 rounded-[2.5rem] border border-purple-500/30 shadow-2xl flex items-center justify-between text-left">
             <div className="flex items-center gap-4">
@@ -11300,9 +11483,44 @@ export function App() {
                     VOICE
                   </h2>
                 </header>
+
+                {/* GENDER FILTER SWITCH */}
+                <div className="mb-6 px-1">
+                  <div className="bg-[#0F172A]/80 rounded-[1.75rem] border border-purple-500/20 p-4 flex items-center justify-between shadow-xl">
+                    <div className="flex items-center gap-3">
+                      <div className="w-10 h-10 rounded-full bg-purple-600/10 flex items-center justify-center text-purple-400">
+                        <Sparkles className="w-5 h-5" />
+                      </div>
+                      <div>
+                        <h4 className="text-[13px] font-black uppercase text-white leading-none mb-1">নারী কণ্ঠ ফিল্টার</h4>
+                        <p className="text-[9px] text-slate-500 font-bold uppercase tracking-tight">শুধুমাত্র নারী কণ্ঠ দেখাবে</p>
+                      </div>
+                    </div>
+                    <button
+                      onClick={() => {
+                        const newVal = !onlyFemaleVoices;
+                        setOnlyFemaleVoices(newVal);
+                        localStorage.setItem("iyabd_only_female_voices", String(newVal));
+                      }}
+                      className={'w-12 h-6 rounded-full transition-colors flex items-center px-1 shrink-0 ' + (onlyFemaleVoices ? "bg-purple-600" : "bg-slate-700")}
+                    >
+                      <motion.div
+                        animate={{ x: onlyFemaleVoices ? 24 : 0 }}
+                        className="w-4 h-4 bg-white rounded-full shadow-lg"
+                      />
+                    </button>
+                  </div>
+                </div>
+
                 <div className="space-y-4 pb-36 flex-1">
-                  {FEMALE_VOICE_PRESETS.map((preset) => {
-                    const isSelected = getVoicePreset(prefs.voiceName).voiceName === preset.voiceName;
+                  {VOICE_PRESETS
+                    .filter(v => !onlyFemaleVoices || v.gender === 'female')
+                    .sort((a, b) => {
+                      if (a.gender === b.gender) return a.label.localeCompare(b.label);
+                      return a.gender === 'female' ? -1 : 1;
+                    })
+                    .map((preset) => {
+                    const isSelected = prefs.voiceName === preset.voiceName;
                     const isLoading = loadingVoiceId === preset.voiceName;
                     const isPlaying = playingVoiceId === preset.voiceName;
                     return (
@@ -11310,12 +11528,10 @@ export function App() {
                         key={preset.voiceName}
                         onClick={() => {
                           const applied = applyVoicePreset(preset.voiceName);
-                          setToast(`কণ্ঠ বদলে ${applied.label} হয়েছে`);
+                          setToast(`কণ্ঠ বদলে ${applied.label} করা হয়েছে`);
 
                           if (wsRef.current) {
-                            try {
-                              wsRef.current.close(1000, "Voice Sync");
-                            } catch (e) {}
+                            try { wsRef.current.close(1000, "Voice Sync"); } catch (e) {}
                             wsRef.current = null;
                           }
 
@@ -11328,13 +11544,11 @@ export function App() {
                             stopListening();
                             isAssistantEnabledRef.current = true;
                             setIsAssistantEnabled(true);
-                            setTimeout(() => {
-                              startListening();
-                            }, 150);
+                            setTimeout(() => { startListening(); }, 150);
                           }
                         }}
                         className={
-                          "w-full p-5 rounded-[2.5rem] border transition-all flex items-center justify-between cursor-pointer active:scale-[0.98] text-left " +
+                          "w-full p-4 rounded-[2.25rem] border transition-all flex items-center justify-between cursor-pointer active:scale-[0.98] text-left " +
                           (isSelected
                             ? "bg-purple-600/15 border-purple-400 ring-1 ring-purple-400/50 shadow-2xl shadow-purple-900/30"
                             : "bg-[#0F172A]/80 border-purple-500/30 shadow-2xl")
@@ -11343,17 +11557,23 @@ export function App() {
                         <div className="flex items-center gap-4 min-w-0 flex-1 pr-3">
                           <div
                             className={
-                              "w-12 h-12 rounded-full flex items-center justify-center shrink-0 border " +
+                              "w-11 h-11 rounded-full flex items-center justify-center shrink-0 border " +
                               (isSelected
                                 ? "bg-purple-600 border-purple-300/40 text-white shadow-lg shadow-purple-900/40"
                                 : "bg-purple-600/10 border-purple-500/20 text-purple-400")
                             }
                           >
-                            <User className="w-6 h-6" />
+                            <User className="w-5 h-5" />
                           </div>
-                          <h4 className="text-base font-black uppercase tracking-wider text-white leading-none truncate">
-                            {preset.label}
-                          </h4>
+                          <div className="min-w-0">
+                            <h4 className="text-[13px] font-black uppercase tracking-wider text-white leading-none mb-1.5 flex items-center gap-2">
+                              {preset.label}
+                              <span className={'text-[9px] font-bold px-1.5 py-0.5 rounded-full border ' + (preset.gender === 'female' ? "text-pink-400 border-pink-400/30 bg-pink-400/10" : "text-blue-400 border-blue-400/30 bg-blue-400/10")}>
+                                {preset.gender === 'female' ? "♀ নারী" : "♂ পুরুষ"}
+                              </span>
+                            </h4>
+                            <p className="text-[10px] text-slate-500 font-bold uppercase tracking-tight truncate">{preset.tone}</p>
+                          </div>
                         </div>
                         <div className="flex items-center gap-2.5 shrink-0">
                           {isSelected && (
@@ -11367,16 +11587,16 @@ export function App() {
                               e.stopPropagation();
                               playSampleVoice(preset.voiceName);
                             }}
-                            className="px-3.5 py-2 bg-purple-600 hover:bg-purple-500 rounded-xl active:scale-95 transition-transform flex items-center gap-1.5 text-[10px] font-black uppercase tracking-wider text-white shadow-md"
+                            className="px-3 py-1.5 bg-purple-600 hover:bg-purple-500 rounded-xl active:scale-95 transition-transform flex items-center gap-1.5 text-[9px] font-black uppercase tracking-wider text-white shadow-md"
                           >
                             {isLoading ? (
-                              <Loader2 className="w-3.5 h-3.5 animate-spin text-white" />
+                              <Loader2 className="w-3 h-3 animate-spin text-white" />
                             ) : isPlaying ? (
-                              <Pause className="w-3.5 h-3.5 fill-current text-white" />
+                              <Pause className="w-3 h-3 fill-current text-white" />
                             ) : (
-                              <Play className="w-3.5 h-3.5 fill-current text-white" />
+                              <Play className="w-3 h-3 fill-current text-white" />
                             )}
-                            <span>PLAY</span>
+                            <span>শুনুন</span>
                           </button>
                         </div>
                       </div>
@@ -11885,8 +12105,20 @@ export function App() {
                     state={speakingState}
                     reduceMotion={prefs.reduceMotion}
                     dimmed={!isAssistantEnabled || isMuted}
+                    inputVolumeRef={inputVolumeRef}
+                    outputVolumeRef={outputVolumeRef}
                   />
                 </button>
+              </div>
+
+              {/* Dots / Voice Bars */}
+              <div className="mt-8">
+                <LiveVoiceBars 
+                  inputAnalyserRef={analyserRef} 
+                  outputAnalyserRef={outputAnalyserRef}
+                  sessionState={sessionState}
+                  isAssistantEnabled={isAssistantEnabled}
+                />
               </div>
             </div>
 

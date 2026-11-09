@@ -204,54 +204,89 @@ export class GeminiLiveSession {
 
   private async startMicCapture() {
     try {
-      if (!this.audioCtx) {
-        this.audioCtx = new (window.AudioContext || (window as any).webkitAudioContext)({ sampleRate: 16000 });
-      }
-      
-      if (this.audioCtx.state === 'suspended') {
-        await this.audioCtx.resume();
+      // 1. Get the mic stream with desired constraints
+      this.micStream = await navigator.mediaDevices.getUserMedia({
+        audio: { 
+          echoCancellation: true, 
+          noiseSuppression: true, 
+          autoGainControl: true 
+        }
+      });
+
+      const micTrack = this.micStream.getAudioTracks()[0];
+      if (!micTrack || micTrack.readyState !== 'live' || !micTrack.enabled) {
+        throw new Error("মাইক ট্র্যাক সচল নয়।");
       }
 
+      // 2. Create the AudioContext (let browser choose native rate for stability)
+      this.audioCtx = new (window.AudioContext || (window as any).webkitAudioContext)();
+      await this.audioCtx.resume();
+
       if (this.audioCtx.state !== 'running') {
-        this.options.onError?.("AudioContext চালু করা যায়নি। মাইক অনুমতি দিন।");
+        this.options.onError?.("অডিও সেশন চালু করা যায়নি। মাইক অনুমতি দিন।");
         return;
       }
 
-      this.micStream = await getGlobalMicStream({
-        audio: { channelCount: 1, sampleRate: 16000, echoCancellation: true, noiseSuppression: true, autoGainControl: true }
-      });
-
       const source = this.audioCtx.createMediaStreamSource(this.micStream);
+      const sampleRate = this.audioCtx.sampleRate;
+      logVoiceEvent("Mic", `Capture started at ${sampleRate}Hz`);
       
-      // Mic Analyser
+      // Mic Analyser (for visuals)
       this.micAnalyser = this.audioCtx.createAnalyser();
       this.micAnalyser.fftSize = 256;
       source.connect(this.micAnalyser);
 
-      // Output Analyser (dummy gain node to tap into output)
+      // Output Analyser (for visuals)
       this.outputAnalyser = this.audioCtx.createAnalyser();
       this.outputAnalyser.fftSize = 256;
 
       try {
+        // Use inline AudioWorklet with resampling logic
         const processorCode = `
           class AudioProcessor extends AudioWorkletProcessor {
-            constructor() { super(); }
+            constructor() { 
+              super(); 
+              this.targetRate = 16000;
+              this.sourceRate = sampleRate; // Will be injected
+              this.buffer = [];
+            }
             process(inputs) {
               const input = inputs[0];
-              if (input && input.length > 0) {
-                const channel = input[0];
+              if (!input || input.length === 0) return true;
+              const channel = input[0];
+              
+              // Simple linear resampling if sourceRate != targetRate
+              if (this.sourceRate === this.targetRate) {
                 const pcm16 = new Int16Array(channel.length);
                 for (let i = 0; i < channel.length; i++) {
                   const s = Math.max(-1, Math.min(1, channel[i]));
                   pcm16[i] = s < 0 ? s * 0x8000 : s * 0x7FFF;
                 }
                 this.port.postMessage(pcm16.buffer, [pcm16.buffer]);
+              } else {
+                // Buffer and resample
+                for (let i = 0; i < channel.length; i++) this.buffer.push(channel[i]);
+                
+                const ratio = this.sourceRate / this.targetRate;
+                const outLength = Math.floor(this.buffer.length / ratio);
+                
+                if (outLength >= 160) { // Send in chunks of ~10ms+
+                  const pcm16 = new Int16Array(outLength);
+                  for (let i = 0; i < outLength; i++) {
+                    const idx = Math.floor(i * ratio);
+                    const s = Math.max(-1, Math.min(1, this.buffer[idx]));
+                    pcm16[i] = s < 0 ? s * 0x8000 : s * 0x7FFF;
+                  }
+                  this.port.postMessage(pcm16.buffer, [pcm16.buffer]);
+                  this.buffer = this.buffer.slice(Math.floor(outLength * ratio));
+                }
               }
               return true;
             }
           }
           registerProcessor('audio-processor', AudioProcessor);
-        `;
+        `.replace('sampleRate', String(sampleRate));
+
         const blob = new Blob([processorCode], { type: 'application/javascript' });
         const url = URL.createObjectURL(blob);
         await this.audioCtx.audioWorklet.addModule(url);
@@ -260,15 +295,18 @@ export class GeminiLiveSession {
         this.audioWorkletNode = new AudioWorkletNode(this.audioCtx, 'audio-processor');
         this.audioWorkletNode.port.onmessage = (e) => this.sendAudio(e.data);
         source.connect(this.audioWorkletNode);
-        logVoiceEvent("Mic", "Inline AudioWorklet active");
+        logVoiceEvent("Mic", `Inline Worklet resampler active (${sampleRate} -> 16000)`);
       } catch (e) {
-        logVoiceEvent("Mic", "AudioWorklet failed, falling back to ScriptProcessor", "warn");
-        this.scriptProcessor = this.audioCtx.createScriptProcessor(2048, 1, 1);
+        logVoiceEvent("Mic", "Worklet failed, fallback to high-rate ScriptProcessor", "warn");
+        this.scriptProcessor = this.audioCtx.createScriptProcessor(4096, 1, 1);
         this.scriptProcessor.onaudioprocess = (e) => {
           const input = e.inputBuffer.getChannelData(0);
-          const pcm16 = new Int16Array(input.length);
-          for (let i = 0; i < input.length; i++) {
-            const s = Math.max(-1, Math.min(1, input[i]));
+          // Very crude downsampling for fallback
+          const ratio = Math.round(sampleRate / 16000);
+          const outLen = Math.floor(input.length / ratio);
+          const pcm16 = new Int16Array(outLen);
+          for (let i = 0; i < outLen; i++) {
+            const s = Math.max(-1, Math.min(1, input[i * ratio]));
             pcm16[i] = s < 0 ? s * 0x8000 : s * 0x7FFF;
           }
           this.sendAudio(pcm16.buffer);
@@ -280,8 +318,8 @@ export class GeminiLiveSession {
       this.options.onMicLive?.(true);
       this.startVisualizer();
     } catch (e: any) {
-      logVoiceEvent("Mic", `Error: ${e.message}`, "error");
-      this.options.onError?.("মাইক্রোফোন সংযোগ করা যায়নি।");
+      logVoiceEvent("Mic", `Capture Error: ${e.message}`, "error");
+      this.options.onError?.(`মাইক্রোফোন সংযোগ করা যায়নি: ${e.message}`);
     }
   }
 
