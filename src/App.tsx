@@ -115,6 +115,7 @@ import { PhoneControl, PHONE_CONTROL_TOOLS } from "./lib/phoneControl";
 import { AlwaysListen } from "./lib/alwaysListen";
 import { OfficeScene } from "./components/OfficeScene";
 import { isDesktopMode } from "./lib/desktop";
+import { GeminiLiveSession } from "./lib/gemini-live";
 
 const APP_VERSION = "v1.4.0";
 const OWNER_NAME = "MD YOUSUF KHAN";
@@ -3240,6 +3241,7 @@ export function App() {
 
   const recognitionRef = useRef<any>(null);
   const wsRef = useRef<WebSocket | null>(null);
+  const liveSessionRef = useRef<GeminiLiveSession | null>(null);
   const inputAudioCtxRef = useRef<AudioContext | null>(null);
   const outputAudioCtxRef = useRef<AudioContext | null>(null);
   const gainNodeRef = useRef<GainNode | null>(null);
@@ -3262,7 +3264,7 @@ export function App() {
   const [hasReceivedAudio, setHasReceivedAudio] = useState(false);
   const [liveErrorMsg, setLiveErrorMsg] = useState<string | null>(null);
   const callGlowRef = useRef<HTMLDivElement>(null);
-  const callOrbWrapperRef = useRef<HTMLDivElement>(null);
+  const callOrbWrapperRef = useRef<HTMLButtonElement>(null);
 
   const [debugLogs, setDebugLogs] = useState<
     { step: string; status: "pending" | "success" | "error"; error?: string }[]
@@ -5730,6 +5732,11 @@ export function App() {
     clearBrowserCheckTimers();
     stopRecorderVadLoop(true);
 
+    if (liveSessionRef.current) {
+      liveSessionRef.current.stop();
+      liveSessionRef.current = null;
+    }
+
     if (recognitionStartTimerRef.current) {
       try {
         clearTimeout(recognitionStartTimerRef.current);
@@ -5745,6 +5752,8 @@ export function App() {
     setMicStream(null);
 
     currentAnalyserRef.current = null;
+    analyserRef.current = null;
+    outputAnalyserRef.current = null;
     smoothedLevelRef.current = 0;
     setMicLevel(0);
     setIsUserSpeaking(false);
@@ -6980,6 +6989,72 @@ export function App() {
     await speakSentenceViaGeminiTTS(text, key);
   };
 
+  const startLiveCall = useCallback(async () => {
+    if (!settingsRef.current.masterAccess) return;
+    ensureAudioContext();
+    if (liveSessionRef.current) {
+      liveSessionRef.current.stop();
+      liveSessionRef.current = null;
+    }
+
+    setLiveErrorMsg(null);
+    setIsAssistantEnabled(true);
+    isAssistantEnabledRef.current = true;
+
+    const session = new GeminiLiveSession({
+      apiKey: getGeminiKey() || "",
+      voiceName: prefs.voiceName || 'Sulafat',
+      systemInstruction: buildSystemInstruction(settingsRef.current, prefsRef.current, true),
+      onStateChange: (state) => {
+        if (state === 'listening') transitionToState("LISTENING");
+        else if (state === 'thinking') transitionToState("THINKING");
+        else if (state === 'speaking') transitionToState("SPEAKING");
+        else if (state === 'off') {
+           if (isCallScreenOpenRef.current && isAssistantEnabledRef.current) {
+             // Reconnect handled inside class usually, but if it dies, we reset UI
+             transitionToState("IDLE");
+           }
+        }
+      },
+      onTranscription: (role, text) => {
+        if (role === 'user') setInterimSpeechText(text);
+        else {
+           setChatHistory(prev => {
+             const last = prev[prev.length - 1];
+             if (last && last.role === 'assistant') {
+               return [...prev.slice(0, -1), { role: 'assistant', content: last.content + text }];
+             }
+             return [...prev, { role: 'assistant', content: text }];
+           });
+        }
+      },
+      onError: (msg) => {
+        setLiveErrorMsg(msg);
+        setToast(msg);
+      },
+      onClose: () => {
+        liveSessionRef.current = null;
+      }
+    });
+
+    liveSessionRef.current = session;
+    await session.start();
+
+    // Use a small loop to wait for analysers to be populated after mic capture starts
+    let checkCount = 0;
+    const checkInterval = setInterval(() => {
+      const micAn = session.getMicAnalyser();
+      const outAn = session.getOutputAnalyser();
+      if (micAn || checkCount > 20) {
+        analyserRef.current = micAn;
+        outputAnalyserRef.current = outAn;
+        currentAnalyserRef.current = micAn;
+        clearInterval(checkInterval);
+      }
+      checkCount++;
+    }, 100);
+  }, [transitionToState, ensureAudioContext]);
+
   const endLiveCall = useCallback(() => {
     if (chatHistory.length > 0) {
       const durationSeconds = callStartTimeRef.current ? Math.floor((Date.now() - callStartTimeRef.current) / 1000) : 30;
@@ -6994,8 +7069,6 @@ export function App() {
         duration: durationSeconds
       };
       setConversations(prev => [newConv, ...prev]);
-      
-      // Static build without backend stats endpoint
     }
 
     callStartTimeRef.current = null;
@@ -7034,52 +7107,14 @@ export function App() {
     isCallScreenOpenRef.current = true;
     setIsCallMinimized(false);
     setVoiceModeEnabled(true);
-    startListening();
-  }, [isCallScreenOpen, isCallMinimized, settings.masterAccess, startListening]);
+    
+    // START LIVE SESSION
+    startLiveCall();
+  }, [isCallScreenOpen, isCallMinimized, settings.masterAccess, startLiveCall, ensureAudioContext]);
 
   const toggleListeningSwitch = useCallback(() => {
-    ensureAudioContext();
-    const isCurrentlyActiveOrBusy =
-      isAssistantEnabledRef.current ||
-      isBusyRef.current ||
-      isProcessingGeminiRef.current ||
-      isSpeakingTTSRef.current ||
-      recognitionRunningRef.current ||
-      sessionStateRef.current === "THINKING" ||
-      sessionStateRef.current === "SPEAKING" ||
-      sessionStateRef.current === "LISTENING";
-
-    if (isCurrentlyActiveOrBusy) {
-      // Stop action: tapping the bottom orb cancels thinking, speech and recognition immediately
-      setIsSilentMode(false);
-      isSilentModeRef.current = false;
-      try {
-        localStorage.setItem("iyabd_listening_active", "false");
-      } catch (e) {}
-      stopListening();
-      setToast("শোনা বন্ধ");
-    } else {
-      micNotAllowedRef.current = false;
-      isAssistantEnabledRef.current = true;
-      setIsAssistantEnabled(true);
-      // Immediately unlock speechSynthesis on user tap for Chrome on Android
-      try {
-        if (typeof window !== "undefined" && "speechSynthesis" in window) {
-          const unlockUtterance = new SpeechSynthesisUtterance(" ");
-          unlockUtterance.volume = 0;
-          window.speechSynthesis.speak(unlockUtterance);
-          window.speechSynthesis.resume();
-        }
-      } catch (e) {}
-      setIsSilentMode(false);
-      isSilentModeRef.current = false;
-      try {
-        localStorage.setItem("iyabd_listening_active", "true");
-      } catch (e) {}
-      setToast("শোনা চালু");
-      startListening();
-    }
-  }, [ensureAudioContext, startListening, stopListening]);
+    handleVoiceToggle();
+  }, [handleVoiceToggle]);
 
   const toggleAssistant = () => {
     toggleListeningSwitch();
@@ -11813,9 +11848,16 @@ export function App() {
                   )}
                 />
 
-                <div
+                <button
+                  type="button"
                   ref={callOrbWrapperRef}
-                  className="transition-transform duration-75 ease-out"
+                  onClick={() => {
+                    if (sessionState === "IDLE" || !liveSessionRef.current) {
+                      startLiveCall();
+                    }
+                  }}
+                  className="transition-transform duration-75 ease-out outline-none"
+                  aria-label="Start or Restart Voice Session"
                 >
                   <OrbSphere
                     styleId={prefs.orbTheme || "classic"}
@@ -11824,7 +11866,7 @@ export function App() {
                     reduceMotion={prefs.reduceMotion}
                     dimmed={!isAssistantEnabled || isMuted}
                   />
-                </div>
+                </button>
               </div>
             </div>
 

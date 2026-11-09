@@ -8,6 +8,7 @@ import {
   getCurrentlyActiveChatModel,
   getDynamicGroqChatModels,
   getDynamicGeminiChatModels,
+  getDynamicGeminiLiveModels,
   getSelectedChatEngine,
   getEffectiveChatEngineKey
 } from "../lib/chatEngines";
@@ -279,6 +280,9 @@ export const LiveModelSettings = ({
   const [availableModels, setAvailableModels] = useState<string[]>([]);
   const [showModelsList, setShowModelsList] = useState<boolean>(false);
 
+  const [isDetectingLive, setIsDetectingLive] = useState<boolean>(false);
+  const [availableLiveModels, setAvailableLiveModels] = useState<string[]>([]);
+
   const handleAutoDetectChatModel = async () => {
     setIsDetecting(true);
     setAvailableModels([]);
@@ -324,6 +328,29 @@ export const LiveModelSettings = ({
       notifyToast("মডেল শনাক্তকরণে সমস্যা হয়েছে");
     } finally {
       setIsDetecting(false);
+    }
+  };
+
+  const handleAutoDetectLiveModel = async () => {
+    setIsDetectingLive(true);
+    try {
+      const apiKey = (getGeminiKey() || "").replace(/[\r\n\t\s"']+/g, "").trim();
+      if (!apiKey) {
+        notifyToast("আগে Gemini Key দিন");
+        return;
+      }
+      const res = await getDynamicGeminiLiveModels(apiKey, true);
+      if (res.models && res.models.length > 0) {
+        setAvailableLiveModels(res.models);
+        selectAndSaveModel(res.models[0]);
+        notifyToast(`তাজা Live মডেল পাওয়া গেছে: ${res.models[0]}`);
+      } else {
+        notifyToast(res.error || "কোনো Live মডেল পাওয়া যায়নি");
+      }
+    } catch (e) {
+      notifyToast("মডেল শনাক্তকরণে সমস্যা হয়েছে");
+    } finally {
+      setIsDetectingLive(false);
     }
   };
 
@@ -466,7 +493,35 @@ export const LiveModelSettings = ({
         <h2 className="text-xl font-black italic uppercase tracking-tighter text-white">
           LIVE VOICE MODEL
         </h2>
+        <button
+          onClick={handleAutoDetectLiveModel}
+          disabled={isDetectingLive}
+          className="ml-auto p-2 bg-purple-600/20 border border-purple-500/30 rounded-xl text-purple-200 active:scale-95 transition-all disabled:opacity-50"
+          title="Auto detect live models"
+        >
+          <RotateCw className={`w-5 h-5 ${isDetectingLive ? "animate-spin" : ""}`} />
+        </button>
       </header>
+
+      {availableLiveModels.length > 0 && (
+        <div className="px-5 pt-3 pb-1">
+          <div className="flex flex-wrap gap-2">
+            {availableLiveModels.map((m) => (
+              <button
+                key={m}
+                onClick={() => selectAndSaveModel(m)}
+                className={`px-3 py-1.5 rounded-lg text-[10px] font-bold border transition-all ${
+                  savedModel === m
+                    ? "bg-purple-600 border-purple-400 text-white shadow-lg"
+                    : "bg-purple-600/10 border-purple-500/20 text-purple-300"
+                }`}
+              >
+                {m}
+              </button>
+            ))}
+          </div>
+        </div>
+      )}
 
       {/* Scrollable Page Body */}
       <div className="flex-1 min-h-0 overflow-y-auto px-5 pt-5 pb-32 space-y-3.5 no-scrollbar">

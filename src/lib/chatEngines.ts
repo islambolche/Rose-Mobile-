@@ -386,6 +386,118 @@ export const getDynamicGeminiChatModels = async (
 };
 
 /**
+ * Dynamic Gemini Live Model Discovery (Cached for 1 hour)
+ * Filters for supportedGenerationMethods: "bidiGenerateContent"
+ * Prioritizes "native-audio", then "live", highest version first.
+ */
+export const getDynamicGeminiLiveModels = async (
+  apiKey: string,
+  forceFresh = false
+): Promise<{ models: string[]; error?: string; errorReason?: string; source?: string }> => {
+  const cleanKey = apiKey.trim();
+  if (!cleanKey) return { models: [], error: 'Gemini key দেওয়া নেই' };
+
+  const cacheKey = 'gemini_cached_live_models';
+  if (!forceFresh) {
+    try {
+      const cachedStr = localStorage.getItem(cacheKey);
+      if (cachedStr) {
+        const cached = JSON.parse(cachedStr);
+        if (Array.isArray(cached?.models) && cached.models.length > 0 && Date.now() - cached.timestamp < 3600000) {
+          return { models: cached.models, source: 'cache' };
+        }
+      }
+    } catch (e) {}
+  }
+
+  let allModels: any[] = [];
+  let nextToken = '';
+  let attemptCount = 0;
+
+  try {
+    do {
+      attemptCount++;
+      const controller = new AbortController();
+      const timer = setTimeout(() => controller.abort(), 8000);
+      let url = `https://generativelanguage.googleapis.com/v1beta/models?key=${encodeURIComponent(cleanKey)}&pageSize=200`;
+      if (nextToken) url += `&pageToken=${encodeURIComponent(nextToken)}`;
+
+      const res = await fetch(url, { signal: controller.signal });
+      clearTimeout(timer);
+
+      if (!res.ok) {
+        const raw = await res.text().catch(() => '');
+        let errMsg = `HTTP ${res.status}`;
+        try {
+          const j = JSON.parse(raw);
+          if (j?.error?.message) errMsg = j.error.message;
+        } catch (e) {}
+        return { models: [], error: `Gemini Live ত্রুটি (${res.status}): ${errMsg}`, errorReason: errMsg };
+      }
+
+      const data = await res.json();
+      if (Array.isArray(data.models)) {
+        allModels = [...allModels, ...data.models];
+      }
+      nextToken = data.nextPageToken || '';
+      if (attemptCount > 10) break;
+    } while (nextToken);
+
+    const filtered = allModels.filter((m: any) => {
+      const methods: string[] = Array.isArray(m?.supportedGenerationMethods) ? m.supportedGenerationMethods : [];
+      return methods.includes('bidiGenerateContent');
+    });
+
+    const parseVersion = (name: string): { major: number; minor: number } => {
+      const match = name.toLowerCase().match(/gemini-(\d+)(?:\.(\d+))?/);
+      if (match) {
+        return {
+          major: parseInt(match[1], 10),
+          minor: parseInt(match[2] || '0', 10),
+        };
+      }
+      return { major: 0, minor: 0 };
+    };
+
+    const scoreGeminiLive = (name: string): number => {
+      const lower = name.toLowerCase();
+      let score = 0;
+      const { major, minor } = parseVersion(lower);
+      score += major * 1000 + minor * 100;
+
+      if (lower.includes('native-audio')) score += 500;
+      else if (lower.includes('live')) score += 400;
+      
+      if (lower.includes('exp')) score -= 20;
+      if (lower.includes('preview')) score -= 10;
+      return score;
+    };
+
+    filtered.sort((a, b) => {
+      const scoreA = scoreGeminiLive(a.name);
+      const scoreB = scoreGeminiLive(b.name);
+      if (scoreA !== scoreB) return scoreB - scoreA;
+      return String(b.name).localeCompare(String(a.name));
+    });
+
+    const modelNames = filtered.map((m) => String(m.name).replace(/^models\//, '').trim()).filter(Boolean);
+
+    if (modelNames.length > 0) {
+      try {
+        localStorage.setItem(cacheKey, JSON.stringify({ models: modelNames, timestamp: Date.now() }));
+      } catch (e) {}
+      return { models: modelNames, source: 'network' };
+    }
+
+    return { models: [], error: 'কোনো উপযুক্ত Gemini Live মডেল পাওয়া যায়নি', errorReason: 'No live models found' };
+  } catch (err: any) {
+    const isAbort = err?.name === 'AbortError';
+    const text = isAbort ? 'সময় শেষ (Timeout)' : `নেটওয়ার্ক সমস্যা: ${err.message}`;
+    return { models: [], error: text, errorReason: text };
+  }
+};
+
+/**
  * Direct Gemini Chat Completion caller using Generative Language REST API.
  */
 export const callGeminiDirectChat = async (params: {
