@@ -61,25 +61,20 @@ export class GeminiLiveSession {
     this.options.onTiming?.("audioChunksReceived", 0);
 
     const apiKey = String(this.options.apiKey || getGeminiKey() || '').replace(/[\r\n\t\s"']+/g, '').trim();
-    if (!apiKey) {
-      const errMsg = "Add your Gemini key in Settings > Connections.";
-      logVoiceEvent("Live WS", errMsg, "error");
-      this.options.onError?.(errMsg);
-      this.stop(true);
-      return;
-    }
-
-    const rawModel = (localStorage.getItem('voice_model') || this.options.model || 'gemini-2.5-flash-native-audio-preview-09-2025').replace(/^models\//, '').trim();
+    const rawModel = (localStorage.getItem('voice_model') || this.options.model || 'gemini-3.8-live').replace(/^models\//, '').trim();
     const fullModel = `models/${rawModel}`;
-    const url = `wss://generativelanguage.googleapis.com/ws/google.ai.generativelanguage.v1beta.GenerativeService.BidiGenerateContent?key=${encodeURIComponent(apiKey)}`;
+
+    const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+    const host = window.location.host;
+    const url = `${protocol}//${host}/api/live?assistantName=${encodeURIComponent(this.options.assistantName || 'Rose AI')}&ownerName=${encodeURIComponent(this.options.ownerName || 'MD YOUSUF KHAN')}&voiceName=${encodeURIComponent(this.options.voiceName || 'Sulafat')}&model=${encodeURIComponent(rawModel)}${apiKey ? `&apiKey=${encodeURIComponent(apiKey)}` : ''}`;
 
     const systemText = `তোমার নাম ${this.options.assistantName || 'Rose AI'}। ইউজারের নাম ${this.options.ownerName || 'MD YOUSUF KHAN'}। শুধু বাংলায় ছোট উত্তর দাও।`;
 
-    logVoiceEvent("Live WS", "Connecting directly to Google Gemini Live...");
+    logVoiceEvent("Live WS", "Connecting to server Gemini Live bridge...");
     this.ws = new WebSocket(url);
 
     this.ws.onopen = () => {
-      logVoiceEvent("Live WS", "[onopen] Connected to Gemini Live, sending setup...", "success");
+      logVoiceEvent("Live WS", "[onopen] Connected to Gemini Live bridge, sending setup...", "success");
       this.ws?.send(JSON.stringify({
         setup: {
           model: fullModel,
@@ -105,7 +100,7 @@ export class GeminiLiveSession {
         const raw = typeof event.data === 'string' ? event.data : await (event.data as Blob).text();
         const msg = JSON.parse(raw);
         
-        if (msg.setupComplete) {
+        if (msg.setupComplete || msg.connected) {
             logVoiceEvent("Live WS", "[onmessage] Setup complete.", "success");
             this.isConnected = true;
             this.updateState('listening');

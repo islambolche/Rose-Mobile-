@@ -195,12 +195,6 @@ export async function generateVoiceAnswer(payload: {
     .replace(/[\r\n\t\s"']+/g, "")
     .trim();
 
-  if (!userKey) {
-    const errorMsg = "Add your Gemini key in Settings > Connections.";
-    logVoiceEvent("Answer Step", errorMsg, "error");
-    throw new Error(errorMsg);
-  }
-
   const strictSystemInstruction =
     (systemInstruction || "") +
     "\n\nIMPORTANT CONSTRAINTS: Reply in 1 to 2 short sentences. Never use lists or markdown in voice. Only give a longer answer if I ask for details.";
@@ -223,20 +217,18 @@ export async function generateVoiceAnswer(payload: {
     triedModels.add(modelCandidate);
     const answerStartTime = Date.now();
     const cleanModel = modelCandidate.replace(/^models\//, "").trim();
-    const url = `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(
-      cleanModel
-    )}:generateContent?key=${encodeURIComponent(userKey)}`;
+    const url = `/api/gemini/generate`;
 
     const body: any = {
+      model: cleanModel,
       contents: history,
       generationConfig: {
         maxOutputTokens: 150,
       },
+      apiKey: userKey || undefined,
     };
     if (strictSystemInstruction.trim()) {
-      body.systemInstruction = {
-        parts: [{ text: strictSystemInstruction.trim() }],
-      };
+      body.systemInstruction = strictSystemInstruction.trim();
     }
 
     const res = await fetchWithTimeoutAndRetry(
@@ -343,14 +335,6 @@ export async function generateVoiceTTS(payload: {
     .replace(/[\r\n\t\s"']+/g, "")
     .trim();
 
-  if (!userKey) {
-    logVoiceEvent("TTS Step", "No Gemini API key available for TTS", "error");
-    return {
-      modelUsed: "none",
-      useBrowserSynth: false,
-      quotaExhaustedNotice: "Add your Gemini key in Settings > Connections.",
-    };
-  }
 
   const ttsStartTime = Date.now();
   const prefix = ttsStylePrefix || (personality ? PERSONALITY_TTS_PROMPT_PREFIX[personality] : "");
@@ -376,9 +360,7 @@ export async function generateVoiceTTS(payload: {
   const tryTtsModel = async (ttsModelCandidate: string): Promise<TTSResult | null> => {
     triedTts.add(ttsModelCandidate);
     const cleanModel = ttsModelCandidate.replace(/^models\//, "").trim();
-    const url = `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(
-      cleanModel
-    )}:generateContent?key=${encodeURIComponent(userKey)}`;
+    const url = `/api/gemini/tts`;
 
     const res = await fetchWithTimeoutAndRetry(
       url,
@@ -386,17 +368,10 @@ export async function generateVoiceTTS(payload: {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          contents: [{ role: "user", parts: [{ text: String(text || "").trim() }] }],
-          generationConfig: {
-            responseModalities: ["AUDIO"],
-            speechConfig: {
-              voiceConfig: {
-                prebuiltVoiceConfig: {
-                  voiceName: voiceName || "Leda",
-                },
-              },
-            },
-          },
+          model: cleanModel,
+          text: String(text || "").trim(),
+          voiceName: voiceName || "Sulafat",
+          apiKey: userKey || undefined,
         }),
       },
       10000
@@ -429,7 +404,7 @@ export async function generateVoiceTTS(payload: {
     }
 
     const ttsMs = Date.now() - ttsStartTime;
-    const rawAudio = data?.candidates?.[0]?.content?.parts?.find((p: any) => p.inlineData)?.inlineData?.data;
+    const rawAudio = data?.audio || data?.candidates?.[0]?.content?.parts?.find((p: any) => p.inlineData)?.inlineData?.data;
 
     if (rawAudio) {
       let processedB64 = rawAudio;

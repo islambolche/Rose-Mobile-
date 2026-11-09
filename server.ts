@@ -1,7 +1,7 @@
 import express from 'express';
 import fs from 'fs';
 import path from 'path';
-import { GoogleGenAI, Type, Modality, LiveServerMessage } from "@google/genai/node";
+import { GoogleGenAI, Type, Modality, LiveServerMessage } from "@google/genai";
 import dotenv from 'dotenv';
 import { createServer } from 'http';
 import { WebSocketServer } from 'ws';
@@ -16,7 +16,18 @@ const app = express();
 app.use(express.json());
 
 const httpServer = createServer(app);
-const wss = new WebSocketServer({ server: httpServer, path: '/api/live' });
+const wss = new WebSocketServer({ noServer: true });
+
+httpServer.on('upgrade', (request, socket, head) => {
+  const pathname = new URL(request.url || '', `http://${request.headers.host || 'localhost'}`).pathname;
+  if (pathname === '/api/live' || pathname === '/live') {
+    wss.handleUpgrade(request, socket, head, (ws) => {
+      wss.emit('connection', ws, request);
+    });
+  } else {
+    socket.destroy();
+  }
+});
 
 process.on('uncaughtException', (err) => {
   console.error('Server Uncaught Exception:', err);
@@ -25,8 +36,58 @@ process.on('unhandledRejection', (reason) => {
   console.error('Server Unhandled Rejection:', reason);
 });
 
+interface ServerSecretVault {
+  freeKey: string;
+  paidKey: string;
+  groqKeys: string; // Comma separated
+  activeProfile: 'free' | 'paid';
+}
+
+const SECRETS_PATH = path.join(__dirname, 'secrets.json');
+
+const saveSecrets = (vault: ServerSecretVault) => {
+  try {
+    fs.writeFileSync(SECRETS_PATH, JSON.stringify(vault, null, 2));
+  } catch (err) {
+    console.error('Failed to save secrets:', err);
+  }
+};
+
+const loadSecrets = (): ServerSecretVault => {
+  try {
+    if (fs.existsSync(SECRETS_PATH)) {
+      const data = fs.readFileSync(SECRETS_PATH, 'utf-8');
+      const parsed = JSON.parse(data);
+      if (parsed.freeKey?.startsWith('AQ.')) parsed.freeKey = '';
+      if (parsed.paidKey?.startsWith('AQ.')) parsed.paidKey = '';
+      return parsed;
+    }
+  } catch (err) {
+    console.error('Failed to load secrets:', err);
+  }
+  const envKey = process.env.GEMINI_API_KEY || '';
+  return {
+    freeKey: envKey.startsWith('AQ.') ? '' : envKey,
+    paidKey: '',
+    groqKeys: '',
+    activeProfile: 'free',
+  };
+};
+
+const serverSecretVault: ServerSecretVault = loadSecrets();
+
+const resolveGeminiApiKey = (customKey?: string): string => {
+  const cleanCustom = typeof customKey === 'string' ? customKey.replace(/[\r\n\t\s"']+/g, '').trim() : '';
+  const activeServerKey = serverSecretVault.activeProfile === 'paid'
+    ? (serverSecretVault.paidKey || serverSecretVault.freeKey)
+    : (serverSecretVault.freeKey || serverSecretVault.paidKey);
+  const rawEnvKey = (process.env.GEMINI_API_KEY || '').trim();
+  const usableEnvKey = rawEnvKey && !rawEnvKey.startsWith('AQ.') && rawEnvKey !== 'placeholder' ? rawEnvKey : '';
+  return cleanCustom || activeServerKey || usableEnvKey || '';
+};
+
 const getGenAIClient = (customKey?: string) => {
-  const key = customKey || process.env.GEMINI_API_KEY || 'placeholder';
+  const key = resolveGeminiApiKey(customKey) || 'placeholder';
   return new GoogleGenAI({
     apiKey: key,
     httpOptions: {
@@ -132,10 +193,10 @@ wss.on('connection', async (clientWs, req) => {
     'gemini-3.8-live'
   ];
 
-  let model = requestedModel && requestedModel.trim() ? requestedModel.trim() : 'gemini-2.5-flash-native-audio-preview-09-2025';
+  let model = requestedModel && requestedModel.trim() ? requestedModel.trim() : 'gemini-3.8-live';
 
   const userKeyParam = url.searchParams.get('apiKey') || '';
-  const apiKey = userKeyParam.replace(/["']/g, '').trim();
+  const apiKey = resolveGeminiApiKey(userKeyParam);
 
   const isKeyUsable = apiKey && 
     apiKey !== 'placeholder' && 
@@ -248,7 +309,14 @@ wss.on('connection', async (clientWs, req) => {
                 if ((part as any).thought === true) continue;
                 
                 if (part.inlineData?.data) {
-                  clientWs.send(JSON.stringify({ audio: part.inlineData.data }));
+                  clientWs.send(JSON.stringify({ 
+                    audio: part.inlineData.data,
+                    serverContent: {
+                      modelTurn: {
+                        parts: [{ inlineData: { data: part.inlineData.data, mimeType: 'audio/pcm;rate=24000' } }]
+                      }
+                    }
+                  }));
                 }
                 
                 if (part.text && !outputText && !isThoughtOrReasoning(part.text)) {
@@ -259,10 +327,10 @@ wss.on('connection', async (clientWs, req) => {
               }
             }
             if (message.serverContent?.interrupted) {
-              clientWs.send(JSON.stringify({ interrupted: true }));
+              clientWs.send(JSON.stringify({ interrupted: true, serverContent: { interrupted: true } }));
             }
             if (message.serverContent?.turnComplete) {
-              clientWs.send(JSON.stringify({ turnComplete: true }));
+              clientWs.send(JSON.stringify({ turnComplete: true, serverContent: { turnComplete: true } }));
             }
             
             const toolCall = message.toolCall;
@@ -323,6 +391,10 @@ wss.on('connection', async (clientWs, req) => {
           session.sendRealtimeInput({
             audio: { data: msg.audio, mimeType: 'audio/pcm;rate=16000' }
           });
+        } else if (msg.realtime_input?.media_chunks?.[0]?.data) {
+          session.sendRealtimeInput({
+            audio: { data: msg.realtime_input.media_chunks[0].data, mimeType: 'audio/pcm;rate=16000' }
+          });
         } else if (msg.realtime_input) {
           session.sendRealtimeInput(msg.realtime_input);
         } else if (msg.realtimeInput) {
@@ -361,11 +433,11 @@ wss.on('connection', async (clientWs, req) => {
 app.get('/api/gemini/models', async (req, res) => {
   try {
     const customKey = req.query.apiKey as string;
-    const key = customKey || process.env.GEMINI_API_KEY;
+    const key = resolveGeminiApiKey(customKey);
     if (!key || key === 'placeholder') {
       return res.status(401).json({ error: "API key not configured" });
     }
-    const response = await fetch(`https://generativelanguage.googleapis.com/v1beta/models?key=${key}`);
+    const response = await fetch(`https://generativelanguage.googleapis.com/v1beta/models?key=${encodeURIComponent(key)}`);
     const data = await response.json();
     res.json(data);
   } catch (error: any) {
@@ -375,21 +447,12 @@ app.get('/api/gemini/models', async (req, res) => {
 
 app.post('/api/gemini/generate', async (req, res) => {
   try {
-    const { model, contents, systemInstruction, generationConfig, apiKey, tools, toolConfig } = req.body;
+    const { model, contents, systemInstruction, generationConfig, apiKey, prompt, tools, toolConfig } = req.body;
     const cleanUserKey =
       typeof apiKey === 'string'
         ? apiKey.replace(/[\r\n\t\s"']+/g, '').trim()
         : '';
-    const activeServerKey = serverSecretVault.activeProfile === 'paid'
-      ? (serverSecretVault.paidKey || serverSecretVault.freeKey)
-      : (serverSecretVault.freeKey || serverSecretVault.paidKey);
-    const rawEnvKey = (process.env.GEMINI_API_KEY || '').trim();
-    const usableEnvKey =
-      rawEnvKey && !rawEnvKey.startsWith('AQ.') && rawEnvKey !== 'placeholder'
-        ? rawEnvKey
-        : '';
-
-    const effectiveKey = cleanUserKey || activeServerKey || usableEnvKey;
+    const effectiveKey = resolveGeminiApiKey(cleanUserKey);
 
     if (!effectiveKey) {
       return res.status(400).json({
@@ -402,118 +465,130 @@ app.post('/api/gemini/generate', async (req, res) => {
       });
     }
 
-    if (cleanUserKey && !serverSecretVault.freeKey) {
+    if (cleanUserKey && !serverSecretVault.freeKey && !cleanUserKey.startsWith('AQ.')) {
       serverSecretVault.freeKey = cleanUserKey;
       saveSecrets(serverSecretVault);
     }
 
-    // Ensure we only use text-capable Gemini models (NEVER native-audio Live models)
     let modelToUse =
       model && typeof model === 'string'
         ? model.replace(/^models\//, '').trim()
-        : 'gemini-3.5-flash';
+        : 'gemini-flash-latest';
     if (
       !modelToUse ||
       !modelToUse.startsWith('gemini') ||
       modelToUse.includes('native-audio') ||
-      modelToUse.includes('live') ||
-      modelToUse.startsWith('gemini-2.5-flash')
+      modelToUse.includes('live')
     ) {
-      modelToUse = 'gemini-3.5-flash';
+      modelToUse = 'gemini-flash-latest';
     }
 
-    const baseGenConfig: any = {
-      maxOutputTokens: 150,
-      thinkingConfig: { thinkingBudget: 0 },
-      ...(generationConfig || {}),
-    };
+    const client = getGenAIClient(effectiveKey);
 
-    const requestBody: any = {
-      contents: Array.isArray(contents) ? contents : [{ role: 'user', parts: [{ text: String(contents || '') }] }],
-      generationConfig: baseGenConfig,
-    };
-
-    if (systemInstruction && String(systemInstruction).trim().length > 0) {
-      requestBody.systemInstruction = {
-        parts: [{ text: String(systemInstruction).trim() }],
-      };
-    }
-
-    if (tools && Array.isArray(tools) && tools.length > 0) {
-      requestBody.tools = tools;
-      if (toolConfig) {
-        requestBody.toolConfig = toolConfig;
-      }
-    }
-
-    const url = `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(
-      modelToUse
-    )}:generateContent?key=${encodeURIComponent(effectiveKey)}`;
-
-    let googleRes = await fetch(url, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(requestBody),
-    });
-
-    let rawResponseText = await googleRes.text();
-
-    // If the model does not support thinkingConfig, retry once without thinkingConfig
-    if (
-      googleRes.status === 400 &&
-      rawResponseText.toLowerCase().includes('thinking') &&
-      requestBody.generationConfig?.thinkingConfig
-    ) {
-      const { thinkingConfig, ...restGenConfig } = requestBody.generationConfig;
-      requestBody.generationConfig = restGenConfig;
-      googleRes = await fetch(url, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(requestBody),
+    let normalizedContents: any = contents;
+    if (!normalizedContents && prompt) {
+      normalizedContents = [{ role: 'user', parts: [{ text: String(prompt) }] }];
+    } else if (typeof normalizedContents === 'string') {
+      normalizedContents = [{ role: 'user', parts: [{ text: normalizedContents }] }];
+    } else if (Array.isArray(normalizedContents)) {
+      normalizedContents = normalizedContents.map((item: any) => {
+        if (typeof item === 'string') {
+          return { role: 'user', parts: [{ text: item }] };
+        }
+        if (item && item.text && !item.parts) {
+          return { role: item.role === 'assistant' ? 'model' : (item.role || 'user'), parts: [{ text: item.text }] };
+        }
+        return item;
       });
-      rawResponseText = await googleRes.text();
     }
 
-    if (!googleRes.ok) {
-      console.error(`Gemini generate HTTP ${googleRes.status} (${modelToUse}):`, rawResponseText);
-      return res
-        .status(googleRes.status)
-        .type('application/json')
-        .send(rawResponseText);
+    const config: any = {};
+    if (systemInstruction) {
+      config.systemInstruction = typeof systemInstruction === 'string'
+        ? systemInstruction
+        : systemInstruction?.parts?.[0]?.text || '';
+    }
+    if (generationConfig?.maxOutputTokens) {
+      config.maxOutputTokens = generationConfig.maxOutputTokens;
+    }
+    if (generationConfig?.temperature !== undefined) {
+      config.temperature = generationConfig.temperature;
+    }
+    if (generationConfig?.responseMimeType) {
+      config.responseMimeType = generationConfig.responseMimeType;
+    }
+    if (generationConfig?.responseSchema) {
+      config.responseSchema = generationConfig.responseSchema;
+    }
+    if (tools && Array.isArray(tools) && tools.length > 0) {
+      config.tools = tools;
+    }
+    if (toolConfig) {
+      config.toolConfig = toolConfig;
     }
 
-    return res.status(200).type('application/json').send(rawResponseText);
+    try {
+      const response = await client.models.generateContent({
+        model: modelToUse,
+        contents: normalizedContents,
+        config: Object.keys(config).length > 0 ? config : undefined,
+      });
+
+      const replyText = response.text || '';
+      return res.status(200).json({
+        text: replyText,
+        candidates: response.candidates || [
+          {
+            content: {
+              parts: [{ text: replyText }],
+              role: 'model',
+            },
+          },
+        ],
+        usageMetadata: response.usageMetadata,
+      });
+    } catch (sdkErr: any) {
+      console.warn(`[Gemini SDK generate] error for model ${modelToUse}:`, sdkErr?.message);
+      // Fallback to gemini-flash-latest if model was not found
+      if (modelToUse !== 'gemini-flash-latest' && String(sdkErr?.message || '').toLowerCase().includes('not found')) {
+        const fallbackRes = await client.models.generateContent({
+          model: 'gemini-flash-latest',
+          contents: normalizedContents,
+          config: Object.keys(config).length > 0 ? config : undefined,
+        });
+        const replyText = fallbackRes.text || '';
+        return res.status(200).json({
+          text: replyText,
+          candidates: fallbackRes.candidates || [
+            { content: { parts: [{ text: replyText }], role: 'model' } }
+          ],
+          usageMetadata: fallbackRes.usageMetadata,
+        });
+      }
+      throw sdkErr;
+    }
   } catch (error: any) {
     console.error('Gemini generate error:', error);
-    const status =
-      typeof error?.status === 'number' && error.status >= 400
-        ? error.status
-        : 500;
-    const rawBody =
-      typeof error?.message === 'string' && error.message.trim()
-        ? error.message
-        : JSON.stringify({ error: String(error) });
-    res.status(status).send(rawBody);
+    const parsed = parseGeminiError(error);
+    const status = parsed.status || (typeof error?.status === 'number' && error.status >= 400 ? error.status : 500);
+    return res.status(status).json({
+      error: {
+        code: status,
+        message: parsed.message || error?.message || 'Gemini request failed',
+        status: 'FAILED',
+      },
+    });
   }
 });
 
 app.post('/api/gemini/stream', async (req, res) => {
   try {
-    const { model, contents, systemInstruction, generationConfig, apiKey, tools, toolConfig } = req.body;
+    const { model, contents, systemInstruction, generationConfig, apiKey, prompt } = req.body;
     const cleanUserKey =
       typeof apiKey === 'string'
         ? apiKey.replace(/[\r\n\t\s"']+/g, '').trim()
         : '';
-    const activeServerKey = serverSecretVault.activeProfile === 'paid'
-      ? (serverSecretVault.paidKey || serverSecretVault.freeKey)
-      : (serverSecretVault.freeKey || serverSecretVault.paidKey);
-    const rawEnvKey = (process.env.GEMINI_API_KEY || '').trim();
-    const usableEnvKey =
-      rawEnvKey && !rawEnvKey.startsWith('AQ.') && rawEnvKey !== 'placeholder'
-        ? rawEnvKey
-        : '';
-
-    const effectiveKey = cleanUserKey || activeServerKey || usableEnvKey;
+    const effectiveKey = resolveGeminiApiKey(cleanUserKey);
 
     if (!effectiveKey) {
       return res.status(400).json({
@@ -529,98 +604,59 @@ app.post('/api/gemini/stream', async (req, res) => {
     let modelToUse =
       model && typeof model === 'string'
         ? model.replace(/^models\//, '').trim()
-        : 'gemini-3.5-flash';
+        : 'gemini-flash-latest';
     if (
       !modelToUse ||
       !modelToUse.startsWith('gemini') ||
       modelToUse.includes('native-audio') ||
-      modelToUse.includes('live') ||
-      modelToUse.startsWith('gemini-2.5-flash')
+      modelToUse.includes('live')
     ) {
-      modelToUse = 'gemini-3.5-flash';
+      modelToUse = 'gemini-flash-latest';
     }
 
-    const baseGenConfig: any = {
-      maxOutputTokens: 150,
-      thinkingConfig: { thinkingBudget: 0 },
-      ...(generationConfig || {}),
-    };
+    const client = getGenAIClient(effectiveKey);
 
-    const requestBody: any = {
-      contents: Array.isArray(contents) ? contents : [{ role: 'user', parts: [{ text: String(contents || '') }] }],
-      generationConfig: baseGenConfig,
-    };
-
-    if (systemInstruction && String(systemInstruction).trim().length > 0) {
-      requestBody.systemInstruction = {
-        parts: [{ text: String(systemInstruction).trim() }],
-      };
+    let normalizedContents: any = contents;
+    if (!normalizedContents && prompt) {
+      normalizedContents = [{ role: 'user', parts: [{ text: String(prompt) }] }];
+    } else if (typeof normalizedContents === 'string') {
+      normalizedContents = [{ role: 'user', parts: [{ text: normalizedContents }] }];
     }
 
-    if (tools && Array.isArray(tools) && tools.length > 0) {
-      requestBody.tools = tools;
-      if (toolConfig) {
-        requestBody.toolConfig = toolConfig;
-      }
+    const config: any = {};
+    if (systemInstruction) {
+      config.systemInstruction = typeof systemInstruction === 'string'
+        ? systemInstruction
+        : systemInstruction?.parts?.[0]?.text || '';
+    }
+    if (generationConfig?.maxOutputTokens) {
+      config.maxOutputTokens = generationConfig.maxOutputTokens;
+    }
+    if (generationConfig?.temperature !== undefined) {
+      config.temperature = generationConfig.temperature;
     }
 
-    const url = `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(
-      modelToUse
-    )}:streamGenerateContent?alt=sse&key=${encodeURIComponent(effectiveKey)}`;
-
-    let googleRes = await fetch(url, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(requestBody),
+    const streamResponse = await client.models.generateContentStream({
+      model: modelToUse,
+      contents: normalizedContents,
+      config: Object.keys(config).length > 0 ? config : undefined,
     });
-
-    if (!googleRes.ok) {
-      let errText = await googleRes.text();
-      if (
-        googleRes.status === 400 &&
-        errText.toLowerCase().includes('thinking') &&
-        requestBody.generationConfig?.thinkingConfig
-      ) {
-        const { thinkingConfig, ...restGenConfig } = requestBody.generationConfig;
-        requestBody.generationConfig = restGenConfig;
-        googleRes = await fetch(url, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify(requestBody),
-        });
-        if (!googleRes.ok) {
-          errText = await googleRes.text();
-          return res.status(googleRes.status).type('application/json').send(errText);
-        }
-      } else {
-        return res.status(googleRes.status).type('application/json').send(errText);
-      }
-    }
 
     res.setHeader('Content-Type', 'text/event-stream; charset=utf-8');
     res.setHeader('Cache-Control', 'no-cache');
     res.setHeader('Connection', 'keep-alive');
 
-    if (!googleRes.body) {
-      const fullText = await googleRes.text();
-      res.write(fullText);
-      return res.end();
+    for await (const chunk of streamResponse) {
+      const text = chunk.text || '';
+      res.write(`data: ${JSON.stringify({ text, candidates: chunk.candidates })}\n\n`);
     }
-
-    const reader = googleRes.body.getReader();
-    const decoder = new TextDecoder();
-    while (true) {
-      const { done, value } = await reader.read();
-      if (done) break;
-      if (value) {
-        res.write(decoder.decode(value, { stream: true }));
-      }
-    }
+    res.write('data: [DONE]\n\n');
     res.end();
   } catch (error: any) {
     console.error('Gemini stream error:', error);
     if (!res.headersSent) {
-      res.status(500).send(error?.message || String(error));
+      const parsed = parseGeminiError(error);
+      res.status(parsed.status || 500).json({ error: { message: parsed.message } });
     } else {
       res.end();
     }
@@ -711,6 +747,8 @@ app.post('/api/gemini/tts', async (req, res) => {
 
     const initialModels = Array.from(new Set([
       model && model.toLowerCase().includes('tts') ? model : null,
+      'gemini-3.8-flash-lite-tts',
+      'gemini-3.8-flash-tts',
       'gemini-2.5-flash-preview-tts',
       'gemini-2.5-flash-tts',
       'gemini-2.0-flash-preview-tts',
@@ -969,48 +1007,7 @@ app.post('/api/stats/increment', (req, res) => {
   res.json({ success: true });
 });
 
-// =========================================================================
-// Server-Side Encrypted/Vault Secrets Management for Gemini API
-// =========================================================================
-interface ServerSecretVault {
-  freeKey: string;
-  paidKey: string;
-  groqKeys: string; // Comma separated
-  activeProfile: 'free' | 'paid';
-}
-
-const SECRETS_PATH = path.join(__dirname, 'secrets.json');
-
-const saveSecrets = (vault: ServerSecretVault) => {
-  try {
-    fs.writeFileSync(SECRETS_PATH, JSON.stringify(vault, null, 2));
-  } catch (err) {
-    console.error('Failed to save secrets:', err);
-  }
-};
-
-const loadSecrets = (): ServerSecretVault => {
-  try {
-    if (fs.existsSync(SECRETS_PATH)) {
-      const data = fs.readFileSync(SECRETS_PATH, 'utf-8');
-      const parsed = JSON.parse(data);
-      if (parsed.freeKey?.startsWith('AQ.')) parsed.freeKey = '';
-      if (parsed.paidKey?.startsWith('AQ.')) parsed.paidKey = '';
-      return parsed;
-    }
-  } catch (err) {
-    console.error('Failed to load secrets:', err);
-  }
-  const envKey = process.env.GEMINI_API_KEY || '';
-  return {
-    freeKey: envKey.startsWith('AQ.') ? '' : envKey,
-    paidKey: '',
-    groqKeys: '',
-    activeProfile: 'free',
-  };
-};
-
-const serverSecretVault: ServerSecretVault = loadSecrets();
+// Vault secrets initialized at top of file
 
 const maskApiKey = (key?: string): string => {
   if (!key) return '';

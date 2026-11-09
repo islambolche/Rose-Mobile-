@@ -93,6 +93,13 @@ import realisticAssistantImg from "./assets/images/iyabd_realistic_assistant_179
 import * as Permissions from "./lib/permissions";
 import { directGeminiGenerate, directGeminiStream, directGeminiTTS, formatGeminiErrorForUI, TEXT_MODELS, getSavedWorkingTextModel, discoverAvailableFlashModels } from "./lib/ai-service";
 import {
+  generateTextWithSelectedEngine,
+  getSelectedChatEngine,
+  getProviderKey,
+  getProviderStatus,
+  FREE_CHAT_PROVIDERS,
+} from "./lib/chatEngines";
+import {
   GEMINI_PHONE_TOOLS,
   browserPhoneBridge,
   executePhoneAction,
@@ -1216,7 +1223,7 @@ const VoiceCheckView = ({
       const controller = new AbortController();
       const timeoutId = setTimeout(() => controller.abort(), 4000);
       const res = await fetch(
-        `https://generativelanguage.googleapis.com/v1beta/models?key=${encodeURIComponent(rawKey)}`,
+        `/api/gemini/models?apiKey=${encodeURIComponent(rawKey)}`,
         { signal: controller.signal }
       );
       clearTimeout(timeoutId);
@@ -3948,10 +3955,12 @@ export function App() {
 
         try {
           const testModel = getSavedWorkingTextModel() || TEXT_MODELS[0];
-          const url = `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(testModel)}:generateContent?key=${encodeURIComponent(cleanKey)}`;
+          const url = `/api/gemini/generate`;
           const body = {
+            model: testModel,
             contents: [{ role: "user", parts: [{ text: "hi" }] }],
-            generationConfig: { maxOutputTokens: 5 }
+            generationConfig: { maxOutputTokens: 5 },
+            apiKey: cleanKey || undefined,
           };
           const res = await fetch(url, {
             method: "POST",
@@ -5255,7 +5264,7 @@ export function App() {
   );
 
   const processVoiceInputWithGemini = useCallback(
-    async (userText: string, userAlreadyPushed: boolean = false) => {
+    async (userText: string, userAlreadyPushed: boolean = false, isTypedChat: boolean = false) => {
       // Create ONE speech controller session with a unique token per reply
       const turnToken = cancelAllSpeechAndAudio(true);
       const lockedEngineMode: "fast" | "quality" = "quality";
@@ -5335,8 +5344,28 @@ export function App() {
       try {
         const currentKey = getGeminiKey() || apiKeysRef.current.gemini || "";
         const sanitizedKey = currentKey.replace(/["'\r\n\t\s]+/g, "").trim();
-        if (!sanitizedKey) {
-          throw new Error("Add your Gemini key in Settings > Connections.");
+        const activeChatEngine = getSelectedChatEngine();
+        const activeProviderConfig =
+          FREE_CHAT_PROVIDERS.find((p) => p.id === activeChatEngine) || FREE_CHAT_PROVIDERS[0];
+        const selectedEngineKey = getProviderKey(activeChatEngine);
+        const selectedEngineStatus = getProviderStatus(activeChatEngine);
+
+        if (isTypedChat) {
+          if (!selectedEngineKey || selectedEngineStatus === "INVALID") {
+            const pName = activeProviderConfig.displayName || activeProviderConfig.name;
+            const missingMsg = `${pName}-এর key দিন বা অন্য সেবা বাছুন`;
+            setLiveErrorMsg(missingMsg);
+            setToast(missingMsg);
+            pushSharedMessage({
+              role: "system",
+              text: missingMsg,
+            });
+            return;
+          }
+        } else {
+          if (!sanitizedKey) {
+            throw new Error("Add your Gemini key in Settings > Connections.");
+          }
         }
 
         const memoryContext =
@@ -5441,89 +5470,112 @@ export function App() {
           apiKey: sanitizedKey,
         };
 
-        const geminiRes: any = await directGeminiGenerate(payload);
-        if (speechTokenRef.current !== turnToken) return;
+        let generatedText = "";
 
-        const fullReplyText =
-          geminiRes?.text ||
-          geminiRes?.candidates?.[0]?.content?.parts
-            ?.map((p: any) => p?.text || "")
-            .join("")
-            .trim() ||
-          "";
-        if (fullReplyText) {
-          fullAccumulatedText = fullReplyText;
-          sentenceBuffer = fullReplyText;
-          updateSharedRoseBubble(fullAccumulatedText);
+        if (isTypedChat && activeChatEngine !== "gemini") {
+          const simplifiedHistory = historyWithoutSystem.map((m) => ({
+            role: m.role === "model" ? ("assistant" as const) : ("user" as const),
+            text: m.parts?.[0]?.text || "",
+          }));
+
+          const engineResult = await generateTextWithSelectedEngine({
+            userText,
+            systemPrompt: systemInst,
+            historyWithoutSystem: simplifiedHistory,
+            maxTokens: targetMaxTokens,
+          });
+          generatedText = engineResult.text;
+          fullAccumulatedText = generatedText;
+          sentenceBuffer = generatedText;
+          updateSharedRoseBubble(generatedText);
           extractCompletedSentences();
+        } else {
+          // Gemini selected engine (or voice): no fallback to other providers!
+          const geminiRes: any = await directGeminiGenerate(payload);
+          if (speechTokenRef.current !== turnToken) return;
+
+          const fullReplyText =
+            geminiRes?.text ||
+            geminiRes?.candidates?.[0]?.content?.parts
+              ?.map((p: any) => p?.text || "")
+              .join("")
+              .trim() ||
+            "";
+          if (fullReplyText) {
+            fullAccumulatedText = fullReplyText;
+            sentenceBuffer = fullReplyText;
+            updateSharedRoseBubble(fullAccumulatedText);
+            extractCompletedSentences();
+          }
+
+          const candidates = geminiRes?.candidates || [];
+          const parts = candidates[0]?.content?.parts || [];
+          const functionCallPart = parts.find((p: any) => Boolean(p.functionCall));
+
+          if (functionCallPart && functionCallPart.functionCall) {
+            const { name: toolName, args: toolArgs } = functionCallPart.functionCall;
+            console.log("[Gemini Function Call]", toolName, toolArgs);
+
+            const actionRes = await executePhoneAction(toolName, toolArgs || {});
+            setActionHistory(getPhoneActionHistory());
+
+            if (actionRes.status === "confirmation_needed" && actionRes.confirmation) {
+              const conf = actionRes.confirmation;
+              setPendingActionConfirmation(conf);
+              fullAccumulatedText = conf.cardPrompt;
+              updateSharedRoseBubble(conf.cardPrompt, conf);
+              anySentenceEnqueued = true;
+              enqueueSentenceForToken(conf.cardPrompt, turnToken, lockedEngineMode);
+            } else if (actionRes.status === "refused") {
+              fullAccumulatedText = actionRes.message;
+              updateSharedRoseBubble(actionRes.message);
+              anySentenceEnqueued = true;
+              enqueueSentenceForToken(actionRes.message, turnToken, lockedEngineMode);
+            } else if (actionRes.status === "unsupported") {
+              fullAccumulatedText = "Needs Android app";
+              updateSharedRoseBubble("Needs Android app");
+              anySentenceEnqueued = true;
+              enqueueSentenceForToken("Needs Android app", turnToken, lockedEngineMode);
+            } else {
+              fullAccumulatedText = actionRes.message;
+              updateSharedRoseBubble(actionRes.message);
+              anySentenceEnqueued = true;
+              enqueueSentenceForToken(actionRes.message, turnToken, lockedEngineMode);
+            }
+            return;
+          } else {
+            generatedText =
+              fullAccumulatedText ||
+              parts.map((p: any) => p.text || "").join("").trim();
+          }
         }
 
-        const candidates = geminiRes?.candidates || [];
-        const parts = candidates[0]?.content?.parts || [];
-        const functionCallPart = parts.find((p: any) => Boolean(p.functionCall));
+        fullAccumulatedText = generatedText;
+        const finalCleanedReply = fullAccumulatedText.replace(/[*#_~`]/g, "").trim();
+        if (!finalCleanedReply) {
+          throw new Error("Empty reply received from assistant");
+        }
 
-        if (functionCallPart && functionCallPart.functionCall) {
-          const { name: toolName, args: toolArgs } = functionCallPart.functionCall;
-          console.log("[Gemini Function Call]", toolName, toolArgs);
+        // Always show the text reply first before enqueuing remaining TTS
+        updateSharedRoseBubble(finalCleanedReply);
+        const remainingSentence = sentenceBuffer.replace(/[*#_~`]/g, "").trim();
+        sentenceBuffer = "";
+        if (remainingSentence) {
+          anySentenceEnqueued = true;
+          enqueueSentenceForToken(remainingSentence, turnToken, lockedEngineMode);
+        } else if (!anySentenceEnqueued) {
+          anySentenceEnqueued = true;
+          enqueueSentenceForToken(finalCleanedReply, turnToken, lockedEngineMode);
+        }
 
-          const actionRes = await executePhoneAction(toolName, toolArgs || {});
-          setActionHistory(getPhoneActionHistory());
-
-          if (actionRes.status === "confirmation_needed" && actionRes.confirmation) {
-            const conf = actionRes.confirmation;
-            setPendingActionConfirmation(conf);
-            fullAccumulatedText = conf.cardPrompt;
-            updateSharedRoseBubble(conf.cardPrompt, conf);
-            anySentenceEnqueued = true;
-            enqueueSentenceForToken(conf.cardPrompt, turnToken, lockedEngineMode);
-          } else if (actionRes.status === "refused") {
-            fullAccumulatedText = actionRes.message;
-            updateSharedRoseBubble(actionRes.message);
-            anySentenceEnqueued = true;
-            enqueueSentenceForToken(actionRes.message, turnToken, lockedEngineMode);
-          } else if (actionRes.status === "unsupported") {
-            fullAccumulatedText = "Needs Android app";
-            updateSharedRoseBubble("Needs Android app");
-            anySentenceEnqueued = true;
-            enqueueSentenceForToken("Needs Android app", turnToken, lockedEngineMode);
-          } else {
-            fullAccumulatedText = actionRes.message;
-            updateSharedRoseBubble(actionRes.message);
-            anySentenceEnqueued = true;
-            enqueueSentenceForToken(actionRes.message, turnToken, lockedEngineMode);
-          }
-        } else {
-          // Standard conversational text generated
-          const generatedText =
-            fullAccumulatedText ||
-            parts.map((p: any) => p.text || "").join("").trim();
-          fullAccumulatedText = generatedText;
-          const finalCleanedReply = fullAccumulatedText.replace(/[*#_~`]/g, "").trim();
-          if (!finalCleanedReply) {
-            throw new Error("Empty reply received from Gemini");
-          }
-
-          // Always show the text reply first before enqueuing remaining TTS
-          updateSharedRoseBubble(finalCleanedReply);
-          const remainingSentence = sentenceBuffer.replace(/[*#_~`]/g, "").trim();
-          sentenceBuffer = "";
-          if (remainingSentence) {
-            anySentenceEnqueued = true;
-            enqueueSentenceForToken(remainingSentence, turnToken, lockedEngineMode);
-          } else if (!anySentenceEnqueued) {
-            anySentenceEnqueued = true;
-            enqueueSentenceForToken(finalCleanedReply, turnToken, lockedEngineMode);
-          }
-
-          if (rememberMeRef.current) {
-            extractAndSaveMemoriesFromTurn(userText, finalCleanedReply, sanitizedKey);
-          }
+        if (rememberMeRef.current && sanitizedKey) {
+          extractAndSaveMemoriesFromTurn(userText, finalCleanedReply, sanitizedKey);
         }
 
         setLiveErrorMsg(null);
       } catch (err: any) {
         if (speechTokenRef.current !== turnToken) return;
-        console.error("[Gemini] API error or timeout:", err);
+        console.error("[ChatEngine] Error:", err);
 
         const currentKey = getGeminiKey() || apiKeysRef.current.gemini || "";
         const sanitizedKey = currentKey.replace(/["'\r\n\t\s]+/g, "").trim();
@@ -5542,7 +5594,30 @@ export function App() {
             enqueueSentenceForToken(partialReply, turnToken, lockedEngineMode);
           }
         } else {
-          const { bengaliMessage, debugLine } = formatGeminiErrorForUI(err, sanitizedKey);
+          let bengaliMessage = "";
+          let debugLine = "";
+          const activeChatEngine = getSelectedChatEngine();
+          const activeProviderConfig =
+            FREE_CHAT_PROVIDERS.find((p) => p.id === activeChatEngine) || FREE_CHAT_PROVIDERS[0];
+
+          if (err?.isKeyMissingOrInvalid || String(err?.message || "").includes("-এর key দিন বা অন্য সেবা বাছুন")) {
+            bengaliMessage = err.message;
+          } else if (isTypedChat && activeChatEngine !== "gemini") {
+            const pName = activeProviderConfig.displayName || activeProviderConfig.name;
+            if (err?.status === 401 || err?.status === 403) {
+              bengaliMessage = `${pName} key ভুল বা মেয়াদোত্তীর্ণ (401)`;
+            } else if (err?.status === 429) {
+              bengaliMessage = `${pName}-এর কোটাসীমা শেষ (429)`;
+            } else {
+              bengaliMessage = `${pName} ত্রুটি: ${err?.message || "উত্তর দিতে ব্যর্থ"}`;
+            }
+            debugLine = `engine: ${activeChatEngine} | status: ${err?.status || "error"} | ${String(err?.message || "").slice(0, 100)}`;
+          } else {
+            const formatted = formatGeminiErrorForUI(err, sanitizedKey);
+            bengaliMessage = formatted.bengaliMessage;
+            debugLine = formatted.debugLine;
+          }
+
           setLiveErrorMsg(bengaliMessage);
           setToast(bengaliMessage);
           pushSharedMessage({
@@ -8241,7 +8316,7 @@ export function App() {
       role: "user",
       text,
     });
-    processVoiceInputWithGemini(text, true);
+    processVoiceInputWithGemini(text, true, true);
   };
 
   const isThinkingActive =
@@ -8352,7 +8427,7 @@ export function App() {
                                 chatHistoryRef.current = next;
                                 return next;
                               });
-                              processVoiceInputWithGemini(retryTargetText, true);
+                              processVoiceInputWithGemini(retryTargetText, true, true);
                             }}
                             className="inline-flex items-center gap-1 px-2.5 py-1 rounded-lg bg-rose-500/20 hover:bg-rose-500/35 border border-rose-400/40 text-rose-100 text-[10px] font-bold uppercase tracking-wider active:scale-95 transition-all"
                           >
@@ -10923,6 +10998,7 @@ export function App() {
               apiKeys={apiKeys}
               setApiKeys={setApiKeys}
               apiStatus={apiStatus}
+              setToast={setToast}
               onBack={() => setCurrentView("settings")}
             />
           )}

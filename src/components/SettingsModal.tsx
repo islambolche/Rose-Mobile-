@@ -271,13 +271,15 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({ isOpen, onClose, o
     setKeyTestState({ loading: true, result: null, isOk: false });
     try {
       const model = getSavedWorkingTextModel() || TEXT_MODELS[0];
-      const url = `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(model)}:generateContent?key=${encodeURIComponent(key)}`;
+      const url = `/api/gemini/generate`;
       const res = await fetch(url, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
+          model,
           contents: [{ role: "user", parts: [{ text: "hi" }] }],
           generationConfig: { maxOutputTokens: 10 },
+          apiKey: key || undefined,
         }),
       });
       const rawText = await res.text().catch(() => "");

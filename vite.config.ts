@@ -33,6 +33,16 @@ export default defineConfig(() => {
             });
           },
         },
+        '/live': {
+          target: 'http://127.0.0.1:3001',
+          changeOrigin: true,
+          ws: true,
+          configure: (proxy) => {
+            proxy.on('error', (err, _req, _res) => {
+              // Suppress connection errors when backend server is starting up
+            });
+          },
+        },
       },
     },
   };

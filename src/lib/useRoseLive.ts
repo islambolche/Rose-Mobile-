@@ -53,15 +53,10 @@ export function useRoseLive(getOpts: () => Opts) {
       const s = R.current;
       const o = getOpts();
       const apiKey = String(o.apiKey || getGeminiKey() || "").replace(/[\r\n\t\s"']+/g, "").trim();
-
-      if (!apiKey) {
-        const e = new Error("Add your Gemini key in Settings > Connections.");
-        setError(e.message); reject(e); return;
-      }
-
-      const rawModel = (o.model || "gemini-2.5-flash-native-audio-preview-09-2025").replace(/^models\//, "").trim();
+      const rawModel = (o.model || "gemini-3.8-live").replace(/^models\//, "").trim();
       const fullModel = `models/${rawModel}`;
-      const wsUrl = `wss://generativelanguage.googleapis.com/ws/google.ai.generativelanguage.v1beta.GenerativeService.BidiGenerateContent?key=${encodeURIComponent(apiKey)}`;
+      const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+      const wsUrl = `${protocol}//${window.location.host}/api/live?model=${encodeURIComponent(rawModel)}&voiceName=${encodeURIComponent(o.voiceName || 'Sulafat')}${apiKey ? `&apiKey=${encodeURIComponent(apiKey)}` : ''}`;
 
       const ws = new WebSocket(wsUrl);
       let ready = false;
