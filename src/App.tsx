@@ -7092,6 +7092,7 @@ export function App() {
       apiKey: getGeminiKey() || "",
       voiceName: prefs.voiceName || 'Sulafat',
       systemInstruction: buildSystemInstruction(settingsRef.current, prefsRef.current, true),
+      audioContext: currentCtx as AudioContext,
       onStateChange: (state) => {
         if (state === 'listening') transitionToState("LISTENING");
         else if (state === 'thinking') transitionToState("THINKING");

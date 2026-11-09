@@ -22,6 +22,7 @@ export interface GeminiLiveOptions {
   onClose?: (event?: any) => void;
   onTurnComplete?: () => void;
   onInterrupted?: () => void;
+  audioContext?: AudioContext;
 }
 
 export class GeminiLiveSession {
@@ -203,8 +204,8 @@ export class GeminiLiveSession {
   }
 
   private async startMicCapture() {
+    logVoiceEvent("Mic", "Starting mic capture...");
     try {
-      // 1. Get the mic stream with desired constraints
       this.micStream = await navigator.mediaDevices.getUserMedia({
         audio: { 
           echoCancellation: true, 
@@ -212,15 +213,16 @@ export class GeminiLiveSession {
           autoGainControl: true 
         }
       });
+      logVoiceEvent("Mic", "Mic stream acquired");
 
       const micTrack = this.micStream.getAudioTracks()[0];
       if (!micTrack || micTrack.readyState !== 'live' || !micTrack.enabled) {
         throw new Error("মাইক ট্র্যাক সচল নয়।");
       }
 
-      // 2. Create the AudioContext (let browser choose native rate for stability)
-      this.audioCtx = new (window.AudioContext || (window as any).webkitAudioContext)();
+      this.audioCtx = this.options.audioContext || new (window.AudioContext || (window as any).webkitAudioContext)();
       await this.audioCtx.resume();
+      logVoiceEvent("Mic", `AudioContext state: ${this.audioCtx.state}`);
 
       if (this.audioCtx.state !== 'running') {
         this.options.onError?.("অডিও সেশন চালু করা যায়নি। মাইক অনুমতি দিন।");
@@ -231,23 +233,20 @@ export class GeminiLiveSession {
       const sampleRate = this.audioCtx.sampleRate;
       logVoiceEvent("Mic", `Capture started at ${sampleRate}Hz`);
       
-      // Mic Analyser (for visuals)
       this.micAnalyser = this.audioCtx.createAnalyser();
       this.micAnalyser.fftSize = 256;
       source.connect(this.micAnalyser);
 
-      // Output Analyser (for visuals)
       this.outputAnalyser = this.audioCtx.createAnalyser();
       this.outputAnalyser.fftSize = 256;
 
       try {
-        // Use inline AudioWorklet with resampling logic
         const processorCode = `
           class AudioProcessor extends AudioWorkletProcessor {
             constructor() { 
               super(); 
               this.targetRate = 16000;
-              this.sourceRate = sampleRate; // Will be injected
+              this.sourceRate = ${this.audioCtx.sampleRate};
               this.buffer = [];
             }
             process(inputs) {
@@ -255,37 +254,26 @@ export class GeminiLiveSession {
               if (!input || input.length === 0) return true;
               const channel = input[0];
               
-              // Simple linear resampling if sourceRate != targetRate
-              if (this.sourceRate === this.targetRate) {
-                const pcm16 = new Int16Array(channel.length);
-                for (let i = 0; i < channel.length; i++) {
-                  const s = Math.max(-1, Math.min(1, channel[i]));
+              for (let i = 0; i < channel.length; i++) this.buffer.push(channel[i]);
+              
+              const ratio = this.sourceRate / this.targetRate;
+              const outLength = Math.floor(this.buffer.length / ratio);
+              
+              if (outLength >= 160) {
+                const pcm16 = new Int16Array(outLength);
+                for (let i = 0; i < outLength; i++) {
+                  const idx = Math.floor(i * ratio);
+                  const s = Math.max(-1, Math.min(1, this.buffer[idx]));
                   pcm16[i] = s < 0 ? s * 0x8000 : s * 0x7FFF;
                 }
                 this.port.postMessage(pcm16.buffer, [pcm16.buffer]);
-              } else {
-                // Buffer and resample
-                for (let i = 0; i < channel.length; i++) this.buffer.push(channel[i]);
-                
-                const ratio = this.sourceRate / this.targetRate;
-                const outLength = Math.floor(this.buffer.length / ratio);
-                
-                if (outLength >= 160) { // Send in chunks of ~10ms+
-                  const pcm16 = new Int16Array(outLength);
-                  for (let i = 0; i < outLength; i++) {
-                    const idx = Math.floor(i * ratio);
-                    const s = Math.max(-1, Math.min(1, this.buffer[idx]));
-                    pcm16[i] = s < 0 ? s * 0x8000 : s * 0x7FFF;
-                  }
-                  this.port.postMessage(pcm16.buffer, [pcm16.buffer]);
-                  this.buffer = this.buffer.slice(Math.floor(outLength * ratio));
-                }
+                this.buffer = this.buffer.slice(Math.floor(outLength * ratio));
               }
               return true;
             }
           }
           registerProcessor('audio-processor', AudioProcessor);
-        `.replace('sampleRate', String(sampleRate));
+        `;
 
         const blob = new Blob([processorCode], { type: 'application/javascript' });
         const url = URL.createObjectURL(blob);
@@ -295,18 +283,16 @@ export class GeminiLiveSession {
         this.audioWorkletNode = new AudioWorkletNode(this.audioCtx, 'audio-processor');
         this.audioWorkletNode.port.onmessage = (e) => this.sendAudio(e.data);
         source.connect(this.audioWorkletNode);
-        logVoiceEvent("Mic", `Inline Worklet resampler active (${sampleRate} -> 16000)`);
+        logVoiceEvent("Mic", "Inline Worklet active");
       } catch (e) {
-        logVoiceEvent("Mic", "Worklet failed, fallback to high-rate ScriptProcessor", "warn");
+        logVoiceEvent("Mic", "Worklet failed, fallback to ScriptProcessor", "warn");
+        console.error("Worklet error:", e);
         this.scriptProcessor = this.audioCtx.createScriptProcessor(4096, 1, 1);
         this.scriptProcessor.onaudioprocess = (e) => {
           const input = e.inputBuffer.getChannelData(0);
-          // Very crude downsampling for fallback
-          const ratio = Math.round(sampleRate / 16000);
-          const outLen = Math.floor(input.length / ratio);
-          const pcm16 = new Int16Array(outLen);
-          for (let i = 0; i < outLen; i++) {
-            const s = Math.max(-1, Math.min(1, input[i * ratio]));
+          const pcm16 = new Int16Array(input.length);
+          for (let i = 0; i < input.length; i++) {
+            const s = Math.max(-1, Math.min(1, input[i]));
             pcm16[i] = s < 0 ? s * 0x8000 : s * 0x7FFF;
           }
           this.sendAudio(pcm16.buffer);
@@ -326,6 +312,7 @@ export class GeminiLiveSession {
   private sendAudio(buffer: ArrayBuffer) {
     if (!this.ws || this.ws.readyState !== WebSocket.OPEN || this.isMuted) return;
     const base64 = btoa(String.fromCharCode(...new Uint8Array(buffer)));
+    logVoiceEvent("Mic", `Sending audio chunk: ${base64.length} bytes`);
     this.ws.send(JSON.stringify({
       realtime_input: {
         media_chunks: [{ data: base64, mime_type: "audio/pcm;rate=16000" }]
@@ -335,6 +322,8 @@ export class GeminiLiveSession {
 
   private playPcmAudio(base64Pcm: string) {
     if (!this.audioCtx) return;
+    if (this.audioCtx.state === 'suspended') this.audioCtx.resume();
+    logVoiceEvent("Audio", `Received audio chunk: ${base64Pcm.length} bytes`);
     try {
       const binaryStr = atob(base64Pcm);
       const len = binaryStr.length;
@@ -352,45 +341,37 @@ export class GeminiLiveSession {
       source.buffer = audioBuffer;
       
       const gainNode = this.audioCtx.createGain();
-      const prefs = localStorage.getItem('rose_prefs') ? JSON.parse(localStorage.getItem('rose_prefs')!) : {};
-      gainNode.gain.value = (prefs.voiceVolume || 80) / 100;
+      gainNode.gain.value = 1.0; 
 
       source.connect(gainNode);
       gainNode.connect(this.outputAnalyser!);
       gainNode.connect(this.audioCtx.destination);
 
-      const startTime = Math.max(this.audioCtx.currentTime, this.nextStartTime);
-      source.start(startTime);
-      this.nextStartTime = startTime + audioBuffer.duration;
-
-      this.scheduledAudioSources.push(source);
-      source.onended = () => {
-        this.scheduledAudioSources = this.scheduledAudioSources.filter(s => s !== source);
-        if (this.scheduledAudioSources.length === 0 && this.currentState === 'speaking') {
-          this.updateState('listening');
-        }
-      };
-    } catch (e) {}
+      source.start(Math.max(this.audioCtx.currentTime, this.nextStartTime));
+      this.nextStartTime = Math.max(this.audioCtx.currentTime, this.nextStartTime) + audioBuffer.duration;
+      logVoiceEvent("Audio", "Playing audio chunk");
+    } catch (e) {
+      logVoiceEvent("Audio", `Playback error: ${e}`, "error");
+    }
   }
 
   private startVisualizer() {
+    logVoiceEvent("Visualizer", "Starting visualizer");
     const micData = new Uint8Array(this.micAnalyser?.frequencyBinCount || 0);
     const outData = new Uint8Array(this.outputAnalyser?.frequencyBinCount || 0);
     
     const loop = () => {
       if (this.currentState === 'off') return;
       
-      let micVol = 0;
       if (this.micAnalyser) {
         this.micAnalyser.getByteFrequencyData(micData);
-        micVol = micData.reduce((a, b) => a + b, 0) / micData.length;
+        const micVol = micData.reduce((a, b) => a + b, 0) / micData.length;
         this.options.onMicVolume?.(micVol);
       }
 
-      let outVol = 0;
       if (this.outputAnalyser) {
         this.outputAnalyser.getByteFrequencyData(outData);
-        outVol = outData.reduce((a, b) => a + b, 0) / outData.length;
+        const outVol = outData.reduce((a, b) => a + b, 0) / outData.length;
         this.options.onVolume?.(outVol);
       }
 
