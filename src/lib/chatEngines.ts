@@ -50,7 +50,7 @@ export const FREE_CHAT_PROVIDERS: ChatProviderConfig[] = [
     badgeLabel: 'চ্যাট',
     tier: 'free',
     baseURL: 'https://openrouter.ai/api/v1',
-    defaultModel: 'google/gemma-4-31b-it:free',
+    defaultModel: 'google/gemma-2-9b-it:free',
     storageKey: 'openrouter_api_key',
     statusStorageKey: 'connection_status_openrouter',
     getKeyUrl: 'https://openrouter.ai/keys',
@@ -198,7 +198,23 @@ export const fetchActiveModelForProvider = async (
       const list: any[] = Array.isArray(data?.data) ? data.data : Array.isArray(data) ? data : [];
       if (list.length > 0) {
         if (provider.id === 'openrouter') {
-          // Find any model with :free
+          // Priority list for stable free models
+          const stableFreeIds = [
+            'google/gemma-2-9b-it:free',
+            'mistralai/pixtral-12b:free',
+            'huggingfaceh4/zephyr-7b-beta:free',
+            'openchat/openchat-7b:free',
+            'google/gemma-4-31b-it:free'
+          ];
+          
+          for (const stableId of stableFreeIds) {
+            if (list.some(m => m.id === stableId)) {
+              writeLocalKey(cachedModelKey, stableId);
+              return stableId;
+            }
+          }
+
+          // Fallback to any :free model
           const freeModel = list.find((m) => typeof m.id === 'string' && m.id.endsWith(':free'));
           if (freeModel?.id) {
             writeLocalKey(cachedModelKey, freeModel.id);
@@ -264,78 +280,110 @@ export const callOpenAiCompatibleChat = async (params: {
     model,
     systemPrompt,
     messages,
-    maxTokens = 280,
+    maxTokens = 400,
     temperature = 0.7,
     signal,
   } = params;
 
-  const formattedMessages: Array<{ role: 'system' | 'user' | 'assistant'; content: string }> = [];
-  if (systemPrompt && systemPrompt.trim()) {
-    formattedMessages.push({ role: 'system', content: systemPrompt.trim() });
+  let attempts = 0;
+  const maxAttempts = 3;
+
+  while (attempts < maxAttempts) {
+    attempts++;
+    try {
+      const formattedMessages: Array<{ role: 'system' | 'user' | 'assistant'; content: string }> = [];
+      if (systemPrompt && systemPrompt.trim()) {
+        formattedMessages.push({ role: 'system', content: systemPrompt.trim() });
+      }
+
+      for (const msg of messages) {
+        if (!msg.text || !msg.text.trim()) continue;
+        formattedMessages.push({
+          role: msg.role === 'assistant' ? 'assistant' : 'user',
+          content: msg.text.trim(),
+        });
+      }
+
+      if (formattedMessages.length === 0 || formattedMessages[formattedMessages.length - 1].role !== 'user') {
+        throw new Error('No user message provided to chat');
+      }
+
+      const cleanBase = baseURL.replace(/\/+$/, '');
+      const url = `${cleanBase}/chat/completions`;
+
+      const headers: Record<string, string> = {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${apiKey.trim()}`,
+      };
+
+      if (baseURL.includes('openrouter.ai')) {
+        headers['HTTP-Referer'] = typeof window !== 'undefined' ? window.location.origin : 'https://aistudio.google.com';
+        headers['X-Title'] = 'Rose AI Assistant';
+      }
+
+      const body = {
+        model,
+        messages: formattedMessages,
+        max_tokens: maxTokens,
+        temperature,
+      };
+
+      const res = await fetch(url, {
+        method: 'POST',
+        headers,
+        body: JSON.stringify(body),
+        signal,
+      });
+
+      const rawText = await res.text().catch(() => '');
+      let parsed: any = null;
+      try {
+        parsed = rawText ? JSON.parse(rawText) : null;
+      } catch {}
+
+      // Detailed Logging (Redacting Key)
+      console.log(`[ChatEngine] ${baseURL} ${model} | Status: ${res.status}`);
+      if (!res.ok) {
+        console.error(`[ChatEngine] Error Body:`, rawText.slice(0, 500));
+        const errorMsg =
+          parsed?.error?.message ||
+          parsed?.message ||
+          parsed?.detail ||
+          `HTTP ${res.status}`;
+        const err: any = new Error(errorMsg);
+        err.status = res.status;
+        throw err;
+      }
+
+      const choice = parsed?.choices?.[0];
+      let reply = choice?.message?.content;
+      
+      // Handle array content if present (some providers return this)
+      if (Array.isArray(reply)) {
+        reply = reply.map((part: any) => part.text || part.content || '').join('');
+      }
+
+      if (typeof reply === 'string' && reply.trim()) {
+        return reply.trim();
+      }
+
+      // Requirement: Do NOT use reasoning field, instead retry
+      console.warn(`[ChatEngine] Empty content in response. Attempt ${attempts}/${maxAttempts}`);
+      if (attempts === maxAttempts) {
+        throw new Error('No text reply returned by provider');
+      }
+      // Wait a bit before retry
+      await new Promise(r => setTimeout(r, 1000));
+
+    } catch (err: any) {
+      if (err.name === 'AbortError') throw err;
+      if (attempts === maxAttempts) throw err;
+      console.error(`[ChatEngine] Attempt ${attempts} failed:`, err.message);
+      await new Promise(r => setTimeout(r, 1000));
+    }
   }
 
-  for (const msg of messages) {
-    if (!msg.text || !msg.text.trim()) continue;
-    formattedMessages.push({
-      role: msg.role === 'assistant' ? 'assistant' : 'user',
-      content: msg.text.trim(),
-    });
-  }
-
-  if (formattedMessages.length === 0 || formattedMessages[formattedMessages.length - 1].role !== 'user') {
-    throw new Error('No user message provided to chat');
-  }
-
-  const cleanBase = baseURL.replace(/\/+$/, '');
-  const url = `${cleanBase}/chat/completions`;
-
-  const headers: Record<string, string> = {
-    'Content-Type': 'application/json',
-    Authorization: `Bearer ${apiKey.trim()}`,
-  };
-
-  if (baseURL.includes('openrouter.ai')) {
-    headers['HTTP-Referer'] = typeof window !== 'undefined' ? window.location.origin : 'https://aistudio.google.com';
-    headers['X-Title'] = 'Rose AI Assistant';
-  }
-
-  const body = {
-    model,
-    messages: formattedMessages,
-    max_tokens: maxTokens,
-    temperature,
-  };
-
-  const res = await fetch(url, {
-    method: 'POST',
-    headers,
-    body: JSON.stringify(body),
-    signal,
-  });
-
-  const rawText = await res.text().catch(() => '');
-  let parsed: any = null;
-  try {
-    parsed = rawText ? JSON.parse(rawText) : null;
-  } catch {}
-
-  if (!res.ok) {
-    const errorMsg =
-      parsed?.error?.message ||
-      parsed?.message ||
-      parsed?.detail ||
-      `HTTP ${res.status}`;
-    const err: any = new Error(errorMsg);
-    err.status = res.status;
-    throw err;
-  }
-
-  const reply = parsed?.choices?.[0]?.message?.content;
-  if (typeof reply === 'string') {
-    return reply.trim();
-  }
-
-  throw new Error('No text reply returned by provider');
+  throw new Error('All attempts failed');
 };
 
 /**
@@ -469,7 +517,7 @@ export const generateTextWithSelectedEngine = async (params: {
   historyWithoutSystem: Array<{ role: 'user' | 'assistant'; text: string }>;
   maxTokens?: number;
 }): Promise<{ text: string; usedEngine: ChatEngineId }> => {
-  const { userText, systemPrompt, historyWithoutSystem, maxTokens = 280 } = params;
+  const { userText, systemPrompt, historyWithoutSystem, maxTokens = 400 } = params;
 
   const currentEngine = getSelectedChatEngine();
   const providerConfig = FREE_CHAT_PROVIDERS.find((p) => p.id === currentEngine) || FREE_CHAT_PROVIDERS[0];

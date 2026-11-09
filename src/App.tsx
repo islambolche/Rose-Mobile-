@@ -2573,6 +2573,19 @@ export function App() {
       };
 
       setChatHistory((prev) => {
+        if (prev.length > 0) {
+          const last = prev[prev.length - 1];
+          const lastText = (last.text || last.content || "").trim();
+          if (
+            last.role === entry.role &&
+            lastText === cleanText &&
+            entry.role !== "system"
+          ) {
+            // Already pushed this exact text as the last message, skip (unless system)
+            return prev;
+          }
+        }
+
         let next: Message[];
         const last = prev[prev.length - 1];
         if (
@@ -5489,10 +5502,10 @@ export function App() {
 
         const targetMaxTokens =
           activeRespStyle === "Detailed"
-            ? 650
+            ? 800
             : activeRespStyle === "Balanced"
-              ? 280
-              : 140;
+              ? 400
+              : 250;
 
         const payload = {
           contents: historyWithoutSystem,
@@ -5654,11 +5667,12 @@ export function App() {
 
           setLiveErrorMsg(bengaliMessage);
           setToast(bengaliMessage);
+          
           pushSharedMessage({
             role: "system",
             text: bengaliMessage,
             debugLine,
-            retryText: userText,
+            retryText: userText
           });
         }
       } finally {
