@@ -45,6 +45,12 @@ export class GeminiLiveSession {
 
   constructor(private options: GeminiLiveOptions) {}
 
+  private isMuted = false;
+  public setMuted(muted: boolean) {
+    this.isMuted = muted;
+    logVoiceEvent("Mic", muted ? "Muted" : "Unmuted");
+  }
+
   public async start() {
     if (this.ws) return;
     this.wasStoppedByUser = false;
@@ -109,6 +115,9 @@ export class GeminiLiveSession {
           system_instruction: {
             parts: [{ text: this.options.systemInstruction || "You are Rose, a helpful assistant." }],
           },
+          // Enable transcriptions
+          input_audio_transcription: {},
+          output_audio_transcription: {}
         },
       };
       this.ws?.send(JSON.stringify(setupMsg));
@@ -127,6 +136,19 @@ export class GeminiLiveSession {
 
         if (msg.serverContent) {
           const content = msg.serverContent;
+          
+          // Handle User Transcription (check both camel and snake case)
+          const inTrans = content.inputAudioTranscription || content.inputTranscription || content.input_audio_transcription;
+          if (inTrans) {
+            this.options.onTranscription?.('user', inTrans.text, inTrans.isFinal || inTrans.is_final);
+          }
+
+          // Handle Assistant Transcription
+          const outTrans = content.outputAudioTranscription || content.outputTranscription || content.output_audio_transcription;
+          if (outTrans) {
+            this.options.onTranscription?.('assistant', outTrans.text, true);
+          }
+
           if (content.modelTurn) {
             const parts = content.modelTurn.parts || [];
             for (const part of parts) {
@@ -139,11 +161,13 @@ export class GeminiLiveSession {
               }
             }
           }
+
           if (content.interrupted) {
             this.stopAllAudioPlayback();
             this.updateState('listening');
             this.options.onInterrupted?.();
           }
+
           if (content.turnComplete) {
             this.scheduleReturnToListening();
             this.options.onTurnComplete?.();
@@ -152,13 +176,12 @@ export class GeminiLiveSession {
 
         if (msg.error) {
           logVoiceEvent("Live WS", `Error: ${msg.error.message}`, "error");
-          // If unsupported or not found, try next model
           if (msg.error.message.includes("not found") || msg.error.message.includes("unsupported")) {
              this.ws?.close();
              this.connectWithRetry(apiKey, models, index + 1);
              return;
           }
-          this.options.onError?.(`Gemini Live ব্যর্থ। মডেল: ${model}, মোট Live মডেল: ${models.length}টি। Google এরর: ${msg.error.message}`);
+          this.options.onError?.(`Gemini Live ব্যর্থ। মডেল: ${model}, Google এরর: ${msg.error.message}`);
         }
       } catch (e) {}
     };
@@ -181,11 +204,21 @@ export class GeminiLiveSession {
 
   private async startMicCapture() {
     try {
-      this.audioCtx = new (window.AudioContext || (window as any).webkitAudioContext)({ sampleRate: 16000 });
-      await this.audioCtx.resume();
+      if (!this.audioCtx) {
+        this.audioCtx = new (window.AudioContext || (window as any).webkitAudioContext)({ sampleRate: 16000 });
+      }
+      
+      if (this.audioCtx.state === 'suspended') {
+        await this.audioCtx.resume();
+      }
+
+      if (this.audioCtx.state !== 'running') {
+        this.options.onError?.("AudioContext চালু করা যায়নি। মাইক অনুমতি দিন।");
+        return;
+      }
 
       this.micStream = await getGlobalMicStream({
-        audio: { channelCount: 1, sampleRate: 16000, echoCancellation: true, noiseSuppression: true }
+        audio: { channelCount: 1, sampleRate: 16000, echoCancellation: true, noiseSuppression: true, autoGainControl: true }
       });
 
       const source = this.audioCtx.createMediaStreamSource(this.micStream);
@@ -200,14 +233,37 @@ export class GeminiLiveSession {
       this.outputAnalyser.fftSize = 256;
 
       try {
-        await this.audioCtx.audioWorklet.addModule('/audio-processor.js');
+        const processorCode = `
+          class AudioProcessor extends AudioWorkletProcessor {
+            constructor() { super(); }
+            process(inputs) {
+              const input = inputs[0];
+              if (input && input.length > 0) {
+                const channel = input[0];
+                const pcm16 = new Int16Array(channel.length);
+                for (let i = 0; i < channel.length; i++) {
+                  const s = Math.max(-1, Math.min(1, channel[i]));
+                  pcm16[i] = s < 0 ? s * 0x8000 : s * 0x7FFF;
+                }
+                this.port.postMessage(pcm16.buffer, [pcm16.buffer]);
+              }
+              return true;
+            }
+          }
+          registerProcessor('audio-processor', AudioProcessor);
+        `;
+        const blob = new Blob([processorCode], { type: 'application/javascript' });
+        const url = URL.createObjectURL(blob);
+        await this.audioCtx.audioWorklet.addModule(url);
+        URL.revokeObjectURL(url);
+        
         this.audioWorkletNode = new AudioWorkletNode(this.audioCtx, 'audio-processor');
         this.audioWorkletNode.port.onmessage = (e) => this.sendAudio(e.data);
         source.connect(this.audioWorkletNode);
-        logVoiceEvent("Mic", "AudioWorklet active");
+        logVoiceEvent("Mic", "Inline AudioWorklet active");
       } catch (e) {
         logVoiceEvent("Mic", "AudioWorklet failed, falling back to ScriptProcessor", "warn");
-        this.scriptProcessor = this.audioCtx.createScriptProcessor(1024, 1, 1);
+        this.scriptProcessor = this.audioCtx.createScriptProcessor(2048, 1, 1);
         this.scriptProcessor.onaudioprocess = (e) => {
           const input = e.inputBuffer.getChannelData(0);
           const pcm16 = new Int16Array(input.length);
@@ -224,12 +280,13 @@ export class GeminiLiveSession {
       this.options.onMicLive?.(true);
       this.startVisualizer();
     } catch (e: any) {
+      logVoiceEvent("Mic", `Error: ${e.message}`, "error");
       this.options.onError?.("মাইক্রোফোন সংযোগ করা যায়নি।");
     }
   }
 
   private sendAudio(buffer: ArrayBuffer) {
-    if (!this.ws || this.ws.readyState !== WebSocket.OPEN) return;
+    if (!this.ws || this.ws.readyState !== WebSocket.OPEN || this.isMuted) return;
     const base64 = btoa(String.fromCharCode(...new Uint8Array(buffer)));
     this.ws.send(JSON.stringify({
       realtime_input: {

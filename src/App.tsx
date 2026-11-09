@@ -6997,6 +6997,15 @@ export function App() {
       liveSessionRef.current = null;
     }
 
+    const currentCtx = inputAudioCtxRef.current || outputAudioCtxRef.current;
+    if (currentCtx && currentCtx.state !== 'running') {
+      try { await currentCtx.resume(); } catch(e) {}
+    }
+    if (!currentCtx || currentCtx.state !== 'running') {
+      setToast("অডিও চালু করা যায়নি। মাইক পারমিশন চেক করুন।");
+      return;
+    }
+
     setLiveErrorMsg(null);
     setIsAssistantEnabled(true);
     isAssistantEnabledRef.current = true;
@@ -7011,22 +7020,31 @@ export function App() {
         else if (state === 'speaking') transitionToState("SPEAKING");
         else if (state === 'off') {
            if (isCallScreenOpenRef.current && isAssistantEnabledRef.current) {
-             // Reconnect handled inside class usually, but if it dies, we reset UI
              transitionToState("IDLE");
            }
         }
       },
-      onTranscription: (role, text) => {
-        if (role === 'user') setInterimSpeechText(text);
-        else {
-           setChatHistory(prev => {
-             const last = prev[prev.length - 1];
-             if (last && last.role === 'assistant') {
-               return [...prev.slice(0, -1), { role: 'assistant', content: last.content + text }];
-             }
-             return [...prev, { role: 'assistant', content: text }];
-           });
+      onTranscription: (role, text, isFinal) => {
+        if (!text) return;
+        setChatHistory(prev => {
+          const mappedRole = role === 'assistant' ? "rose" : "user";
+          const last = prev[prev.length - 1];
+          // If we are in the same turn (same role), update the message
+          if (last && last.role === mappedRole) {
+            const next = [...prev];
+            next[next.length - 1] = { ...last, content: text };
+            return next;
+          }
+          // New turn
+          return [...prev, { role: mappedRole, content: text }];
+        });
+        if (role === 'user') {
+          setInterimSpeechText(text);
         }
+      },
+      onTurnComplete: () => {
+        // Chat history is updated live and saved via useEffect
+        setInterimSpeechText("");
       },
       onError: (msg) => {
         setLiveErrorMsg(msg);
@@ -7036,6 +7054,8 @@ export function App() {
         liveSessionRef.current = null;
       }
     });
+
+    session.setMuted(isMutedRef.current);
 
     liveSessionRef.current = session;
     await session.start();
@@ -11878,6 +11898,7 @@ export function App() {
                   const next = !isMuted;
                   setIsMuted(next);
                   isMutedRef.current = next;
+                  if (liveSessionRef.current) liveSessionRef.current.setMuted(next);
                   setToast(next ? "Microphone muted" : "Microphone active");
                 }}
                 className={'w-14 h-14 sm:w-16 sm:h-16 rounded-full flex items-center justify-center transition-all active:scale-95 border ' + (isMuted
