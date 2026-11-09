@@ -5519,7 +5519,7 @@ export function App() {
 
         let generatedText = "";
 
-        if (isTypedChat && activeChatEngine !== "gemini") {
+        if (activeChatEngine !== "gemini") {
           const simplifiedHistory = historyWithoutSystem.map((m) => ({
             role: m.role === "model" ? ("assistant" as const) : ("user" as const),
             text: m.parts?.[0]?.text || "",
