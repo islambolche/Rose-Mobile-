@@ -562,7 +562,93 @@ export const generateTextWithSelectedEngine = async (params: {
     throw new Error('Gemini থেকে উত্তর পাওয়া যায়নি');
   }
 
-  // OpenAI-compatible engines (Groq, OpenRouter, Cerebras, Mistral)
+  // Special handling for Groq as requested
+  if (currentEngine === 'groq') {
+    const groqKey = key;
+    const groqModel = 'llama-3.3-70b-versatile';
+    
+    // 2. History truncation: last 10 messages, exclude empty/error-like messages
+    const groqHistory = historyWithoutSystem
+      .filter(m => m.text && m.text.trim() && !m.text.toLowerCase().includes('error') && !m.text.toLowerCase().includes('ত্রুটি'))
+      .slice(-10);
+
+    // 3. System prompt capping: max 3000 chars
+    const groqSystemPrompt = systemPrompt.slice(0, 3000);
+
+    try {
+      // 4. max_tokens set to 1024
+      const reply = await callOpenAiCompatibleChat({
+        baseURL: providerConfig.baseURL,
+        apiKey: groqKey,
+        model: groqModel,
+        systemPrompt: groqSystemPrompt,
+        messages: groqHistory.length > 0 ? groqHistory : [{ role: 'user', text: userText }],
+        maxTokens: 1024,
+        temperature: 0.7,
+      });
+
+      if (reply) {
+        return { text: reply, usedEngine: 'groq' };
+      }
+    } catch (err: any) {
+      // 6. If 400 error, retry once with reduced context
+      if (err.status === 400 || String(err.message).includes('400')) {
+        console.warn('[Groq] 400 error, retrying with reduced context...');
+        try {
+          const retryReply = await callOpenAiCompatibleChat({
+            baseURL: providerConfig.baseURL,
+            apiKey: groqKey,
+            model: groqModel,
+            systemPrompt: systemPrompt.slice(0, 1500), // even shorter system prompt
+            messages: groqHistory.slice(-3), // only last 3 messages
+            maxTokens: 1024,
+            temperature: 0.7,
+          });
+          if (retryReply) {
+            return { text: retryReply, usedEngine: 'groq' };
+          }
+        } catch (retryErr) {
+          console.error('[Groq] Retry failed, falling back to Gemini...', retryErr);
+        }
+      } else {
+        console.error('[Groq] Engine error, falling back to Gemini...', err.message);
+      }
+      
+      // 6. Fallback to Gemini
+      const geminiKey = getProviderKey('gemini');
+      if (geminiKey && getProviderStatus('gemini') === 'READY') {
+        const geminiHistory = historyWithoutSystem.slice(-8).map((m) => ({
+          role: m.role === 'assistant' ? ('model' as const) : ('user' as const),
+          parts: [{ text: m.text }],
+        }));
+        if (geminiHistory.length === 0 || geminiHistory[geminiHistory.length - 1].role !== 'user') {
+          geminiHistory.push({ role: 'user', parts: [{ text: userText }] });
+        }
+
+        const res: any = await directGeminiGenerate({
+          contents: geminiHistory,
+          systemInstruction: systemPrompt,
+          generationConfig: {
+            maxOutputTokens: 1024,
+            temperature: 0.7,
+          },
+          apiKey: geminiKey,
+        });
+
+        const reply =
+          res?.text ||
+          res?.candidates?.[0]?.content?.parts?.map((p: any) => p?.text || '').join('').trim() ||
+          '';
+
+        if (reply) {
+          return { text: reply, usedEngine: 'gemini' };
+        }
+      }
+      throw err; // Re-throw if fallback fails or no gemini key
+    }
+  }
+
+  // OpenAI-compatible engines (OpenRouter, Cerebras, Mistral)
   const activeModel = await fetchActiveModelForProvider(providerConfig, key);
   const messages = [...historyWithoutSystem.slice(-8)];
   if (messages.length === 0 || messages[messages.length - 1].role !== 'user') {
