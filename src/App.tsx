@@ -5647,22 +5647,30 @@ export function App() {
           const activeProviderConfig =
             FREE_CHAT_PROVIDERS.find((p) => p.id === activeChatEngine) || FREE_CHAT_PROVIDERS[0];
 
-          if (err?.isKeyMissingOrInvalid || String(err?.message || "").includes("-এর key দিন বা অন্য সেবা বাছুন")) {
-            bengaliMessage = err.message;
+          const rawMsg = String(err?.message || "").trim();
+          if (err?.isKeyMissingOrInvalid || rawMsg.includes("-এর key দিন") || rawMsg.includes("Connections-এ key দিন")) {
+            bengaliMessage = rawMsg || "Connections-এ key দিন";
           } else if (isTypedChat && activeChatEngine !== "gemini") {
             const pName = activeProviderConfig.displayName || activeProviderConfig.name;
-            if (err?.status === 401 || err?.status === 403) {
+            if (rawMsg.includes("ত্রুটি:") || rawMsg.startsWith(pName) || rawMsg.includes("Connections-এ")) {
+              bengaliMessage = rawMsg;
+            } else if (err?.status === 401 || err?.status === 403) {
               bengaliMessage = `${pName} key ভুল বা মেয়াদোত্তীর্ণ (401)`;
             } else if (err?.status === 429) {
               bengaliMessage = `${pName}-এর কোটাসীমা শেষ (429)`;
             } else {
-              bengaliMessage = `${pName} ত্রুটি: ${err?.message || "উত্তর দিতে ব্যর্থ"}`;
+              bengaliMessage = `${pName} ত্রুটি: ${rawMsg || "উত্তর দিতে ব্যর্থ"}`;
             }
-            debugLine = `engine: ${activeChatEngine} | status: ${err?.status || "error"} | ${String(err?.message || "").slice(0, 100)}`;
+            debugLine = `engine: ${activeChatEngine} | status: ${err?.status || "error"} | ${rawMsg.slice(0, 100)}`;
           } else {
-            const formatted = formatGeminiErrorForUI(err, sanitizedKey);
-            bengaliMessage = formatted.bengaliMessage;
-            debugLine = formatted.debugLine;
+            if (rawMsg.includes("Gemini ত্রুটি:") || rawMsg.includes("Connections-এ") || rawMsg.includes("ত্রুটি:")) {
+              bengaliMessage = rawMsg;
+              debugLine = `engine: gemini | ${rawMsg.slice(0, 100)}`;
+            } else {
+              const formatted = formatGeminiErrorForUI(err, sanitizedKey);
+              bengaliMessage = formatted.bengaliMessage;
+              debugLine = formatted.debugLine;
+            }
           }
 
           setLiveErrorMsg(bengaliMessage);
@@ -10847,7 +10855,7 @@ export function App() {
 
 
           {currentView === "settings" && <PhoneErrorBoundary>{renderSettings()}</PhoneErrorBoundary>}
-          {currentView === "live-model" && <PhoneErrorBoundary><LiveModelSettings setCurrentView={setCurrentView} /></PhoneErrorBoundary>}
+          {currentView === "live-model" && <PhoneErrorBoundary><LiveModelSettings setCurrentView={setCurrentView} setToast={setToast} /></PhoneErrorBoundary>}
           {currentView === "voice" && <PhoneErrorBoundary>{renderVoice()}</PhoneErrorBoundary>}
           {currentView === "memory" && <PhoneErrorBoundary>{renderMemory()}</PhoneErrorBoundary>}
           {currentView === "look" && <PhoneErrorBoundary>{renderLook()}</PhoneErrorBoundary>}

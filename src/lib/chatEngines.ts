@@ -126,6 +126,8 @@ export const getProviderKey = (id: ChatEngineId): string => {
   return readLocalKey(config.storageKey).trim();
 };
 
+export const getEffectiveChatEngineKey = getProviderKey;
+
 export const setProviderKey = async (id: ChatEngineId, rawKey: string): Promise<void> => {
   const clean = String(rawKey || '').trim();
   if (id === 'gemini') {
@@ -161,6 +163,302 @@ export const setProviderStatus = async (id: ChatEngineId, status: KeyStatus): Pr
 };
 
 /**
+ * Chat Model Override support
+ */
+export const getChatModelOverride = (): string => {
+  return readLocalKey('chat_model_override');
+};
+
+export const setChatModelOverride = (model: string) => {
+  writeLocalKey('chat_model_override', model.trim());
+};
+
+export const getCurrentlyActiveChatModel = (engineId?: ChatEngineId): string => {
+  const override = getChatModelOverride();
+  if (override) return override;
+  const engine = engineId || getSelectedChatEngine();
+  const saved = readLocalKey(`active_model_${engine}`);
+  if (saved) return saved;
+  return engine === 'groq' ? 'Auto (Groq)' : 'Auto (Gemini)';
+};
+
+/**
+ * Dynamic Groq Chat Model Discovery (Cached for 1 hour)
+ * Filters out non-chat models (whisper, tts, guard, playai, distil-whisper)
+ * Prioritizes 70b, versatile, instant, llama, gpt-oss, qwen
+ */
+export const getDynamicGroqChatModels = async (
+  apiKey: string,
+  forceFresh = false
+): Promise<{ models: string[]; error?: string; errorReason?: string }> => {
+  const cleanKey = apiKey.trim();
+  if (!cleanKey) return { models: [], error: 'Groq key দেওয়া নেই' };
+
+  const cacheKey = 'groq_cached_chat_models';
+  if (!forceFresh) {
+    try {
+      const cachedStr = localStorage.getItem(cacheKey);
+      if (cachedStr) {
+        const cached = JSON.parse(cachedStr);
+        if (Array.isArray(cached?.models) && cached.models.length > 0 && Date.now() - cached.timestamp < 3600000) {
+          return { models: cached.models };
+        }
+      }
+    } catch (e) {}
+  }
+
+  try {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), 8000);
+    const res = await fetch('https://api.groq.com/openai/v1/models', {
+      method: 'GET',
+      headers: {
+        Authorization: `Bearer ${cleanKey}`,
+      },
+      signal: controller.signal,
+    });
+    clearTimeout(timer);
+
+    if (!res.ok) {
+      const raw = await res.text().catch(() => '');
+      let errMsg = `HTTP ${res.status}`;
+      try {
+        const j = JSON.parse(raw);
+        if (j?.error?.message) errMsg = j.error.message;
+      } catch (e) {}
+      if (res.status === 401 || res.status === 403) {
+        return { models: [], error: `ভুল Groq key (${res.status})`, errorReason: `ভুল Key (${res.status})` };
+      }
+      if (res.status === 429) {
+        return { models: [], error: `Groq সীমা শেষ (429)`, errorReason: `সীমা শেষ (429)` };
+      }
+      return { models: [], error: `Groq মডেল তালিকা আনা যায়নি (${res.status}): ${errMsg}`, errorReason: errMsg };
+    }
+
+    const data = await res.json();
+    const list: any[] = Array.isArray(data?.data) ? data.data : Array.isArray(data) ? data : [];
+
+    const excluded = ['whisper', 'tts', 'guard', 'playai', 'distil-whisper'];
+    const filtered = list.filter((m: any) => {
+      const id = String(m?.id || '').toLowerCase();
+      if (!id) return false;
+      if (excluded.some((ex) => id.includes(ex))) return false;
+      return true;
+    });
+
+    const scoreGroq = (id: string): number => {
+      const lower = id.toLowerCase();
+      let score = 0;
+      if (lower.includes('70b')) score += 100;
+      if (lower.includes('versatile')) score += 80;
+      if (lower.includes('gpt-oss')) score += 70;
+      if (lower.includes('qwen')) score += 60;
+      if (lower.includes('llama')) score += 50;
+      if (lower.includes('instant')) score += 40;
+      if (lower.includes('8b')) score += 30;
+      if (lower.includes('3.3')) score += 25;
+      if (lower.includes('3.2')) score += 20;
+      if (lower.includes('3.1')) score += 15;
+      return score;
+    };
+
+    filtered.sort((a, b) => scoreGroq(b.id) - scoreGroq(a.id));
+    const modelIds = filtered.map((m) => String(m.id).trim()).filter(Boolean);
+
+    if (modelIds.length > 0) {
+      try {
+        localStorage.setItem(cacheKey, JSON.stringify({ models: modelIds, timestamp: Date.now() }));
+      } catch (e) {}
+      return { models: modelIds };
+    }
+
+    return { models: ['llama-3.3-70b-versatile', 'llama-3.1-8b-instant'], error: 'কোনো উপযুক্ত চ্যাট মডেল পাওয়া যায়নি', errorReason: 'উপযুক্ত মডেল পাওয়া যায়নি' };
+  } catch (err: any) {
+    const isAbort = err?.name === 'AbortError';
+    const text = isAbort ? 'সময় শেষ (Timeout)' : 'নেটওয়ার্ক সমস্যা/যাচাই করা যায়নি';
+    return { models: ['llama-3.3-70b-versatile', 'llama-3.1-8b-instant'], error: text, errorReason: text };
+  }
+};
+
+/**
+ * Dynamic Gemini Chat Model Discovery (Cached for 1 hour)
+ * Filters for supportedGenerationMethods: "generateContent" & name has "flash"
+ * Excludes live, audio, tts, image, embedding
+ * Strips "models/" and sorts newest version first
+ */
+export const getDynamicGeminiChatModels = async (
+  apiKey: string,
+  forceFresh = false
+): Promise<{ models: string[]; error?: string; errorReason?: string }> => {
+  const cleanKey = apiKey.trim();
+  if (!cleanKey) return { models: [], error: 'Gemini key দেওয়া নেই' };
+
+  const cacheKey = 'gemini_cached_chat_models';
+  if (!forceFresh) {
+    try {
+      const cachedStr = localStorage.getItem(cacheKey);
+      if (cachedStr) {
+        const cached = JSON.parse(cachedStr);
+        if (Array.isArray(cached?.models) && cached.models.length > 0 && Date.now() - cached.timestamp < 3600000) {
+          return { models: cached.models };
+        }
+      }
+    } catch (e) {}
+  }
+
+  try {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), 8000);
+    const url = `https://generativelanguage.googleapis.com/v1beta/models?key=${encodeURIComponent(cleanKey)}`;
+    const res = await fetch(url, { signal: controller.signal });
+    clearTimeout(timer);
+
+    if (!res.ok) {
+      const raw = await res.text().catch(() => '');
+      let errMsg = `HTTP ${res.status}`;
+      try {
+        const j = JSON.parse(raw);
+        if (j?.error?.message) errMsg = j.error.message;
+      } catch (e) {}
+      if (res.status === 400 || res.status === 401 || res.status === 403) {
+        return { models: [], error: `ভুল Gemini key (${res.status})`, errorReason: `ভুল Key (${res.status})` };
+      }
+      if (res.status === 429) {
+        return { models: [], error: `Gemini সীমা শেষ (429)`, errorReason: `সীমা শেষ (429)` };
+      }
+      return { models: [], error: `Gemini মডেল তালিকা আনা যায়নি (${res.status}): ${errMsg}`, errorReason: errMsg };
+    }
+
+    const data = await res.json();
+    const list: any[] = Array.isArray(data?.models) ? data.models : [];
+
+    const excluded = ['live', 'audio', 'tts', 'image', 'embedding'];
+    const filtered = list.filter((m: any) => {
+      const name = String(m?.name || '').replace(/^models\//, '').toLowerCase();
+      const methods: string[] = Array.isArray(m?.supportedGenerationMethods) ? m.supportedGenerationMethods : [];
+      if (!methods.includes('generateContent')) return false;
+      if (!name.includes('flash')) return false;
+      if (excluded.some((ex) => name.includes(ex))) return false;
+      return true;
+    });
+
+    const scoreGemini = (name: string): number => {
+      const lower = name.toLowerCase();
+      let score = 0;
+      const vMatch = lower.match(/gemini-(\d+)(?:\.(\d+))?/);
+      if (vMatch) {
+        const major = parseInt(vMatch[1] || '0', 10);
+        const minor = parseInt(vMatch[2] || '0', 10);
+        score += major * 100 + minor * 10;
+      }
+      if (lower.includes('exp')) score -= 5;
+      if (lower.includes('preview')) score -= 2;
+      if (lower.includes('8b')) score -= 10;
+      return score;
+    };
+
+    filtered.sort((a, b) => scoreGemini(b.name) - scoreGemini(a.name));
+    const modelNames = filtered.map((m) => String(m.name).replace(/^models\//, '').trim()).filter(Boolean);
+
+    if (modelNames.length > 0) {
+      try {
+        localStorage.setItem(cacheKey, JSON.stringify({ models: modelNames, timestamp: Date.now() }));
+      } catch (e) {}
+      return { models: modelNames };
+    }
+
+    return { models: ['gemini-1.5-flash'], error: 'কোনো উপযুক্ত flash মডেল পাওয়া যায়নি', errorReason: 'উপযুক্ত মডেল পাওয়া যায়নি' };
+  } catch (err: any) {
+    const isAbort = err?.name === 'AbortError';
+    const text = isAbort ? 'সময় শেষ (Timeout)' : 'নেটওয়ার্ক সমস্যা/যাচাই করা যায়নি';
+    return { models: ['gemini-1.5-flash'], error: text, errorReason: text };
+  }
+};
+
+/**
+ * Direct Gemini Chat Completion caller using Generative Language REST API.
+ */
+export const callGeminiDirectChat = async (params: {
+  apiKey: string;
+  model: string;
+  systemPrompt?: string;
+  messages: Array<{ role: 'user' | 'assistant'; text: string }>;
+  maxTokens?: number;
+}): Promise<string> => {
+  const { apiKey, model, systemPrompt, messages, maxTokens = 1024 } = params;
+  const cleanKey = apiKey.trim();
+  const cleanModel = model.replace(/^models\//, '').trim();
+
+  const url = `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(cleanModel)}:generateContent?key=${encodeURIComponent(cleanKey)}`;
+  const contents = messages.map((m) => ({
+    role: m.role === 'assistant' ? 'model' : 'user',
+    parts: [{ text: m.text }],
+  }));
+
+  const body: any = {
+    contents,
+    generationConfig: {
+      maxOutputTokens: maxTokens,
+      temperature: 0.7,
+    },
+  };
+  if (systemPrompt && systemPrompt.trim()) {
+    body.systemInstruction = {
+      parts: [{ text: systemPrompt.trim() }],
+    };
+  }
+
+  try {
+    const res = await fetch(url, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify(body),
+    });
+
+    const data = await res.json().catch(() => null);
+
+    if (!res.ok) {
+      const errorMsg = data?.error?.message || `HTTP ${res.status}`;
+      const err: any = new Error(errorMsg);
+      err.status = res.status;
+      err.code = data?.error?.code || res.status;
+      throw err;
+    }
+
+    const reply = data?.candidates?.[0]?.content?.parts?.map((p: any) => p?.text || '').join('').trim();
+    if (reply) return reply;
+    throw new Error('Gemini থেকে ফাঁকা উত্তর এসেছে');
+  } catch (directErr: any) {
+    // If 404, throw immediately so next model is tried
+    if (directErr.status === 404 || String(directErr.message).includes('404') || String(directErr.message).toLowerCase().includes('not found')) {
+      directErr.status = 404;
+      throw directErr;
+    }
+    // Fallback attempt via proxy
+    try {
+      const proxyRes: any = await directGeminiGenerate({
+        model: cleanModel,
+        contents,
+        systemInstruction: systemPrompt,
+        generationConfig: {
+          maxOutputTokens: maxTokens,
+          temperature: 0.7,
+        },
+        apiKey: cleanKey,
+      });
+      const proxyReply =
+        proxyRes?.text ||
+        proxyRes?.candidates?.[0]?.content?.parts?.map((p: any) => p?.text || '').join('').trim() ||
+        '';
+      if (proxyReply) return proxyReply;
+    } catch (proxyErr) {}
+    throw directErr;
+  }
+};
+
+/**
  * Fetch available model dynamically from the provider's /models endpoint
  * ensuring we never send an outdated model name.
  */
@@ -168,8 +466,25 @@ export const fetchActiveModelForProvider = async (
   provider: ChatProviderConfig,
   key: string
 ): Promise<string> => {
+  const override = getChatModelOverride();
+  if (override) return override;
+
   if (provider.id === 'gemini') {
-    return getSavedWorkingTextModel() || TEXT_MODELS[0] || 'gemini-1.5-flash-8b';
+    const disc = await getDynamicGeminiChatModels(key);
+    if (disc.models.length > 0) {
+      writeLocalKey('active_model_gemini', disc.models[0]);
+      return disc.models[0];
+    }
+    return getSavedWorkingTextModel() || TEXT_MODELS[0] || 'gemini-1.5-flash';
+  }
+
+  if (provider.id === 'groq') {
+    const disc = await getDynamicGroqChatModels(key);
+    if (disc.models.length > 0) {
+      writeLocalKey('active_model_groq', disc.models[0]);
+      return disc.models[0];
+    }
+    return provider.defaultModel;
   }
 
   const cachedModelKey = `active_model_${provider.id}`;
@@ -198,42 +513,25 @@ export const fetchActiveModelForProvider = async (
       const list: any[] = Array.isArray(data?.data) ? data.data : Array.isArray(data) ? data : [];
       if (list.length > 0) {
         if (provider.id === 'openrouter') {
-          // Priority list for stable free models
           const stableFreeIds = [
             'google/gemma-2-9b-it:free',
             'mistralai/pixtral-12b:free',
             'huggingfaceh4/zephyr-7b-beta:free',
             'openchat/openchat-7b:free',
-            'google/gemma-4-31b-it:free'
+            'google/gemma-4-31b-it:free',
           ];
-          
           for (const stableId of stableFreeIds) {
-            if (list.some(m => m.id === stableId)) {
+            if (list.some((m) => m.id === stableId)) {
               writeLocalKey(cachedModelKey, stableId);
               return stableId;
             }
           }
-
-          // Fallback to any :free model
           const freeModel = list.find((m) => typeof m.id === 'string' && m.id.endsWith(':free'));
           if (freeModel?.id) {
             writeLocalKey(cachedModelKey, freeModel.id);
             return freeModel.id;
           }
-        } else if (provider.id === 'groq') {
-          // Check for llama-3.3-70b-versatile or first chat-capable model
-          const hasDefault = list.some((m) => m.id === 'llama-3.3-70b-versatile');
-          if (hasDefault) {
-            writeLocalKey(cachedModelKey, 'llama-3.3-70b-versatile');
-            return 'llama-3.3-70b-versatile';
-          }
-          const alt = list.find((m) => typeof m.id === 'string' && m.id.includes('llama'));
-          if (alt?.id) {
-            writeLocalKey(cachedModelKey, alt.id);
-            return alt.id;
-          }
         } else if (provider.id === 'cerebras') {
-          // Check for llama3.1-8b or llama-3.3-70b
           const match = list.find(
             (m) => typeof m.id === 'string' && (m.id.includes('llama3.1-8b') || m.id.includes('llama-3.3-70b') || m.id.includes('llama'))
           );
@@ -242,7 +540,6 @@ export const fetchActiveModelForProvider = async (
             return match.id;
           }
         } else if (provider.id === 'mistral') {
-          // Check for mistral-small-latest or open-mistral
           const match = list.find(
             (m) => typeof m.id === 'string' && (m.id.includes('mistral-small') || m.id.includes('open-mistral') || m.id.includes('mistral-tiny'))
           );
@@ -286,7 +583,7 @@ export const callOpenAiCompatibleChat = async (params: {
   } = params;
 
   let attempts = 0;
-  const maxAttempts = 3;
+  const maxAttempts = 2;
 
   while (attempts < maxAttempts) {
     attempts++;
@@ -341,7 +638,6 @@ export const callOpenAiCompatibleChat = async (params: {
         parsed = rawText ? JSON.parse(rawText) : null;
       } catch {}
 
-      // Detailed Logging (Redacting Key)
       console.log(`[ChatEngine] ${baseURL} ${model} | Status: ${res.status}`);
       if (!res.ok) {
         console.error(`[ChatEngine] Error Body:`, rawText.slice(0, 500));
@@ -357,8 +653,7 @@ export const callOpenAiCompatibleChat = async (params: {
 
       const choice = parsed?.choices?.[0];
       let reply = choice?.message?.content;
-      
-      // Handle array content if present (some providers return this)
+
       if (Array.isArray(reply)) {
         reply = reply.map((part: any) => part.text || part.content || '').join('');
       }
@@ -367,19 +662,17 @@ export const callOpenAiCompatibleChat = async (params: {
         return reply.trim();
       }
 
-      // Requirement: Do NOT use reasoning field, instead retry
       console.warn(`[ChatEngine] Empty content in response. Attempt ${attempts}/${maxAttempts}`);
       if (attempts === maxAttempts) {
         throw new Error('No text reply returned by provider');
       }
-      // Wait a bit before retry
-      await new Promise(r => setTimeout(r, 1000));
-
+      await new Promise((r) => setTimeout(r, 800));
     } catch (err: any) {
       if (err.name === 'AbortError') throw err;
+      if (err.status === 404 || err.status === 401 || err.status === 403) throw err;
       if (attempts === maxAttempts) throw err;
       console.error(`[ChatEngine] Attempt ${attempts} failed:`, err.message);
-      await new Promise(r => setTimeout(r, 1000));
+      await new Promise((r) => setTimeout(r, 800));
     }
   }
 
@@ -388,14 +681,11 @@ export const callOpenAiCompatibleChat = async (params: {
 
 /**
  * Verification test call on SAVE.
- * Checks key validity against models endpoint or a 2-token completion.
- * Returns { ok, status, errorText }
  */
 export const verifyProviderKey = async (
   providerId: ChatEngineId,
   rawKey: string
 ): Promise<{ ok: boolean; status: KeyStatus; errorText?: string; model?: string }> => {
-  // Requirement 2: Clean the key including invisible characters
   const cleanKey = String(rawKey || '')
     .replace(/[\r\n\t\s\u200B\u200C\u200D\uFEFF]+/g, '')
     .trim();
@@ -411,11 +701,10 @@ export const verifyProviderKey = async (
   }
 
   const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), 12000); // Increased timeout to 12s
+  const timer = setTimeout(() => controller.abort(), 12000);
 
   try {
     if (providerId === 'gemini') {
-      // Requirement 1: Use direct models list endpoint for Gemini
       const url = `https://generativelanguage.googleapis.com/v1beta/models?key=${encodeURIComponent(cleanKey)}`;
       const res = await fetch(url, {
         method: 'GET',
@@ -433,7 +722,6 @@ export const verifyProviderKey = async (
         return { ok: true, status: 'READY' };
       }
 
-      // Requirement 1: 400/403 হলে INVALID, 429 হলে "সীমা শেষ"
       if (status === 400 || status === 401 || status === 403) {
         await setProviderStatus('gemini', 'INVALID');
         return { ok: false, status: 'INVALID', errorText: `ভুল API Key (${status}): ${msg.slice(0, 50)}` };
@@ -442,17 +730,13 @@ export const verifyProviderKey = async (
         await setProviderStatus('gemini', 'READY');
         return { ok: true, status: 'READY', errorText: 'সীমা শেষ (429), পরে চেষ্টা করুন' };
       }
-      
+
       const current = getProviderStatus('gemini');
       return { ok: false, status: current, errorText: `ত্রুটি (${status}): ${msg.slice(0, 50)}` };
     }
 
-    // OpenAI-compatible providers (Groq, OpenRouter, Cerebras, Mistral)
-    const provider = FREE_CHAT_PROVIDERS.find((p) => p.id === providerId);
-    if (!provider) return { ok: false, status: 'INVALID', errorText: 'অজানা সেবা' };
-
     const headers: Record<string, string> = {
-      'Authorization': `Bearer ${cleanKey}`,
+      Authorization: `Bearer ${cleanKey}`,
       'Content-Type': 'application/json',
     };
     if (providerId === 'openrouter') {
@@ -460,7 +744,6 @@ export const verifyProviderKey = async (
       headers['X-Title'] = 'Rose AI Assistant';
     }
 
-    // Requirement 2 & 3: Verify using /models endpoint
     const testUrl = `${provider.baseURL}/models`;
     const res = await fetch(testUrl, {
       method: 'GET',
@@ -494,7 +777,6 @@ export const verifyProviderKey = async (
 
     const current = getProviderStatus(providerId);
     return { ok: false, status: current, errorText: `ত্রুটি (${status}): ${msg.slice(0, 50)}` };
-
   } catch (netErr: any) {
     const isAbort = netErr?.name === 'AbortError';
     const text = isAbort ? 'সময় শেষ (Timeout)' : 'যাচাই করা যায়নি, ইন্টারনেট দেখুন';
@@ -506,124 +788,188 @@ export const verifyProviderKey = async (
 };
 
 /**
- * Text chat generation strictly using the selected engine!
- * - Strictly executes the user's selected engine.
- * - If key is missing or INVALID, throws clear message: "<Name>-এর key দিন বা অন্য সেবা বাছুন"
- * - Automatic fallback across engines is removed as requested.
+ * Text chat generation with Dynamic Model Selection, Auto-Retry across models on 404,
+ * and clear distinct error labeling for Groq and Gemini.
  */
 export const generateTextWithSelectedEngine = async (params: {
   userText: string;
   systemPrompt: string;
   historyWithoutSystem: Array<{ role: 'user' | 'assistant'; text: string }>;
   maxTokens?: number;
-}): Promise<{ text: string; usedEngine: ChatEngineId }> => {
-  const { userText, systemPrompt, historyWithoutSystem } = params;
+}): Promise<{ text: string; usedEngine: ChatEngineId; modelUsed?: string }> => {
+  const { userText, systemPrompt, historyWithoutSystem, maxTokens = 1024 } = params;
 
   const currentEngine = getSelectedChatEngine();
   const groqKey = getProviderKey('groq');
   const geminiKey = getProviderKey('gemini');
+  const overrideModel = getChatModelOverride();
 
-  // Requirement 4: Filter history (last 10, no errors)
+  if (!groqKey && !geminiKey) {
+    throw new Error('Connections-এ key দিন');
+  }
+
+  // Requirement 4: Filter history (last 10 messages, no error/failure messages)
   const filteredHistory = historyWithoutSystem
-    .filter(m => {
-      const t = String(m.text || "").toLowerCase();
-      return t.trim() && !t.includes('error') && !t.includes('ত্রুটি') && !t.includes('failed') && !t.includes('ব্যর্থ');
+    .filter((m) => {
+      const t = String(m.text || '').toLowerCase();
+      return (
+        t.trim() &&
+        !t.includes('error') &&
+        !t.includes('ত্রুটি') &&
+        !t.includes('failed') &&
+        !t.includes('ব্যর্থ') &&
+        !t.includes('cannot reach')
+      );
     })
     .slice(-10);
-  
-  // Requirement 4: Truncate system prompt (max 3000 chars)
-  const truncatedSystemPrompt = systemPrompt.slice(0, 3000);
 
-  let firstAttemptError = "";
+  if (filteredHistory.length === 0 || filteredHistory[filteredHistory.length - 1].role !== 'user') {
+    filteredHistory.push({ role: 'user', text: userText });
+  }
 
-  // 1. Try selected engine if key exists
-  const selectedKey = getProviderKey(currentEngine);
-  if (selectedKey) {
-    try {
-      if (currentEngine === 'gemini') {
-        const geminiHistory = filteredHistory.map(m => ({
-          role: m.role === 'assistant' ? ('model' as const) : ('user' as const),
-          parts: [{ text: m.text }]
-        }));
-        if (geminiHistory.length === 0 || geminiHistory[geminiHistory.length - 1].role !== 'user') {
-          geminiHistory.push({ role: 'user', parts: [{ text: userText }] });
-        }
-        const res: any = await directGeminiGenerate({
-          model: 'gemini-1.5-flash', // Corrected name (Fixing typo 2.5)
-          contents: geminiHistory,
-          systemInstruction: truncatedSystemPrompt,
-          generationConfig: { maxOutputTokens: 1024, temperature: 0.7 },
-          apiKey: selectedKey,
-        });
-        const reply = res?.text || res?.candidates?.[0]?.content?.parts?.map((p: any) => p?.text || '').join('').trim();
-        if (reply) return { text: reply, usedEngine: 'gemini' };
+  // Requirement 3 & 4: Truncate system prompt (max 3000 chars)
+  let truncatedSystemPrompt = systemPrompt;
+  if (truncatedSystemPrompt.length > 3000) {
+    truncatedSystemPrompt = systemPrompt.slice(0, 1200) + '\n...[context trimmed]...\n' + systemPrompt.slice(-1750);
+  }
+
+  let lastGroqError = '';
+  let lastGeminiError = '';
+
+  // 1. TRY GROQ IF GROQ KEY IS AVAILABLE
+  if (groqKey) {
+    let candidateGroqModels: string[] = [];
+    if (overrideModel && (currentEngine === 'groq' || !geminiKey)) {
+      candidateGroqModels = [overrideModel];
+    } else {
+      const discovery = await getDynamicGroqChatModels(groqKey);
+      if (discovery.models.length > 0) {
+        candidateGroqModels = discovery.models.slice(0, 3);
       } else {
-        const providerConfig = FREE_CHAT_PROVIDERS.find(p => p.id === currentEngine) || FREE_CHAT_PROVIDERS[1];
-        const activeModel = currentEngine === 'groq' ? 'llama-3.3-70b-versatile' : await fetchActiveModelForProvider(providerConfig, selectedKey);
+        lastGroqError = discovery.error || 'মডেল তালিকা পাওয়া যায়নি';
+      }
+    }
+
+    for (const modelCandidate of candidateGroqModels) {
+      try {
         const reply = await callOpenAiCompatibleChat({
-          baseURL: providerConfig.baseURL,
-          apiKey: selectedKey,
-          model: activeModel,
+          baseURL: 'https://api.groq.com/openai/v1',
+          apiKey: groqKey,
+          model: modelCandidate,
           systemPrompt: truncatedSystemPrompt,
-          messages: filteredHistory.length > 0 ? filteredHistory : [{ role: 'user', text: userText }],
-          maxTokens: 1024,
+          messages: filteredHistory,
+          maxTokens: Math.min(maxTokens, 1024),
           temperature: 0.7,
         });
-        if (reply) return { text: reply, usedEngine: currentEngine };
+
+        if (reply) {
+          writeLocalKey('active_model_groq', modelCandidate);
+          return { text: reply, usedEngine: 'groq', modelUsed: modelCandidate };
+        }
+      } catch (err: any) {
+        const errMsg = String(err?.message || '');
+        const is404 =
+          err?.status === 404 ||
+          errMsg.includes('404') ||
+          errMsg.toLowerCase().includes('does not exist') ||
+          errMsg.toLowerCase().includes('model_not_found');
+
+        if (is404) {
+          console.warn(`[Groq] Model ${modelCandidate} not found (404), trying next candidate...`);
+          lastGroqError = `${errMsg} (মডেল: ${modelCandidate})`;
+          continue; // Try next model in list
+        }
+
+        // Check if 400 length error
+        const isLengthError =
+          err?.status === 400 ||
+          errMsg.toLowerCase().includes('length') ||
+          errMsg.toLowerCase().includes('reduce');
+
+        if (isLengthError) {
+          try {
+            const retryReply = await callOpenAiCompatibleChat({
+              baseURL: 'https://api.groq.com/openai/v1',
+              apiKey: groqKey,
+              model: modelCandidate,
+              systemPrompt: truncatedSystemPrompt.slice(0, 1500),
+              messages: filteredHistory.slice(-3),
+              maxTokens: Math.min(maxTokens, 1024),
+              temperature: 0.7,
+            });
+            if (retryReply) {
+              writeLocalKey('active_model_groq', modelCandidate);
+              return { text: retryReply, usedEngine: 'groq', modelUsed: modelCandidate };
+            }
+          } catch (retryErr: any) {
+            lastGroqError = `${retryErr?.message || 'দৈর্ঘ্য ত্রুটি'} (মডেল: ${modelCandidate})`;
+            break;
+          }
+        }
+
+        lastGroqError = `${errMsg} (মডেল: ${modelCandidate})`;
+        break; // Stop Groq on fatal non-404 error
       }
-    } catch (err: any) {
-      firstAttemptError = `${currentEngine === 'groq' ? 'Groq' : currentEngine.charAt(0).toUpperCase() + currentEngine.slice(1)} ত্রুটি: ${err.message}`;
     }
   }
 
-  // 2. Fallback logic: Try Groq then Gemini
-  
-  // Try Groq fallback
-  if (currentEngine !== 'groq' && groqKey) {
-    try {
-      const reply = await callOpenAiCompatibleChat({
-        baseURL: 'https://api.groq.com/openai/v1',
-        apiKey: groqKey,
-        model: 'llama-3.3-70b-versatile',
-        systemPrompt: truncatedSystemPrompt,
-        messages: filteredHistory.length > 0 ? filteredHistory : [{ role: 'user', text: userText }],
-        maxTokens: 1024,
-        temperature: 0.7,
-      });
-      if (reply) return { text: reply, usedEngine: 'groq' };
-    } catch (err: any) {
-      const msg = `Groq ত্রুটি: ${err.message}`;
-      firstAttemptError = firstAttemptError ? `${firstAttemptError} | ${msg}` : msg;
-    }
-  }
-
-  // Try Gemini fallback
-  if (currentEngine !== 'gemini' && geminiKey) {
-    try {
-      const geminiHistory = filteredHistory.map(m => ({
-        role: m.role === 'assistant' ? ('model' as const) : ('user' as const),
-        parts: [{ text: m.text }]
-      }));
-      if (geminiHistory.length === 0 || geminiHistory[geminiHistory.length - 1].role !== 'user') {
-        geminiHistory.push({ role: 'user', parts: [{ text: userText }] });
+  // 2. FALLBACK TO GEMINI IF GROQ FAILED OR NO GROQ KEY
+  if (geminiKey) {
+    let candidateGeminiModels: string[] = [];
+    if (overrideModel && (currentEngine === 'gemini' || !groqKey)) {
+      candidateGeminiModels = [overrideModel];
+    } else {
+      const discovery = await getDynamicGeminiChatModels(geminiKey);
+      if (discovery.models.length > 0) {
+        candidateGeminiModels = discovery.models.slice(0, 3);
+      } else {
+        lastGeminiError = discovery.error || 'মডেল তালিকা পাওয়া যায়নি';
       }
-      const res: any = await directGeminiGenerate({
-        model: 'gemini-1.5-flash',
-        contents: geminiHistory,
-        systemInstruction: truncatedSystemPrompt,
-        generationConfig: { maxOutputTokens: 1024, temperature: 0.7 },
-        apiKey: geminiKey,
-      });
-      const reply = res?.text || res?.candidates?.[0]?.content?.parts?.map((p: any) => p?.text || '').join('').trim();
-      if (reply) return { text: reply, usedEngine: 'gemini' };
-    } catch (err: any) {
-      const msg = `Gemini ত্রুটি: ${err.message}`;
-      firstAttemptError = firstAttemptError ? `${firstAttemptError} | ${msg}` : msg;
+    }
+
+    for (const modelCandidate of candidateGeminiModels) {
+      try {
+        const reply = await callGeminiDirectChat({
+          apiKey: geminiKey,
+          model: modelCandidate,
+          systemPrompt: truncatedSystemPrompt,
+          messages: filteredHistory,
+          maxTokens: Math.min(maxTokens, 1024),
+        });
+
+        if (reply) {
+          writeLocalKey('active_model_gemini', modelCandidate);
+          return { text: reply, usedEngine: 'gemini', modelUsed: modelCandidate };
+        }
+      } catch (err: any) {
+        const errMsg = String(err?.message || '');
+        const is404 =
+          err?.status === 404 ||
+          errMsg.includes('404') ||
+          errMsg.toLowerCase().includes('not found');
+
+        if (is404) {
+          console.warn(`[Gemini] Model ${modelCandidate} not found (404), trying next candidate...`);
+          lastGeminiError = `${errMsg} (মডেল: ${modelCandidate})`;
+          continue; // Try next model in list
+        }
+
+        lastGeminiError = `${errMsg} (মডেল: ${modelCandidate})`;
+        break;
+      }
     }
   }
 
-  if (firstAttemptError) throw new Error(firstAttemptError);
-  throw new Error("Connections-এ key দিন");
+  // Combine errors clearly without duplicating labels
+  if (groqKey && geminiKey) {
+    throw new Error(`Groq ত্রুটি: ${lastGroqError || 'ব্যর্থ'} | Gemini ত্রুটি: ${lastGeminiError || 'ব্যর্থ'}`);
+  } else if (groqKey) {
+    throw new Error(`Groq ত্রুটি: ${lastGroqError || 'ব্যর্থ'}`);
+  } else if (geminiKey) {
+    throw new Error(`Gemini ত্রুটি: ${lastGeminiError || 'ব্যর্থ'}`);
+  }
+
+  throw new Error('Connections-এ key দিন');
 };
 
 export const generateTextWithEngineFallback = generateTextWithSelectedEngine;

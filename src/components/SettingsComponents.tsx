@@ -1,7 +1,16 @@
 import React, { useState } from "react";
 import { motion } from "framer-motion";
-import { ArrowLeft, Facebook, Instagram, Youtube, Check, Loader2, ExternalLink, Cpu, PenTool, Zap, ChevronRight } from "lucide-react";
+import { ArrowLeft, Facebook, Instagram, Youtube, Check, Loader2, ExternalLink, Cpu, PenTool, Zap, ChevronRight, RotateCw, MessageSquare } from "lucide-react";
 import { getGeminiKey } from "../lib/geminiKey";
+import {
+  getChatModelOverride,
+  setChatModelOverride,
+  getCurrentlyActiveChatModel,
+  getDynamicGroqChatModels,
+  getDynamicGeminiChatModels,
+  getSelectedChatEngine,
+  getEffectiveChatEngineKey
+} from "../lib/chatEngines";
 
 const DEVELOPER_INFO = {
   name: "MD YOUSUF KHAN",
@@ -264,6 +273,71 @@ export const LiveModelSettings = ({
     }
   };
 
+  const [chatOverrideInput, setChatOverrideInput] = useState<string>(() => getChatModelOverride());
+  const [currentActiveChatModel, setCurrentActiveChatModel] = useState<string>(() => getCurrentlyActiveChatModel());
+  const [isDetecting, setIsDetecting] = useState<boolean>(false);
+
+  const handleAutoDetectChatModel = async () => {
+    setIsDetecting(true);
+    try {
+      const engine = getSelectedChatEngine();
+      const apiKey = getEffectiveChatEngineKey(engine);
+      let detected = "";
+      if (engine === "groq") {
+        const res = await getDynamicGroqChatModels(apiKey, true);
+        if (res.models && res.models.length > 0) {
+          detected = res.models[0];
+        } else if (res.errorReason) {
+          notifyToast(`Groq মডেল শনাক্ত ব্যর্থ: ${res.errorReason}`);
+        }
+      } else if (engine === "gemini") {
+        const res = await getDynamicGeminiChatModels(apiKey, true);
+        if (res.models && res.models.length > 0) {
+          detected = res.models[0];
+        } else if (res.errorReason) {
+          notifyToast(`Gemini মডেল শনাক্ত ব্যর্থ: ${res.errorReason}`);
+        }
+      } else {
+        detected = getCurrentlyActiveChatModel(engine);
+      }
+
+      if (detected) {
+        setChatOverrideInput(detected);
+        setChatModelOverride(detected);
+        setCurrentActiveChatModel(detected);
+        notifyToast(`তাজা মডেল সনাক্ত হয়েছে: ${detected}`);
+      } else {
+        const fallback = getCurrentlyActiveChatModel(engine);
+        setCurrentActiveChatModel(fallback);
+        notifyToast(`বর্তমান সক্রিয় মডেল: ${fallback}`);
+      }
+    } catch (err: any) {
+      notifyToast("মডেল শনাক্তকরণে সমস্যা হয়েছে");
+    } finally {
+      setIsDetecting(false);
+    }
+  };
+
+  const handleSaveChatOverride = () => {
+    const trimmed = chatOverrideInput.trim();
+    setChatModelOverride(trimmed);
+    const active = getCurrentlyActiveChatModel();
+    setCurrentActiveChatModel(active);
+    if (trimmed) {
+      notifyToast(`চ্যাট মডেল ওভাররাইড সেভ হয়েছে: ${trimmed}`);
+    } else {
+      notifyToast("চ্যাট মডেল অটো বাছাইয়ে ফিরিয়ে আনা হয়েছে");
+    }
+  };
+
+  const handleClearChatOverride = () => {
+    setChatOverrideInput("");
+    setChatModelOverride("");
+    const active = getCurrentlyActiveChatModel();
+    setCurrentActiveChatModel(active);
+    notifyToast("ওভাররাইড মোছা হয়েছে (এখন অটো বাছাই চলবে)");
+  };
+
   if (showCustomPage) {
     return (
       <motion.div
@@ -428,6 +502,80 @@ export const LiveModelSettings = ({
           </div>
           <ChevronRight className="w-5 h-5 text-slate-400 shrink-0" />
         </button>
+
+        {/* Chat Model Override Section */}
+        <div className="w-full p-4 rounded-2xl bg-[#0F172A] border border-purple-500/25 space-y-3.5 mt-2 shadow-xl shadow-purple-950/20">
+          <div className="flex items-center justify-between">
+            <div className="flex items-center gap-3">
+              <div className="w-9 h-9 rounded-xl bg-purple-600/15 border border-purple-500/30 flex items-center justify-center text-purple-300 shrink-0">
+                <MessageSquare className="w-4 h-4" />
+              </div>
+              <div>
+                <h3 className="text-xs font-black uppercase tracking-wider text-white">
+                  CHAT MODEL OVERRIDE
+                </h3>
+                <p className="text-[10px] text-slate-400">
+                  টেক্সট চ্যাটের মডেল (খালি থাকলে অটো বাছাই)
+                </p>
+              </div>
+            </div>
+          </div>
+
+          <div className="space-y-2.5">
+            <div className="flex items-center gap-2">
+              <input
+                type="text"
+                value={chatOverrideInput}
+                onChange={(e) => setChatOverrideInput(e.target.value)}
+                placeholder="খালি রাখলে অটো বাছাই..."
+                className="flex-1 min-w-0 bg-[#020617] border border-purple-500/30 focus:border-purple-400 rounded-xl px-3.5 py-2.5 font-mono text-xs text-white placeholder:text-slate-500 outline-none transition-colors"
+              />
+              <button
+                type="button"
+                onClick={handleAutoDetectChatModel}
+                disabled={isDetecting}
+                title="তাজা মডেল নাম অটো খুঁজুন"
+                className="px-3 py-2.5 bg-purple-600/20 hover:bg-purple-600/30 border border-purple-400/30 rounded-xl text-purple-200 text-xs font-bold flex items-center gap-1.5 active:scale-95 transition-all shrink-0 disabled:opacity-50"
+              >
+                <RotateCw className={`w-3.5 h-3.5 ${isDetecting ? "animate-spin" : ""}`} />
+                <span>Auto detect</span>
+              </button>
+            </div>
+
+            <div className="flex items-center gap-2">
+              <button
+                type="button"
+                onClick={handleSaveChatOverride}
+                className="flex-1 py-2.5 bg-purple-600 hover:bg-purple-500 border border-purple-400/40 rounded-xl font-bold text-xs uppercase tracking-wider text-white active:scale-[0.99] transition-all shadow-md shadow-purple-950/40"
+              >
+                SAVE
+              </button>
+              {chatOverrideInput && (
+                <button
+                  type="button"
+                  onClick={handleClearChatOverride}
+                  className="px-4 py-2.5 bg-slate-800 hover:bg-slate-700 border border-slate-600 rounded-xl font-bold text-xs uppercase tracking-wider text-slate-300 active:scale-[0.99] transition-all"
+                >
+                  CLEAR
+                </button>
+              )}
+            </div>
+
+            <div className="pt-1 px-1">
+              <p className="text-[11px] text-purple-300/90 leading-tight">
+                বর্তমান সক্রিয় চ্যাট মডেল:{" "}
+                <span className="font-mono font-bold text-white break-all">
+                  {chatOverrideInput.trim() || currentActiveChatModel || "অটো বাছাই (স্বয়ংক্রিয়)"}
+                </span>
+                {chatOverrideInput.trim() && (
+                  <span className="ml-1.5 text-[10px] bg-purple-500/20 text-purple-300 px-1.5 py-0.5 rounded border border-purple-400/30">
+                    ইউজার ওভাররাইড
+                  </span>
+                )}
+              </p>
+            </div>
+          </div>
+        </div>
       </div>
 
       {localToast && (
