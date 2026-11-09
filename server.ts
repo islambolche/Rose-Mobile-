@@ -265,9 +265,45 @@ wss.on('connection', async (clientWs, req) => {
   };
 
   try {
+    const PHONE_CONTROL_TOOLS = {
+      functionDeclarations: [
+        {
+          name: "open_app",
+          description: "Open an installed app by name.",
+          parameters: { type: Type.OBJECT, properties: { name: { type: Type.STRING } }, required: ["name"] }
+        },
+        {
+          name: "call_contact",
+          description: "Call a phone number.",
+          parameters: { type: Type.OBJECT, properties: { number: { type: Type.STRING } }, required: ["number"] }
+        },
+        {
+          name: "send_sms",
+          description: "Send an SMS message.",
+          parameters: { type: Type.OBJECT, properties: { number: { type: Type.STRING }, text: { type: Type.STRING } }, required: ["number", "text"] }
+        },
+        {
+          name: "read_notifications",
+          description: "Read latest notifications.",
+          parameters: { type: Type.OBJECT, properties: { limit: { type: Type.NUMBER, description: "Max number of notifications to read" } } }
+        },
+        {
+          name: "take_photo",
+          description: "Take a photo.",
+          parameters: { type: Type.OBJECT, properties: { camera: { type: Type.NUMBER, description: "0 for back, 1 for front" } } }
+        },
+        {
+          name: "flashlight",
+          description: "Turn flashlight on or off.",
+          parameters: { type: Type.OBJECT, properties: { state: { type: Type.STRING, enum: ["on", "off"] } }, required: ["state"] }
+        }
+      ]
+    };
+
     const liveConfig: any = {
       responseModalities: [Modality.AUDIO],
       systemInstruction: systemInstructionLines.join(" "),
+      tools: [PHONE_CONTROL_TOOLS],
       speechConfig: {
         voiceConfig: { prebuiltVoiceConfig: { voiceName: voiceName } },
       },
@@ -1666,14 +1702,20 @@ app.post('/api/termux/action', (req, res) => {
     case 'torch':
       command = `termux-torch ${args?.state === 'on' ? 'on' : 'off'}`;
       break;
+    case 'open':
+      if (args?.url) command = `termux-open "${args.url}"`;
+      break;
     case 'contacts':
       command = `termux-contact-list`;
+      if (args?.limit) command += ` | head -n ${args.limit}`;
       break;
     case 'notifications':
       command = `termux-notification-list`;
+      if (args?.limit) command += ` | head -n ${args.limit}`;
       break;
     case 'photo':
-      command = `termux-camera-photo -c ${args?.camera || 0} ~/rose_capture_${Date.now()}.jpg`;
+      const photoPath = args?.path || `~/rose_capture_${Date.now()}.jpg`;
+      command = `termux-camera-photo -c ${args?.camera || 0} ${photoPath}`;
       break;
     case 'intent':
       if (args?.url) command = `am start -a android.intent.action.VIEW -d "${args.url}"`;
@@ -1689,12 +1731,23 @@ app.post('/api/termux/action', (req, res) => {
 
   exec(command, (error, stdout, stderr) => {
     if (error) {
-      console.error(`Termux command error: ${error.message}`);
-      return res.status(500).json({ error: error.message, stderr });
+      // Don't log as error if it's just command not found (normal in non-Termux env)
+      const isNotFound = error.message.includes('not found') || error.code === 127;
+      if (!isNotFound) {
+        console.warn(`Termux command failed: ${command} | Error: ${error.message}`);
+      }
+      
+      // Return 200 with success: false so the frontend can handle it without a crash/500
+      return res.json({ 
+        success: false, 
+        error: isNotFound ? 'Termux environment not detected' : error.message,
+        command 
+      });
     }
+
     try {
       const output = stdout.trim();
-      const jsonOutput = output.startsWith('{') || output.startsWith('[') ? JSON.parse(output) : output;
+      const jsonOutput = (output.startsWith('{') || output.startsWith('[')) ? JSON.parse(output) : output;
       res.json({ success: true, command, output: jsonOutput });
     } catch (e) {
       res.json({ success: true, command, output: stdout.trim() });

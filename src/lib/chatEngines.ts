@@ -29,7 +29,7 @@ export const FREE_CHAT_PROVIDERS: ChatProviderConfig[] = [
     defaultModel: '',
     storageKey: 'gemini_api_key',
     statusStorageKey: 'connection_status_gemini',
-    getKeyUrl: 'https://aistudio.google.com/apikey',
+    getKeyUrl: 'https://aistudio.google.com/app/apikey',
     placeholder: 'AIza...',
   },
   {
@@ -903,6 +903,7 @@ export const verifyProviderKey = async (
     const isAbort = netErr?.name === 'AbortError';
     const text = isAbort ? 'সময় শেষ (Timeout)' : 'যাচাই করা যায়নি, ইন্টারনেট দেখুন';
     const current = getProviderStatus(providerId);
+    // Return current status (READY or NOT SET) instead of forcing INVALID on network error
     return { ok: false, status: current, errorText: text };
   } finally {
     clearTimeout(timer);

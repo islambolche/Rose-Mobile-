@@ -132,7 +132,9 @@ export const PHONE_CONTROL_TOOLS = [
         description: 'Read the latest notifications from the phone (Android Termux only).',
         parameters: {
           type: 'OBJECT',
-          properties: {}
+          properties: {
+            limit: { type: 'NUMBER', description: 'Maximum number of notifications to read (default 30)' }
+          }
         }
       },
       {
@@ -141,7 +143,8 @@ export const PHONE_CONTROL_TOOLS = [
         parameters: {
           type: 'OBJECT',
           properties: {
-            camera: { type: 'NUMBER', description: 'Camera ID (0 for back, 1 for front)' }
+            camera: { type: 'NUMBER', description: 'Camera ID (0 for back, 1 for front)' },
+            path: { type: 'STRING', description: 'Optional path to save the photo (e.g. ~/test.jpg)' }
           }
         }
       }

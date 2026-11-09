@@ -22,6 +22,7 @@ import {
 import { motion, AnimatePresence } from 'framer-motion';
 import { getGeminiKey, setGeminiKey, initGeminiKey } from '../lib/geminiKey';
 import { storage } from '../lib/storage';
+import { openInExternalBrowser } from '../lib/phoneActions';
 import {
   ChatEngineId,
   KeyStatus,
@@ -57,7 +58,7 @@ const ALL_PROVIDERS: ProviderItem[] = [
     tier: 'free',
     displayName: 'Gemini',
     badgeLabel: 'চ্যাট ও ভয়েস',
-    link: 'https://aistudio.google.com/apikey',
+    link: 'https://aistudio.google.com/app/apikey',
     storageKey: 'gemini_api_key',
     statusStorageKey: 'connection_status_gemini',
     placeholder: 'AIza...',
@@ -273,19 +274,7 @@ export const ConnectionsView = ({
   };
 
   const handleGetKey = (url: string) => {
-    try {
-      const anchor = document.createElement('a');
-      anchor.href = url;
-      anchor.target = '_blank';
-      anchor.rel = 'noopener noreferrer';
-      document.body.appendChild(anchor);
-      anchor.click();
-      document.body.removeChild(anchor);
-    } catch {
-      try {
-        window.open(url, '_blank', 'noopener,noreferrer');
-      } catch {}
-    }
+    openInExternalBrowser(url);
   };
 
   const verifyElevenLabs = async (rawKey: string): Promise<{ ok: boolean; status: KeyStatus; errorText?: string }> => {
@@ -397,7 +386,7 @@ export const ConnectionsView = ({
         if (warning) {
           notifyToast(`${provider.displayName} Key সেভ হয়েছে কিন্তু: ${warning}`);
         } else {
-          notifyToast(`${provider.displayName} Key যাচাই সম্পন্ন: READY`);
+          notifyToast(`${provider.displayName} Key যাচাই সম্পন্ন: CONNECTED`);
         }
       } else {
         const reason = checkResult.errorText || 'যাচাই ব্যর্থ';
@@ -448,7 +437,7 @@ export const ConnectionsView = ({
         <div className="flex items-center gap-1.5 px-3 py-1 bg-emerald-500/15 border border-emerald-500/40 rounded-full shrink-0">
           <Check className="w-3 h-3 text-emerald-400" />
           <span className="text-[10px] font-black uppercase tracking-widest text-emerald-400">
-            READY
+            CONNECTED
           </span>
         </div>
       );

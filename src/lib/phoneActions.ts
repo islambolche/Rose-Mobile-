@@ -268,10 +268,45 @@ export function getPhoneActionHistory(): PhoneActionLogItem[] {
 }
 
 /**
+ * Helper to safely launch external URLs.
+ * On Android, attempts to force opening in an external browser using the intent: scheme
+ * to prevent the WebView from intercepting the URL or login process.
+ */
+export function openInExternalBrowser(url: string) {
+  if (!url) return;
+  
+  // 1. Check if we can use Termux bridge for termux-open
+  callTermuxApi('open', { url }).then(success => {
+    if (success) return;
+
+    // 2. Try Android Intent scheme to force external browser
+    // This is the most reliable way to escape a WebView on Android
+    const isAndroid = /Android/i.test(navigator.userAgent);
+    if (isAndroid && !url.startsWith('intent:')) {
+      const intentUrl = `intent:${url}#Intent;action=android.intent.action.VIEW;category=android.intent.category.BROWSABLE;package=com.android.chrome;end`;
+      try {
+        window.location.href = intentUrl;
+        return;
+      } catch (e) {
+        // Fallback if Chrome is not installed or intent fails
+      }
+    }
+
+    // 3. Standard web fallback
+    safelyOpenUrl(url);
+  });
+}
+
+/**
  * Helper to safely launch external URLs without blocking popup filters
  */
-function safelyOpenUrl(url: string) {
+export function safelyOpenUrl(url: string) {
   try {
+    // Try window.open first with specific features
+    const win = window.open(url, '_blank', 'noopener,noreferrer');
+    if (win) return;
+
+    // Fallback to anchor click
     const a = document.createElement('a');
     a.href = url;
     a.target = '_blank';
@@ -296,7 +331,9 @@ async function callTermuxApi(action: string, args: any): Promise<boolean> {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ action, args })
     });
-    return res.ok;
+    if (!res.ok) return false;
+    const data = await res.json();
+    return !!data.success;
   } catch (e) {
     return false;
   }
@@ -344,8 +381,8 @@ export interface PhoneBridge {
   brightness(args: { level: string }): Promise<PhoneActionResult>;
   wifi(args: { state: string }): Promise<PhoneActionResult>;
   bluetooth(args: { state: string }): Promise<PhoneActionResult>;
-  read_notifications(): Promise<PhoneActionResult>;
-  take_photo(args: { camera?: number }): Promise<PhoneActionResult>;
+  read_notifications(args?: { limit?: number }): Promise<PhoneActionResult>;
+  take_photo(args?: { camera?: number; path?: string }): Promise<PhoneActionResult>;
 }
 
 /**
@@ -413,7 +450,7 @@ export const browserPhoneBridge: PhoneBridge = {
       };
     }
 
-    safelyOpenUrl(url);
+    openInExternalBrowser(url);
     logPhoneAction({
       tool: 'open_app',
       status: 'executed',
@@ -574,7 +611,24 @@ export const browserPhoneBridge: PhoneBridge = {
     const q = String(query || '').trim();
     const url = `https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(q)}`;
 
-    safelyOpenUrl(url);
+    const termuxOk = await callTermuxApi('intent', { url });
+    if (termuxOk) {
+      logPhoneAction({
+        tool: 'open_maps',
+        status: 'executed',
+        summary: `Maps search: ${q} (Termux)`,
+        details: { query: q, url, method: 'termux' },
+      });
+      return {
+        success: true,
+        tool: 'open_maps',
+        status: 'executed',
+        message: `Opening Google Maps for ${q}...`,
+        url,
+      };
+    }
+
+    openInExternalBrowser(url);
     logPhoneAction({
       tool: 'open_maps',
       status: 'executed',
@@ -595,7 +649,24 @@ export const browserPhoneBridge: PhoneBridge = {
     const q = String(query || '').trim();
     const url = `https://www.youtube.com/results?search_query=${encodeURIComponent(q)}`;
 
-    safelyOpenUrl(url);
+    const termuxOk = await callTermuxApi('intent', { url });
+    if (termuxOk) {
+      logPhoneAction({
+        tool: 'youtube_search',
+        status: 'executed',
+        summary: `YouTube search: ${q} (Termux)`,
+        details: { query: q, url, method: 'termux' },
+      });
+      return {
+        success: true,
+        tool: 'youtube_search',
+        status: 'executed',
+        message: `Searching YouTube for ${q}...`,
+        url,
+      };
+    }
+
+    openInExternalBrowser(url);
     logPhoneAction({
       tool: 'youtube_search',
       status: 'executed',
@@ -868,14 +939,14 @@ export const browserPhoneBridge: PhoneBridge = {
     };
   },
 
-  async read_notifications() {
-    const termuxOk = await callTermuxApi('notifications', {});
+  async read_notifications(args?: { limit?: number }) {
+    const termuxOk = await callTermuxApi('notifications', { limit: args?.limit || 30 });
     if (termuxOk) {
        logPhoneAction({
         tool: 'read_notifications',
         status: 'executed',
         summary: `Read notifications (Termux)`,
-        details: { method: 'termux' },
+        details: { method: 'termux', limit: args?.limit || 30 },
       });
       return {
         success: true,
@@ -892,20 +963,23 @@ export const browserPhoneBridge: PhoneBridge = {
     };
   },
 
-  async take_photo({ camera }) {
-    const termuxOk = await callTermuxApi('photo', { camera: camera || 0 });
+  async take_photo(args?: { camera?: number; path?: string }) {
+    const termuxOk = await callTermuxApi('photo', { 
+      camera: args?.camera || 0,
+      path: args?.path || `~/rose_capture_${Date.now()}.jpg`
+    });
     if (termuxOk) {
        logPhoneAction({
         tool: 'take_photo',
         status: 'executed',
         summary: `Took photo (Termux)`,
-        details: { camera, method: 'termux' },
+        details: { camera: args?.camera || 0, path: args?.path, method: 'termux' },
       });
       return {
         success: true,
         tool: 'take_photo',
         status: 'executed',
-        message: `Photo captured and saved to ~/rose_capture_...`,
+        message: `Photo captured and saved.`,
       };
     }
     return {
@@ -977,7 +1051,7 @@ export async function confirmAndExecuteAction(confirmation: ActionConfirmationDa
 
   // 2. Fallback to browser URL launch if Termux failed or not applicable
   if (!termuxSuccess) {
-    safelyOpenUrl(confirmation.executeUrl);
+    openInExternalBrowser(confirmation.executeUrl);
   }
 
   logPhoneAction({
