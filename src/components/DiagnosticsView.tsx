@@ -102,7 +102,7 @@ export const DiagnosticsView: React.FC<DiagnosticsViewProps> = ({
         ws?.send(
           JSON.stringify({
             setup: {
-              model: "models/gemini-2.5-flash-native-audio-preview-09-2025",
+              model: "models/gemini-1.5-flash",
               generationConfig: {
                 responseModalities: ["AUDIO"],
               },
@@ -275,7 +275,7 @@ export const DiagnosticsView: React.FC<DiagnosticsViewProps> = ({
           <div className="space-y-2">
             <div className="flex justify-between items-center">
               <span className="text-slate-400 uppercase font-bold text-[10px]">Model</span>
-              <span className="text-emerald-400 font-mono">gemini-2.5-flash-native-audio-preview-09-2025</span>
+              <span className="text-emerald-400 font-mono">gemini-1.5-flash</span>
             </div>
             <div className="flex justify-between items-center">
               <span className="text-slate-400 uppercase font-bold text-[10px]">Voice</span>

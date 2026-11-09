@@ -777,9 +777,9 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({ isOpen, onClose, o
                         onChange={(e) => handleFieldChange("liveVoiceModel", e.target.value)}
                         className="w-full bg-[#060e1a] border border-cyan-500/30 rounded-xl px-3.5 py-2.5 text-xs text-white outline-none focus:border-cyan-400"
                       >
-                        <option value="gemini-3.5-flash">Gemini 3.5 Flash</option>
-                        <option value="gemini-3.5-flash-lite">Gemini 3.5 Flash Lite</option>
-                        <option value="gemini-flash-latest">Gemini Flash Latest</option>
+                        <option value="gemini-1.5-flash">Gemini 3.5 Flash</option>
+                        <option value="gemini-1.5-flash-lite">Gemini 3.5 Flash Lite</option>
+                        <option value="gemini-1.5-flash">Gemini Flash Latest</option>
                       </select>
                     </div>
                     <div className="space-y-1.5">
@@ -789,9 +789,9 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({ isOpen, onClose, o
                         onChange={(e) => handleFieldChange("textChatModel", e.target.value)}
                         className="w-full bg-[#060e1a] border border-cyan-500/30 rounded-xl px-3.5 py-2.5 text-xs text-white outline-none focus:border-cyan-400"
                       >
-                        <option value="gemini-3.5-flash">Gemini 3.5 Flash</option>
-                        <option value="gemini-3.5-flash-lite">Gemini 3.5 Flash Lite</option>
-                        <option value="gemini-flash-latest">Gemini Flash Latest</option>
+                        <option value="gemini-1.5-flash">Gemini 3.5 Flash</option>
+                        <option value="gemini-1.5-flash-lite">Gemini 3.5 Flash Lite</option>
+                        <option value="gemini-1.5-flash">Gemini Flash Latest</option>
                       </select>
                     </div>
                   </div>

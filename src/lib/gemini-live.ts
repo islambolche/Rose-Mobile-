@@ -62,7 +62,7 @@ export class GeminiLiveSession {
     this.options.onTiming?.("audioChunksReceived", 0);
 
     const apiKey = String(this.options.apiKey || getGeminiKey() || '').replace(/[\r\n\t\s"']+/g, '').trim();
-    const rawModel = (localStorage.getItem('voice_model') || this.options.model || 'gemini-3.8-live').replace(/^models\//, '').trim();
+    const rawModel = (localStorage.getItem('voice_model') || this.options.model || 'gemini-1.5-flash').replace(/^models\//, '').trim();
     const fullModel = `models/${rawModel}`;
 
     const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';

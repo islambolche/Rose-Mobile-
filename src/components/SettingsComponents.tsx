@@ -89,26 +89,26 @@ export const Developer = ({ setCurrentView, setToast, backView = "home" }: { set
   );
 };
 
-const DEFAULT_LIVE_MODEL = "gemini-2.5-flash-native-audio-preview-09-2025";
+const DEFAULT_LIVE_MODEL = "gemini-1.5-flash";
 
 const LIVE_MODEL_CARDS = [
   {
-    model: "gemini-2.5-flash-native-audio-preview-09-2025",
-    badge: "BEST VOICE",
+    model: "gemini-2.0-flash-exp",
+    badge: "NEW & FAST",
     badgeClass: "bg-emerald-500/20 text-emerald-300 border-emerald-500/40",
-    description: "Natural Bengali voice, audio to audio",
+    description: "Next-gen experimental flash model",
   },
   {
-    model: "gemini-live-2.5-flash-preview",
+    model: "gemini-1.5-flash",
     badge: "STABLE",
     badgeClass: "bg-blue-500/20 text-blue-300 border-blue-500/40",
-    description: "Reliable live voice",
+    description: "Reliable production model",
   },
   {
-    model: "gemini-2.0-flash-live-001",
-    badge: "FALLBACK",
+    model: "gemini-1.5-flash-8b",
+    badge: "LITE",
     badgeClass: "bg-orange-500/20 text-orange-300 border-orange-500/40",
-    description: "Older backup model",
+    description: "Lightweight and cost-effective",
   },
 ];
 

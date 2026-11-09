@@ -22,7 +22,7 @@ export const HomeScreenV4 = ({
   
   const live = useRoseLive(() => ({
     apiKey: getGeminiKey(),
-    model: 'gemini-3.8-flash',
+    model: 'gemini-1.5-flash',
     voiceName: unifiedSettings.voiceName || "Sulafat",
     systemInstruction: buildAssistantSystemInstruction(unifiedSettings),
     onUserText: (t) => {}, 

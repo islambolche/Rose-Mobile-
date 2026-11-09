@@ -111,7 +111,7 @@ export const OfficeScene = ({
       console.log("FINAL TEXT:", userText, "CONTENTS LEN:", preparedHistory.length);
       
       const data = await directGeminiGenerate({
-        model: 'gemini-3.8-flash',
+        model: 'gemini-1.5-flash',
         systemInstruction: activeChar.systemInstruction,
         contents: preparedHistory,
         generationConfig: { temperature: 0.7, maxOutputTokens: 200 },

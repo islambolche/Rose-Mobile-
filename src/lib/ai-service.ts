@@ -2,11 +2,10 @@ import { prepareHistory, extractLastUserText } from './ai-utils';
 import { getGeminiKey } from './geminiKey';
 
 const TEXT_MODELS = [
-  'gemini-flash-lite-latest',
-  'gemini-flash-latest',
-  'gemini-2.5-flash-lite',
-  'gemini-2.5-flash',
-  'gemini-2.0-flash',
+  'gemini-1.5-flash',
+  'gemini-1.5-flash-8b',
+  'gemini-2.0-flash-exp',
+  'gemini-1.5-pro',
 ];
 export { TEXT_MODELS };
 
@@ -1091,6 +1090,6 @@ export const directGeminiTTS = async (payload: any) => {
 
   return {
     audio: data.audio,
-    modelUsed: data.modelUsed || 'gemini-3.8-flash-lite-tts',
+    modelUsed: data.modelUsed || 'gemini-1.5-flash-lite-tts',
   };
 };

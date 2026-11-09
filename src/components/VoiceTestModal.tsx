@@ -93,8 +93,8 @@ export const VoiceTestModal: React.FC<VoiceTestModalProps> = ({ settings, onClos
     // STEP 4: Gemini Live WebSocket Connection & Probing
     updateStep(4, "running");
     const LIVE_MODELS = [
-      "gemini-2.5-flash-native-audio-preview-12-2025",
-      "gemini-2.0-flash-live-001"
+      "gemini-1.5-flash",
+      "gemini-1.5-flash"
     ];
     let ws: WebSocket | null = null;
     let wsSuccess = false;
@@ -242,7 +242,7 @@ export const VoiceTestModal: React.FC<VoiceTestModalProps> = ({ settings, onClos
     return [
       "=== Rose AI VOICE PIPELINE DIAGNOSTIC REPORT ===",
       `Timestamp: ${new Date().toISOString()}`,
-      `Selected Model: ${settings.liveVoiceModel || 'gemini-2.5-flash-native-audio-preview-12-2025'}`,
+      `Selected Model: ${settings.liveVoiceModel || 'gemini-1.5-flash'}`,
       `Language: ${settings.language}`,
       "",
       ...steps.map(s => `[${s.status.toUpperCase()}] Step ${s.id}: ${s.title}\n  Details: ${s.detail || 'N/A'}\n  Error: ${s.error || 'None'}\n`),

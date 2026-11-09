@@ -168,7 +168,7 @@ export const DEFAULT_UNIFIED_SETTINGS: UnifiedSettings = {
 
   // 3. VOICE & MODEL
   voiceName: "Sulafat",
-  liveVoiceModel: "gemini-2.5-flash-native-audio-preview-09-2025",
+  liveVoiceModel: "gemini-1.5-flash",
   textChatModel: "llama-3.3-70b-versatile",
   voiceModelMode: "fast",
   voiceMode: "free",
@@ -231,9 +231,14 @@ export function loadUnifiedSettings(): UnifiedSettings {
     if (raw) {
       const parsed = JSON.parse(raw);
       
-      // Auto-migrate old liveVoiceModel
-      if (['gemini-3.1-flash-live-preview', 'gemini-live-2.5-flash-preview'].includes(parsed.liveVoiceModel)) {
-          parsed.liveVoiceModel = "gemini-3.8-live";
+      // Auto-migrate old/futuristic model names
+      if (typeof parsed.liveVoiceModel === 'string' && (
+        parsed.liveVoiceModel.includes('2.5') || 
+        parsed.liveVoiceModel.includes('3.1') || 
+        parsed.liveVoiceModel.includes('3.8') || 
+        parsed.liveVoiceModel.includes('native-audio')
+      )) {
+          parsed.liveVoiceModel = "gemini-1.5-flash";
       }
 
       return {

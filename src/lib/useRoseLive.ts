@@ -54,7 +54,7 @@ export function useRoseLive(getOpts: () => Opts) {
       const s = R.current;
       const o = getOpts();
       const apiKey = String(o.apiKey || getGeminiKey() || "").replace(/[\r\n\t\s"']+/g, "").trim();
-      const rawModel = (o.model || "gemini-3.8-live").replace(/^models\//, "").trim();
+      const rawModel = (o.model || "gemini-1.5-flash").replace(/^models\//, "").trim();
       const fullModel = `models/${rawModel}`;
       const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
       const wsUrl = `${protocol}//${window.location.host}/api/live?model=${encodeURIComponent(rawModel)}&voiceName=${encodeURIComponent(o.voiceName || 'Sulafat')}${apiKey ? `&apiKey=${encodeURIComponent(apiKey)}` : ''}`;

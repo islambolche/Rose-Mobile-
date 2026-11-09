@@ -17,10 +17,9 @@ import {
 export const ANSWER_MODELS_PRIORITY = TEXT_MODELS;
 
 export const TTS_MODELS_PRIORITY = [
-  "gemini-2.5-flash-preview-tts",
-  "gemini-2.5-flash-tts",
-  "gemini-2.0-flash-preview-tts",
-  "gemini-2.0-flash-tts",
+  "gemini-1.5-flash-lite-tts",
+  "gemini-1.5-flash-tts",
+  "gemini-2.0-flash-exp-tts",
 ];
 
 export function getElevenLabsKey(): string {
@@ -56,7 +55,7 @@ export interface VoiceTurnTiming {
 }
 
 let activeCachedAnswerModel = TEXT_MODELS[0];
-let activeCachedTTSModel = "gemini-2.5-flash-preview-tts";
+let activeCachedTTSModel = "gemini-1.5-flash-lite-tts";
 
 export const getCachedAnswerModel = (): string => {
   return localStorage.getItem("cached_answer_model") || activeCachedAnswerModel;

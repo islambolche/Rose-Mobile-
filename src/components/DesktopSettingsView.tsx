@@ -512,9 +512,9 @@ export const DesktopSettingsView: React.FC<DesktopSettingsViewProps> = ({
                     <label className="text-xs font-bold text-slate-300">Live Voice Call Model</label>
                     <select
                       className="w-full bg-[#081220] border border-cyan-500/30 rounded-xl p-2.5 text-xs text-white outline-none focus:border-cyan-400"
-                      defaultValue="gemini-3.8-live"
+                      defaultValue="gemini-1.5-flash"
                     >
-                      <option value="gemini-3.8-live">Gemini 3.8 Live (Recommended for Voice)</option>
+                      <option value="gemini-1.5-flash">Gemini 3.8 Live (Recommended for Voice)</option>
                     </select>
                   </div>
 
@@ -522,9 +522,9 @@ export const DesktopSettingsView: React.FC<DesktopSettingsViewProps> = ({
                     <label className="text-xs font-bold text-slate-300">Text Chat & Subordinate Agents Model</label>
                     <select
                       className="w-full bg-[#081220] border border-cyan-500/30 rounded-xl p-2.5 text-xs text-white outline-none focus:border-cyan-400"
-                      defaultValue="gemini-3.5-flash"
+                      defaultValue="gemini-1.5-flash"
                     >
-                      <option value="gemini-3.5-flash">Gemini 3.5 Flash</option>
+                      <option value="gemini-1.5-flash">Gemini 3.5 Flash</option>
                       <option value="gemini-1.5-pro">Gemini 1.5 Pro</option>
                     </select>
                   </div>
@@ -1078,7 +1078,7 @@ export const DesktopSettingsView: React.FC<DesktopSettingsViewProps> = ({
                 <div className="bg-[#060e1a] border border-emerald-500/20 rounded-2xl p-5 space-y-3">
                    <h3 className="text-[10px] font-black uppercase tracking-widest text-emerald-400">Model Info</h3>
                    <div className="space-y-2">
-                     <div className="flex justify-between items-center"><span className="text-[10px] text-slate-500 uppercase">Active Model</span><span className="text-xs font-mono text-white">gemini-2.5-flash-live</span></div>
+                     <div className="flex justify-between items-center"><span className="text-[10px] text-slate-500 uppercase">Active Model</span><span className="text-xs font-mono text-white">gemini-1.5-flash</span></div>
                      <div className="flex justify-between items-center"><span className="text-[10px] text-slate-500 uppercase">Voice</span><span className="text-xs text-white">{unifiedSettings.voiceName}</span></div>
                    </div>
                 </div>

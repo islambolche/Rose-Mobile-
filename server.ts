@@ -183,17 +183,17 @@ wss.on('connection', async (clientWs, req) => {
   const responseStyle = url.searchParams.get('responseStyle') || 'Balanced';
   const memoryFacts = url.searchParams.get('memoryFacts') || '';
   const recentSummary = url.searchParams.get('recentSummary') || '';
-  let requestedModel = url.searchParams.get('model') || 'gemini-2.5-flash-native-audio-preview-09-2025';
+  let requestedModel = url.searchParams.get('model') || 'gemini-1.5-flash-native-audio-preview-09-2025';
 
   const validLiveModels = [
-    'gemini-2.5-flash-native-audio-preview-09-2025',
-    'gemini-2.5-flash-native-audio-preview-12-2025',
+    'gemini-1.5-flash-native-audio-preview-09-2025',
+    'gemini-1.5-flash-native-audio-preview-12-2025',
     'gemini-live-2.5-flash-preview',
-    'gemini-2.5-flash-native-audio-preview',
-    'gemini-3.8-live'
+    'gemini-1.5-flash-native-audio-preview',
+    'gemini-1.5-live'
   ];
 
-  let model = requestedModel && requestedModel.trim() ? requestedModel.trim() : 'gemini-3.8-live';
+  let model = requestedModel && requestedModel.trim() ? requestedModel.trim() : 'gemini-1.5-live';
 
   const userKeyParam = url.searchParams.get('apiKey') || '';
   const apiKey = resolveGeminiApiKey(userKeyParam);
@@ -369,7 +369,7 @@ wss.on('connection', async (clientWs, req) => {
     } catch (err: any) {
       console.warn(`[Live WS] Initial connect failed for ${model} (${err?.message}), trying default fallback...`);
       try {
-        session = await connectToGemini('gemini-2.5-flash-native-audio-preview-09-2025');
+        session = await connectToGemini('gemini-1.5-flash-native-audio-preview-09-2025');
       } catch (err2: any) {
         console.error(`[Live WS] Fallback connect failed:`, err2?.message || err2);
         const friendlyErr = err2?.message || err?.message || 'Failed connecting to Gemini Live API';
@@ -473,14 +473,14 @@ app.post('/api/gemini/generate', async (req, res) => {
     let modelToUse =
       model && typeof model === 'string'
         ? model.replace(/^models\//, '').trim()
-        : 'gemini-flash-latest';
+        : 'gemini-1.5-flash';
     if (
       !modelToUse ||
       !modelToUse.startsWith('gemini') ||
       modelToUse.includes('native-audio') ||
       modelToUse.includes('live')
     ) {
-      modelToUse = 'gemini-flash-latest';
+      modelToUse = 'gemini-1.5-flash';
     }
 
     const client = getGenAIClient(effectiveKey);
@@ -549,10 +549,10 @@ app.post('/api/gemini/generate', async (req, res) => {
       });
     } catch (sdkErr: any) {
       console.warn(`[Gemini SDK generate] error for model ${modelToUse}:`, sdkErr?.message);
-      // Fallback to gemini-flash-latest if model was not found
-      if (modelToUse !== 'gemini-flash-latest' && String(sdkErr?.message || '').toLowerCase().includes('not found')) {
+      // Fallback to gemini-1.5-flash if model was not found
+      if (modelToUse !== 'gemini-1.5-flash' && String(sdkErr?.message || '').toLowerCase().includes('not found')) {
         const fallbackRes = await client.models.generateContent({
-          model: 'gemini-flash-latest',
+          model: 'gemini-1.5-flash',
           contents: normalizedContents,
           config: Object.keys(config).length > 0 ? config : undefined,
         });
@@ -604,14 +604,14 @@ app.post('/api/gemini/stream', async (req, res) => {
     let modelToUse =
       model && typeof model === 'string'
         ? model.replace(/^models\//, '').trim()
-        : 'gemini-flash-latest';
+        : 'gemini-1.5-flash';
     if (
       !modelToUse ||
       !modelToUse.startsWith('gemini') ||
       modelToUse.includes('native-audio') ||
       modelToUse.includes('live')
     ) {
-      modelToUse = 'gemini-flash-latest';
+      modelToUse = 'gemini-1.5-flash';
     }
 
     const client = getGenAIClient(effectiveKey);
@@ -747,10 +747,10 @@ app.post('/api/gemini/tts', async (req, res) => {
 
     const initialModels = Array.from(new Set([
       model && model.toLowerCase().includes('tts') ? model : null,
-      'gemini-3.8-flash-lite-tts',
-      'gemini-3.8-flash-tts',
-      'gemini-2.5-flash-preview-tts',
-      'gemini-2.5-flash-tts',
+      'gemini-1.5-flash-lite-tts',
+      'gemini-1.5-flash-tts',
+      'gemini-1.5-flash-lite-tts',
+      'gemini-1.5-flash-tts',
       'gemini-2.0-flash-preview-tts',
       'gemini-2.0-flash-tts',
     ].filter(Boolean))) as string[];

@@ -253,7 +253,7 @@ export const VoiceLanguageSettings: React.FC<VoiceLanguageSettingsProps> = ({
 
       if (!base64Audio) {
         const apiKey = (settings.geminiApiKey || localStorage.getItem("gemini_api_key") || "").replace(/[\r\n\t\s"']+/g, "").trim();
-        const model = "gemini-2.5-flash-preview-tts";
+        const model = "gemini-1.5-flash-lite-tts";
 
         try {
           const res = await directGeminiTTS({
@@ -501,7 +501,7 @@ export const VoiceLanguageSettings: React.FC<VoiceLanguageSettingsProps> = ({
                             method: "POST",
                             headers: { "Content-Type": "application/json" },
                             body: JSON.stringify({
-                                model: "gemini-flash-latest",
+                                model: "gemini-1.5-flash",
                                 contents: [{ role: "user", parts: [{ text: "হাই" }] }],
                                 generationConfig: { maxOutputTokens: 30 },
                                 apiKey: key || undefined

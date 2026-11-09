@@ -947,9 +947,9 @@ ${APP_NAVIGATION_KNOWLEDGE}
 ${getDeveloperFactsInstruction()}`;
 };
 
-const LIVE_MODELS = ["Auto (recommended)", "gemini-3.8-live"];
+const LIVE_MODELS = ["Auto (recommended)", "gemini-1.5-flash"];
 
-const LIVE_MODEL = "gemini-3.8-live";
+const LIVE_MODEL = "gemini-1.5-flash";
 
 const LANGUAGES = [
   { id: "auto", label: "Auto" },
@@ -980,7 +980,7 @@ const RESPONSE_STYLES = [
 
 const PRIORITY_ANSWER_MODELS = TEXT_MODELS;
 
-const PRIORITY_TTS_MODELS = ["gemini-3.8-flash-lite-tts"];
+const PRIORITY_TTS_MODELS = ["gemini-1.5-flash-lite-tts"];
 
 type AppView =
   | "home"
@@ -3417,7 +3417,7 @@ export function App() {
   const lastSpeakerTypeRef = useRef<"Gemini TTS" | "phone voice (female)" | "none">("Gemini TTS");
   const [lastStylePrompt, setLastStylePrompt] = useState<string>("");
   const lastStylePromptRef = useRef<string>("");
-  const lastTtsModelUsedRef = useRef<string>("gemini-3.8-flash-lite-tts");
+  const lastTtsModelUsedRef = useRef<string>("gemini-1.5-flash-lite-tts");
   const activeAudioSourcesCountRef = useRef<number>(0);
 
   const stopPlayback = useCallback(() => {
@@ -4050,7 +4050,7 @@ export function App() {
       throw new Error("Add your Gemini key in Settings > Connections.");
     }
     const result = await directGeminiGenerate({
-      model: PRIORITY_ANSWER_MODELS[0] || "gemini-2.5-flash",
+      model: PRIORITY_ANSWER_MODELS[0] || "gemini-1.5-flash",
       contents: [{ role: "user", parts: [{ text: formatUserPromptWithCharacterGuard(prompt, settings, prefs) }] }],
       systemInstruction: buildSystemInstruction(settings, prefs, false),
       generationConfig: { temperature: 0.9, maxOutputTokens: 280 },
