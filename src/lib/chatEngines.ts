@@ -347,7 +347,11 @@ export const verifyProviderKey = async (
   providerId: ChatEngineId,
   rawKey: string
 ): Promise<{ ok: boolean; status: KeyStatus; errorText?: string; model?: string }> => {
-  const cleanKey = String(rawKey || '').trim();
+  // Requirement 2: Clean the key including invisible characters
+  const cleanKey = String(rawKey || '')
+    .replace(/[\r\n\t\s\u200B\u200C\u200D\uFEFF]+/g, '')
+    .trim();
+
   if (!cleanKey) {
     await setProviderStatus(providerId, 'NOT SET');
     return { ok: false, status: 'NOT SET', errorText: 'Key দেওয়া হয়নি' };
@@ -359,71 +363,91 @@ export const verifyProviderKey = async (
   }
 
   const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), 10000);
+  const timer = setTimeout(() => controller.abort(), 12000); // Increased timeout to 12s
 
   try {
     if (providerId === 'gemini') {
       const testModel = getSavedWorkingTextModel() || TEXT_MODELS[0] || 'gemini-flash-lite-latest';
-      const url = `/api/gemini/generate`;
-      const res = await fetch(url, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          model: testModel,
-          contents: [{ role: 'user', parts: [{ text: 'hi' }] }],
-          generationConfig: { maxOutputTokens: 5 },
-          apiKey: cleanKey,
-        }),
-        signal: controller.signal,
-      });
+      
+      // Try simple generation first
+      try {
+        const url = `/api/gemini/generate`;
+        const res = await fetch(url, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            model: testModel,
+            contents: [{ role: 'user', parts: [{ text: 'hi' }] }],
+            generationConfig: { maxOutputTokens: 2 },
+            apiKey: cleanKey,
+          }),
+          signal: controller.signal,
+        });
 
-      if (res.ok) {
-        await setProviderStatus('gemini', 'READY');
-        return { ok: true, status: 'READY', model: testModel };
-      }
-
-      if (res.status === 400 || res.status === 401 || res.status === 403) {
-        const errJson = await res.json().catch(() => null);
-        const errStr = JSON.stringify(errJson || {}).toLowerCase();
-        if (
-          res.status === 401 ||
-          res.status === 403 ||
-          errStr.includes('api_key_invalid') ||
-          errStr.includes('api key not valid') ||
-          errStr.includes('invalid api key')
-        ) {
-          await setProviderStatus('gemini', 'INVALID');
-          return { ok: false, status: 'INVALID', errorText: 'ভুল API Key (401)' };
+        if (res.ok) {
+          await setProviderStatus('gemini', 'READY');
+          return { ok: true, status: 'READY', model: testModel };
         }
+
+        const raw = await res.text().catch(() => '');
+        let errJson: any = null;
+        try { errJson = JSON.parse(raw); } catch {}
+        const msg = errJson?.error?.message || errJson?.message || '';
+        const status = res.status;
+
+        // Requirement 3: Handle specific statuses
+        if (status === 401 || status === 403) {
+          await setProviderStatus('gemini', 'INVALID');
+          return { ok: false, status: 'INVALID', errorText: `ভুল API Key (${status}): ${msg.slice(0, 50)}` };
+        }
+        if (status === 429) {
+          await setProviderStatus('gemini', 'READY'); // Key is valid, just rate limited
+          return { ok: true, status: 'READY', errorText: 'সীমা শেষ (429), পরে চেষ্টা করুন' };
+        }
+        if (status >= 400) {
+          const current = getProviderStatus('gemini');
+          return { ok: false, status: current, errorText: `ত্রুটি (${status}): ${msg.slice(0, 50)}` };
+        }
+      } catch (e) {
+        // Fallback to models list if generate fails due to non-auth reasons
       }
 
+      // Try models list as ultimate auth check
       const listRes = await fetch(
         `/api/gemini/models?apiKey=${encodeURIComponent(cleanKey)}`,
         { method: 'GET', signal: controller.signal }
       );
+
       if (listRes.ok) {
         await setProviderStatus('gemini', 'READY');
         return { ok: true, status: 'READY', model: testModel };
       }
-      if (listRes.status === 429) {
+
+      const status = listRes.status;
+      if (status === 401 || status === 403) {
+        await setProviderStatus('gemini', 'INVALID');
+        return { ok: false, status: 'INVALID', errorText: `ভুল API Key (${status})` };
+      }
+      if (status === 429) {
         await setProviderStatus('gemini', 'READY');
-        return { ok: true, status: 'READY', errorText: 'কোটাসীমা শেষ (429)' };
+        return { ok: true, status: 'READY', errorText: 'সীমা শেষ (429)' };
       }
 
-      await setProviderStatus('gemini', 'INVALID');
-      return { ok: false, status: 'INVALID', errorText: `ত্রুটি (${listRes.status || res.status})` };
+      throw new Error(`HTTP ${status}`);
     }
 
-    // OpenAI-compatible providers: test /models endpoint first
+    // OpenAI-compatible providers (Groq, etc.)
     const activeModel = await fetchActiveModelForProvider(provider, cleanKey);
     const headers: Record<string, string> = {
-      Authorization: `Bearer ${cleanKey}`,
+      'Authorization': `Bearer ${cleanKey}`,
+      'Content-Type': 'application/json',
     };
     if (providerId === 'openrouter') {
       headers['HTTP-Referer'] = typeof window !== 'undefined' ? window.location.origin : 'https://aistudio.google.com';
       headers['X-Title'] = 'Rose AI Assistant';
     }
 
+    // Requirement 4: Verify Groq URL and method
     const testUrl = `${provider.baseURL}/models`;
     const res = await fetch(testUrl, {
       method: 'GET',
@@ -438,46 +462,51 @@ export const verifyProviderKey = async (
 
     const raw = await res.text().catch(() => '');
     let errJson: any = null;
-    try {
-      errJson = JSON.parse(raw);
-    } catch {}
+    try { errJson = JSON.parse(raw); } catch {}
+    const msg = errJson?.error?.message || errJson?.message || errJson?.detail || '';
+    const status = res.status;
 
-    const errDetail = errJson?.error?.message || errJson?.detail || errJson?.message || '';
-
-    if (res.status === 401 || res.status === 403) {
+    if (status === 401 || status === 403) {
       await setProviderStatus(providerId, 'INVALID');
-      return { ok: false, status: 'INVALID', errorText: 'ভুল API Key (401)' };
+      return { ok: false, status: 'INVALID', errorText: `ভুল API Key (${status}): ${msg.slice(0, 50)}` };
     }
-
-    if (res.status === 429) {
-      // 429 means key is valid but quota exceeded
+    if (status === 429) {
       await setProviderStatus(providerId, 'READY');
-      return { ok: true, status: 'READY', errorText: 'কোটাসীমা শেষ (429)', model: activeModel };
+      return { ok: true, status: 'READY', errorText: 'সীমা শেষ (429), পরে চেষ্টা করুন' };
     }
-
-    // Try a small chat completion as fallback check
+    
+    // Attempt tiny completion if /models is restricted but key might work
     try {
-      await callOpenAiCompatibleChat({
-        baseURL: provider.baseURL,
-        apiKey: cleanKey,
-        model: activeModel,
-        messages: [{ role: 'user', text: 'hi' }],
-        maxTokens: 2,
+      const chatRes = await fetch(`${provider.baseURL}/chat/completions`, {
+        method: 'POST',
+        headers,
+        body: JSON.stringify({
+          model: activeModel,
+          messages: [{ role: 'user', content: 'hi' }],
+          max_tokens: 1,
+        }),
         signal: controller.signal,
       });
-      await setProviderStatus(providerId, 'READY');
-      return { ok: true, status: 'READY', model: activeModel };
-    } catch (chatErr: any) {
-      const code = chatErr?.status || res.status;
-      const text = code === 401 ? 'ভুল API Key (401)' : code === 429 ? 'কোটাসীমা শেষ (429)' : errDetail || `ত্রুটি (${code})`;
-      await setProviderStatus(providerId, 'INVALID');
-      return { ok: false, status: 'INVALID', errorText: text };
-    }
+      if (chatRes.ok) {
+        await setProviderStatus(providerId, 'READY');
+        return { ok: true, status: 'READY', model: activeModel };
+      }
+      if (chatRes.status === 401 || chatRes.status === 403) {
+        await setProviderStatus(providerId, 'INVALID');
+        return { ok: false, status: 'INVALID', errorText: `ভুল API Key (${chatRes.status})` };
+      }
+    } catch (e) {}
+
+    const current = getProviderStatus(providerId);
+    return { ok: false, status: current, errorText: `ত্রুটি (${status}): ${msg.slice(0, 50)}` };
+
   } catch (netErr: any) {
     const isAbort = netErr?.name === 'AbortError';
-    const text = isAbort ? 'সময় শেষ (Timeout)' : 'সংযোগ ব্যর্থ বা CORS সমস্যা';
-    await setProviderStatus(providerId, 'INVALID');
-    return { ok: false, status: 'INVALID', errorText: text };
+    const text = isAbort ? 'সময় শেষ (Timeout)' : 'যাচাই করা যায়নি, ইন্টারনেট দেখুন';
+    // Requirement 3: 401/403 হলেই কেবল INVALID দেখাও। 
+    // নেটওয়ার্ক এরর হলে স্ট্যাটাস বদলাব না, আগেরটাই রাখব।
+    const current = getProviderStatus(providerId);
+    return { ok: false, status: current, errorText: text };
   } finally {
     clearTimeout(timer);
   }

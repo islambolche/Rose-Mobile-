@@ -289,29 +289,47 @@ export const ConnectionsView = ({
   };
 
   const verifyElevenLabs = async (rawKey: string): Promise<{ ok: boolean; status: KeyStatus; errorText?: string }> => {
-    const cleanKey = rawKey.trim();
+    // Requirement 2: Clean invisible characters
+    const cleanKey = String(rawKey || '').replace(/[\r\n\t\s\u200B\u200C\u200D\uFEFF]+/g, '').trim();
     if (!cleanKey) {
       writeLocalKey('connection_status_elevenlabs', 'NOT SET');
       return { ok: false, status: 'NOT SET', errorText: 'Key দেওয়া হয়নি' };
     }
     const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), 10000);
+    const timer = setTimeout(() => controller.abort(), 12000);
     try {
       const res = await fetch('https://api.elevenlabs.io/v1/voices', {
         method: 'GET',
         headers: { 'xi-api-key': cleanKey },
         signal: controller.signal,
       });
-      if (res.ok || res.status === 429) {
+      if (res.ok) {
         writeLocalKey('connection_status_elevenlabs', 'READY');
         return { ok: true, status: 'READY' };
       }
-      writeLocalKey('connection_status_elevenlabs', 'INVALID');
-      const errText = res.status === 401 ? 'ভুল API Key (401)' : `ত্রুটি (${res.status})`;
-      return { ok: false, status: 'INVALID', errorText: errText };
-    } catch {
-      writeLocalKey('connection_status_elevenlabs', 'INVALID');
-      return { ok: false, status: 'INVALID', errorText: 'সংযোগ ব্যর্থ' };
+      
+      const raw = await res.text().catch(() => '');
+      let errJson: any = null;
+      try { errJson = JSON.parse(raw); } catch {}
+      const msg = errJson?.error?.message || errJson?.message || errJson?.detail || '';
+      const status = res.status;
+
+      if (status === 401 || status === 403) {
+        writeLocalKey('connection_status_elevenlabs', 'INVALID');
+        return { ok: false, status: 'INVALID', errorText: `ভুল API Key (${status}): ${msg.slice(0, 50)}` };
+      }
+      if (status === 429) {
+        writeLocalKey('connection_status_elevenlabs', 'READY');
+        return { ok: true, status: 'READY', errorText: 'সীমা শেষ (429), পরে চেষ্টা করুন' };
+      }
+
+      const current = getProviderStatus('elevenlabs' as any);
+      return { ok: false, status: current, errorText: `ত্রুটি (${status}): ${msg.slice(0, 50)}` };
+    } catch (err: any) {
+      const isAbort = err?.name === 'AbortError';
+      const text = isAbort ? 'সময় শেষ (Timeout)' : 'যাচাই করা যায়নি, ইন্টারনেট দেখুন';
+      const current = getProviderStatus('elevenlabs' as any);
+      return { ok: false, status: current, errorText: text };
     } finally {
       clearTimeout(timer);
     }
@@ -321,7 +339,8 @@ export const ConnectionsView = ({
     const provider = ALL_PROVIDERS.find((p) => p.id === id);
     if (!provider) return;
 
-    const cleanKey = (typedKeys[id] || '').trim();
+    // Requirement 2: Clean invisible characters
+    const cleanKey = String(typedKeys[id] || '').replace(/[\r\n\t\s\u200B\u200C\u200D\uFEFF]+/g, '').trim();
     setTypedKeys((prev) => ({ ...prev, [id]: cleanKey }));
 
     if (!cleanKey) {
@@ -373,8 +392,13 @@ export const ConnectionsView = ({
 
       setStatusMap((prev) => ({ ...prev, [id]: checkResult.status }));
       if (checkResult.ok && checkResult.status === 'READY') {
-        setErrorDetails((prev) => ({ ...prev, [id]: '' }));
-        notifyToast(`${provider.displayName} Key যাচাই সম্পন্ন: READY`);
+        const warning = checkResult.errorText;
+        setErrorDetails((prev) => ({ ...prev, [id]: warning || '' }));
+        if (warning) {
+          notifyToast(`${provider.displayName} Key সেভ হয়েছে কিন্তু: ${warning}`);
+        } else {
+          notifyToast(`${provider.displayName} Key যাচাই সম্পন্ন: READY`);
+        }
       } else {
         const reason = checkResult.errorText || 'যাচাই ব্যর্থ';
         setErrorDetails((prev) => ({ ...prev, [id]: reason }));
@@ -771,9 +795,11 @@ export const ConnectionsView = ({
             <span>SAVE KEY</span>
           </button>
 
-          {/* Brief error line if INVALID */}
-          {isSelectedInvalid && selectedErrorMsg && (
-            <div className="p-3 bg-red-950/70 border border-red-500/40 rounded-2xl text-[11px] text-red-300 font-medium text-center">
+          {/* Brief error line if present */}
+          {selectedErrorMsg && (
+            <div className={`p-3 border rounded-2xl text-[11px] font-medium text-center ${
+              isSelectedInvalid ? 'bg-red-950/70 border-red-500/40 text-red-300' : 'bg-amber-950/70 border-amber-500/40 text-amber-300'
+            }`}>
               {selectedErrorMsg}
             </div>
           )}

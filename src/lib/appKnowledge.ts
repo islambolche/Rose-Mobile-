@@ -1,34 +1,31 @@
 export const APP_NAVIGATION_KNOWLEDGE = `APP NAVIGATION & FEATURE PATHS (ROSE'S KNOWLEDGE):
 When the user asks where or how to access a feature, button, or setting in the app, answer with the exact path:
-- Change assistant name: Settings → Voice & Language → Assistant name
-- Change user's name: Settings → Voice & Language → Your name (or Profile → Your name)
-- Change personality / character: Settings → Voice & Language → Personality
-- Change language: Settings → Voice & Language → Language
-- Change response style (Short / Detailed): Settings → Voice & Language → Response style
-- Change Rose's voice: Settings → Voice & Language → Voice
-- Change voice model: Settings → Voice & Language → Voice model
-- Voice Tuning (Speech Speed, Voice Volume, Pitch): Settings → Voice & Language → Voice Tuning-এর ভিতরে Speech Speed, Voice Volume, Pitch আলাদা ঘরে, প্রতিটার নিজস্ব Save। Speed = কথা বলার গতি, Volume = আওয়াজের জোর, Pitch = কণ্ঠ মোটা বা সরু।
-- Check / test voice connection: Settings → Voice & Language → VOICE CHECK
-- Set Gemini API key / Groq key / ElevenLabs key: Settings → Connections
-- Change Live Voice Model (Gemini 2.5 Live): Settings → Live Voice Model
-- View saved chats / Clear chat history: Settings → Chats & Memory (or Profile → Privacy controls → Chat History)
-- Add or clear memories: Settings → Chats & Memory
-- Change theme / Orb style / Reduce motion: Settings → Look & Feel
-- Phone control & app permissions: Settings → Phone Control (Quick actions / App permissions)
-- User profile & privacy: Profile (Your name, Privacy controls)
-- Account & data deletion: Profile → Privacy controls → Account & Data Delete
-- Developer contact info: Home → DEVELOPER card (or Settings → About & Guide → ডেভেলপার)
+- Home Page: Home (নিচের বাম দিকের বাটন)। এখানে Rose-এর ছবি ও ভয়েস অর্ব (Orb) থাকে।
+- Chat Screen: Home → Chat (নিচের বাটন)। এখানে মেসেজ লিখে কথা বলা যায়।
+- Chat History List: Home → History (নিচের বাটন)। আগের সব জমানো চ্যাট এখানে থাকে।
+- Settings Menu: Home → Settings (নিচের ডান দিকের বাটন)। সব কনফিগারেশন এখানে।
 
-Voice Check: Settings → Voice & Language → Voice Check। এটা ভয়েস সিস্টেমের পরীক্ষা পেজ। Internet = ইন্টারনেট আছে কিনা। Microphone = মাইক চালু ও অনুমতি আছে কিনা। AI Key = Gemini key ঠিক আছে কিনা। Voice Connection = লাইভ ভয়েস প্রস্তুত কিনা। Test Voice = আমি নমুনা বাক্য বলি। Test Microphone = ইউজারের কণ্ঠ মাইকে ধরা পড়ছে কিনা দেখা। Fix Automatically = সমস্যা নিজে ঠিক করার চেষ্টা। ইউজার বললে 'আমি শুনতে পাচ্ছি না', 'তুমি আমার কথা শুনছ না' বা 'ভয়েস কাজ করছে না', তাহলে আমি তাকে Voice Check খুলে লাল চিহ্ন দেখতে ও Fix Automatically চাপতে বলব, প্রতিটা চেকের মানে বুঝিয়ে দেব।
+Settings Menu Details:
+- About & Guide: Settings → ABOUT & GUIDE। অ্যাপের তথ্য, ডেভেলপার প্রোফাইল, গাইড ও যোগাযোগের তথ্য এখানে।
+- Set API keys: Settings → CONNECTIONS। এখানে FREE ও PAID দুটি ট্যাব আছে।
+  - FREE ট্যাব: Gemini (চ্যাট ও ভয়েস), Groq, OpenRouter, Cerebras, Mistral-এর key দেওয়ার ও সেবা বাছার জায়গা।
+  - PAID ট্যাব: ElevenLabs (ভয়েস স্টুডিও)-এর key দেওয়ার জায়গা।
+- Voice & Language: Settings → VOICE & LANGUAGE। ক্যারেক্টার, ভাষা, কণ্ঠ ও টিউনিং বদলানোর মূল পেজ।
+- Edit Assistant Name: Settings → VOICE & LANGUAGE → Assistant name।
+- Edit User Name: Settings → VOICE & LANGUAGE → Your name (বা Profile → Your name)।
+- Personality: Settings → VOICE & LANGUAGE → Personality। এখানে Rose-এর স্বভাব (Normal, Friendly, Professional, Funny, Companion, GF Mode, Emotional, Teacher, Developer, Hungry, Nautanki, Motivator, Storyteller, Calm guide) বদলানো যায়।
+- Language: Settings → VOICE & LANGUAGE → Language। Bengali, English, Hindi, Urdu, Arabic বা Auto বেছে নেওয়া যায়।
+- Response Style: Settings → VOICE & LANGUAGE → Response style। উত্তর Short, Balanced না Detailed হবে তা বাছা যায়।
+- Voice: Settings → VOICE & LANGUAGE → Voice। বিভিন্ন কণ্ঠ (Leda, Kore, Aoede, Puck, Zephyr, Sulafat, Vindemiatrix, Achernar, Callirrhoe, Despina, Laomedeia, Erinome, Autonoe, Gacrux, Pulcherrima) বাছা ও Play করে শোনা।
+- Voice Model (Engine): Settings → VOICE & LANGUAGE → Voice model। Fast (Groq) বা Quality (Gemini) নির্বাচন।
+- Voice Tuning (Speed, Volume, Pitch): Settings → VOICE & LANGUAGE → VOICE TUNING। কথা বলার গতি, সাউন্ড ও কণ্ঠের তীক্ষ্ণতা কমানো-বাড়ানো।
+- Voice System Check: Settings → VOICE & LANGUAGE → VOICE CHECK। ইন্টারনেট, মাইক ও কী কাজ করছে কিনা পরীক্ষা করা।
+- Always Listening: Settings → VOICE & LANGUAGE → Always listening (Toggle বাটন)। চালু থাকলে Rose নাম শুনলেই উত্তর দেবে।
+- Chats & Memory: Settings → CHATS & MEMORY। চ্যাট দেখা, মেমোরি যোগ/মুছে ফেলা ও চ্যাট এক্সপোর্ট করা।
+- Look & Feel (Theme/Orb): Settings → LOOK & FEEL। থিম (Dark/Light/AMOLED) ও অর্বের স্টাইল (Classic, Glass, Aura, Cyber, Minimal, Fluid, Solar, Portal, Pulse) বদলানো।
+- Phone Control: Settings → PHONE CONTROL। ভয়েস দিয়ে কল, এসএমএস বা অ্যাপ খোলার পারমিশন ও কুইক অ্যাকশন।
+- User Profile: Settings → [ইউজারের নাম]। প্রোফাইল পেজ যেখানে নাম ও প্রাইভেসি কন্ট্রোল আছে।
+- Privacy Controls: Profile → Privacy controls। লোকেশন পারমিশন, হিস্ট্রি মোছা ও অ্যাকাউন্ট ডিলিট করার অপশন।
+- Sign Out: Settings → Sign Out। অ্যাকাউন্ট থেকে লগ আউট করা।
 
-ক্যারেক্টার বদলাতে: Settings → Voice & Language → Personality। সেখানে Normal, Friendly, Professional, Funny, Companion, GF Mode, Emotional Love Mode, Teacher, Developer, Hungry, Nautanki, Motivator, Storyteller, Calm guide, Custom, Emotional এই সব বাটন আছে। যেকোনো একটা চাপলে আমার কথা বলার ধরন, ভাষার সুর ও ভয়েসের স্টাইল সাথে সাথে সেই ক্যারেক্টারের মতো হয়ে যায়। নির্বাচিত ক্যারেক্টারে টিক থাকে। ইউজার ক্যারেক্টার বদলাতে চাইলে বা কোথায় বদলাব জিজ্ঞেস করলে আমি এই পথ বলে দেব।
-
-কণ্ঠ বদলাতে: Settings → Voice & Language → Voice। কণ্ঠের নামের বাটন চাপলে নির্বাচন হয়, PLAY চাপলে নমুনা শোনা যায়। গতি, ভলিউম ও পিচ আলাদাভাবে বদলাতে Voice Tuning। ক্যারেক্টার বদলাতে Personality।
-
-উত্তরের দৈর্ঘ্য বদলাতে: Settings → Voice & Language → Response Style। Short = সংক্ষিপ্ত, Balanced = মাঝারি, Detailed = বিস্তারিত। বাটন চাপলেই আমার পরের উত্তর সেই ধরনে হবে।
-
-লাইভ ভয়েস মডেল বদলাতে: Settings → Live Voice Model। মডেলের নামের বাটন চাপলেই নির্বাচন হয়, নির্বাচিতে টিক থাকে। Auto Fallback চালু থাকলে সংযোগ ব্যর্থ হলে পরের মডেল নিজে চেষ্টা হয়। নিজের মডেলের নাম দিতে Custom Model।
-
-উত্তর দেওয়ার সেবা বাছতে ও API key দিতে: Settings → Connections। FREE বা PAID বাটন চাপলে সেবার আলাদা পেজ খোলে। একটা বাছলে Connections পেজে ফিরে নিচে শুধু সেটার key-র ঘর আসে, আর শুধু সেই সেবা দিয়েই উত্তর আসে। ভয়েস সবসময় Gemini key দিয়ে চলে।
-
-App-এর তথ্য, নিয়ম, মূল্য, প্রাইভেসি ও যোগাযোগ দেখতে: Settings → About & Guide। ইউজার এসব জিজ্ঞেস করলে আমি এই পথ বলব ও সংক্ষেপে উত্তর দেব।`;
+ইউজার বললে 'আমি শুনতে পাচ্ছি না', 'তুমি আমার কথা শুনছ না' বা 'ভয়েস কাজ করছে না', তাকে Voice Check (Settings → VOICE & LANGUAGE → VOICE CHECK) খুলে লাল চিহ্ন দেখতে ও Fix Automatically চাপতে বলবে। কোনো ক্যারেক্টার বা কণ্ঠ বদলাতে বললে উপরের পথগুলো পরিষ্কারভাবে বলে দেবে।`;

@@ -126,7 +126,7 @@ export const MobileSettingsView: React.FC<MobileSettingsViewProps> = ({
   ];
 
   const [viewMode, setViewMode] = useState<"list" | "detail">("list");
-  const [activeSection, setActiveSection] = useState<MobileTab>("keys");
+  const [activeSection, setActiveSection] = useState<MobileTab>("connections");
   const [showFreeKey, setShowFreeKey] = useState(false);
   const [showPaidKey, setShowPaidKey] = useState(false);
   const [testingProfile, setTestingProfile] = useState<GeminiProfileType | null>(null);
@@ -301,85 +301,10 @@ export const MobileSettingsView: React.FC<MobileSettingsViewProps> = ({
           </div>
         ) : (
           <div className="p-5 space-y-5">
-            {activeSection === "keys" && (
-              <div className="space-y-5">
-                <div className="bg-[#0A1628]/90 border border-emerald-500/30 rounded-[2rem] p-5 space-y-4">
-                  <span className="text-[10px] font-black uppercase tracking-widest text-emerald-400">Profile Selection</span>
-                  <div className="grid grid-cols-2 gap-3">
-                    {["free", "paid"].map((type) => (
-                      <button
-                        key={type}
-                        onClick={() => { updateDatabase((prev) => ({ ...prev, activeGeminiProfile: type as any })); notify(`Switched to ${type} profile.`); }}
-                        className={`py-3.5 rounded-2xl text-[10px] font-black uppercase tracking-widest border transition-all ${db.activeGeminiProfile === type ? "bg-emerald-500/20 border-emerald-400 text-emerald-300 shadow-[0_0_15px_rgba(16,185,129,0.3)]" : "bg-black/40 border-white/5 text-slate-500"}`}
-                      >
-                        {type} Profile
-                      </button>
-                    ))}
-                  </div>
-                </div>
-                
-                <div className="bg-[#0A1628]/90 border border-emerald-500/20 rounded-[2rem] p-5 space-y-4">
-                  <div className="flex items-center justify-between">
-                    <h3 className="text-xs font-black uppercase tracking-wider text-white">Gemini Free Key</h3>
-                    <span className={`px-2 py-0.5 rounded-full text-[9px] font-black border ${db.geminiProfiles.free.status === 'connected' ? 'bg-emerald-500/10 border-emerald-500/40 text-emerald-400' : 'bg-slate-500/10 border-slate-500/20 text-slate-500'}`}>{db.geminiProfiles.free.status}</span>
-                  </div>
-                  <div className="relative">
-                    <input 
-                      type={showFreeKey ? "text" : "password"} 
-                      value={db.geminiProfiles.free.key || db.geminiProfiles.free.maskedKey || ""} 
-                      onChange={(e) => {
-                        const val = e.target.value;
-                        updateDatabase(prev => ({ 
-                          ...prev, 
-                          geminiProfiles: { 
-                            ...prev.geminiProfiles, 
-                            free: { ...prev.geminiProfiles.free, key: val }
-                          }
-                        }));
-                      }} 
-                      placeholder="Enter Free API Key" 
-                      className="w-full bg-black/40 border border-white/5 rounded-2xl px-4 py-3 text-xs text-white outline-none focus:border-emerald-500/50 font-mono pr-12" 
-                    />
-                    <button onClick={() => setShowFreeKey(!showFreeKey)} className="absolute right-4 top-1/2 -translate-y-1/2 text-slate-500">
-                      {showFreeKey ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
-                    </button>
-                  </div>
-                  <div className="flex gap-2">
-                    <button onClick={() => handleSaveKey('free')} className="w-full py-3 bg-emerald-600 rounded-2xl text-[10px] font-black uppercase text-white shadow-lg">Save Free Key</button>
-                  </div>
-                </div>
-
-                <div className="bg-[#0A1628]/90 border border-teal-500/20 rounded-[2rem] p-5 space-y-4">
-                  <div className="flex items-center justify-between">
-                    <h3 className="text-xs font-black uppercase tracking-wider text-white">Gemini Paid Key</h3>
-                    <span className={`px-2 py-0.5 rounded-full text-[9px] font-black border ${db.geminiProfiles.paid.status === 'connected' ? 'bg-teal-500/10 border-teal-500/40 text-teal-400' : 'bg-slate-500/10 border-slate-500/20 text-slate-500'}`}>{db.geminiProfiles.paid.status}</span>
-                  </div>
-                  <div className="relative">
-                    <input 
-                      type={showPaidKey ? "text" : "password"} 
-                      value={db.geminiProfiles.paid.key || db.geminiProfiles.paid.maskedKey || ""} 
-                      onChange={(e) => {
-                        const val = e.target.value;
-                        updateDatabase(prev => ({ 
-                          ...prev, 
-                          geminiProfiles: { 
-                            ...prev.geminiProfiles, 
-                            paid: { ...prev.geminiProfiles.paid, key: val }
-                          }
-                        }));
-                      }} 
-                      placeholder="Enter Paid API Key" 
-                      className="w-full bg-black/40 border border-white/5 rounded-2xl px-4 py-3 text-xs text-white outline-none focus:border-teal-500/50 font-mono pr-12" 
-                    />
-                    <button onClick={() => setShowPaidKey(!showPaidKey)} className="absolute right-4 top-1/2 -translate-y-1/2 text-slate-500">
-                      {showPaidKey ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
-                    </button>
-                  </div>
-                  <div className="flex gap-2">
-                    <button onClick={() => handleSaveKey('paid')} className="w-full py-3 bg-teal-600 rounded-2xl text-[10px] font-black uppercase text-white shadow-lg">Save Paid Key</button>
-                  </div>
-                </div>
-              </div>
+            {activeSection === "connections" && (
+              <ConnectionsView
+                onBack={() => setViewMode("list")}
+              />
             )}
               {activeSection === "live-model" && (
                 <LiveModelSettings setCurrentView={() => setViewMode("list")} />

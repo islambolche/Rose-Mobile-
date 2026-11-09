@@ -3918,8 +3918,9 @@ export function App() {
   const verifyKey = async (type: "gemini" | "groq" | "openai", keys: string) => {
     const keyList = keys
       .split(",")
-      .map((k) => k.trim())
+      .map((k) => k.replace(/[\r\n\t\s\u200B\u200C\u200D\uFEFF]+/g, "").trim())
       .filter((k) => k);
+    
     if (keyList.length === 0) {
       setApiKeys((prev) => {
         const updated = { ...prev, [type]: "" };
@@ -3935,51 +3936,69 @@ export function App() {
     let verifiedCount = 0;
     let invalidFound = false;
     let networkError = false;
+    let lastErrorMsg = "";
 
     try {
       for (const key of keyList) {
-        const cleanKey = key.replace(/["'\r\n\t\s]+/g, "").trim();
+        const cleanKey = key.replace(/[\r\n\t\s\u200B\u200C\u200D\uFEFF]+/g, "").trim();
         if (!cleanKey) continue;
         const controller = new AbortController();
-        const timeoutId = setTimeout(() => controller.abort(), 10000); // 10s timeout
+        const timeoutId = setTimeout(() => controller.abort(), 12000);
 
         try {
-          const testModel = getSavedWorkingTextModel() || TEXT_MODELS[0];
-          const url = `/api/gemini/generate`;
-          const body = {
-            model: testModel,
-            contents: [{ role: "user", parts: [{ text: "hi" }] }],
-            generationConfig: { maxOutputTokens: 5 },
-            apiKey: cleanKey || undefined,
-          };
+          let url = "";
+          let method = "GET";
+          let body: any = null;
+          let headers: any = { "Content-Type": "application/json" };
+
+          if (type === "gemini") {
+            url = `/api/gemini/generate`;
+            method = "POST";
+            body = JSON.stringify({
+              model: getSavedWorkingTextModel() || TEXT_MODELS[0],
+              contents: [{ role: "user", parts: [{ text: "hi" }] }],
+              generationConfig: { maxOutputTokens: 2 },
+              apiKey: cleanKey,
+            });
+          } else if (type === "groq") {
+            url = `https://api.groq.com/openai/v1/models`;
+            headers["Authorization"] = `Bearer ${cleanKey}`;
+          } else if (type === "openai") {
+            url = `https://api.openai.com/v1/models`;
+            headers["Authorization"] = `Bearer ${cleanKey}`;
+          }
+
           const res = await fetch(url, {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify(body),
+            method,
+            headers,
+            body,
             signal: controller.signal
           });
           clearTimeout(timeoutId);
+          
           const rawText = await res.text().catch(() => "");
           let parsed: any = null;
-          try {
-            parsed = rawText ? JSON.parse(rawText) : null;
-          } catch {
-            parsed = null;
-          }
-          if (!parsed || typeof parsed !== "object" || (!parsed.candidates && !parsed.error)) {
-            networkError = true;
-            setToast(`Cannot reach Gemini. Check your internet and your Gemini key. (HTTP ${res.status})`);
-          } else if (res.ok && parsed.candidates) {
+          try { parsed = JSON.parse(rawText); } catch {}
+          const apiMsg = parsed?.error?.message || parsed?.message || "";
+          const status = res.status;
+
+          if (res.ok) {
             verifiedCount++;
-          } else if (res.status === 400 || res.status === 401 || res.status === 403) {
+          } else if (status === 401 || status === 403) {
             invalidFound = true;
+            lastErrorMsg = `ভুল API Key (${status}): ${apiMsg.slice(0, 40)}`;
+          } else if (status === 429) {
+            lastErrorMsg = "সীমা শেষ (429), পরে চেষ্টা করুন";
+            // We count 429 as "potential ok" for storage but failed for verification
           } else {
             networkError = true;
+            lastErrorMsg = `ত্রুটি (${status}): ${apiMsg.slice(0, 40)}`;
           }
-        } catch (e) {
+        } catch (e: any) {
           clearTimeout(timeoutId);
           networkError = true;
-          setToast("Cannot reach Gemini. Check your internet and your Gemini key. (HTTP 0)");
+          const isAbort = e?.name === "AbortError";
+          lastErrorMsg = isAbort ? "সময় শেষ (Timeout)" : "যাচাই করা যায়নি, ইন্টারনেট দেখুন";
         }
       }
 
@@ -3992,6 +4011,7 @@ export function App() {
           localStorage.setItem("iyabd_api_keys", JSON.stringify(updated));
           return updated;
         });
+        setToast(`${type.toUpperCase()} Key যাচাই সম্পন্ন`);
       } else {
         setApiKeys((prev) => {
           const updated = { ...prev, [type]: "" };
@@ -4003,6 +4023,7 @@ export function App() {
         } else if (networkError) {
           resultStatus = "failed";
         }
+        setToast(`${type.toUpperCase()} যাচাই ব্যর্থ: ${lastErrorMsg}`);
       }
 
       setApiStatus((prev) => ({
@@ -4011,6 +4032,7 @@ export function App() {
           status: resultStatus,
           verifiedCount,
           totalCount: keyList.length,
+          errorText: lastErrorMsg,
         },
       }));
     } finally {
