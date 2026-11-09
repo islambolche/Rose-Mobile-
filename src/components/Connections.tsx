@@ -760,14 +760,27 @@ export const ConnectionsView = ({
           </button>
 
           {/* 3. GET KEY Button */}
-          <button
-            type="button"
-            onClick={() => handleGetKey(selectedItem.link)}
-            className="w-full p-4 bg-[#0F172A]/85 hover:bg-[#0F172A] rounded-2xl border border-purple-500/30 shadow-xl flex items-center justify-center gap-2.5 text-xs font-black uppercase tracking-widest text-white active:scale-[0.98] transition-all"
-          >
-            <ExternalLink className="w-4 h-4 text-purple-400" />
-            <span>GET KEY</span>
-          </button>
+          <div className="space-y-2">
+            <button
+              type="button"
+              onClick={() => handleGetKey(selectedItem.link)}
+              className="w-full p-4 bg-[#0F172A]/85 hover:bg-[#0F172A] rounded-2xl border border-purple-500/30 shadow-xl flex items-center justify-center gap-2.5 text-xs font-black uppercase tracking-widest text-white active:scale-[0.98] transition-all"
+            >
+              <ExternalLink className="w-4 h-4 text-purple-400" />
+              <span>GET KEY</span>
+            </button>
+            <div className="p-3 bg-purple-950/30 border border-purple-500/20 rounded-2xl text-[10px] text-purple-200/80 space-y-2">
+              <p>যদি লগইন করার পর মূল পেজে না যান:</p>
+              <button
+                type="button"
+                onClick={() => window.open(selectedItem.link, '_blank')}
+                className="w-full p-2 bg-purple-600/50 hover:bg-purple-600 rounded-lg text-white font-bold"
+              >
+                OPEN API KEYS DIRECTLY
+              </button>
+              <p className="text-[9px] opacity-70">লগইন করার পর এই বাটনটি চাপ দিন এবং API Key কপি করে নিচে পেস্ট করুন।</p>
+            </div>
+          </div>
 
           {/* 4. SAVE KEY Button */}
           <button

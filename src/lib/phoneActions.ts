@@ -275,26 +275,22 @@ export function getPhoneActionHistory(): PhoneActionLogItem[] {
 export function openInExternalBrowser(url: string) {
   if (!url) return;
   
-  // 1. Check if we can use Termux bridge for termux-open
-  callTermuxApi('open', { url }).then(success => {
-    if (success) return;
-
-    // 2. Try Android Intent scheme to force external browser
-    // This is the most reliable way to escape a WebView on Android
-    const isAndroid = /Android/i.test(navigator.userAgent);
-    if (isAndroid && !url.startsWith('intent:')) {
-      const intentUrl = `intent:${url}#Intent;action=android.intent.action.VIEW;category=android.intent.category.BROWSABLE;package=com.android.chrome;end`;
-      try {
-        window.location.href = intentUrl;
-        return;
-      } catch (e) {
-        // Fallback if Chrome is not installed or intent fails
-      }
+  // 1. Try Android Intent scheme to force external browser (Chrome)
+  // This is the most reliable way to escape a WebView on Android
+  const isAndroid = /Android/i.test(navigator.userAgent);
+  if (isAndroid) {
+    const cleanUrl = url.replace(/^https?:\/\//, '');
+    const intentUrl = `intent://${cleanUrl}#Intent;scheme=https;action=android.intent.action.VIEW;category=android.intent.category.BROWSABLE;package=com.android.chrome;end`;
+    try {
+      window.location.href = intentUrl;
+      return;
+    } catch (e) {
+      // Fallback if Chrome intent fails
     }
+  }
 
-    // 3. Standard web fallback
-    safelyOpenUrl(url);
-  });
+  // 2. Standard web fallback
+  safelyOpenUrl(url);
 }
 
 /**
