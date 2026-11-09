@@ -26,7 +26,7 @@ export const FREE_CHAT_PROVIDERS: ChatProviderConfig[] = [
     badgeLabel: 'চ্যাট ও ভয়েস',
     tier: 'free',
     baseURL: '/api/gemini',
-    defaultModel: 'gemini-1.5-flash-8b',
+    defaultModel: '',
     storageKey: 'gemini_api_key',
     statusStorageKey: 'connection_status_gemini',
     getKeyUrl: 'https://aistudio.google.com/apikey',
@@ -38,7 +38,7 @@ export const FREE_CHAT_PROVIDERS: ChatProviderConfig[] = [
     badgeLabel: 'চ্যাট',
     tier: 'free',
     baseURL: 'https://api.groq.com/openai/v1',
-    defaultModel: 'llama-3.3-70b-versatile',
+    defaultModel: '',
     storageKey: 'groq_api_keys',
     statusStorageKey: 'connection_status_groq',
     getKeyUrl: 'https://console.groq.com/keys',
@@ -50,7 +50,7 @@ export const FREE_CHAT_PROVIDERS: ChatProviderConfig[] = [
     badgeLabel: 'চ্যাট',
     tier: 'free',
     baseURL: 'https://openrouter.ai/api/v1',
-    defaultModel: 'google/gemma-2-9b-it:free',
+    defaultModel: '',
     storageKey: 'openrouter_api_key',
     statusStorageKey: 'connection_status_openrouter',
     getKeyUrl: 'https://openrouter.ai/keys',
@@ -62,7 +62,7 @@ export const FREE_CHAT_PROVIDERS: ChatProviderConfig[] = [
     badgeLabel: 'চ্যাট',
     tier: 'free',
     baseURL: 'https://api.cerebras.ai/v1',
-    defaultModel: 'llama3.1-8b',
+    defaultModel: '',
     storageKey: 'cerebras_api_key',
     statusStorageKey: 'connection_status_cerebras',
     getKeyUrl: 'https://cloud.cerebras.ai',
@@ -74,7 +74,7 @@ export const FREE_CHAT_PROVIDERS: ChatProviderConfig[] = [
     badgeLabel: 'চ্যাট',
     tier: 'free',
     baseURL: 'https://api.mistral.ai/v1',
-    defaultModel: 'mistral-small-latest',
+    defaultModel: '',
     storageKey: 'mistral_api_key',
     statusStorageKey: 'connection_status_mistral',
     getKeyUrl: 'https://console.mistral.ai',
@@ -182,15 +182,10 @@ export const getCurrentlyActiveChatModel = (engineId?: ChatEngineId): string => 
   return engine === 'groq' ? 'Auto (Groq)' : 'Auto (Gemini)';
 };
 
-/**
- * Dynamic Groq Chat Model Discovery (Cached for 1 hour)
- * Filters out non-chat models (whisper, tts, guard, playai, distil-whisper)
- * Prioritizes 70b, versatile, instant, llama, gpt-oss, qwen
- */
 export const getDynamicGroqChatModels = async (
   apiKey: string,
   forceFresh = false
-): Promise<{ models: string[]; error?: string; errorReason?: string }> => {
+): Promise<{ models: string[]; error?: string; errorReason?: string; source?: string }> => {
   const cleanKey = apiKey.trim();
   if (!cleanKey) return { models: [], error: 'Groq key দেওয়া নেই' };
 
@@ -201,7 +196,7 @@ export const getDynamicGroqChatModels = async (
       if (cachedStr) {
         const cached = JSON.parse(cachedStr);
         if (Array.isArray(cached?.models) && cached.models.length > 0 && Date.now() - cached.timestamp < 3600000) {
-          return { models: cached.models };
+          return { models: cached.models, source: 'cache' };
         }
       }
     } catch (e) {}
@@ -226,39 +221,29 @@ export const getDynamicGroqChatModels = async (
         const j = JSON.parse(raw);
         if (j?.error?.message) errMsg = j.error.message;
       } catch (e) {}
-      if (res.status === 401 || res.status === 403) {
-        return { models: [], error: `ভুল Groq key (${res.status})`, errorReason: `ভুল Key (${res.status})` };
-      }
-      if (res.status === 429) {
-        return { models: [], error: `Groq সীমা শেষ (429)`, errorReason: `সীমা শেষ (429)` };
-      }
-      return { models: [], error: `Groq মডেল তালিকা আনা যায়নি (${res.status}): ${errMsg}`, errorReason: errMsg };
+      return { models: [], error: `Groq ত্রুটি (${res.status}): ${errMsg}`, errorReason: errMsg };
     }
 
     const data = await res.json();
     const list: any[] = Array.isArray(data?.data) ? data.data : Array.isArray(data) ? data : [];
 
-    const excluded = ['whisper', 'tts', 'guard', 'playai', 'distil-whisper'];
+    // Filter: exclude whisper, tts, guard, playai
+    const excluded = ['whisper', 'tts', 'guard', 'playai'];
     const filtered = list.filter((m: any) => {
       const id = String(m?.id || '').toLowerCase();
       if (!id) return false;
-      if (excluded.some((ex) => id.includes(ex))) return false;
-      return true;
+      return !excluded.some((ex) => id.includes(ex));
     });
 
     const scoreGroq = (id: string): number => {
       const lower = id.toLowerCase();
       let score = 0;
-      if (lower.includes('70b')) score += 100;
-      if (lower.includes('versatile')) score += 80;
-      if (lower.includes('gpt-oss')) score += 70;
-      if (lower.includes('qwen')) score += 60;
-      if (lower.includes('llama')) score += 50;
-      if (lower.includes('instant')) score += 40;
-      if (lower.includes('8b')) score += 30;
-      if (lower.includes('3.3')) score += 25;
-      if (lower.includes('3.2')) score += 20;
-      if (lower.includes('3.1')) score += 15;
+      if (lower.includes('70b')) score += 1000;
+      if (lower.includes('versatile')) score += 500;
+      if (lower.includes('llama')) score += 100;
+      if (lower.includes('qwen')) score += 80;
+      if (lower.includes('mixtral')) score += 70;
+      if (lower.includes('gemma')) score += 60;
       return score;
     };
 
@@ -269,27 +254,28 @@ export const getDynamicGroqChatModels = async (
       try {
         localStorage.setItem(cacheKey, JSON.stringify({ models: modelIds, timestamp: Date.now() }));
       } catch (e) {}
-      return { models: modelIds };
+      return { models: modelIds, source: 'network' };
     }
 
-    return { models: ['llama-3.3-70b-versatile', 'llama-3.1-8b-instant'], error: 'কোনো উপযুক্ত চ্যাট মডেল পাওয়া যায়নি', errorReason: 'উপযুক্ত মডেল পাওয়া যায়নি' };
+    return { models: [], error: 'কোনো উপযুক্ত Groq চ্যাট মডেল পাওয়া যায়নি', errorReason: 'No chat models found' };
   } catch (err: any) {
     const isAbort = err?.name === 'AbortError';
-    const text = isAbort ? 'সময় শেষ (Timeout)' : 'নেটওয়ার্ক সমস্যা/যাচাই করা যায়নি';
-    return { models: ['llama-3.3-70b-versatile', 'llama-3.1-8b-instant'], error: text, errorReason: text };
+    const text = isAbort ? 'সময় শেষ (Timeout)' : `নেটওয়ার্ক সমস্যা: ${err.message}`;
+    return { models: [], error: text, errorReason: text };
   }
 };
 
 /**
  * Dynamic Gemini Chat Model Discovery (Cached for 1 hour)
- * Filters for supportedGenerationMethods: "generateContent" & name has "flash"
- * Excludes live, audio, tts, image, embedding
- * Strips "models/" and sorts newest version first
+ * Handles pagination with pageSize=200 and loops through nextPageToken
+ * Filters for supportedGenerationMethods: "generateContent"
+ * Excludes live, audio, tts, image, embedding, aqa, imagen, veo
+ * Sorts Flash models by version (3.x > 2.x) then by model name
  */
 export const getDynamicGeminiChatModels = async (
   apiKey: string,
   forceFresh = false
-): Promise<{ models: string[]; error?: string; errorReason?: string }> => {
+): Promise<{ models: string[]; error?: string; errorReason?: string; source?: string }> => {
   const cleanKey = apiKey.trim();
   if (!cleanKey) return { models: [], error: 'Gemini key দেওয়া নেই' };
 
@@ -300,78 +286,102 @@ export const getDynamicGeminiChatModels = async (
       if (cachedStr) {
         const cached = JSON.parse(cachedStr);
         if (Array.isArray(cached?.models) && cached.models.length > 0 && Date.now() - cached.timestamp < 3600000) {
-          return { models: cached.models };
+          return { models: cached.models, source: 'cache' };
         }
       }
     } catch (e) {}
   }
 
+  let allModels: any[] = [];
+  let nextToken = '';
+  let attemptCount = 0;
+
   try {
-    const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), 8000);
-    const url = `https://generativelanguage.googleapis.com/v1beta/models?key=${encodeURIComponent(cleanKey)}`;
-    const res = await fetch(url, { signal: controller.signal });
-    clearTimeout(timer);
+    do {
+      attemptCount++;
+      const controller = new AbortController();
+      const timer = setTimeout(() => controller.abort(), 8000);
+      let url = `https://generativelanguage.googleapis.com/v1beta/models?key=${encodeURIComponent(cleanKey)}&pageSize=200`;
+      if (nextToken) url += `&pageToken=${encodeURIComponent(nextToken)}`;
 
-    if (!res.ok) {
-      const raw = await res.text().catch(() => '');
-      let errMsg = `HTTP ${res.status}`;
-      try {
-        const j = JSON.parse(raw);
-        if (j?.error?.message) errMsg = j.error.message;
-      } catch (e) {}
-      if (res.status === 400 || res.status === 401 || res.status === 403) {
-        return { models: [], error: `ভুল Gemini key (${res.status})`, errorReason: `ভুল Key (${res.status})` };
+      const res = await fetch(url, { signal: controller.signal });
+      clearTimeout(timer);
+
+      if (!res.ok) {
+        const raw = await res.text().catch(() => '');
+        let errMsg = `HTTP ${res.status}`;
+        try {
+          const j = JSON.parse(raw);
+          if (j?.error?.message) errMsg = j.error.message;
+        } catch (e) {}
+        return { models: [], error: `Gemini ত্রুটি (${res.status}): ${errMsg}`, errorReason: errMsg };
       }
-      if (res.status === 429) {
-        return { models: [], error: `Gemini সীমা শেষ (429)`, errorReason: `সীমা শেষ (429)` };
+
+      const data = await res.json();
+      if (Array.isArray(data.models)) {
+        allModels = [...allModels, ...data.models];
       }
-      return { models: [], error: `Gemini মডেল তালিকা আনা যায়নি (${res.status}): ${errMsg}`, errorReason: errMsg };
-    }
+      nextToken = data.nextPageToken || '';
+      // Safety break to prevent infinite loops
+      if (attemptCount > 10) break;
+    } while (nextToken);
 
-    const data = await res.json();
-    const list: any[] = Array.isArray(data?.models) ? data.models : [];
-
-    const excluded = ['live', 'audio', 'tts', 'image', 'embedding'];
-    const filtered = list.filter((m: any) => {
+    const excluded = ['live', 'audio', 'tts', 'image', 'embedding', 'aqa', 'imagen', 'veo'];
+    const filtered = allModels.filter((m: any) => {
       const name = String(m?.name || '').replace(/^models\//, '').toLowerCase();
       const methods: string[] = Array.isArray(m?.supportedGenerationMethods) ? m.supportedGenerationMethods : [];
       if (!methods.includes('generateContent')) return false;
-      if (!name.includes('flash')) return false;
       if (excluded.some((ex) => name.includes(ex))) return false;
       return true;
     });
 
+    const parseVersion = (name: string): { major: number; minor: number } => {
+      const match = name.toLowerCase().match(/gemini-(\d+)(?:\.(\d+))?/);
+      if (match) {
+        return {
+          major: parseInt(match[1], 10),
+          minor: parseInt(match[2] || '0', 10),
+        };
+      }
+      return { major: 0, minor: 0 };
+    };
+
     const scoreGemini = (name: string): number => {
       const lower = name.toLowerCase();
       let score = 0;
-      const vMatch = lower.match(/gemini-(\d+)(?:\.(\d+))?/);
-      if (vMatch) {
-        const major = parseInt(vMatch[1] || '0', 10);
-        const minor = parseInt(vMatch[2] || '0', 10);
-        score += major * 100 + minor * 10;
-      }
-      if (lower.includes('exp')) score -= 5;
-      if (lower.includes('preview')) score -= 2;
-      if (lower.includes('8b')) score -= 10;
+      const { major, minor } = parseVersion(lower);
+      score += major * 1000 + minor * 100;
+
+      if (lower.includes('flash')) score += 500;
+      if (lower.includes('pro')) score += 400;
+      if (lower.includes('12b')) score += 50;
+      if (lower.includes('8b')) score += 30;
+      if (lower.includes('exp')) score -= 20;
+      if (lower.includes('preview')) score -= 10;
       return score;
     };
 
-    filtered.sort((a, b) => scoreGemini(b.name) - scoreGemini(a.name));
+    filtered.sort((a, b) => {
+      const scoreA = scoreGemini(a.name);
+      const scoreB = scoreGemini(b.name);
+      if (scoreA !== scoreB) return scoreB - scoreA;
+      return String(b.name).localeCompare(String(a.name));
+    });
+
     const modelNames = filtered.map((m) => String(m.name).replace(/^models\//, '').trim()).filter(Boolean);
 
     if (modelNames.length > 0) {
       try {
         localStorage.setItem(cacheKey, JSON.stringify({ models: modelNames, timestamp: Date.now() }));
       } catch (e) {}
-      return { models: modelNames };
+      return { models: modelNames, source: 'network' };
     }
 
-    return { models: ['gemini-1.5-flash'], error: 'কোনো উপযুক্ত flash মডেল পাওয়া যায়নি', errorReason: 'উপযুক্ত মডেল পাওয়া যায়নি' };
+    return { models: [], error: 'কোনো উপযুক্ত Gemini চ্যাট মডেল পাওয়া যায়নি', errorReason: 'No chat models found' };
   } catch (err: any) {
     const isAbort = err?.name === 'AbortError';
-    const text = isAbort ? 'সময় শেষ (Timeout)' : 'নেটওয়ার্ক সমস্যা/যাচাই করা যায়নি';
-    return { models: ['gemini-1.5-flash'], error: text, errorReason: text };
+    const text = isAbort ? 'সময় শেষ (Timeout)' : `নেটওয়ার্ক সমস্যা: ${err.message}`;
+    return { models: [], error: text, errorReason: text };
   }
 };
 
@@ -835,20 +845,27 @@ export const generateTextWithSelectedEngine = async (params: {
 
   let lastGroqError = '';
   let lastGeminiError = '';
+  let groqSummary = '';
+  let geminiSummary = '';
 
   // 1. TRY GROQ IF GROQ KEY IS AVAILABLE
   if (groqKey) {
     let candidateGroqModels: string[] = [];
+    let discoveryInfo = '';
     if (overrideModel && (currentEngine === 'groq' || !geminiKey)) {
       candidateGroqModels = [overrideModel];
+      discoveryInfo = 'ইউজার ওভাররাইড ব্যবহার হচ্ছে';
     } else {
       const discovery = await getDynamicGroqChatModels(groqKey);
       if (discovery.models.length > 0) {
         candidateGroqModels = discovery.models.slice(0, 3);
+        discoveryInfo = `তালিকা আনা সফল (${discovery.source === 'cache' ? 'ক্যাশ' : 'নেটওয়ার্ক'}), ${discovery.models.length}টি মডেল পাওয়া গেছে`;
       } else {
-        lastGroqError = discovery.error || 'মডেল তালিকা পাওয়া যায়নি';
+        lastGroqError = discovery.error || 'মডেল তালিকা পাওয়া যায়নি';
+        discoveryInfo = `তালিকা আনা ব্যর্থ: ${lastGroqError}`;
       }
     }
+    groqSummary = discoveryInfo;
 
     for (const modelCandidate of candidateGroqModels) {
       try {
@@ -868,25 +885,17 @@ export const generateTextWithSelectedEngine = async (params: {
         }
       } catch (err: any) {
         const errMsg = String(err?.message || '');
-        const is404 =
-          err?.status === 404 ||
-          errMsg.includes('404') ||
-          errMsg.toLowerCase().includes('does not exist') ||
-          errMsg.toLowerCase().includes('model_not_found');
+        const status = err?.status || 'Error';
+        const is404 = status === 404 || errMsg.toLowerCase().includes('not found') || errMsg.toLowerCase().includes('does not exist');
 
         if (is404) {
           console.warn(`[Groq] Model ${modelCandidate} not found (404), trying next candidate...`);
-          lastGroqError = `${errMsg} (মডেল: ${modelCandidate})`;
-          continue; // Try next model in list
+          lastGroqError = `HTTP ${status}: ${errMsg} (মডেল: ${modelCandidate})`;
+          continue;
         }
 
-        // Check if 400 length error
-        const isLengthError =
-          err?.status === 400 ||
-          errMsg.toLowerCase().includes('length') ||
-          errMsg.toLowerCase().includes('reduce');
-
-        if (isLengthError) {
+        // Length error handling
+        if (status === 400 && (errMsg.toLowerCase().includes('length') || errMsg.toLowerCase().includes('reduce'))) {
           try {
             const retryReply = await callOpenAiCompatibleChat({
               baseURL: 'https://api.groq.com/openai/v1',
@@ -902,13 +911,13 @@ export const generateTextWithSelectedEngine = async (params: {
               return { text: retryReply, usedEngine: 'groq', modelUsed: modelCandidate };
             }
           } catch (retryErr: any) {
-            lastGroqError = `${retryErr?.message || 'দৈর্ঘ্য ত্রুটি'} (মডেল: ${modelCandidate})`;
+            lastGroqError = `HTTP ${retryErr.status || '400'}: ${retryErr.message} (মডেল: ${modelCandidate})`;
             break;
           }
         }
 
-        lastGroqError = `${errMsg} (মডেল: ${modelCandidate})`;
-        break; // Stop Groq on fatal non-404 error
+        lastGroqError = `HTTP ${status}: ${errMsg} (মডেল: ${modelCandidate})`;
+        break;
       }
     }
   }
@@ -916,16 +925,21 @@ export const generateTextWithSelectedEngine = async (params: {
   // 2. FALLBACK TO GEMINI IF GROQ FAILED OR NO GROQ KEY
   if (geminiKey) {
     let candidateGeminiModels: string[] = [];
+    let discoveryInfo = '';
     if (overrideModel && (currentEngine === 'gemini' || !groqKey)) {
       candidateGeminiModels = [overrideModel];
+      discoveryInfo = 'ইউজার ওভাররাইড ব্যবহার হচ্ছে';
     } else {
       const discovery = await getDynamicGeminiChatModels(geminiKey);
       if (discovery.models.length > 0) {
         candidateGeminiModels = discovery.models.slice(0, 3);
+        discoveryInfo = `তালিকা আনা সফল (${discovery.source === 'cache' ? 'ক্যাশ' : 'নেটওয়ার্ক'}), ${discovery.models.length}টি মডেল পাওয়া গেছে`;
       } else {
-        lastGeminiError = discovery.error || 'মডেল তালিকা পাওয়া যায়নি';
+        lastGeminiError = discovery.error || 'মডেল তালিকা পাওয়া যায়নি';
+        discoveryInfo = `তালিকা আনা ব্যর্থ: ${lastGeminiError}`;
       }
     }
+    geminiSummary = discoveryInfo;
 
     for (const modelCandidate of candidateGeminiModels) {
       try {
@@ -943,18 +957,16 @@ export const generateTextWithSelectedEngine = async (params: {
         }
       } catch (err: any) {
         const errMsg = String(err?.message || '');
-        const is404 =
-          err?.status === 404 ||
-          errMsg.includes('404') ||
-          errMsg.toLowerCase().includes('not found');
+        const status = err?.status || 'Error';
+        const is404 = status === 404 || errMsg.toLowerCase().includes('not found');
 
         if (is404) {
           console.warn(`[Gemini] Model ${modelCandidate} not found (404), trying next candidate...`);
-          lastGeminiError = `${errMsg} (মডেল: ${modelCandidate})`;
-          continue; // Try next model in list
+          lastGeminiError = `HTTP ${status}: ${errMsg} (মডেল: ${modelCandidate})`;
+          continue;
         }
 
-        lastGeminiError = `${errMsg} (মডেল: ${modelCandidate})`;
+        lastGeminiError = `HTTP ${status}: ${errMsg} (মডেল: ${modelCandidate})`;
         break;
       }
     }
@@ -962,11 +974,11 @@ export const generateTextWithSelectedEngine = async (params: {
 
   // Combine errors clearly without duplicating labels
   if (groqKey && geminiKey) {
-    throw new Error(`Groq ত্রুটি: ${lastGroqError || 'ব্যর্থ'} | Gemini ত্রুটি: ${lastGeminiError || 'ব্যর্থ'}`);
+    throw new Error(`Groq: ${groqSummary}. শেষ এরর: ${lastGroqError || 'ব্যর্থ'} | Gemini: ${geminiSummary}. শেষ এরর: ${lastGeminiError || 'ব্যর্থ'}`);
   } else if (groqKey) {
-    throw new Error(`Groq ত্রুটি: ${lastGroqError || 'ব্যর্থ'}`);
+    throw new Error(`Groq: ${groqSummary}. শেষ এরর: ${lastGroqError || 'ব্যর্থ'}`);
   } else if (geminiKey) {
-    throw new Error(`Gemini ত্রুটি: ${lastGeminiError || 'ব্যর্থ'}`);
+    throw new Error(`Gemini: ${geminiSummary}. শেষ এরর: ${lastGeminiError || 'ব্যর্থ'}`);
   }
 
   throw new Error('Connections-এ key দিন');

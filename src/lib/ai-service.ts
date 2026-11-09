@@ -1,12 +1,7 @@
 import { prepareHistory, extractLastUserText } from './ai-utils';
 import { getGeminiKey } from './geminiKey';
 
-const TEXT_MODELS = [
-  'gemini-1.5-flash',
-  'gemini-1.5-flash-8b',
-  'gemini-2.0-flash-exp',
-  'gemini-1.5-pro',
-];
+const TEXT_MODELS: string[] = [];
 export { TEXT_MODELS };
 
 const WORKING_MODEL_STORAGE_KEY = 'working_gemini_text_model';

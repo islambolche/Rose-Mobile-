@@ -276,24 +276,33 @@ export const LiveModelSettings = ({
   const [chatOverrideInput, setChatOverrideInput] = useState<string>(() => getChatModelOverride());
   const [currentActiveChatModel, setCurrentActiveChatModel] = useState<string>(() => getCurrentlyActiveChatModel());
   const [isDetecting, setIsDetecting] = useState<boolean>(false);
+  const [availableModels, setAvailableModels] = useState<string[]>([]);
+  const [showModelsList, setShowModelsList] = useState<boolean>(false);
 
   const handleAutoDetectChatModel = async () => {
     setIsDetecting(true);
+    setAvailableModels([]);
     try {
       const engine = getSelectedChatEngine();
       const apiKey = getEffectiveChatEngineKey(engine);
       let detected = "";
+      let foundModels: string[] = [];
+      
       if (engine === "groq") {
         const res = await getDynamicGroqChatModels(apiKey, true);
-        if (res.models && res.models.length > 0) {
-          detected = res.models[0];
+        foundModels = res.models || [];
+        if (foundModels.length > 0) {
+          detected = foundModels[0];
+          setAvailableModels(foundModels);
         } else if (res.errorReason) {
           notifyToast(`Groq মডেল শনাক্ত ব্যর্থ: ${res.errorReason}`);
         }
       } else if (engine === "gemini") {
         const res = await getDynamicGeminiChatModels(apiKey, true);
-        if (res.models && res.models.length > 0) {
-          detected = res.models[0];
+        foundModels = res.models || [];
+        if (foundModels.length > 0) {
+          detected = foundModels[0];
+          setAvailableModels(foundModels);
         } else if (res.errorReason) {
           notifyToast(`Gemini মডেল শনাক্ত ব্যর্থ: ${res.errorReason}`);
         }
@@ -305,7 +314,7 @@ export const LiveModelSettings = ({
         setChatOverrideInput(detected);
         setChatModelOverride(detected);
         setCurrentActiveChatModel(detected);
-        notifyToast(`তাজা মডেল সনাক্ত হয়েছে: ${detected}`);
+        notifyToast(`তাজা মডেল সনাক্ত হয়েছে: ${detected} (${foundModels.length}টি পাওয়া গেছে)`);
       } else {
         const fallback = getCurrentlyActiveChatModel(engine);
         setCurrentActiveChatModel(fallback);
@@ -318,6 +327,40 @@ export const LiveModelSettings = ({
     }
   };
 
+  const handleShowAvailableModels = async () => {
+    if (showModelsList) {
+      setShowModelsList(false);
+      return;
+    }
+    
+    if (availableModels.length === 0) {
+      setIsDetecting(true);
+      try {
+        const engine = getSelectedChatEngine();
+        const apiKey = getEffectiveChatEngineKey(engine);
+        let foundModels: string[] = [];
+        if (engine === "groq") {
+          const res = await getDynamicGroqChatModels(apiKey, false);
+          foundModels = res.models || [];
+        } else if (engine === "gemini") {
+          const res = await getDynamicGeminiChatModels(apiKey, false);
+          foundModels = res.models || [];
+        }
+        setAvailableModels(foundModels);
+        if (foundModels.length === 0) {
+          notifyToast("কোনো মডেল পাওয়া যায়নি। Key পরীক্ষা করুন।");
+          return;
+        }
+      } catch (e) {
+        notifyToast("মডেল তালিকা আনতে সমস্যা হয়েছে");
+        return;
+      } finally {
+        setIsDetecting(false);
+      }
+    }
+    setShowModelsList(true);
+  };
+
   const handleSaveChatOverride = () => {
     const trimmed = chatOverrideInput.trim();
     setChatModelOverride(trimmed);
@@ -328,6 +371,7 @@ export const LiveModelSettings = ({
     } else {
       notifyToast("চ্যাট মডেল অটো বাছাইয়ে ফিরিয়ে আনা হয়েছে");
     }
+    setShowModelsList(false);
   };
 
   const handleClearChatOverride = () => {
@@ -336,6 +380,7 @@ export const LiveModelSettings = ({
     const active = getCurrentlyActiveChatModel();
     setCurrentActiveChatModel(active);
     notifyToast("ওভাররাইড মোছা হয়েছে (এখন অটো বাছাই চলবে)");
+    setShowModelsList(false);
   };
 
   if (showCustomPage) {
@@ -535,7 +580,7 @@ export const LiveModelSettings = ({
                 onClick={handleAutoDetectChatModel}
                 disabled={isDetecting}
                 title="তাজা মডেল নাম অটো খুঁজুন"
-                className="px-3 py-2.5 bg-purple-600/20 hover:bg-purple-600/30 border border-purple-400/30 rounded-xl text-purple-200 text-xs font-bold flex items-center gap-1.5 active:scale-95 transition-all shrink-0 disabled:opacity-50"
+                className="px-3 py-2.5 bg-purple-600/20 hover:bg-purple-600/30 border border-purple-400/30 rounded-xl text-purple-200 text-[10px] font-bold flex items-center gap-1.5 active:scale-95 transition-all shrink-0 disabled:opacity-50"
               >
                 <RotateCw className={`w-3.5 h-3.5 ${isDetecting ? "animate-spin" : ""}`} />
                 <span>Auto detect</span>
@@ -543,6 +588,15 @@ export const LiveModelSettings = ({
             </div>
 
             <div className="flex items-center gap-2">
+              <button
+                type="button"
+                onClick={handleShowAvailableModels}
+                disabled={isDetecting}
+                className="px-3 py-2.5 bg-indigo-600/20 hover:bg-indigo-600/30 border border-indigo-400/30 rounded-xl text-indigo-200 text-[10px] font-bold flex items-center gap-1.5 active:scale-95 transition-all shrink-0 disabled:opacity-50"
+              >
+                <Cpu className="w-3.5 h-3.5" />
+                <span>{showModelsList ? "Hide models" : "Show models"}</span>
+              </button>
               <button
                 type="button"
                 onClick={handleSaveChatOverride}
@@ -560,6 +614,30 @@ export const LiveModelSettings = ({
                 </button>
               )}
             </div>
+
+            {showModelsList && availableModels.length > 0 && (
+              <motion.div 
+                initial={{ height: 0, opacity: 0 }}
+                animate={{ height: "auto", opacity: 1 }}
+                className="bg-[#020617] border border-purple-500/20 rounded-xl overflow-hidden"
+              >
+                <div className="max-h-40 overflow-y-auto p-1.5 space-y-1 custom-scrollbar">
+                  {availableModels.map((m) => (
+                    <button
+                      key={m}
+                      onClick={() => setChatOverrideInput(m)}
+                      className={`w-full text-left px-3 py-2 rounded-lg font-mono text-[10px] transition-colors ${
+                        chatOverrideInput === m 
+                          ? "bg-purple-600/30 text-white border border-purple-500/40" 
+                          : "text-slate-400 hover:bg-purple-500/10 hover:text-slate-200"
+                      }`}
+                    >
+                      {m}
+                    </button>
+                  ))}
+                </div>
+              </motion.div>
+            )}
 
             <div className="pt-1 px-1">
               <p className="text-[11px] text-purple-300/90 leading-tight">
