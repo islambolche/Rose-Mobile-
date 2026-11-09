@@ -4319,6 +4319,66 @@ export function App() {
     apiKeysRef.current = apiKeys;
   }, [apiKeys]);
 
+  const [voiceDiag, setVoiceDiag] = useState<{
+    mic: "granted" | "denied" | "unsupported";
+    recognition: "supported" | "unsupported";
+    mode: "browser" | "recorder";
+  } | null>(null);
+
+  const voiceModeRef = useRef<"browser" | "recorder">("browser");
+  const browserFallbackForcedRef = useRef<boolean>(false);
+  const browserEverStartedRef = useRef<boolean>(false);
+  const browserEverGotResultRef = useRef<boolean>(false);
+  const browserStartCheckTimerRef = useRef<any>(null);
+  const browserNothingTimerRef = useRef<any>(null);
+  const recorderVadIntervalRef = useRef<any>(null);
+  const recorderChunksRef = useRef<BlobPart[]>([]);
+  const recorderSpeechStartRef = useRef<number>(0);
+  const recorderLastVoiceRef = useRef<number>(0);
+  const recorderDiscardRef = useRef<boolean>(false);
+  const isTranscribingAudioRef = useRef<boolean>(false);
+  const startRecorderModeListeningRef = useRef<() => Promise<void>>(async () => {});
+
+  const clearBrowserCheckTimers = useCallback(() => {
+    if (browserStartCheckTimerRef.current) {
+      try {
+        clearTimeout(browserStartCheckTimerRef.current);
+      } catch (e) {}
+      browserStartCheckTimerRef.current = null;
+    }
+    if (browserNothingTimerRef.current) {
+      try {
+        clearTimeout(browserNothingTimerRef.current);
+      } catch (e) {}
+      browserNothingTimerRef.current = null;
+    }
+  }, []);
+
+  const stopActiveMediaRecorder = useCallback((discard: boolean = true) => {
+    recorderDiscardRef.current = discard;
+    if (mediaRecorderRef.current) {
+      try {
+        if (mediaRecorderRef.current.state !== "inactive") {
+          mediaRecorderRef.current.stop();
+        }
+      } catch (e) {}
+      mediaRecorderRef.current = null;
+    }
+    if (discard) {
+      recorderChunksRef.current = [];
+    }
+  }, []);
+
+  const stopRecorderVadLoop = useCallback((discardRecording: boolean = true) => {
+    if (recorderVadIntervalRef.current) {
+      try {
+        clearInterval(recorderVadIntervalRef.current);
+      } catch (e) {}
+      recorderVadIntervalRef.current = null;
+    }
+    stopActiveMediaRecorder(discardRecording);
+  }, [stopActiveMediaRecorder]);
+
   const cancelAllSpeechAndAudio = useCallback((abortRec: boolean = true): number => {
     speechTokenRef.current += 1;
     const newToken = speechTokenRef.current;
@@ -4379,16 +4439,20 @@ export function App() {
     allActiveAudioElementsRef.current.clear();
     ttsFallbackAudioRef.current = null;
 
-    // 5. Abort speech recognition if requested
-    if (abortRec && recognitionRef.current) {
-      try {
-        recognitionRef.current.abort();
-      } catch (e) {}
-      recognitionRunningRef.current = false;
+    // 5. Abort speech recognition and active MediaRecorder clip if requested
+    if (abortRec) {
+      clearBrowserCheckTimers();
+      if (recognitionRef.current) {
+        try {
+          recognitionRef.current.abort();
+        } catch (e) {}
+        recognitionRunningRef.current = false;
+      }
+      stopActiveMediaRecorder(true);
     }
 
     return newToken;
-  }, []);
+  }, [clearBrowserCheckTimers, stopActiveMediaRecorder]);
 
   // Cancel all speech/audio/timers whenever ANY setting changes (voice, voice model, speed, personality, language)
   const didMountSettingsWatchRef = useRef(false);
@@ -4424,6 +4488,39 @@ export function App() {
     handledResultIndices: new Set<number>(),
   });
 
+  const switchToRecorderMode = useCallback((reason: string) => {
+    console.log("[VoiceInput] Switching to RECORDER mode. Reason:", reason);
+    browserFallbackForcedRef.current = true;
+    voiceModeRef.current = "recorder";
+    clearBrowserCheckTimers();
+    if (recognitionStartTimerRef.current) {
+      try {
+        clearTimeout(recognitionStartTimerRef.current);
+      } catch (e) {}
+      recognitionStartTimerRef.current = null;
+    }
+    if (recognitionRef.current) {
+      try {
+        recognitionRef.current.abort();
+      } catch (e) {}
+      recognitionRunningRef.current = false;
+    }
+    const hasSpeechRec =
+      typeof window !== "undefined" &&
+      Boolean((window as any).SpeechRecognition || (window as any).webkitSpeechRecognition);
+    const hasGetUserMedia =
+      typeof navigator !== "undefined" &&
+      Boolean(navigator.mediaDevices && typeof navigator.mediaDevices.getUserMedia === "function");
+    setVoiceDiag((prev) => ({
+      mic: prev?.mic || (hasGetUserMedia ? "granted" : "unsupported"),
+      recognition: hasSpeechRec ? "supported" : "unsupported",
+      mode: "recorder",
+    }));
+    if (isAssistantEnabledRef.current) {
+      startRecorderModeListeningRef.current();
+    }
+  }, [clearBrowserCheckTimers]);
+
   const getOrCreateRecognitionSingleton = useCallback((): any | null => {
     if (typeof window === "undefined") return null;
     if (recognitionRef.current) return recognitionRef.current;
@@ -4438,6 +4535,13 @@ export function App() {
 
     recognition.onstart = () => {
       recognitionRunningRef.current = true;
+      browserEverStartedRef.current = true;
+      if (browserStartCheckTimerRef.current) {
+        try {
+          clearTimeout(browserStartCheckTimerRef.current);
+        } catch (e) {}
+        browserStartCheckTimerRef.current = null;
+      }
       recognitionSessionStateRef.current.gotAnyResult = false;
       recognitionSessionStateRef.current.turnHandled = false;
       recognitionSessionStateRef.current.handledResultIndices.clear();
@@ -4452,6 +4556,13 @@ export function App() {
     };
 
     recognition.onresult = (event: any) => {
+      browserEverGotResultRef.current = true;
+      if (browserNothingTimerRef.current) {
+        try {
+          clearTimeout(browserNothingTimerRef.current);
+        } catch (e) {}
+        browserNothingTimerRef.current = null;
+      }
       // Ignore recognition results while busy (thinking or speaking)
       if (
         isBusyRef.current ||
@@ -4526,76 +4637,75 @@ export function App() {
     };
 
     recognition.onerror = (event: any) => {
-      console.warn("[SpeechRecognition] Error event:", event.error);
+      const errCode = String(event?.error || "");
+      console.warn("[SpeechRecognition] Error event:", errCode);
       setInterimSpeechText("");
       const sess = recognitionSessionStateRef.current;
-      if (event.error === "no-speech" || event.error === "aborted") {
+      if (errCode === "aborted") {
         return;
-      } else if (event.error === "not-allowed" || event.error === "service-not-allowed") {
-        sess.gotAnyResult = true;
-        micNotAllowedRef.current = true;
-        recognitionRunningRef.current = false;
-        if (recognitionStartTimerRef.current) {
-          try {
-            clearTimeout(recognitionStartTimerRef.current);
-          } catch (e) {}
-          recognitionStartTimerRef.current = null;
+      }
+      if (errCode === "no-speech") {
+        if (!browserEverGotResultRef.current && isAssistantEnabledRef.current) {
+          switchToRecorderMode("no-speech");
         }
-        const clearPermMsg =
-          "Open the app link in a new Chrome tab and allow the microphone";
-        setLiveErrorMsg(clearPermMsg);
-        setToast(clearPermMsg);
-        pushSharedMessageRef.current({
-          role: "system",
-          text: clearPermMsg,
-        });
-        setIsAssistantEnabled(false);
-        isAssistantEnabledRef.current = false;
-        setStatus("idle");
-        setSpeakingState("idle");
-        transitionToState("IDLE");
-      } else if (event.error === "network") {
+        return;
+      }
+      if (
+        errCode === "not-allowed" ||
+        errCode === "service-not-allowed" ||
+        errCode === "audio-capture" ||
+        errCode === "network"
+      ) {
         sess.gotAnyResult = true;
-        setLiveErrorMsg("Network error in speech recognition");
-        pushSharedMessageRef.current({
-          role: "system",
-          text: "Mic error: Network error in speech recognition",
-        });
-      } else if (event.error) {
+        recognitionRunningRef.current = false;
+        switchToRecorderMode(errCode);
+        return;
+      }
+      if (errCode) {
         sess.gotAnyResult = true;
-        pushSharedMessageRef.current({
-          role: "system",
-          text: "Mic error: " + String(event.error),
-        });
+        recognitionRunningRef.current = false;
+        switchToRecorderMode(errCode);
       }
     };
 
     recognition.onend = () => {
       recognitionRunningRef.current = false;
       setInterimSpeechText("");
-      if (micNotAllowedRef.current) {
+      if (micNotAllowedRef.current || voiceModeRef.current === "recorder") {
         return;
       }
       const sess = recognitionSessionStateRef.current;
       if (
-        !sess.gotAnyResult &&
-        !sess.turnHandled &&
-        !isBusyRef.current &&
         isAssistantEnabledRef.current &&
+        !isBusyRef.current &&
         !isSpeakingTTSRef.current &&
         !isProcessingGeminiRef.current
       ) {
-        pushSharedMessageRef.current({
-          role: "system",
-          text: "Mic heard nothing",
-        });
-        sess.turnHandled = true;
+        if (!sess.gotAnyResult && !browserEverGotResultRef.current) {
+          // If SpeechRecognition ended with nothing on first check, let the 6s fallback timer or immediate fallback handle it
+          return;
+        }
+        // Automatically restart browser recognition while orb is ON
+        setTimeout(() => {
+          if (
+            isAssistantEnabledRef.current &&
+            voiceModeRef.current === "browser" &&
+            !isBusyRef.current &&
+            !isSpeakingTTSRef.current &&
+            !isProcessingGeminiRef.current
+          ) {
+            try {
+              recognition.start();
+              recognitionRunningRef.current = true;
+            } catch (e) {}
+          }
+        }, 250);
       }
     };
 
     recognitionRef.current = recognition;
     return recognition;
-  }, [transitionToState]);
+  }, [transitionToState, switchToRecorderMode]);
 
   // Helper: abort inside try/catch, wait 300ms, then start inside try/catch (ignoring "already started")
   const startSingletonRecognitionSafely = useCallback(() => {
@@ -4611,8 +4721,16 @@ export function App() {
       return;
     }
 
+    if (browserFallbackForcedRef.current || voiceModeRef.current === "recorder") {
+      startRecorderModeListeningRef.current();
+      return;
+    }
+
     const singletonRecognition = getOrCreateRecognitionSingleton();
-    if (!singletonRecognition) return;
+    if (!singletonRecognition) {
+      switchToRecorderMode("unsupported");
+      return;
+    }
 
     if (recognitionStartTimerRef.current) {
       try {
@@ -4621,15 +4739,47 @@ export function App() {
       recognitionStartTimerRef.current = null;
     }
 
+    clearBrowserCheckTimers();
+
     try {
       singletonRecognition.abort();
     } catch (e) {}
     recognitionRunningRef.current = false;
+    browserEverStartedRef.current = false;
+
+    // 1) 3-second check: if SpeechRecognition does not start without error within 3s, switch to Recorder Mode
+    browserStartCheckTimerRef.current = setTimeout(() => {
+      browserStartCheckTimerRef.current = null;
+      if (
+        isAssistantEnabledRef.current &&
+        voiceModeRef.current === "browser" &&
+        !browserEverStartedRef.current
+      ) {
+        switchToRecorderMode("start-timeout-3s");
+      }
+    }, 3000);
+
+    // 2) 6-second check: if SpeechRecognition fires nothing for 6 seconds, switch to Recorder Mode
+    if (!browserEverGotResultRef.current) {
+      browserNothingTimerRef.current = setTimeout(() => {
+        browserNothingTimerRef.current = null;
+        if (
+          isAssistantEnabledRef.current &&
+          voiceModeRef.current === "browser" &&
+          !browserEverGotResultRef.current &&
+          !isBusyRef.current &&
+          !isSpeakingTTSRef.current &&
+          !isProcessingGeminiRef.current
+        ) {
+          switchToRecorderMode("nothing-for-6s");
+        }
+      }, 6000);
+    }
 
     recognitionStartTimerRef.current = setTimeout(() => {
       recognitionStartTimerRef.current = null;
       if (!settingsRef.current.masterAccess || !isAssistantEnabledRef.current) return;
-      if (micNotAllowedRef.current) return;
+      if (micNotAllowedRef.current || voiceModeRef.current === "recorder") return;
       if (
         isBusyRef.current ||
         isProcessingGeminiRef.current ||
@@ -4652,21 +4802,16 @@ export function App() {
       } catch (e: any) {
         const msg = String(e?.message || e || "").toLowerCase();
         if (msg.includes("already started") || e?.name === "InvalidStateError") {
-          // Ignore the "already started" error silently
+          browserEverStartedRef.current = true;
           recognitionRunningRef.current = true;
           transitionToState("LISTENING");
           return;
         }
-        console.error("[SpeechRecognition] Failed to start:", e);
-        const errMsg = "Speech recognition start failed: " + (e?.message || e);
-        setLiveErrorMsg(errMsg);
-        pushSharedMessageRef.current({
-          role: "system",
-          text: errMsg,
-        });
+        console.warn("[SpeechRecognition] Failed to start, switching to Recorder Mode:", e);
+        switchToRecorderMode("start-exception");
       }
-    }, 300);
-  }, [getOrCreateRecognitionSingleton, transitionToState]);
+    }, 250);
+  }, [getOrCreateRecognitionSingleton, transitionToState, clearBrowserCheckTimers, switchToRecorderMode]);
 
   const resumeRecognitionAfterSpeech = useCallback(() => {
     isBusyRef.current = false;
@@ -4678,7 +4823,11 @@ export function App() {
     transitionToState("IDLE");
 
     if (isAssistantEnabledRef.current && !micNotAllowedRef.current) {
-      startSingletonRecognitionSafely();
+      if (voiceModeRef.current === "recorder" || browserFallbackForcedRef.current) {
+        startRecorderModeListeningRef.current();
+      } else {
+        startSingletonRecognitionSafely();
+      }
     }
   }, [transitionToState, startSingletonRecognitionSafely]);
 
@@ -4720,7 +4869,7 @@ export function App() {
 
   // Play prefetched Gemini TTS audio using HTMLAudioElement with preservesPitch = true and clamped playbackRate (0.9 - 1.25)
   const playPrefetchedGeminiAudio = useCallback(
-    async (base64Audio: string, token: number): Promise<boolean> => {
+    async (base64Audio: string, token: number, startTimeoutMs: number = 4000): Promise<boolean> => {
       if (!base64Audio || speechTokenRef.current !== token) return false;
       const pcm = base64ToPcm(base64Audio);
       const wavUrl = pcmInt16ToWavBlobUrl(pcm, 24000);
@@ -4750,9 +4899,15 @@ export function App() {
       return await new Promise<boolean>((resolve) => {
         let settled = false;
         let didStartPlaying = false;
+        let startWatchTimer: any = null;
         const finish = (ok: boolean) => {
           if (settled) return;
           settled = true;
+          if (startWatchTimer) {
+            try {
+              clearTimeout(startWatchTimer);
+            } catch (e) {}
+          }
           allActiveAudioElementsRef.current.delete(audio);
           if (ttsFallbackAudioRef.current === audio) {
             ttsFallbackAudioRef.current = null;
@@ -4763,8 +4918,23 @@ export function App() {
           resolve(ok);
         };
 
+        startWatchTimer = setTimeout(() => {
+          if (!didStartPlaying) {
+            try {
+              audio.pause();
+            } catch (e) {}
+            finish(false);
+          }
+        }, Math.max(1200, startTimeoutMs));
+
         audio.onplaying = () => {
           didStartPlaying = true;
+          if (startWatchTimer) {
+            try {
+              clearTimeout(startWatchTimer);
+            } catch (e) {}
+            startWatchTimer = null;
+          }
         };
 
         audio.ontimeupdate = () => {
@@ -4774,6 +4944,12 @@ export function App() {
             return;
           }
           didStartPlaying = true;
+          if (startWatchTimer) {
+            try {
+              clearTimeout(startWatchTimer);
+            } catch (e) {}
+            startWatchTimer = null;
+          }
           lastWordBoundaryTimeRef.current = performance.now();
           mouthWordPulseRef.current = 0.75 + Math.random() * 0.2;
         };
@@ -4898,7 +5074,7 @@ export function App() {
     [waitForVoices, selectPreferredVoice, transitionToState]
   );
 
-  // Guaranteed Voice: speak with Gemini TTS first; if Gemini TTS fails, speak the same text with phone's speechSynthesis (female Bengali voice preferred) and only show toast if BOTH fail
+  // Guaranteed Voice: speak with Gemini TTS first; if Gemini TTS fails or is silent within 6 seconds, speak the same text with phone's speechSynthesis (female Bengali voice preferred)
   const speakSingleSentenceWithToken = useCallback(
     async (
       item: {
@@ -4918,22 +5094,38 @@ export function App() {
 
       isBusyRef.current = true;
       isSpeakingTTSRef.current = true;
+      // Never listen while speaking: abort both SpeechRecognition and any active MediaRecorder clip
       if (recognitionRef.current) {
         try {
           recognitionRef.current.abort();
         } catch (e) {}
         recognitionRunningRef.current = false;
       }
+      stopActiveMediaRecorder(true);
       transitionToState("SPEAKING");
 
-      const result = ttsPromise
-        ? await ttsPromise
-        : await requestGeminiTTSAudio(clean, token);
+      const ttsStartMs = Date.now();
+      const TTS_OVERALL_BUDGET_MS = 6000;
+      let ttsTimeoutId: any = null;
+      const result = await Promise.race([
+        ttsPromise ? ttsPromise : requestGeminiTTSAudio(clean, token),
+        new Promise<{ audio?: string; error?: string }>((resolve) => {
+          ttsTimeoutId = setTimeout(() => {
+            resolve({ error: "Gemini TTS timed out after 6s" });
+          }, TTS_OVERALL_BUDGET_MS);
+        }),
+      ]);
+      if (ttsTimeoutId) {
+        try {
+          clearTimeout(ttsTimeoutId);
+        } catch (e) {}
+      }
       if (speechTokenRef.current !== token) return;
 
       let playedGeminiOk = false;
       if (result.audio) {
-        playedGeminiOk = await playPrefetchedGeminiAudio(result.audio, token);
+        const remainingStartMs = Math.max(1500, TTS_OVERALL_BUDGET_MS - (Date.now() - ttsStartMs));
+        playedGeminiOk = await playPrefetchedGeminiAudio(result.audio, token, remainingStartMs);
       }
 
       if (!playedGeminiOk && speechTokenRef.current === token) {
@@ -4948,6 +5140,7 @@ export function App() {
       requestGeminiTTSAudio,
       playPrefetchedGeminiAudio,
       speakSentenceWithPhoneVoice,
+      stopActiveMediaRecorder,
     ]
   );
 
@@ -5397,10 +5590,14 @@ export function App() {
     isBusyRef.current = false;
     isSpeakingTTSRef.current = false;
     isProcessingGeminiRef.current = false;
+    isTranscribingAudioRef.current = false;
     isConnectingRef.current = false;
     isSessionActiveRef.current = false;
     recognitionRunningRef.current = false;
     setInterimSpeechText("");
+
+    clearBrowserCheckTimers();
+    stopRecorderVadLoop(true);
 
     if (recognitionStartTimerRef.current) {
       try {
@@ -5430,11 +5627,12 @@ export function App() {
     setStatus("idle");
     setSpeakingState("idle");
     transitionToState("IDLE", "session stopped");
-  }, [transitionToState, cancelAllSpeechAndAudio]);
+  }, [transitionToState, cancelAllSpeechAndAudio, clearBrowserCheckTimers, stopRecorderVadLoop]);
 
   const ensureAudioContext = useCallback(() => {
     try {
       const AudioCtx = window.AudioContext || (window as any).webkitAudioContext;
+      if (!AudioCtx) return;
       if (!inputAudioCtxRef.current || inputAudioCtxRef.current.state === "closed") {
         inputAudioCtxRef.current = new AudioCtx({ sampleRate: 16000 });
       }
@@ -5447,15 +5645,491 @@ export function App() {
       if (outputAudioCtxRef.current.state === "suspended") {
         outputAudioCtxRef.current.resume().catch((e) => console.warn("[Audio] Resume output error:", e));
       }
+      // Play a 1-frame silent buffer to unlock audio output on Android WebView / mobile browsers
+      const unlockCtx = outputAudioCtxRef.current || inputAudioCtxRef.current;
+      if (unlockCtx) {
+        try {
+          const silentBuffer = unlockCtx.createBuffer(1, 1, 22050);
+          const silentSource = unlockCtx.createBufferSource();
+          silentSource.buffer = silentBuffer;
+          silentSource.connect(unlockCtx.destination);
+          silentSource.start(0);
+        } catch (e) {}
+      }
     } catch (e) {
       console.error("[Audio] Failed initializing AudioContexts:", e);
     }
   }, []);
 
+  const blobToBase64 = useCallback((blob: Blob): Promise<string> => {
+    return new Promise((resolve, reject) => {
+      const reader = new FileReader();
+      reader.onloadend = () => {
+        const res = String(reader.result || "");
+        const commaIdx = res.indexOf(",");
+        resolve(commaIdx >= 0 ? res.slice(commaIdx + 1) : res);
+      };
+      reader.onerror = (err) => reject(err);
+      reader.readAsDataURL(blob);
+    });
+  }, []);
+
+  const startRecorderModeListening = useCallback(async () => {
+    if (!settingsRef.current.masterAccess || !isAssistantEnabledRef.current) return;
+    if (micNotAllowedRef.current) return;
+
+    voiceModeRef.current = "recorder";
+    const hasSpeechRec =
+      typeof window !== "undefined" &&
+      Boolean((window as any).SpeechRecognition || (window as any).webkitSpeechRecognition);
+    const hasGetUserMedia =
+      typeof navigator !== "undefined" &&
+      Boolean(navigator.mediaDevices && typeof navigator.mediaDevices.getUserMedia === "function");
+
+    if (!hasGetUserMedia) {
+      setVoiceDiag({
+        mic: "unsupported",
+        recognition: hasSpeechRec ? "supported" : "unsupported",
+        mode: "recorder",
+      });
+      const unsupMsg = "মাইক অসমর্থিত: এই ব্রাউজারে getUserMedia সাপোর্ট নেই";
+      setLiveErrorMsg(unsupMsg);
+      setToast(unsupMsg);
+      pushSharedMessageRef.current({
+        role: "system",
+        text: unsupMsg,
+      });
+      isAssistantEnabledRef.current = false;
+      setIsAssistantEnabled(false);
+      setStatus("idle");
+      setSpeakingState("idle");
+      transitionToState("IDLE");
+      return;
+    }
+
+    // 2a) Get the mic with getUserMedia({audio: {echoCancellation: true, noiseSuppression: true}}) once and keep the stream while the orb is ON
+    let stream = activeStreamRef.current;
+    const hasLiveTrack =
+      stream &&
+      stream.getAudioTracks().some((t) => t.readyState === "live" && t.enabled);
+
+    if (!hasLiveTrack) {
+      try {
+        stream = await navigator.mediaDevices.getUserMedia({
+          audio: {
+            echoCancellation: true,
+            noiseSuppression: true,
+          },
+        });
+        if (!isAssistantEnabledRef.current) {
+          stream.getTracks().forEach((t) => t.stop());
+          return;
+        }
+        activeStreamRef.current = stream;
+        setMicStream(stream);
+      } catch (err: any) {
+        const errName = String(err?.name || "");
+        const errMsg = String(err?.message || err || "");
+        const isDenied =
+          errName === "NotAllowedError" ||
+          errName === "PermissionDeniedError" ||
+          errName === "SecurityError" ||
+          /permission|denied|not allowed/i.test(errMsg);
+
+        if (isDenied) {
+          micNotAllowedRef.current = true;
+          setVoiceDiag({
+            mic: "denied",
+            recognition: hasSpeechRec ? "supported" : "unsupported",
+            mode: "recorder",
+          });
+          const permMsg = "মাইক অনুমতি দিন (Settings → Apps → Permissions → Microphone)";
+          setLiveErrorMsg(permMsg);
+          setToast(permMsg);
+          pushSharedMessageRef.current({
+            role: "system",
+            text: permMsg,
+          });
+        } else {
+          setVoiceDiag({
+            mic: "unsupported",
+            recognition: hasSpeechRec ? "supported" : "unsupported",
+            mode: "recorder",
+          });
+          const exactErr =
+            "মাইক ত্রুটি: " + (errName ? `${errName} (${errMsg})` : errMsg || "Microphone error");
+          setLiveErrorMsg(exactErr);
+          setToast(exactErr);
+          pushSharedMessageRef.current({
+            role: "system",
+            text: exactErr,
+          });
+        }
+        isAssistantEnabledRef.current = false;
+        setIsAssistantEnabled(false);
+        setStatus("idle");
+        setSpeakingState("idle");
+        transitionToState("IDLE");
+        return;
+      }
+    }
+
+    setVoiceDiag({
+      mic: "granted",
+      recognition: hasSpeechRec ? "supported" : "unsupported",
+      mode: "recorder",
+    });
+    setLiveErrorMsg(null);
+
+    // Connect stream to AnalyserNode so both VAD and the visual orb/voice dots work
+    try {
+      const AudioCtx = window.AudioContext || (window as any).webkitAudioContext;
+      if (!inputAudioCtxRef.current || inputAudioCtxRef.current.state === "closed") {
+        inputAudioCtxRef.current = new AudioCtx({ sampleRate: 16000 });
+      }
+      const inCtx = inputAudioCtxRef.current;
+      if (inCtx.state === "suspended") {
+        await inCtx.resume().catch(() => {});
+      }
+      if (!currentAnalyserRef.current && stream) {
+        const source = inCtx.createMediaStreamSource(stream);
+        const analyser = inCtx.createAnalyser();
+        analyser.fftSize = 512;
+        source.connect(analyser);
+        currentAnalyserRef.current = analyser;
+      }
+    } catch (e) {
+      console.warn("[RecorderMode] Failed setting up AnalyserNode:", e);
+    }
+
+    if (
+      isAssistantEnabledRef.current &&
+      !isBusyRef.current &&
+      !isSpeakingTTSRef.current &&
+      !isProcessingGeminiRef.current &&
+      !isTranscribingAudioRef.current
+    ) {
+      transitionToState("LISTENING");
+    }
+
+    if (recorderVadIntervalRef.current) {
+      return;
+    }
+
+    // 2b) Use AnalyserNode to detect speech: start MediaRecorder when volume > threshold, stop after 1.2s silence (max 15s), ignore < 0.5s
+    recorderVadIntervalRef.current = setInterval(() => {
+      if (!isAssistantEnabledRef.current || voiceModeRef.current !== "recorder") {
+        stopRecorderVadLoop(true);
+        return;
+      }
+
+      // 3) NEVER LISTEN WHILE SPEAKING: stop recorder while Rose is speaking/thinking
+      if (
+        isBusyRef.current ||
+        isSpeakingTTSRef.current ||
+        isProcessingGeminiRef.current ||
+        isTranscribingAudioRef.current ||
+        sessionStateRef.current === "THINKING" ||
+        sessionStateRef.current === "SPEAKING"
+      ) {
+        if (mediaRecorderRef.current && mediaRecorderRef.current.state === "recording") {
+          stopActiveMediaRecorder(true);
+          setInterimSpeechText("");
+        }
+        return;
+      }
+
+      const analyser = currentAnalyserRef.current;
+      const activeStream = activeStreamRef.current;
+      if (!analyser || !activeStream) return;
+
+      const freqData = new Uint8Array(analyser.frequencyBinCount);
+      analyser.getByteFrequencyData(freqData);
+      let freqSum = 0;
+      for (let i = 0; i < freqData.length; i++) {
+        freqSum += freqData[i];
+      }
+      const freqAvg = freqSum / (freqData.length * 255);
+
+      const timeData = new Uint8Array(analyser.fftSize);
+      analyser.getByteTimeDomainData(timeData);
+      let sqSum = 0;
+      for (let i = 0; i < timeData.length; i++) {
+        const norm = (timeData[i] - 128) / 128;
+        sqSum += norm * norm;
+      }
+      const timeRms = Math.sqrt(sqSum / timeData.length);
+      const currentVol = Math.max(freqAvg, timeRms * 2.2);
+
+      const SPEECH_START_THRESHOLD = 0.032;
+      const SPEECH_CONTINUE_THRESHOLD = 0.024;
+      const SILENCE_LIMIT_MS = 1200;
+      const MAX_RECORD_MS = 15000;
+      const MIN_CLIP_MS = 500;
+      const now = Date.now();
+
+      const activeRec = mediaRecorderRef.current;
+      if (!activeRec || activeRec.state === "inactive") {
+        if (currentVol >= SPEECH_START_THRESHOLD) {
+          if (typeof MediaRecorder === "undefined") {
+            const noRecMsg = "মাইক ত্রুটি: এই ব্রাউজারে MediaRecorder সাপোর্ট নেই";
+            setLiveErrorMsg(noRecMsg);
+            pushSharedMessageRef.current({ role: "system", text: noRecMsg });
+            stopListening();
+            return;
+          }
+          let chosenMime = "";
+          const candidateMimes = [
+            "audio/webm;codecs=opus",
+            "audio/webm",
+            "audio/ogg;codecs=opus",
+            "audio/mp4",
+          ];
+          for (const m of candidateMimes) {
+            try {
+              if (typeof MediaRecorder.isTypeSupported === "function" && MediaRecorder.isTypeSupported(m)) {
+                chosenMime = m;
+                break;
+              }
+            } catch (e) {}
+          }
+
+          try {
+            const rec = chosenMime
+              ? new MediaRecorder(activeStream, { mimeType: chosenMime })
+              : new MediaRecorder(activeStream);
+            recorderChunksRef.current = [];
+            recorderDiscardRef.current = false;
+            recorderSpeechStartRef.current = now;
+            recorderLastVoiceRef.current = now;
+            mediaRecorderRef.current = rec;
+            setInterimSpeechText("শুনছি...");
+
+            rec.ondataavailable = (ev: BlobEvent) => {
+              if (ev.data && ev.data.size > 0) {
+                recorderChunksRef.current.push(ev.data);
+              }
+            };
+
+            rec.onstop = async () => {
+              const clipDurationMs = Date.now() - recorderSpeechStartRef.current;
+              const chunks = recorderChunksRef.current.slice();
+              recorderChunksRef.current = [];
+              if (mediaRecorderRef.current === rec) {
+                mediaRecorderRef.current = null;
+              }
+              setInterimSpeechText("");
+
+              if (
+                recorderDiscardRef.current ||
+                !isAssistantEnabledRef.current ||
+                isBusyRef.current ||
+                isSpeakingTTSRef.current ||
+                isProcessingGeminiRef.current ||
+                clipDurationMs < MIN_CLIP_MS ||
+                chunks.length === 0
+              ) {
+                return;
+              }
+
+              const rawMime = (rec.mimeType || chosenMime || "audio/webm").split(";")[0].trim() || "audio/webm";
+              const audioBlob = new Blob(chunks, { type: rawMime });
+              if (audioBlob.size < 300) {
+                return;
+              }
+
+              isTranscribingAudioRef.current = true;
+              isBusyRef.current = true;
+              setInterimSpeechText("...");
+              transitionToState("THINKING");
+
+              try {
+                const currentKey = getGeminiKey() || apiKeysRef.current.gemini || "";
+                const sanitizedKey = currentKey.replace(/["'\r\n\t\s]+/g, "").trim();
+                if (!sanitizedKey) {
+                  throw new Error("Add your Gemini key in Settings > Connections.");
+                }
+
+                const base64Audio = await blobToBase64(audioBlob);
+                if (!isAssistantEnabledRef.current) {
+                  isTranscribingAudioRef.current = false;
+                  isBusyRef.current = false;
+                  setInterimSpeechText("");
+                  return;
+                }
+
+                const transcribeRes: any = await directGeminiGenerate({
+                  contents: [
+                    {
+                      role: "user",
+                      parts: [
+                        {
+                          inlineData: {
+                            mimeType: rawMime,
+                            data: base64Audio,
+                          },
+                        },
+                        {
+                          text: "Transcribe this audio exactly. The language is Bengali or English. Return ONLY the spoken text, no quotes, no explanation. If there is no speech, return an empty string.",
+                        },
+                      ],
+                    },
+                  ],
+                  generationConfig: {
+                    maxOutputTokens: 150,
+                    temperature: 0.1,
+                  },
+                  apiKey: sanitizedKey,
+                });
+
+                setInterimSpeechText("");
+                isTranscribingAudioRef.current = false;
+
+                const rawTranscript = String(
+                  transcribeRes?.text ||
+                    transcribeRes?.candidates?.[0]?.content?.parts
+                      ?.map((p: any) => p?.text || "")
+                      .join("") ||
+                    ""
+                )
+                  .replace(/^["'“”‘’`]+|["'“”‘’`]+$/g, "")
+                  .trim();
+
+                if (
+                  !rawTranscript ||
+                  rawTranscript.toLowerCase() === "empty string" ||
+                  rawTranscript === '""' ||
+                  rawTranscript === "''"
+                ) {
+                  isBusyRef.current = false;
+                  if (isAssistantEnabledRef.current && !isSpeakingTTSRef.current) {
+                    transitionToState("LISTENING");
+                  }
+                  return;
+                }
+
+                // Dedupe check
+                const tNow = Date.now();
+                const prevText = lastSentUserMsgRef.current.text.trim().toLowerCase();
+                const prevTime = lastSentUserMsgRef.current.time;
+                const normText = rawTranscript.toLowerCase();
+                if (
+                  prevText &&
+                  tNow - prevTime < 3000 &&
+                  (normText === prevText || normText.startsWith(prevText))
+                ) {
+                  isBusyRef.current = false;
+                  if (isAssistantEnabledRef.current) {
+                    transitionToState("LISTENING");
+                  }
+                  return;
+                }
+                lastSentUserMsgRef.current = { text: rawTranscript, time: tNow };
+
+                // 2d) Feed transcript into the SAME pipeline as a typed message
+                pushSharedMessageRef.current({
+                  role: "user",
+                  text: rawTranscript,
+                });
+                await processVoiceInputWithGeminiRef.current(rawTranscript, true);
+              } catch (err: any) {
+                setInterimSpeechText("");
+                isTranscribingAudioRef.current = false;
+                isBusyRef.current = false;
+                const currentKey = getGeminiKey() || apiKeysRef.current.gemini || "";
+                const sanitizedKey = currentKey.replace(/["'\r\n\t\s]+/g, "").trim();
+                const { bengaliMessage, debugLine } = formatGeminiErrorForUI(err, sanitizedKey);
+                setLiveErrorMsg(bengaliMessage);
+                setToast(bengaliMessage);
+                pushSharedMessageRef.current({
+                  role: "system",
+                  text: bengaliMessage,
+                  debugLine,
+                });
+                if (isAssistantEnabledRef.current && !isSpeakingTTSRef.current) {
+                  transitionToState("LISTENING");
+                }
+              }
+            };
+
+            rec.start(200);
+          } catch (recErr: any) {
+            console.error("[RecorderMode] MediaRecorder start error:", recErr);
+            const errText = "রেকর্ডার চালু করা যায়নি: " + String(recErr?.message || recErr);
+            setLiveErrorMsg(errText);
+            pushSharedMessageRef.current({ role: "system", text: errText });
+          }
+        }
+      } else if (activeRec.state === "recording") {
+        if (currentVol >= SPEECH_CONTINUE_THRESHOLD) {
+          recorderLastVoiceRef.current = now;
+        }
+        const silenceElapsed = now - recorderLastVoiceRef.current;
+        const totalElapsed = now - recorderSpeechStartRef.current;
+        if (silenceElapsed >= SILENCE_LIMIT_MS || totalElapsed >= MAX_RECORD_MS) {
+          try {
+            activeRec.stop();
+          } catch (e) {}
+        }
+      }
+    }, 80);
+  }, [blobToBase64, stopActiveMediaRecorder, stopListening, stopRecorderVadLoop, transitionToState]);
+
+  useEffect(() => {
+    startRecorderModeListeningRef.current = startRecorderModeListening;
+  }, [startRecorderModeListening]);
+
   const startListening = useCallback(async () => {
     if (!settingsRef.current.masterAccess || !isAssistantEnabledRef.current) return;
     if (micNotAllowedRef.current) return;
     if (isBusyRef.current || isProcessingGeminiRef.current || isSpeakingTTSRef.current) return;
+
+    const hasSpeechRec =
+      typeof window !== "undefined" &&
+      Boolean((window as any).SpeechRecognition || (window as any).webkitSpeechRecognition);
+    const hasGetUserMedia =
+      typeof navigator !== "undefined" &&
+      Boolean(navigator.mediaDevices && typeof navigator.mediaDevices.getUserMedia === "function");
+
+    // Check microphone permission state non-blockingly if Permissions API is available
+    if (typeof navigator !== "undefined" && (navigator as any).permissions?.query) {
+      try {
+        (navigator as any).permissions
+          .query({ name: "microphone" })
+          .then((permStatus: any) => {
+            if (permStatus?.state === "denied") {
+              setVoiceDiag((prev) =>
+                prev ? { ...prev, mic: "denied" } : { mic: "denied", recognition: hasSpeechRec ? "supported" : "unsupported", mode: voiceModeRef.current }
+              );
+            } else if (permStatus?.state === "granted") {
+              setVoiceDiag((prev) =>
+                prev ? { ...prev, mic: "granted" } : { mic: "granted", recognition: hasSpeechRec ? "supported" : "unsupported", mode: voiceModeRef.current }
+              );
+            }
+          })
+          .catch(() => {});
+      } catch (e) {}
+    }
+
+    // If SpeechRecognition is unsupported or previously failed in this session, go straight to RECORDER MODE
+    if (!hasSpeechRec || browserFallbackForcedRef.current) {
+      voiceModeRef.current = "recorder";
+      setVoiceDiag({
+        mic: hasGetUserMedia ? "granted" : "unsupported",
+        recognition: hasSpeechRec ? "supported" : "unsupported",
+        mode: "recorder",
+      });
+      await startRecorderModeListening();
+      return;
+    }
+
+    // Otherwise try BROWSER MODE first (with 3s start check and 6s nothing fallback to RECORDER MODE)
+    voiceModeRef.current = "browser";
+    setVoiceDiag({
+      mic: hasGetUserMedia ? "granted" : "unsupported",
+      recognition: "supported",
+      mode: "browser",
+    });
 
     // Release any open getUserMedia stream so SpeechRecognition has exclusive mic access on Android/Chrome
     if (activeStreamRef.current) {
@@ -5464,21 +6138,11 @@ export function App() {
       } catch (e) {}
       activeStreamRef.current = null;
       setMicStream(null);
-    }
-
-    const SpeechRecognition = (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition;
-    if (!SpeechRecognition) {
-      setLiveErrorMsg("Web Speech API is not supported in this browser.");
-      setToast("এই ব্রাউজারে ভয়েস সাপোর্ট নেই");
-      pushSharedMessageRef.current({
-        role: "system",
-        text: "Mic error: Web Speech API is not supported in this browser.",
-      });
-      return;
+      currentAnalyserRef.current = null;
     }
 
     startSingletonRecognitionSafely();
-  }, [startSingletonRecognitionSafely]);
+  }, [startSingletonRecognitionSafely, startRecorderModeListening]);
 
   // Live Settings Sync: Volume
   useEffect(() => {
@@ -7014,10 +7678,15 @@ export function App() {
           {/* Bottom Controls Area - 3 Cards at bottom & Orb Container 20px above cards */}
           <div className="w-full shrink-0 flex flex-col justify-end mt-auto pb-2 z-10">
             {/* Reserved empty space (~90px) for voice dots animation; error banner preserved */}
-            <div className="w-full h-[90px] min-h-[90px] flex flex-col items-center justify-center mb-[20px] shrink-0 mt-auto pointer-events-none">
+            <div className="w-full h-[90px] min-h-[90px] flex flex-col items-center justify-center gap-1 mb-[20px] shrink-0 mt-auto pointer-events-none">
               {liveErrorMsg && (
                 <span className="text-[10px] font-semibold text-rose-300 bg-rose-950/85 border border-rose-500/40 rounded-lg px-2.5 py-1 animate-pulse max-w-[320px] break-words text-center shadow-lg pointer-events-auto">
                   {liveErrorMsg}
+                </span>
+              )}
+              {voiceDiag && (
+                <span className="text-[9px] text-slate-400 font-mono tracking-tight text-center px-2 leading-tight">
+                  {`mic: ${voiceDiag.mic} | recognition: ${voiceDiag.recognition} | mode: ${voiceDiag.mode}`}
                 </span>
               )}
             </div>
@@ -11159,6 +11828,11 @@ export function App() {
                 ? "border-emerald-400/80 shadow-[0_0_16px_rgba(34,197,94,0.85)] opacity-100"
                 : "border-transparent opacity-0"
             )} />
+            {voiceDiag && activeTab === "home" && currentView === "home" && (
+              <span className="absolute -bottom-3.5 left-1/2 -translate-x-1/2 whitespace-nowrap text-[7.5px] text-slate-400 font-mono pointer-events-none select-none">
+                {`mic: ${voiceDiag.mic} | recognition: ${voiceDiag.recognition} | mode: ${voiceDiag.mode}`}
+              </span>
+            )}
           </div>
 
           <button

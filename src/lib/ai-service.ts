@@ -436,7 +436,36 @@ const buildBodyForRequest = (
       ? systemInstruction
       : (systemInstruction as any)?.parts?.[0]?.text || '';
 
+  const hasRichParts =
+    Array.isArray(contents) &&
+    contents.some(
+      (c: any) =>
+        Array.isArray(c?.parts) &&
+        c.parts.some((p: any) => p?.inlineData || p?.inline_data || p?.fileData)
+    );
+
   if (isMinimal) {
+    if (hasRichParts) {
+      const lastItem = contents[contents.length - 1] || contents[0];
+      const body: any = {
+        contents: [
+          {
+            role: 'user',
+            parts: Array.isArray(lastItem?.parts) ? lastItem.parts : [{ text: extractLastUserText(contents) }],
+          },
+        ],
+        generationConfig: {
+          maxOutputTokens: generationConfig?.maxOutputTokens ?? 150,
+        },
+      };
+      if (sysText.trim()) {
+        body.systemInstruction = {
+          parts: [{ text: sysText.trim() }],
+        };
+      }
+      return body;
+    }
+
     const lastUserText = extractLastUserText(contents);
     const body: any = {
       contents: [{ role: 'user', parts: [{ text: lastUserText }] }],
@@ -460,7 +489,7 @@ const buildBodyForRequest = (
   }
 
   const body: any = {
-    contents: prepareHistory(contents),
+    contents: hasRichParts ? contents : prepareHistory(contents),
     generationConfig: genConfig,
   };
 
