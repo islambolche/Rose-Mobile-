@@ -1,5 +1,6 @@
 import { useRef, useState } from "react";
 import { getGeminiKey } from "./geminiKey";
+import { getGlobalMicStream, stopGlobalMicStream } from "./audio-manager";
 
 type Opts = {
   apiKey: string; model: string; voiceName: string; systemInstruction: string;
@@ -143,7 +144,7 @@ export function useRoseLive(getOpts: () => Opts) {
       s.ctxIn = new AudioContext();
       s.ctxOut = new AudioContext({ sampleRate: 24000 });
       await s.ctxIn.resume(); await s.ctxOut.resume();
-      s.stream = await navigator.mediaDevices.getUserMedia({
+      s.stream = await getGlobalMicStream({
         audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true },
       });
       s.gain = s.ctxOut.createGain();
@@ -198,7 +199,7 @@ export function useRoseLive(getOpts: () => Opts) {
     if (s.raf) cancelAnimationFrame(s.raf);
     try { s.proc && (s.proc.onaudioprocess = null, s.proc.disconnect()); } catch {}
     try { s.source?.disconnect(); } catch {}
-    try { s.stream?.getTracks().forEach((t: any) => t.stop()); } catch {}
+    stopGlobalMicStream();
     try { s.session?.close(); } catch {}
     stopPlayback();
     try { s.ctxIn?.close(); } catch {}

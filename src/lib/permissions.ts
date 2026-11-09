@@ -1,3 +1,4 @@
+import { getGlobalMicStream, stopGlobalMicStream } from "./audio-manager";
 export type PermissionStatus =
   | "Allowed"
   | "Skipped"
@@ -220,14 +221,14 @@ export async function requestMicrophoneWithTimeout(timeoutMs: number = 8000): Pr
       return "Skipped";
     }
 
-    const streamPromise = navigator.mediaDevices.getUserMedia({ audio: true });
+    const streamPromise = getGlobalMicStream({ audio: true });
     const timeoutPromise = new Promise<MediaStream>((_, reject) =>
       setTimeout(() => reject(new Error("Microphone request timed out (8s)")), timeoutMs)
     );
 
     const stream = await Promise.race([streamPromise, timeoutPromise]);
     try {
-      stream.getTracks().forEach((t) => t.stop());
+      stopGlobalMicStream();
     } catch (e) {}
 
     setAllowed("microphone", true);
@@ -320,7 +321,7 @@ export async function requestCameraWithTimeout(timeoutMs: number = 8000): Promis
 
     const stream = await Promise.race([streamPromise, timeoutPromise]);
     try {
-      stream.getTracks().forEach((t) => t.stop());
+      stopGlobalMicStream();
     } catch (e) {}
 
     setAllowed("camera", true);

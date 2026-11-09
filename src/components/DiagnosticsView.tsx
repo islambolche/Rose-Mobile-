@@ -1,4 +1,5 @@
 import React, { useState, useEffect } from "react";
+import { getGlobalMicStream, stopGlobalMicStream } from "../lib/audio-manager";
 import { Zap, ArrowLeft, Key, Check, X, Loader2 } from "lucide-react";
 import { UnifiedSettings } from "../types/settings";
 import { getGeminiKey } from "../lib/geminiKey";
@@ -121,7 +122,7 @@ export const DiagnosticsView: React.FC<DiagnosticsViewProps> = ({
 
           try {
             // 3. Mic Start
-            micStream = await navigator.mediaDevices.getUserMedia({ audio: { sampleRate: 16000, channelCount: 1 } });
+            micStream = await getGlobalMicStream({ audio: { sampleRate: 16000, channelCount: 1 } });
             updateStep(2, 'done');
             updateStep(3, 'loading');
 

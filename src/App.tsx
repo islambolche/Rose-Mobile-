@@ -91,6 +91,7 @@ import { storage } from "./lib/storage";
 import rosePortraitImg from "./assets/images/rose_portrait_1793010994175.jpg";
 import realisticAssistantImg from "./assets/images/iyabd_realistic_assistant_1792805556831.jpg";
 import * as Permissions from "./lib/permissions";
+import { getGlobalMicStream, stopGlobalMicStream } from "./lib/audio-manager";
 import { directGeminiGenerate, directGeminiStream, directGeminiTTS, formatGeminiErrorForUI, TEXT_MODELS, getSavedWorkingTextModel, discoverAvailableFlashModels } from "./lib/ai-service";
 import {
   generateTextWithSelectedEngine,
@@ -1322,8 +1323,8 @@ const VoiceCheckView = ({
   const handleAllowMic = async () => {
     try {
       console.log("[Voice Check] Requesting microphone access...");
-      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
-      stream.getTracks().forEach((t) => t.stop());
+      const stream = await getGlobalMicStream({ audio: true });
+      stopGlobalMicStream();
       setMicStatus("ok");
       setToast("মাইক্রোফোনের অনুমতি পাওয়া গেছে");
       runAllChecks();
@@ -1385,7 +1386,7 @@ const VoiceCheckView = ({
       setIsTestingMic(true);
       setMicTestResult("none");
       console.log("[Voice Check] Starting live sound-level test...");
-      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      const stream = await getGlobalMicStream({ audio: true });
       micStreamRef.current = stream;
       setMicStatus("ok");
 
@@ -1418,7 +1419,7 @@ const VoiceCheckView = ({
         if (Date.now() - startTime < 3500) {
           micAnimFrameRef.current = requestAnimationFrame(monitorAudio);
         } else {
-          stream.getTracks().forEach((t) => t.stop());
+          stopGlobalMicStream();
           audioCtx.close().catch(() => {});
           setIsTestingMic(false);
           setMicVolume(0);
@@ -1461,8 +1462,8 @@ const VoiceCheckView = ({
       // Step 2: Mic permission test
       let micOk = false;
       try {
-        const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
-        stream.getTracks().forEach((t) => t.stop());
+        const stream = await getGlobalMicStream({ audio: true });
+        stopGlobalMicStream();
         setMicStatus("ok");
         micOk = true;
       } catch (e) {
@@ -3077,17 +3078,6 @@ export function App() {
     }
   }, [isAssistantEnabled, requestWakeLock, releaseWakeLock]);
 
-  useEffect(() => {
-    const handleVisibilityChange = () => {
-      if (document.visibilityState === "visible" && isAssistantEnabled) {
-        requestWakeLock();
-      }
-    };
-    document.addEventListener("visibilitychange", handleVisibilityChange);
-    return () => {
-      document.removeEventListener("visibilitychange", handleVisibilityChange);
-    };
-  }, [isAssistantEnabled, requestWakeLock]);
 
   // Rose Speaking Vibration Feedback ([20, 40, 20])
   useEffect(() => {
@@ -4694,7 +4684,7 @@ export function App() {
           // If SpeechRecognition ended with nothing on first check, let the 6s fallback timer or immediate fallback handle it
           return;
         }
-        // Automatically restart browser recognition while orb is ON
+        // Automatically restart browser recognition while orb is ON (Point 3)
         setTimeout(() => {
           if (
             isAssistantEnabledRef.current &&
@@ -4706,9 +4696,14 @@ export function App() {
             try {
               recognition.start();
               recognitionRunningRef.current = true;
-            } catch (e) {}
+            } catch (e) {
+              // If already started or other error, ignore or retry
+              if (String(e).includes("already started")) {
+                recognitionRunningRef.current = true;
+              }
+            }
           }
-        }, 250);
+        }, 300);
       }
     };
 
@@ -5265,6 +5260,23 @@ export function App() {
 
   const processVoiceInputWithGemini = useCallback(
     async (userText: string, userAlreadyPushed: boolean = false, isTypedChat: boolean = false) => {
+      // Point 6: De-duplicate calls (especially race conditions between SpeechRecognition and Recorder VAD)
+      if (isProcessingGeminiRef.current && !isTypedChat) {
+        console.warn("[VoiceInput] Already processing, ignoring duplicate call.");
+        return;
+      }
+      
+      const now = Date.now();
+      const prevText = lastSentUserMsgRef.current.text.trim().toLowerCase();
+      const prevTime = lastSentUserMsgRef.current.time;
+      const normText = userText.trim().toLowerCase();
+      
+      if (prevText && now - prevTime < 2000 && normText === prevText && !isTypedChat) {
+        console.log("[VoiceInput] Duplicate text within 2s, ignoring.");
+        return;
+      }
+      lastSentUserMsgRef.current = { text: userText, time: now };
+
       // Create ONE speech controller session with a unique token per reply
       const turnToken = cancelAllSpeechAndAudio(true);
       const lockedEngineMode: "fast" | "quality" = "quality";
@@ -5683,11 +5695,10 @@ export function App() {
 
     cancelAllSpeechAndAudio(true);
 
-    if (activeStreamRef.current) {
-      activeStreamRef.current.getTracks().forEach((track) => track.stop());
-      activeStreamRef.current = null;
-      setMicStream(null);
-    }
+    // Point 1: Stop global stream tracks
+    stopGlobalMicStream();
+    activeStreamRef.current = null;
+    setMicStream(null);
 
     currentAnalyserRef.current = null;
     smoothedLevelRef.current = 0;
@@ -5782,7 +5793,7 @@ export function App() {
       return;
     }
 
-    // 2a) Get the mic with getUserMedia({audio: {echoCancellation: true, noiseSuppression: true}}) once and keep the stream while the orb is ON
+    // 2a) Get the mic with getGlobalMicStream once and keep the stream while the orb is ON (Point 1 & 2)
     let stream = activeStreamRef.current;
     const hasLiveTrack =
       stream &&
@@ -5790,14 +5801,15 @@ export function App() {
 
     if (!hasLiveTrack) {
       try {
-        stream = await navigator.mediaDevices.getUserMedia({
+        stream = await getGlobalMicStream({
           audio: {
             echoCancellation: true,
             noiseSuppression: true,
+            autoGainControl: true
           },
-        });
+        }, 0, setToast);
         if (!isAssistantEnabledRef.current) {
-          stream.getTracks().forEach((t) => t.stop());
+          stopGlobalMicStream();
           return;
         }
         activeStreamRef.current = stream;
@@ -5825,26 +5837,27 @@ export function App() {
             role: "system",
             text: permMsg,
           });
+          
+          isAssistantEnabledRef.current = false;
+          setIsAssistantEnabled(false);
+          setStatus("idle");
+          setSpeakingState("idle");
+          transitionToState("IDLE");
         } else {
-          setVoiceDiag({
-            mic: "unsupported",
-            recognition: hasSpeechRec ? "supported" : "unsupported",
-            mode: "recorder",
-          });
+          // If it's NotReadableError, getGlobalMicStream already retried and toasted.
+          // For other errors, we show the message but KEEP the assistant enabled if possible to allow retry
           const exactErr =
             "মাইক ত্রুটি: " + (errName ? `${errName} (${errMsg})` : errMsg || "Microphone error");
           setLiveErrorMsg(exactErr);
           setToast(exactErr);
-          pushSharedMessageRef.current({
-            role: "system",
-            text: exactErr,
-          });
+          
+          // Only disable if it's clearly fatal and not worth retrying
+          if (errName === "NotFoundError" || errName === "DevicesNotFoundError") {
+             isAssistantEnabledRef.current = false;
+             setIsAssistantEnabled(false);
+             transitionToState("IDLE");
+          }
         }
-        isAssistantEnabledRef.current = false;
-        setIsAssistantEnabled(false);
-        setStatus("idle");
-        setSpeakingState("idle");
-        transitionToState("IDLE");
         return;
       }
     }
@@ -6206,18 +6219,34 @@ export function App() {
       mode: "browser",
     });
 
-    // Release any open getUserMedia stream so SpeechRecognition has exclusive mic access on Android/Chrome
-    if (activeStreamRef.current) {
-      try {
-        activeStreamRef.current.getTracks().forEach((track) => track.stop());
-      } catch (e) {}
-      activeStreamRef.current = null;
-      setMicStream(null);
-      currentAnalyserRef.current = null;
-    }
+    // Release any open getUserMedia stream tracks to ensure clean switch
+    await stopGlobalMicStream();
+    activeStreamRef.current = null;
+    setMicStream(null);
+    currentAnalyserRef.current = null;
 
     startSingletonRecognitionSafely();
   }, [startSingletonRecognitionSafely, startRecorderModeListening]);
+
+  useEffect(() => {
+    const handleVisibilityChange = () => {
+      if (document.visibilityState === "visible") {
+        if (isAssistantEnabledRef.current) {
+          requestWakeLock();
+          // Point 5: Restart mic if it was supposed to be active
+          if (voiceModeRef.current === "browser") {
+             startSingletonRecognitionSafely();
+          } else if (voiceModeRef.current === "recorder") {
+             startRecorderModeListening();
+          }
+        }
+      }
+    };
+    document.addEventListener("visibilitychange", handleVisibilityChange);
+    return () => {
+      document.removeEventListener("visibilitychange", handleVisibilityChange);
+    };
+  }, [requestWakeLock, startSingletonRecognitionSafely, startRecorderModeListening]);
 
   // Live Settings Sync: Volume
   useEffect(() => {

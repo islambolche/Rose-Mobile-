@@ -1,4 +1,5 @@
 import React, { useState, useEffect } from "react";
+import { getGlobalMicStream, stopGlobalMicStream } from "../lib/audio-manager";
 import { X, CheckCircle, XCircle, Loader2, Copy, Play, RefreshCw, Mic, Volume2 } from "lucide-react";
 import { UnifiedSettings } from "../types/settings";
 
@@ -54,7 +55,7 @@ export const VoiceTestModal: React.FC<VoiceTestModalProps> = ({ settings, onClos
     updateStep(2, "running");
     let micStream: MediaStream | null = null;
     try {
-      micStream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      micStream = await getGlobalMicStream({ audio: true });
       updateStep(2, "pass", "Microphone access granted by browser");
     } catch (err: any) {
       updateStep(2, "fail", undefined, `Mic permission denied: ${err?.message || String(err)}`);

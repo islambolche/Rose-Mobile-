@@ -1,4 +1,5 @@
 import React, { useState, useEffect } from 'react';
+import { getGlobalMicStream } from '../lib/audio-manager';
 import { motion, AnimatePresence } from 'framer-motion';
 import { 
   ArrowLeft, Sparkles, ChevronRight, User, Shield, Smile, Globe, Volume2, Pencil, Trash2, 
@@ -214,7 +215,7 @@ export const PrivacyView = ({ settings, prefs, setCurrentView, setToast }: any) 
   // Request Microphone access
   const handleRequestMic = async () => {
     try {
-      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      const stream = await getGlobalMicStream({ audio: true });
       stream.getTracks().forEach(t => t.stop());
       setMicState('granted');
       if (setToast) setToast("মাইক্রোফোন পারমিশন সচল করা হয়েছে");

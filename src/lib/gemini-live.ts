@@ -1,5 +1,6 @@
 import { logVoiceEvent } from './voiceLogger';
 import { getGeminiKey } from './geminiKey';
+import { getGlobalMicStream } from './audio-manager';
 
 export interface GeminiLiveOptions {
   assistantName?: string;
@@ -178,7 +179,7 @@ export class GeminiLiveSession {
 
   private async startMicCapture(micStart: number) {
     try {
-      this.micStream = await navigator.mediaDevices.getUserMedia({
+      this.micStream = await getGlobalMicStream({
         audio: { channelCount: 1, sampleRate: 16000, echoCancellation: true, noiseSuppression: true }
       });
 

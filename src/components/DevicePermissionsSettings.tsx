@@ -1,4 +1,5 @@
 import React, { useState, useEffect, useCallback } from "react";
+import { getGlobalMicStream } from "../lib/audio-manager";
 import { ArrowLeft, Mic, Bell, Lock, Smartphone, Loader2, Shield } from "lucide-react";
 import { isAllowed, setAllowed, savePermissionToMap } from "../lib/permissions";
 
@@ -29,7 +30,7 @@ export const DevicePermissionsSettings: React.FC<{ onClose: () => void }> = ({ o
     try {
         if (id === "microphone") {
             try {
-                const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+                const stream = await getGlobalMicStream({ audio: true });
                 stream.getTracks().forEach(t => t.stop());
                 setAllowed("microphone", true);
                 setResults(r => ({...r, microphone: "ALLOWED"}));

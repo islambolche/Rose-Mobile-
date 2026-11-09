@@ -1,4 +1,5 @@
 import React, { useState, useEffect, useRef } from "react";
+import { getGlobalMicStream, stopGlobalMicStream } from "../lib/audio-manager";
 import { ArrowLeft, CheckCircle, XCircle, Loader2, Copy, Trash2, RefreshCw, Mic, Volume2, Bug, Sparkles, Activity, Clock, AlertTriangle } from "lucide-react";
 import { UnifiedSettings } from "../types/settings";
 import { getVoiceLogs, clearVoiceLogs, logVoiceEvent, VoiceLogEntry, getVADMetrics } from "../lib/voiceLogger";
@@ -114,7 +115,7 @@ export const VoiceDebugView: React.FC<VoiceDebugViewProps> = ({ settings, onBack
     updateStep(2, "running");
     let micStream: MediaStream | null = null;
     try {
-      micStream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      micStream = await getGlobalMicStream({ audio: true });
       updateStep(2, "pass", "Microphone permission granted");
     } catch (err: any) {
       updateStep(2, "fail", undefined, `Mic permission denied: ${err?.message || String(err)}`);
