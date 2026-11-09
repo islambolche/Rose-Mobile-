@@ -307,6 +307,8 @@ wss.on('connection', async (clientWs, req) => {
       speechConfig: {
         voiceConfig: { prebuiltVoiceConfig: { voiceName: voiceName } },
       },
+      inputAudioTranscription: { model: "whisper-1" },
+      outputAudioTranscription: { model: "whisper-1" },
     };
 
     console.log(`[Live WS] Connecting to Gemini Live with model: ${model}`);
@@ -324,62 +326,7 @@ wss.on('connection', async (clientWs, req) => {
           },
           onmessage: (message: LiveServerMessage) => {
             if (clientWs.readyState !== 1) return;
-
-            const userText = (message.serverContent as any)?.inputTranscription?.text;
-            if (userText) {
-              clientWs.send(JSON.stringify({ 
-                transcription: { role: 'user', text: userText, isFinal: false } 
-              }));
-            }
-
-            const outputText = (message.serverContent as any)?.outputTranscription?.text;
-            if (outputText && !isThoughtOrReasoning(outputText)) {
-              clientWs.send(JSON.stringify({ 
-                transcription: { role: 'assistant', text: outputText, isFinal: false } 
-              }));
-            }
-
-            const modelTurn = message.serverContent?.modelTurn;
-            if (modelTurn) {
-              const parts = modelTurn.parts || [];
-              for (const part of parts) {
-                if ((part as any).thought === true) continue;
-                
-                if (part.inlineData?.data) {
-                  clientWs.send(JSON.stringify({ 
-                    audio: part.inlineData.data,
-                    serverContent: {
-                      modelTurn: {
-                        parts: [{ inlineData: { data: part.inlineData.data, mimeType: 'audio/pcm;rate=24000' } }]
-                      }
-                    }
-                  }));
-                }
-                
-                if (part.text && !outputText && !isThoughtOrReasoning(part.text)) {
-                   clientWs.send(JSON.stringify({ 
-                    transcription: { role: 'assistant', text: part.text, isFinal: false } 
-                  }));
-                }
-              }
-            }
-            if (message.serverContent?.interrupted) {
-              clientWs.send(JSON.stringify({ interrupted: true, serverContent: { interrupted: true } }));
-            }
-            if (message.serverContent?.turnComplete) {
-              clientWs.send(JSON.stringify({ turnComplete: true, serverContent: { turnComplete: true } }));
-            }
-            
-            const toolCall = message.toolCall;
-            if (toolCall?.functionCalls) {
-              for (const call of toolCall.functionCalls) {
-                clientWs.send(JSON.stringify({ 
-                  action: call.name,
-                  payload: call.args,
-                  id: call.id
-                }));
-              }
-            }
+            clientWs.send(JSON.stringify(message));
           },
           onerror: (err: any) => {
             console.error(`[Live WS] Gemini error:`, err);
