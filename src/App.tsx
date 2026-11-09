@@ -62,6 +62,8 @@ import {
   ChevronDown,
   Square,
   LogOut,
+  Copy,
+  Terminal,
 } from "lucide-react";
 import {
   AssistantSettings,
@@ -2409,6 +2411,13 @@ const Onboarding = ({ onComplete }: { onComplete: () => void }) => {
 export function App() {
   const [voiceConnOk, setVoiceConnOk] = useState<boolean>(true);
   const [micStatus, setMicStatus] = useState<"ok" | "blocked">("ok");
+
+  // Sync Termux contacts on startup if applicable
+  useEffect(() => {
+    import("./lib/phoneActions").then(({ syncTermuxContacts }) => {
+      syncTermuxContacts();
+    });
+  }, []);
 
   // Navigation State
   const [currentView, setCurrentView] = useState<AppView>("home");
@@ -10579,6 +10588,41 @@ export function App() {
                       <strong className="text-white">৫. প্রথম কথা বলা:</strong> হোম স্ক্রিনে এসে মাঝের মাইক/অর্ব বাটনে চাপ দিয়ে সরাসরি বাংলায় বা ইংরেজিতে কথা বলুন, অথবা নিচের <strong className="text-white">Chat</strong> ট্যাবে গিয়ে মেসেজ লিখে কথা শুরু করুন।
                     </li>
                   </ul>
+
+                  <div className="mt-8 pt-6 border-t border-white/10 space-y-4">
+                    <div className="flex items-center gap-2">
+                      <div className="p-2 bg-purple-600/20 rounded-lg text-purple-400">
+                        <Terminal className="w-4 h-4" />
+                      </div>
+                      <h3 className="text-sm font-black text-white uppercase tracking-wider">Android (Termux) Setup</h3>
+                    </div>
+                    <p className="text-xs text-slate-400 leading-relaxed">
+                      ফোনের কল, এসএমএস এবং সিস্টেম কন্ট্রোল ফিচারের জন্য Android ইউজাররা Termux অ্যাপে নিচের কমান্ডগুলো কপি করে একে একে রান করুন:
+                    </p>
+                    <div className="relative group">
+                      <div className="bg-black/40 rounded-2xl p-4 font-mono text-[11px] text-emerald-400/90 border border-emerald-500/10 leading-loose">
+                        <code className="block">
+                          pkg update -y && pkg install -y termux-api && termux-setup-storage
+                        </code>
+                      </div>
+                      <button
+                        onClick={() => {
+                          navigator.clipboard.writeText("pkg update -y && pkg install -y termux-api && termux-setup-storage");
+                          setToast("কমান্ড কপি করা হয়েছে!");
+                        }}
+                        className="absolute top-3 right-3 p-2 bg-white/5 hover:bg-white/10 rounded-xl text-slate-400 hover:text-white transition-colors"
+                        title="Copy commands"
+                      >
+                        <Copy className="w-3.5 h-3.5" />
+                      </button>
+                    </div>
+                    <div className="flex items-start gap-2 p-3 rounded-xl bg-amber-500/10 border border-amber-500/20 text-[10px] text-amber-200/70">
+                      <Info className="w-3.5 h-3.5 shrink-0 mt-0.5" />
+                      <p>
+                        মনে রাখবেন: এই কমান্ডগুলো রান করার সময় ফোনের স্টোরেজ পারমিশন চাইলে অবশ্যই "Allow" বাটনে চাপ দিন। এই মোডে Rose আপনার ফোনের কন্টাক্ট লিস্ট অটোমেটিকলি অ্যাক্সেস করতে পারবে।
+                      </p>
+                    </div>
+                  </div>
                 </div>
               )}
 

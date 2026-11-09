@@ -126,6 +126,24 @@ export const PHONE_CONTROL_TOOLS = [
           },
           required: ['url']
         }
+      },
+      {
+        name: 'read_notifications',
+        description: 'Read the latest notifications from the phone (Android Termux only).',
+        parameters: {
+          type: 'OBJECT',
+          properties: {}
+        }
+      },
+      {
+        name: 'take_photo',
+        description: 'Take a photo using the phone camera (Android Termux only).',
+        parameters: {
+          type: 'OBJECT',
+          properties: {
+            camera: { type: 'NUMBER', description: 'Camera ID (0 for back, 1 for front)' }
+          }
+        }
       }
     ]
   }

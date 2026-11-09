@@ -1,6 +1,7 @@
 import express from 'express';
 import fs from 'fs';
 import path from 'path';
+import { exec } from 'child_process';
 import { GoogleGenAI, Type, Modality, LiveServerMessage } from "@google/genai";
 import dotenv from 'dotenv';
 import { createServer } from 'http';
@@ -1628,6 +1629,77 @@ app.get('/api/keys/get-live-token', async (req, res) => {
   } catch (err) {
     res.status(500).json({ error: "Failed to retrieve token" });
   }
+});
+
+/**
+ * Termux API Bridge
+ * Enables native Android features when the server is running locally on the device via Termux.
+ */
+app.post('/api/termux/action', (req, res) => {
+  const { action, args } = req.body;
+  
+  if (!action) return res.status(400).json({ error: 'No action specified' });
+
+  let command = '';
+  switch (action) {
+    case 'call':
+      if (args?.number) command = `termux-telephony-call ${args.number}`;
+      break;
+    case 'sms':
+      if (args?.number && args?.text) command = `termux-sms-send -n ${args.number} "${args.text.replace(/"/g, '\\"')}"`;
+      break;
+    case 'vibrate':
+      command = `termux-vibrate -d ${args?.duration || 500}`;
+      break;
+    case 'toast':
+      if (args?.text) command = `termux-toast -c ${args?.color || 'white'} "${args.text.replace(/"/g, '\\"')}"`;
+      break;
+    case 'brightness':
+      if (args?.level !== undefined) command = `termux-brightness ${args.level}`;
+      break;
+    case 'volume':
+      if (args?.level !== undefined) command = `termux-volume music ${args.level}`;
+      break;
+    case 'battery':
+      command = `termux-battery-status`;
+      break;
+    case 'torch':
+      command = `termux-torch ${args?.state === 'on' ? 'on' : 'off'}`;
+      break;
+    case 'contacts':
+      command = `termux-contact-list`;
+      break;
+    case 'notifications':
+      command = `termux-notification-list`;
+      break;
+    case 'photo':
+      command = `termux-camera-photo -c ${args?.camera || 0} ~/rose_capture_${Date.now()}.jpg`;
+      break;
+    case 'intent':
+      if (args?.url) command = `am start -a android.intent.action.VIEW -d "${args.url}"`;
+      break;
+    case 'tts':
+      if (args?.text) command = `termux-tts-speak -p ${args?.pitch || 1.0} -r ${args?.rate || 1.0} "${args.text.replace(/"/g, '\\"')}"`;
+      break;
+    default:
+      return res.status(400).json({ error: 'Unsupported Termux action' });
+  }
+
+  if (!command) return res.status(400).json({ error: 'Missing arguments for command' });
+
+  exec(command, (error, stdout, stderr) => {
+    if (error) {
+      console.error(`Termux command error: ${error.message}`);
+      return res.status(500).json({ error: error.message, stderr });
+    }
+    try {
+      const output = stdout.trim();
+      const jsonOutput = output.startsWith('{') || output.startsWith('[') ? JSON.parse(output) : output;
+      res.json({ success: true, command, output: jsonOutput });
+    } catch (e) {
+      res.json({ success: true, command, output: stdout.trim() });
+    }
+  });
 });
 
 if (process.env.NODE_ENV === 'production') {

@@ -287,6 +287,47 @@ function safelyOpenUrl(url: string) {
 }
 
 /**
+ * Helper to call the Termux API bridge on the backend
+ */
+async function callTermuxApi(action: string, args: any): Promise<boolean> {
+  try {
+    const res = await fetch('/api/termux/action', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ action, args })
+    });
+    return res.ok;
+  } catch (e) {
+    return false;
+  }
+}
+
+/**
+ * Sync contacts from Termux API into local storage
+ */
+export async function syncTermuxContacts() {
+  try {
+    const res = await fetch('/api/termux/action', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ action: 'contacts' })
+    });
+    if (res.ok) {
+      const data = await res.json();
+      if (data.success && Array.isArray(data.output)) {
+        const list = data.output.map((c: any) => ({
+          name: c.name,
+          tel: c.number
+        }));
+        localStorage.setItem('iyabd_saved_contacts', JSON.stringify(list));
+        return list.length;
+      }
+    }
+  } catch (e) {}
+  return 0;
+}
+
+/**
  * 2. PHONE BRIDGE INTERFACE
  */
 export interface PhoneBridge {
@@ -303,6 +344,8 @@ export interface PhoneBridge {
   brightness(args: { level: string }): Promise<PhoneActionResult>;
   wifi(args: { state: string }): Promise<PhoneActionResult>;
   bluetooth(args: { state: string }): Promise<PhoneActionResult>;
+  read_notifications(): Promise<PhoneActionResult>;
+  take_photo(args: { camera?: number }): Promise<PhoneActionResult>;
 }
 
 /**
@@ -350,6 +393,24 @@ export const browserPhoneBridge: PhoneBridge = {
     } else {
       const cleanPkg = lower.replace(/[^a-z0-9]/g, '');
       url = `intent://#Intent;package=com.${cleanPkg};scheme=https;end`;
+    }
+
+    // Try Termux intent bridge first if applicable
+    const termuxOk = await callTermuxApi('intent', { url });
+    if (termuxOk) {
+      logPhoneAction({
+        tool: 'open_app',
+        status: 'executed',
+        summary: `Opened app: ${name} (Termux)`,
+        details: { app_name: name, url, method: 'termux' },
+      });
+      return {
+        success: true,
+        tool: 'open_app',
+        status: 'executed',
+        message: `Opening ${name}...`,
+        url,
+      };
     }
 
     safelyOpenUrl(url);
@@ -623,6 +684,23 @@ export const browserPhoneBridge: PhoneBridge = {
       } catch (e) {}
     }
 
+    // Try Termux API
+    const termuxOk = await callTermuxApi('torch', { state });
+    if (termuxOk) {
+      logPhoneAction({
+        tool: 'flashlight',
+        status: 'executed',
+        summary: `Flashlight ${state} (Termux)`,
+        details: { state, method: 'termux' },
+      });
+      return {
+        success: true,
+        tool: 'flashlight',
+        status: 'executed',
+        message: `Flashlight ${state}`,
+      };
+    }
+
     logPhoneAction({
       tool: 'flashlight',
       status: 'unsupported',
@@ -634,7 +712,7 @@ export const browserPhoneBridge: PhoneBridge = {
       success: false,
       tool: 'flashlight',
       status: 'unsupported',
-      message: 'Needs Android app',
+      message: 'Needs Android app or Termux API',
     };
   },
 
@@ -652,6 +730,24 @@ export const browserPhoneBridge: PhoneBridge = {
       } catch (e) {}
     }
 
+    // Try Termux API
+    const levelNum = level === 'up' ? 100 : level === 'down' ? 0 : level === 'mute' ? 0 : level === 'max' ? 100 : parseInt(level);
+    const termuxOk = await callTermuxApi('volume', { level: isNaN(levelNum) ? 50 : levelNum });
+    if (termuxOk) {
+       logPhoneAction({
+        tool: 'volume',
+        status: 'executed',
+        summary: `Volume ${level} (Termux)`,
+        details: { level, method: 'termux' },
+      });
+      return {
+        success: true,
+        tool: 'volume',
+        status: 'executed',
+        message: `Volume set to ${level}`,
+      };
+    }
+
     logPhoneAction({
       tool: 'volume',
       status: 'unsupported',
@@ -663,7 +759,7 @@ export const browserPhoneBridge: PhoneBridge = {
       success: false,
       tool: 'volume',
       status: 'unsupported',
-      message: 'Needs Android app',
+      message: 'Needs Android app or Termux API',
     };
   },
 
@@ -681,6 +777,24 @@ export const browserPhoneBridge: PhoneBridge = {
       } catch (e) {}
     }
 
+    // Try Termux API
+    const levelNum = level === 'up' ? 255 : level === 'down' ? 0 : level === 'min' ? 0 : level === 'max' ? 255 : Math.floor((parseInt(level) / 100) * 255);
+    const termuxOk = await callTermuxApi('brightness', { level: isNaN(levelNum) ? 128 : levelNum });
+    if (termuxOk) {
+      logPhoneAction({
+        tool: 'brightness',
+        status: 'executed',
+        summary: `Brightness ${level} (Termux)`,
+        details: { level, method: 'termux' },
+      });
+      return {
+        success: true,
+        tool: 'brightness',
+        status: 'executed',
+        message: `Brightness set to ${level}`,
+      };
+    }
+
     logPhoneAction({
       tool: 'brightness',
       status: 'unsupported',
@@ -692,7 +806,7 @@ export const browserPhoneBridge: PhoneBridge = {
       success: false,
       tool: 'brightness',
       status: 'unsupported',
-      message: 'Needs Android app',
+      message: 'Needs Android app or Termux API',
     };
   },
 
@@ -721,7 +835,7 @@ export const browserPhoneBridge: PhoneBridge = {
       success: false,
       tool: 'wifi',
       status: 'unsupported',
-      message: 'Needs Android app',
+      message: 'Needs Android app or Termux API',
     };
   },
 
@@ -750,7 +864,55 @@ export const browserPhoneBridge: PhoneBridge = {
       success: false,
       tool: 'bluetooth',
       status: 'unsupported',
-      message: 'Needs Android app',
+      message: 'Needs Android app or Termux API',
+    };
+  },
+
+  async read_notifications() {
+    const termuxOk = await callTermuxApi('notifications', {});
+    if (termuxOk) {
+       logPhoneAction({
+        tool: 'read_notifications',
+        status: 'executed',
+        summary: `Read notifications (Termux)`,
+        details: { method: 'termux' },
+      });
+      return {
+        success: true,
+        tool: 'read_notifications',
+        status: 'executed',
+        message: `Reading notifications...`,
+      };
+    }
+    return {
+      success: false,
+      tool: 'read_notifications',
+      status: 'unsupported',
+      message: 'Termux API required'
+    };
+  },
+
+  async take_photo({ camera }) {
+    const termuxOk = await callTermuxApi('photo', { camera: camera || 0 });
+    if (termuxOk) {
+       logPhoneAction({
+        tool: 'take_photo',
+        status: 'executed',
+        summary: `Took photo (Termux)`,
+        details: { camera, method: 'termux' },
+      });
+      return {
+        success: true,
+        tool: 'take_photo',
+        status: 'executed',
+        message: `Photo captured and saved to ~/rose_capture_...`,
+      };
+    }
+    return {
+      success: false,
+      tool: 'take_photo',
+      status: 'unsupported',
+      message: 'Termux API required'
     };
   },
 };
@@ -797,13 +959,32 @@ export async function executePhoneAction(
 /**
  * Confirms and executes a pending action (Call, SMS, WhatsApp)
  */
-export function confirmAndExecuteAction(confirmation: ActionConfirmationData) {
-  safelyOpenUrl(confirmation.executeUrl);
+export async function confirmAndExecuteAction(confirmation: ActionConfirmationData) {
+  // 1. Try Termux API first if it's a Call or SMS
+  let termuxSuccess = false;
+  if (confirmation.type === 'call') {
+    const rawNum = confirmation.executeUrl.replace('tel:', '');
+    termuxSuccess = await callTermuxApi('call', { number: decodeURIComponent(rawNum) });
+  } else if (confirmation.type === 'sms') {
+    // extract number and body from sms:number?body=text
+    const match = confirmation.executeUrl.match(/sms:([^?]+)\?body=(.+)/);
+    if (match) {
+      const number = decodeURIComponent(match[1]);
+      const text = decodeURIComponent(match[2]);
+      termuxSuccess = await callTermuxApi('sms', { number, text });
+    }
+  }
+
+  // 2. Fallback to browser URL launch if Termux failed or not applicable
+  if (!termuxSuccess) {
+    safelyOpenUrl(confirmation.executeUrl);
+  }
+
   logPhoneAction({
     tool: confirmation.type,
     status: 'confirmed',
     summary: `Sent/Called: ${confirmation.recipient}`,
-    details: { confirmation },
+    details: { confirmation, method: termuxSuccess ? 'termux' : 'browser' },
   });
 }
 
