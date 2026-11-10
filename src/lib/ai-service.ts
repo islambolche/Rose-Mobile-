@@ -311,7 +311,7 @@ const fetchWithSignalTimeout = async (
   input: RequestInfo | URL,
   init: RequestInit,
   timeoutMs: number,
-  modelName = TEXT_MODELS[0] || 'gemini-2.0-flash',
+  modelName = TEXT_MODELS[0] || 'gemini',
   reqStartTime = Date.now(),
   cleanKey = '',
   externalSignal?: AbortSignal
@@ -491,7 +491,10 @@ const callGeminiTextEndpoint = async (params: {
   }
 
   const cleanModel =
-    String(model || 'gemini-2.0-flash').replace(/^models\//, '').trim() || 'gemini-2.0-flash';
+    String(model || getSavedWorkingTextModel() || '').replace(/^models\//, '').trim();
+  if (!cleanModel) {
+    throw new Error('মডেল পাওয়া যায়নি');
+  }
 
   const startMinimal = isMinimalBodyStoredForModel(cleanModel);
   const directBody = buildBodyForRequest(
@@ -635,7 +638,7 @@ export const directGeminiGenerate = async (payload: any) => {
     const missingErr: any = new Error('Gemini key নেই। Settings → Connections-এ key দিন।');
     missingErr.bodyText = 'Gemini key নেই। Settings → Connections-এ key দিন।';
     missingErr.googleMessage = 'Gemini key নেই। Settings → Connections-এ key দিন।';
-    missingErr.modelName = getSavedWorkingTextModel() || 'gemini-2.0-flash';
+    missingErr.modelName = getSavedWorkingTextModel() || 'gemini';
     missingErr.status = 'missing_key';
     missingErr.elapsedSeconds = '0.0';
     missingErr.attempts = [
@@ -896,7 +899,8 @@ export const runGeminiSpeedTest = async (
   let fastestModel: string | null = null;
   let fastestMs = Infinity;
 
-  const testModels = TEXT_MODELS.length > 0 ? TEXT_MODELS : ['gemini-2.0-flash'];
+  const discoveredFlash = await discoverAvailableFlashModels(cleanKey);
+  const testModels = TEXT_MODELS.length > 0 ? TEXT_MODELS : discoveredFlash.slice(0, 4);
 
   for (const model of testModels) {
     const start = Date.now();
@@ -973,103 +977,198 @@ export const runGeminiSpeedTest = async (
 };
 
 const WORKING_TTS_MODEL_STORAGE_KEY = 'working_gemini_tts_model';
+let cachedDiscoveredTtsModels: string[] = [];
+let lastTtsDiscoveryTime = 0;
+
+function scoreTtsModelVersion(modelName: string): number {
+  const lower = modelName.toLowerCase();
+  const match = lower.match(/-(\d+)(?:\.(\d+))?/);
+  if (!match) return 0;
+  const major = parseInt(match[1], 10) || 0;
+  const minor = parseInt(match[2] || '0', 10) || 0;
+  return major * 1000 + minor * 100;
+}
 
 const getSavedWorkingTtsModel = (): string => {
   try {
-    return (localStorage.getItem(WORKING_TTS_MODEL_STORAGE_KEY) || '').trim();
+    const saved = (localStorage.getItem(WORKING_TTS_MODEL_STORAGE_KEY) || '')
+      .replace(/^models\//, '')
+      .trim();
+    if (saved && saved.toLowerCase().includes('tts')) {
+      return saved;
+    }
+    return '';
   } catch (e) {
     return '';
   }
 };
 
 const saveWorkingTtsModel = (modelName: string) => {
-  if (!modelName) return;
+  if (!modelName || !modelName.toLowerCase().includes('tts')) return;
   try {
-    localStorage.setItem(WORKING_TTS_MODEL_STORAGE_KEY, modelName);
+    localStorage.setItem(WORKING_TTS_MODEL_STORAGE_KEY, modelName.replace(/^models\//, '').trim());
   } catch (e) {}
 };
 
-export const discoverAvailableTtsModels = async (apiKey?: string): Promise<string[]> => {
+const clearWorkingTtsModelIfMatches = (failedModel: string) => {
+  try {
+    const current = localStorage.getItem(WORKING_TTS_MODEL_STORAGE_KEY) || '';
+    if (current.replace(/^models\//, '').trim() === failedModel.replace(/^models\//, '').trim()) {
+      localStorage.removeItem(WORKING_TTS_MODEL_STORAGE_KEY);
+    }
+  } catch (e) {}
+};
+
+export const discoverAvailableTtsModels = async (
+  apiKey?: string,
+  forceRefresh = false
+): Promise<string[]> => {
   const cleanKey = String(apiKey || getGeminiKey() || '').replace(/[\r\n\t\s"']+/g, '').trim();
   if (!cleanKey) return [];
+
+  const now = Date.now();
+  if (!forceRefresh && cachedDiscoveredTtsModels.length > 0 && now - lastTtsDiscoveryTime < 120000) {
+    return cachedDiscoveredTtsModels;
+  }
+
   try {
-    const url = `https://generativelanguage.googleapis.com/v1beta/models?pageSize=200&key=${cleanKey}`;
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), 7000);
+    const url = `https://generativelanguage.googleapis.com/v1beta/models?key=${encodeURIComponent(cleanKey)}&pageSize=200`;
     const res = await fetch(url, {
       headers: { 'x-goog-api-key': cleanKey },
+      signal: controller.signal,
     });
-    if (!res.ok) return [];
+    clearTimeout(timer);
+    if (!res.ok) return cachedDiscoveredTtsModels;
     const data = await res.json();
     const modelsList: any[] = Array.isArray(data?.models) ? data.models : [];
     const found: string[] = [];
     for (const m of modelsList) {
       const rawName = String(m?.name || '');
-      const shortName = rawName.replace(/^models\//, '');
+      const shortName = rawName.replace(/^models\//, '').trim();
       const methods: string[] = Array.isArray(m?.supportedGenerationMethods)
         ? m.supportedGenerationMethods
         : [];
-      if (methods.includes('generateContent') && shortName.toLowerCase().includes('tts')) {
+      if (shortName && methods.includes('generateContent') && shortName.toLowerCase().includes('tts')) {
         found.push(shortName);
       }
     }
+    // Sort newest version first, prefer flash-preview-tts / flash-tts over pro if same version
+    found.sort((a, b) => {
+      const diff = scoreTtsModelVersion(b) - scoreTtsModelVersion(a);
+      if (diff !== 0) return diff;
+      const aFlash = a.toLowerCase().includes('flash') ? 1 : 0;
+      const bFlash = b.toLowerCase().includes('flash') ? 1 : 0;
+      return bFlash - aFlash;
+    });
+    if (found.length > 0) {
+      cachedDiscoveredTtsModels = found;
+      lastTtsDiscoveryTime = now;
+    }
     return found;
   } catch (e) {
-    return [];
+    return cachedDiscoveredTtsModels;
   }
 };
 
 export const directGeminiTTS = async (payload: any) => {
-  const { text, voiceName, style, apiKey, model } = payload || {};
+  const { text, voiceName, apiKey, model } = payload || {};
   const cleanKey = String(apiKey || getGeminiKey() || '').replace(/[\r\n\t\s"']+/g, '').trim();
 
-  const rawText = String(text || '').trim();
+  const rawText = String(text || '').replace(/[*#_~`]/g, '').trim();
   if (!rawText) throw new Error('Empty text for TTS');
-  if (!cleanKey) throw new Error('Add your Gemini key in Settings > Connections.');
-
-  const targetModel = model || 'gemini-2.0-flash';
-  const url = `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(targetModel)}:generateContent?key=${cleanKey}`;
-
-  const res = await fetch(url, {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      'x-goog-api-key': cleanKey,
-    },
-    body: JSON.stringify({
-      contents: [{ parts: [{ text: rawText }] }],
-      generationConfig: {
-        responseModalities: ['AUDIO'],
-        speechConfig: {
-          voiceConfig: {
-            prebuiltVoiceConfig: {
-              voiceName: voiceName || 'Puck',
-            },
-          },
-        },
-      },
-    }),
-  });
-
-  const rawBodyText = await res.text().catch(() => '');
-  let data: any = null;
-  try {
-    data = rawBodyText ? JSON.parse(rawBodyText) : null;
-  } catch {}
-
-  const audioPart = data?.candidates?.[0]?.content?.parts?.find((p: any) => p?.inlineData || p?.inline_data);
-  const audioData = audioPart?.inlineData?.data || audioPart?.inline_data?.data;
-
-  if (!res.ok || !audioData) {
-    const errMsg = data?.error?.message || `TTS failed (HTTP ${res.status})`;
-    const err: any = new Error(errMsg);
-    err.status = res.status;
-    err.googleMessage = errMsg;
+  if (!cleanKey) {
+    const err: any = new Error('Gemini key নেই। Settings → Connections-এ key দিন।');
+    err.status = 'missing_key';
     throw err;
   }
 
-  saveWorkingTtsModel(targetModel);
+  const candidateModels: string[] = [];
+  if (model && String(model).toLowerCase().includes('tts')) {
+    candidateModels.push(String(model).replace(/^models\//, '').trim());
+  }
+  const savedTts = getSavedWorkingTtsModel();
+  if (savedTts && !candidateModels.includes(savedTts)) {
+    candidateModels.push(savedTts);
+  }
+  const discovered = await discoverAvailableTtsModels(cleanKey);
+  for (const dm of discovered) {
+    if (!candidateModels.includes(dm)) {
+      candidateModels.push(dm);
+    }
+  }
 
-  return {
-    audio: audioData,
-    modelUsed: targetModel,
-  };
+  if (candidateModels.length === 0) {
+    const noModelErr: any = new Error('TTS মডেল পাওয়া যায়নি');
+    noModelErr.isNoTtsModel = true;
+    throw noModelErr;
+  }
+
+  let lastError: any = null;
+
+  for (const targetModel of candidateModels) {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), 9000);
+    try {
+      const url = `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(targetModel)}:generateContent?key=${encodeURIComponent(cleanKey)}`;
+      const res = await fetch(url, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'x-goog-api-key': cleanKey,
+        },
+        body: JSON.stringify({
+          contents: [{ parts: [{ text: rawText }] }],
+          generationConfig: {
+            responseModalities: ['AUDIO'],
+            speechConfig: {
+              voiceConfig: {
+                prebuiltVoiceConfig: {
+                  voiceName: voiceName || 'Leda',
+                },
+              },
+            },
+          },
+        }),
+        signal: controller.signal,
+      });
+      clearTimeout(timer);
+
+      const rawBodyText = await res.text().catch(() => '');
+      let data: any = null;
+      try {
+        data = rawBodyText ? JSON.parse(rawBodyText) : null;
+      } catch {}
+
+      const audioPart = data?.candidates?.[0]?.content?.parts?.find(
+        (p: any) => p?.inlineData?.data || p?.inline_data?.data
+      );
+      const audioData = audioPart?.inlineData?.data || audioPart?.inline_data?.data;
+
+      if (!res.ok || !audioData) {
+        clearWorkingTtsModelIfMatches(targetModel);
+        const errMsg = data?.error?.message || `TTS ব্যর্থ (HTTP ${res.status})`;
+        const err: any = new Error(errMsg);
+        err.status = res.status;
+        err.googleMessage = errMsg;
+        lastError = err;
+        continue;
+      }
+
+      saveWorkingTtsModel(targetModel);
+
+      return {
+        audio: audioData,
+        modelUsed: targetModel,
+      };
+    } catch (err: any) {
+      clearTimeout(timer);
+      clearWorkingTtsModelIfMatches(targetModel);
+      lastError = err;
+    }
+  }
+
+  throw lastError || new Error('TTS মডেল পাওয়া যায়নি');
 };
+

@@ -25,7 +25,9 @@ export interface GeminiLiveOptions {
   onClose?: (event?: any) => void;
   onTurnComplete?: () => void;
   onInterrupted?: () => void;
+  onToast?: (message: string) => void;
   audioContext?: AudioContext;
+  playbackAudioContext?: AudioContext;
   micStream?: MediaStream;
 }
 
@@ -239,6 +241,7 @@ function blobToBase64(blob: Blob): Promise<string> {
 export class GeminiLiveSession {
   private ws: WebSocket | null = null;
   private audioCtx: AudioContext | null = null;
+  private playbackAudioCtx: AudioContext | null = null;
   private micStream: MediaStream | null = null;
   private audioWorkletNode: AudioWorkletNode | null = null;
   private scriptProcessor: ScriptProcessorNode | null = null;
@@ -251,6 +254,7 @@ export class GeminiLiveSession {
   private isMuted = false;
   private isSetupComplete = false;
   private isFallbackMode = false;
+  private lastTtsAttemptError: string | null = null;
 
   // Discovered models from ListModels
   private liveModels: string[] = [];
@@ -406,6 +410,25 @@ export class GeminiLiveSession {
         } catch {}
       }
 
+      this.playbackAudioCtx =
+        this.options.playbackAudioContext ||
+        new (window.AudioContext || (window as any).webkitAudioContext)();
+
+      if (this.playbackAudioCtx.state !== 'running') {
+        try {
+          await this.playbackAudioCtx.resume();
+        } catch {}
+      }
+
+      // Unlock playback AudioContext on user gesture with a tiny silent buffer
+      try {
+        const silentBuf = this.playbackAudioCtx.createBuffer(1, 1, 24000);
+        const silentSrc = this.playbackAudioCtx.createBufferSource();
+        silentSrc.buffer = silentBuf;
+        silentSrc.connect(this.playbackAudioCtx.destination);
+        silentSrc.start(0);
+      } catch {}
+
       const source = this.audioCtx.createMediaStreamSource(this.micStream);
       const sourceSampleRate = this.audioCtx.sampleRate;
 
@@ -414,7 +437,7 @@ export class GeminiLiveSession {
       this.micAnalyser.smoothingTimeConstant = 0.45;
       source.connect(this.micAnalyser);
 
-      this.outputAnalyser = this.audioCtx.createAnalyser();
+      this.outputAnalyser = this.playbackAudioCtx.createAnalyser();
       this.outputAnalyser.fftSize = 256;
       this.outputAnalyser.smoothingTimeConstant = 0.45;
 
@@ -1037,23 +1060,50 @@ export class GeminiLiveSession {
     const cleanText = text.replace(/[*#_~`]/g, '').trim();
     if (!cleanText || this.wasStoppedByUser) return;
 
-    this.updateState('speaking');
-
-    // 1. Try Gemini TTS model from ListModels if available
-    if (this.ttsModels.length > 0) {
-      const ttsModel = this.ttsModels[0];
-      const playedViaGeminiTts = await this.trySpeakViaGeminiTts(apiKey, ttsModel, cleanText);
-      if (playedViaGeminiTts || this.wasStoppedByUser) {
-        if (!this.wasStoppedByUser) {
-          this.updateState('listening');
-        }
-        return;
-      }
+    const vol = this.options.voiceVolume ?? 100;
+    if (vol <= 0) {
+      this.options.onToast?.('ভলিউম শূন্য');
+      return;
     }
 
-    // 2. Fallback to browser speechSynthesis (same language, female voice preferred, same speed)
+    // Cancel any previous speech so only the newest reply speaks
+    this.interruptPlayback();
+    this.updateState('speaking');
+    this.lastTtsAttemptError = null;
+
+    // 1. Discover TTS models from ListModels if not yet loaded
+    if (this.ttsModels.length === 0) {
+      try {
+        const discovered = await discoverVoiceModelsFromListModels(apiKey);
+        if (discovered.ttsModels.length > 0) {
+          this.ttsModels = discovered.ttsModels;
+        }
+      } catch {}
+    }
+
+    // 2. Try Gemini TTS models from ListModels (newest first)
+    if (this.ttsModels.length > 0) {
+      for (const ttsModel of this.ttsModels) {
+        if (this.wasStoppedByUser) return;
+        const playedViaGeminiTts = await this.trySpeakViaGeminiTts(apiKey, ttsModel, cleanText);
+        if (playedViaGeminiTts || this.wasStoppedByUser) {
+          if (!this.wasStoppedByUser) {
+            this.updateState('listening');
+          }
+          return;
+        }
+      }
+    } else {
+      this.lastTtsAttemptError = 'TTS মডেল পাওয়া যায়নি';
+    }
+
+    // 3. Fallback to browser speechSynthesis (same language, female voice preferred, same speed)
     if (!this.wasStoppedByUser) {
-      await this.speakViaBrowserSpeechSynthesis(cleanText);
+      const browserOk = await this.speakViaBrowserSpeechSynthesis(cleanText);
+      if (!browserOk && !this.wasStoppedByUser) {
+        const errMsg = this.lastTtsAttemptError || 'অডিও চালু হয়নি';
+        this.options.onToast?.(errMsg);
+      }
       if (!this.wasStoppedByUser) {
         this.updateState('listening');
       }
@@ -1062,7 +1112,7 @@ export class GeminiLiveSession {
 
   private async trySpeakViaGeminiTts(apiKey: string, ttsModel: string, text: string): Promise<boolean> {
     const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), 7000);
+    const timer = setTimeout(() => controller.abort(), 9000);
 
     try {
       const url = `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(ttsModel)}:generateContent?key=${encodeURIComponent(apiKey)}`;
@@ -1091,16 +1141,31 @@ export class GeminiLiveSession {
       });
       clearTimeout(timer);
 
-      if (!res.ok) return false;
+      if (!res.ok) {
+        const errData = await res.json().catch(() => null);
+        this.lastTtsAttemptError =
+          errData?.error?.message
+            ? `TTS (${res.status}): ${errData.error.message}`
+            : `TTS ত্রুটি (${res.status})`;
+        return false;
+      }
       const data = await res.json().catch(() => null);
       const part = data?.candidates?.[0]?.content?.parts?.find(
         (p: any) => p?.inlineData?.data || p?.inline_data?.data
       );
       const base64Audio = part?.inlineData?.data || part?.inline_data?.data;
-      if (!base64Audio || this.wasStoppedByUser) return false;
+      if (!base64Audio || this.wasStoppedByUser) {
+        this.lastTtsAttemptError = 'TTS অডিও ডাটা পাওয়া যায়নি';
+        return false;
+      }
 
-      return await this.playPcmAudioAndWait(base64Audio);
-    } catch {
+      const played = await this.playPcmAudioAndWait(base64Audio);
+      if (!played) {
+        this.lastTtsAttemptError = 'অডিও চালু হয়নি';
+      }
+      return played;
+    } catch (e: any) {
+      this.lastTtsAttemptError = e?.name === 'AbortError' ? 'TTS সময় শেষ' : 'TTS সংযোগ ব্যর্থ';
       return false;
     } finally {
       clearTimeout(timer);
@@ -1109,52 +1174,66 @@ export class GeminiLiveSession {
 
   private playPcmAudioAndWait(base64Pcm: string): Promise<boolean> {
     return new Promise((resolve) => {
-      if (!this.audioCtx || this.wasStoppedByUser) {
+      const ctx = this.playbackAudioCtx || this.audioCtx;
+      if (!ctx || this.wasStoppedByUser) {
         resolve(false);
         return;
       }
-      if (this.audioCtx.state === 'suspended') {
-        this.audioCtx.resume().catch(() => {});
-      }
 
-      try {
-        const binaryStr = atob(base64Pcm);
-        const len = binaryStr.length;
-        const bytes = new Uint8Array(len);
-        for (let i = 0; i < len; i++) bytes[i] = binaryStr.charCodeAt(i);
+      const startPlayback = async () => {
+        try {
+          if (ctx.state !== 'running') {
+            await ctx.resume().catch(() => {});
+          }
 
-        const pcm16 = new Int16Array(bytes.buffer, bytes.byteOffset, Math.floor(len / 2));
-        const float32 = new Float32Array(pcm16.length);
-        for (let i = 0; i < pcm16.length; i++) float32[i] = pcm16[i] / 32768.0;
+          const binaryStr = atob(base64Pcm);
+          const len = binaryStr.length;
+          const bytes = new Uint8Array(len);
+          for (let i = 0; i < len; i++) bytes[i] = binaryStr.charCodeAt(i);
 
-        const audioBuffer = this.audioCtx.createBuffer(1, float32.length, 24000);
-        audioBuffer.copyToChannel(float32, 0);
+          const sampleCount = Math.floor(len / 2);
+          if (sampleCount <= 0) {
+            resolve(false);
+            return;
+          }
 
-        const source = this.audioCtx.createBufferSource();
-        source.buffer = audioBuffer;
+          const view = new DataView(bytes.buffer, bytes.byteOffset, sampleCount * 2);
+          const float32 = new Float32Array(sampleCount);
+          for (let i = 0; i < sampleCount; i++) {
+            float32[i] = view.getInt16(i * 2, true) / 32768.0;
+          }
 
-        const speed = Math.min(1.35, Math.max(0.85, this.options.speechSpeed || 1.05));
-        source.playbackRate.value = speed;
+          const audioBuffer = ctx.createBuffer(1, float32.length, 24000);
+          audioBuffer.copyToChannel(float32, 0);
 
-        const gainNode = this.audioCtx.createGain();
-        gainNode.gain.value = Math.min(1.0, Math.max(0.1, (this.options.voiceVolume ?? 100) / 100));
+          const source = ctx.createBufferSource();
+          source.buffer = audioBuffer;
 
-        source.connect(gainNode);
-        if (this.outputAnalyser) {
-          gainNode.connect(this.outputAnalyser);
+          const speed = Math.min(1.35, Math.max(0.85, this.options.speechSpeed || 1.05));
+          source.playbackRate.value = speed;
+
+          const gainNode = ctx.createGain();
+          gainNode.gain.value = Math.min(1.0, Math.max(0.1, (this.options.voiceVolume ?? 100) / 100));
+
+          source.connect(gainNode);
+          if (this.outputAnalyser && this.outputAnalyser.context === ctx) {
+            gainNode.connect(this.outputAnalyser);
+          }
+          gainNode.connect(ctx.destination);
+
+          this.scheduledAudioSources.push(source);
+          source.onended = () => {
+            this.scheduledAudioSources = this.scheduledAudioSources.filter((s) => s !== source);
+            resolve(true);
+          };
+
+          source.start(0);
+        } catch {
+          resolve(false);
         }
-        gainNode.connect(this.audioCtx.destination);
+      };
 
-        this.scheduledAudioSources.push(source);
-        source.onended = () => {
-          this.scheduledAudioSources = this.scheduledAudioSources.filter((s) => s !== source);
-          resolve(true);
-        };
-
-        source.start(0);
-      } catch {
-        resolve(false);
-      }
+      startPlayback();
     });
   }
 
@@ -1171,8 +1250,10 @@ export class GeminiLiveSession {
           return;
         }
 
-        const targetLang = (this.options.language || 'bn-BD').toLowerCase();
-        const langPrefix = targetLang.split('-')[0];
+        const hasBengali = /[\u0980-\u09FF]/.test(text);
+        const requestedLang = this.options.language || 'bn-BD';
+        const targetLang = hasBengali ? 'bn-BD' : requestedLang;
+        const langPrefix = targetLang.toLowerCase().split(/[-_]/)[0];
 
         const isFemale = (v: SpeechSynthesisVoice) => {
           const s = `${v.name} ${v.voiceURI}`.toLowerCase();
@@ -1186,31 +1267,46 @@ export class GeminiLiveSession {
             s.includes('sangeeta') ||
             s.includes('lekha') ||
             s.includes('kalpana') ||
+            s.includes('tanishaa') ||
+            s.includes('nabanita') ||
             s.includes('google') ||
             s.includes('natural')
           );
         };
 
         const isMale = (v: SpeechSynthesisVoice) =>
-          /\b(male|man|boy|david|mark|alex|daniel|fred|hemant|prabhat)\b/i.test(`${v.name} ${v.voiceURI}`);
+          /\b(male|man|boy|david|mark|alex|daniel|fred|hemant|prabhat|pradeep)\b/i.test(
+            `${v.name} ${v.voiceURI}`
+          );
 
-        const langVoices = voices.filter((v) => v.lang.toLowerCase().startsWith(langPrefix));
+        const langVoices = voices.filter((v) =>
+          v.lang.toLowerCase().replace('_', '-').startsWith(langPrefix)
+        );
+        const hindiFallbackVoices =
+          hasBengali && langVoices.length === 0
+            ? voices.filter((v) => v.lang.toLowerCase().startsWith('hi'))
+            : [];
+
+        const pool = langVoices.length > 0 ? langVoices : hindiFallbackVoices;
         const chosenVoice =
-          langVoices.find((v) => isFemale(v) && !isMale(v)) ||
-          langVoices.find((v) => !isMale(v)) ||
-          langVoices[0] ||
-          voices.find((v) => isFemale(v) && !isMale(v)) ||
-          voices[0] ||
-          null;
+          pool.find((v) => isFemale(v) && !isMale(v)) ||
+          pool.find((v) => !isMale(v)) ||
+          pool[0] ||
+          (!hasBengali && langPrefix === 'en'
+            ? voices.find((v) => isFemale(v) && !isMale(v)) || voices[0] || null
+            : null);
 
         const utterance = new SpeechSynthesisUtterance(text);
-        utterance.lang = chosenVoice?.lang || this.options.language || 'bn-BD';
-        if (chosenVoice) utterance.voice = chosenVoice;
+        utterance.lang = chosenVoice?.lang || targetLang;
+        if (chosenVoice) {
+          utterance.voice = chosenVoice;
+        }
         utterance.rate = Math.min(1.35, Math.max(0.85, this.options.speechSpeed || 1.05));
         utterance.pitch = Math.min(1.5, Math.max(0.85, this.options.speechPitch || 1.15));
         utterance.volume = Math.min(1.0, Math.max(0.1, (this.options.voiceVolume ?? 100) / 100));
 
         let settled = false;
+        let startedAt = 0;
         const finish = (ok: boolean) => {
           if (settled) return;
           settled = true;
@@ -1220,20 +1316,47 @@ export class GeminiLiveSession {
         };
 
         const safetyTimer = setTimeout(() => {
-          finish(true);
+          finish(startedAt > 0);
         }, Math.max(8000, text.length * 120));
 
         utterance.onstart = () => {
+          startedAt = Date.now();
           this.isBrowserTtsSpeaking = true;
         };
-        utterance.onend = () => finish(true);
-        utterance.onerror = () => finish(false);
+        utterance.onend = () => {
+          const duration = startedAt > 0 ? Date.now() - startedAt : 0;
+          if (text.length > 2 && duration < 50) {
+            finish(false);
+          } else {
+            finish(true);
+          }
+        };
+        utterance.onerror = (ev: any) => {
+          if (ev?.error === 'interrupted' || ev?.error === 'canceled') {
+            finish(true);
+            return;
+          }
+          finish(false);
+        };
+
+        const speakNow = () => {
+          if (this.wasStoppedByUser || settled) return;
+          try {
+            this.isBrowserTtsSpeaking = true;
+            window.speechSynthesis.speak(utterance);
+            window.speechSynthesis.resume();
+          } catch {
+            finish(false);
+          }
+        };
 
         try {
-          window.speechSynthesis.cancel();
-          this.isBrowserTtsSpeaking = true;
-          window.speechSynthesis.speak(utterance);
-          window.speechSynthesis.resume();
+          if (window.speechSynthesis.speaking || window.speechSynthesis.pending) {
+            window.speechSynthesis.cancel();
+            setTimeout(speakNow, 45);
+          } else {
+            speakNow();
+          }
         } catch {
           finish(false);
         }
@@ -1263,32 +1386,39 @@ export class GeminiLiveSession {
   }
 
   private playPcmAudioChunk(base64Pcm: string) {
-    if (!this.audioCtx) return;
-    if (this.audioCtx.state === 'suspended') this.audioCtx.resume().catch(() => {});
+    const ctx = this.playbackAudioCtx || this.audioCtx;
+    if (!ctx) return;
+    if (ctx.state === 'suspended') ctx.resume().catch(() => {});
     try {
       const binaryStr = atob(base64Pcm);
       const len = binaryStr.length;
       const bytes = new Uint8Array(len);
       for (let i = 0; i < len; i++) bytes[i] = binaryStr.charCodeAt(i);
 
-      const pcm16 = new Int16Array(bytes.buffer, bytes.byteOffset, Math.floor(len / 2));
-      const float32 = new Float32Array(pcm16.length);
-      for (let i = 0; i < pcm16.length; i++) float32[i] = pcm16[i] / 32768.0;
+      const sampleCount = Math.floor(len / 2);
+      if (sampleCount <= 0) return;
+      const view = new DataView(bytes.buffer, bytes.byteOffset, sampleCount * 2);
+      const float32 = new Float32Array(sampleCount);
+      for (let i = 0; i < sampleCount; i++) {
+        float32[i] = view.getInt16(i * 2, true) / 32768.0;
+      }
 
-      const audioBuffer = this.audioCtx.createBuffer(1, float32.length, 24000);
+      const audioBuffer = ctx.createBuffer(1, float32.length, 24000);
       audioBuffer.copyToChannel(float32, 0);
 
-      const source = this.audioCtx.createBufferSource();
+      const source = ctx.createBufferSource();
       source.buffer = audioBuffer;
 
-      const gainNode = this.audioCtx.createGain();
+      const gainNode = ctx.createGain();
       gainNode.gain.value = Math.min(1.0, Math.max(0.1, (this.options.voiceVolume ?? 100) / 100));
 
       source.connect(gainNode);
-      if (this.outputAnalyser) gainNode.connect(this.outputAnalyser);
-      gainNode.connect(this.audioCtx.destination);
+      if (this.outputAnalyser && this.outputAnalyser.context === ctx) {
+        gainNode.connect(this.outputAnalyser);
+      }
+      gainNode.connect(ctx.destination);
 
-      const startTime = Math.max(this.audioCtx.currentTime, this.nextStartTime);
+      const startTime = Math.max(ctx.currentTime, this.nextStartTime);
       source.start(startTime);
       this.scheduledAudioSources.push(source);
       source.onended = () => {

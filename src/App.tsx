@@ -947,9 +947,9 @@ ${APP_NAVIGATION_KNOWLEDGE}
 ${getDeveloperFactsInstruction()}`;
 };
 
-const LIVE_MODELS = ["Auto (recommended)", "gemini-1.5-flash"];
+const LIVE_MODELS = ["Auto (recommended)"];
 
-const LIVE_MODEL = "gemini-1.5-flash";
+const LIVE_MODEL = "";
 
 const LANGUAGES = [
   { id: "auto", label: "Auto" },
@@ -980,7 +980,7 @@ const RESPONSE_STYLES = [
 
 const PRIORITY_ANSWER_MODELS = TEXT_MODELS;
 
-const PRIORITY_TTS_MODELS = ["gemini-1.5-flash-lite-tts"];
+const PRIORITY_TTS_MODELS: string[] = [];
 
 type AppView =
   | "home"
@@ -1339,47 +1339,102 @@ const VoiceCheckView = ({
     }
   };
 
-  // 5. TEST VOICE (Real sample speech with current pitch, speed, volume, voice)
+  // 5. TEST VOICE (Real sample speech with Gemini TTS first, then Browser fallback)
   const handleTestVoice = async () => {
     if (voiceTestingState === "playing") return;
+    const vol = prefs.voiceVolume ?? 80;
+    if (vol <= 0) {
+      setToast("ভলিউম শূন্য");
+      setVoiceTestError("ভলিউম শূন্য");
+      return;
+    }
     setVoiceTestingState("playing");
     setVoiceTestError(null);
-    console.log("[Voice Check] Playing test voice sample...");
+    const sampleText = "হ্যালো, আমি রোজ";
 
     try {
+      const cleanKey = (getGeminiKey() || apiKeys.gemini || "").replace(/["'\r\n\t\s]+/g, "").trim();
+      const chosenVoiceName = GEMINI_VOICES.find((v) => v.id === prefs.voiceName)?.id || prefs.voiceName || "Leda";
+
+      if (cleanKey) {
+        try {
+          const data = await directGeminiTTS({
+            text: sampleText,
+            voiceName: chosenVoiceName,
+            apiKey: cleanKey,
+          });
+          if (data?.audio) {
+            const AudioCtx = window.AudioContext || (window as any).webkitAudioContext;
+            const ctx = new AudioCtx();
+            if (ctx.state !== "running") await ctx.resume().catch(() => {});
+            const binaryStr = atob(data.audio);
+            const len = binaryStr.length;
+            const bytes = new Uint8Array(len);
+            for (let i = 0; i < len; i++) bytes[i] = binaryStr.charCodeAt(i);
+            const sampleCount = Math.floor(len / 2);
+            const view = new DataView(bytes.buffer, bytes.byteOffset, sampleCount * 2);
+            const float32 = new Float32Array(sampleCount);
+            for (let i = 0; i < sampleCount; i++) float32[i] = view.getInt16(i * 2, true) / 32768.0;
+            const audioBuffer = ctx.createBuffer(1, float32.length, 24000);
+            audioBuffer.copyToChannel(float32, 0);
+            const src = ctx.createBufferSource();
+            src.buffer = audioBuffer;
+            src.playbackRate.value = clampSpeechSpeed(prefs.speechSpeed ?? 1.1);
+            const gain = ctx.createGain();
+            gain.gain.value = Math.min(1, Math.max(0.1, vol / 100));
+            src.connect(gain);
+            gain.connect(ctx.destination);
+            await new Promise<void>((resolve) => {
+              src.onended = () => {
+                ctx.close().catch(() => {});
+                resolve();
+              };
+              src.start(0);
+            });
+            setToast("Gemini TTS");
+            setVoiceTestingState("passed");
+            setTimeout(() => setVoiceTestingState("idle"), 3000);
+            return;
+          }
+        } catch {}
+      }
+
       if (typeof window !== "undefined" && "speechSynthesis" in window) {
-        window.speechSynthesis.cancel();
-        const sampleText = "হ্যালো, আমি রোজ। আমি আপনাকে শুনতে পাচ্ছি এবং কথা বলতে পারছি।";
+        const voices = window.speechSynthesis.getVoices() || [];
+        const bnVoices = voices.filter((v) => v.lang && (v.lang.toLowerCase().startsWith("bn") || v.lang.toLowerCase().startsWith("hi")));
+        const matchedVoice = bnVoices.find((v) => /female|woman|girl|google|natural|tanishaa|kalpana|lekha|veena/i.test(`${v.name} ${v.voiceURI}`)) || bnVoices[0] || null;
         const u = new SpeechSynthesisUtterance(sampleText);
-        const femaleVoice = getSafeFemaleBrowserVoice(prefs.language || "bn");
-        if (femaleVoice) u.voice = femaleVoice;
-        u.lang = femaleVoice?.lang || "bn-BD";
+        if (matchedVoice) u.voice = matchedVoice;
+        u.lang = matchedVoice?.lang || "bn-BD";
         u.pitch = ttsPitch ?? 1.15;
         u.rate = clampSpeechSpeed(prefs.speechSpeed ?? 1.1);
-        u.volume = ((prefs.voiceVolume ?? 80) / 100);
+        u.volume = Math.min(1, Math.max(0.1, vol / 100));
 
-        u.onend = () => {
-          setVoiceTestingState("passed");
-          setTimeout(() => setVoiceTestingState("idle"), 3000);
-        };
-
-        u.onerror = (err) => {
-          console.error("[Voice Check] Speech synthesis error:", err);
-          setVoiceTestingState("idle");
-          setVoiceTestError("ভয়েস আউটপুট দিতে ব্যর্থ হয়েছে। ব্রাউজার বা ডিভাইসের সাউন্ড চেক করুন।");
-        };
-
-        window.speechSynthesis.speak(u);
-        window.speechSynthesis.resume();
-      } else {
-        await playPersonalitySample(settings.personality, prefs.voiceName || "Sulafat");
+        await new Promise<void>((resolve, reject) => {
+          u.onend = () => resolve();
+          u.onerror = () => reject(new Error("অডিও চালু হয়নি"));
+          if (window.speechSynthesis.speaking || window.speechSynthesis.pending) {
+            window.speechSynthesis.cancel();
+            setTimeout(() => {
+              window.speechSynthesis.speak(u);
+              window.speechSynthesis.resume();
+            }, 45);
+          } else {
+            window.speechSynthesis.speak(u);
+            window.speechSynthesis.resume();
+          }
+        });
+        setToast("ব্রাউজার");
         setVoiceTestingState("passed");
         setTimeout(() => setVoiceTestingState("idle"), 3000);
+      } else {
+        throw new Error("অডিও চালু হয়নি");
       }
     } catch (e: any) {
-      console.warn("[Voice Check] Sample playback error:", e);
       setVoiceTestingState("idle");
-      setVoiceTestError(e?.message || "ভয়েস প্লে করতে সমস্যা হয়েছে।");
+      const msg = e?.message || "অডিও চালু হয়নি";
+      setVoiceTestError(msg);
+      setToast(msg);
     }
   };
 
@@ -3625,7 +3680,7 @@ export function App() {
   const lastSpeakerTypeRef = useRef<"Gemini TTS" | "phone voice (female)" | "none">("Gemini TTS");
   const [lastStylePrompt, setLastStylePrompt] = useState<string>("");
   const lastStylePromptRef = useRef<string>("");
-  const lastTtsModelUsedRef = useRef<string>("gemini-1.5-flash-lite-tts");
+  const lastTtsModelUsedRef = useRef<string>("");
   const activeAudioSourcesCountRef = useRef<number>(0);
 
   const stopPlayback = useCallback(() => {
@@ -3918,16 +3973,13 @@ export function App() {
     }
   };
 
-  const fetchVoiceModels = async (key?: string) => {
+  const fetchVoiceModels = async (_key?: string) => {
     try {
       updateDebugLog("Model found", "pending");
-      // Use direct SDK or hardcoded models for Capacitor to avoid server dependency
-      const genName = TEXT_MODELS[0];
-      const ttsName = "gemini-1.5-flash-lite-tts";
+      const genName = TEXT_MODELS[0] || getSavedWorkingTextModel() || "";
+      const ttsName = "";
       setWorkingModel(genName);
       setTtsModel(ttsName);
-      localStorage.setItem("iyabd_gen_model", genName);
-      localStorage.setItem("iyabd_tts_model", ttsName);
       updateDebugLog("Model found", "success");
       return { genName, ttsName };
     } catch (err: any) {
@@ -4160,15 +4212,20 @@ export function App() {
           let headers: any = { "Content-Type": "application/json" };
 
           if (type === "gemini") {
-            const m = getSavedWorkingTextModel() || TEXT_MODELS[0] || 'gemini-2.0-flash';
+            const discoveredModels = await discoverAvailableFlashModels(cleanKey);
+            const m = getSavedWorkingTextModel() || TEXT_MODELS[0] || discoveredModels[0] || "";
             const cleanM = m.replace(/^models\//, "").trim();
-            url = `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(cleanM)}:generateContent?key=${encodeURIComponent(cleanKey)}`;
-            method = "POST";
+            url = cleanM
+              ? `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(cleanM)}:generateContent?key=${encodeURIComponent(cleanKey)}`
+              : `https://generativelanguage.googleapis.com/v1beta/models?key=${encodeURIComponent(cleanKey)}&pageSize=10`;
+            method = cleanM ? "POST" : "GET";
             headers["x-goog-api-key"] = cleanKey;
-            body = JSON.stringify({
-              contents: [{ role: "user", parts: [{ text: "hi" }] }],
-              generationConfig: { maxOutputTokens: 2 },
-            });
+            body = cleanM
+              ? JSON.stringify({
+                  contents: [{ role: "user", parts: [{ text: "hi" }] }],
+                  generationConfig: { maxOutputTokens: 2 },
+                })
+              : null;
           } else if (type === "groq") {
             url = `https://api.groq.com/openai/v1/models`;
             headers["Authorization"] = `Bearer ${cleanKey}`;
@@ -4259,7 +4316,7 @@ export function App() {
       throw new Error("Add your Gemini key in Settings > Connections.");
     }
     const result = await directGeminiGenerate({
-      model: PRIORITY_ANSWER_MODELS[0] || "gemini-1.5-flash",
+      model: PRIORITY_ANSWER_MODELS[0] || getSavedWorkingTextModel() || "",
       contents: [{ role: "user", parts: [{ text: formatUserPromptWithCharacterGuard(prompt, settings, prefs) }] }],
       systemInstruction: buildSystemInstruction(settings, prefs, false),
       generationConfig: { temperature: 0.9, maxOutputTokens: 280 },
@@ -5068,68 +5125,157 @@ export function App() {
 
   const [activeVoiceEngine, setActiveVoiceEngine] = useState<string>("Voice: Phone TTS");
 
-  // Prefetch Gemini TTS audio for a sentence in parallel
+  // Prefetch Gemini TTS audio for a sentence
   const requestGeminiTTSAudio = useCallback(
-    async (text: string, token: number): Promise<{ audio?: string; error?: string }> => {
+    async (text: string, token: number): Promise<{ audio?: string; error?: string; modelUsed?: string }> => {
       if (speechTokenRef.current !== token) return {};
       try {
         const currentKey = getGeminiKey() || apiKeysRef.current.gemini || "";
-        const sanitizedKey = currentKey.replace(/["']/g, "").trim();
+        const sanitizedKey = currentKey.replace(/[\r\n\t\s"']+/g, "").trim();
+        if (!sanitizedKey) {
+          return { error: "Gemini key নেই। Settings → Connections-এ key দিন।" };
+        }
         const preset = getVoicePreset(prefsRef.current.voiceName);
         const voiceLabel = preset.voiceName || "Leda";
-        const activePersonalityId = settingsRef.current?.personality || "Normal";
-        const activePersonalityConfig =
-          PERSONALITY_CONFIGS[activePersonalityId] || PERSONALITY_CONFIGS["Normal"];
-        const activeStyle =
-          activePersonalityId === "Custom" && settingsRef.current?.customPersonalityText
-            ? `Say in a sweet female voice matching this character (${settingsRef.current.customPersonalityText}): `
-            : activePersonalityConfig?.ttsStylePrefix || preset.personalityPrompt;
         const data = await directGeminiTTS({
           text,
-          style: activeStyle,
           voiceName: voiceLabel,
           apiKey: sanitizedKey,
         });
         if (speechTokenRef.current !== token) return {};
         if (data?.audio) {
-          return { audio: data.audio };
+          return { audio: data.audio, modelUsed: data.modelUsed };
         }
-        return { error: "No audio returned from Gemini TTS" };
+        return { error: "TTS অডিও পাওয়া যায়নি" };
       } catch (err: any) {
-        return { error: String(err?.message || err || "Gemini TTS failed") };
+        return { error: String(err?.message || err || "TTS ব্যর্থ") };
       }
     },
     []
   );
 
-  // Play prefetched Gemini TTS audio using HTMLAudioElement with preservesPitch = true and clamped playbackRate (0.9 - 1.25)
+  // Play prefetched 24kHz PCM audio via unlocked AudioContext (+ AnalyserNode for Orb/6 bars)
   const playPrefetchedGeminiAudio = useCallback(
-    async (base64Audio: string, token: number, startTimeoutMs: number = 4000): Promise<boolean> => {
+    async (base64Audio: string, token: number, startTimeoutMs: number = 5000): Promise<boolean> => {
       if (!base64Audio || speechTokenRef.current !== token) return false;
-      const pcm = base64ToPcm(base64Audio);
-      const wavUrl = pcmInt16ToWavBlobUrl(pcm, 24000);
+
+      const vol = prefsRef.current.voiceVolume ?? 100;
+      if (vol <= 0) {
+        setToast("ভলিউম শূন্য");
+        return false;
+      }
+
       const isEmotional = settingsRef.current?.personality === "Emotional";
       const clampedRate = isEmotional
         ? (emotionalSlowRateRef.current ? 0.9 : 1.0)
         : clampSpeechSpeed(prefsRef.current.speechSpeed ?? 1.1);
       const voiceLabel = getVoicePreset(prefsRef.current.voiceName).voiceName || "Leda";
 
+      isBusyRef.current = true;
+      isSpeakingTTSRef.current = true;
+      setActiveVoiceEngine(`Voice: Gemini TTS (${voiceLabel})`);
+      transitionToState("SPEAKING");
+
+      // Primary path: play 24kHz PCM directly through tap-unlocked outputAudioCtxRef
+      try {
+        const AudioCtx = window.AudioContext || (window as any).webkitAudioContext;
+        if (AudioCtx) {
+          if (!outputAudioCtxRef.current || outputAudioCtxRef.current.state === "closed") {
+            outputAudioCtxRef.current = new AudioCtx({ sampleRate: 24000 });
+          }
+          const ctx = outputAudioCtxRef.current;
+          if (ctx.state !== "running") {
+            await ctx.resume().catch(() => {});
+          }
+
+          const binaryStr = atob(base64Audio);
+          const len = binaryStr.length;
+          const bytes = new Uint8Array(len);
+          for (let i = 0; i < len; i++) bytes[i] = binaryStr.charCodeAt(i);
+
+          const sampleCount = Math.floor(len / 2);
+          if (sampleCount > 0) {
+            const view = new DataView(bytes.buffer, bytes.byteOffset, sampleCount * 2);
+            const float32 = new Float32Array(sampleCount);
+            for (let i = 0; i < sampleCount; i++) {
+              float32[i] = view.getInt16(i * 2, true) / 32768.0;
+            }
+
+            const audioBuffer = ctx.createBuffer(1, float32.length, 24000);
+            audioBuffer.copyToChannel(float32, 0);
+
+            const source = ctx.createBufferSource();
+            source.buffer = audioBuffer;
+            source.playbackRate.value = clampedRate;
+
+            const gainNode = ctx.createGain();
+            gainNode.gain.value = Math.min(1, Math.max(0.05, vol / 100));
+
+            if (!outputAnalyserRef.current || outputAnalyserRef.current.context !== ctx) {
+              const analyser = ctx.createAnalyser();
+              analyser.fftSize = 256;
+              analyser.smoothingTimeConstant = 0.45;
+              outputAnalyserRef.current = analyser;
+            }
+
+            source.connect(gainNode);
+            gainNode.connect(outputAnalyserRef.current);
+            outputAnalyserRef.current.connect(ctx.destination);
+
+            allActiveAudioNodesRef.current.add(source);
+
+            const webAudioPlayed = await new Promise<boolean>((resolve) => {
+              let settled = false;
+              let pulseTimer: any = null;
+              const finish = (ok: boolean) => {
+                if (settled) return;
+                settled = true;
+                if (pulseTimer) clearInterval(pulseTimer);
+                allActiveAudioNodesRef.current.delete(source);
+                resolve(ok);
+              };
+
+              pulseTimer = setInterval(() => {
+                if (speechTokenRef.current !== token) {
+                  try { source.stop(); } catch {}
+                  finish(true);
+                  return;
+                }
+                lastWordBoundaryTimeRef.current = performance.now();
+                mouthWordPulseRef.current = 0.75 + Math.random() * 0.2;
+              }, 120);
+
+              source.onended = () => finish(true);
+
+              try {
+                source.start(0);
+              } catch {
+                finish(false);
+              }
+            });
+
+            if (webAudioPlayed) {
+              return true;
+            }
+          }
+        }
+      } catch (e) {
+        console.warn("[TTS] WebAudio playback failed, trying HTMLAudioElement fallback:", e);
+      }
+
+      // Secondary fallback: HTMLAudioElement WAV Blob
+      const pcm = base64ToPcm(base64Audio);
+      const wavUrl = pcmInt16ToWavBlobUrl(pcm, 24000);
       const audio = new Audio(wavUrl);
       audio.preservesPitch = true;
       (audio as any).mozPreservesPitch = true;
       (audio as any).webkitPreservesPitch = true;
       audio.defaultPlaybackRate = clampedRate;
       audio.playbackRate = clampedRate;
-      // Note: Do NOT apply phone-voice pitch (ttsPitch) to Gemini audio
-      audio.volume = Math.min(1, Math.max(0, (prefsRef.current.voiceVolume ?? 100) / 100));
+      audio.volume = Math.min(1, Math.max(0.05, vol / 100));
 
       ttsFallbackAudioRef.current = audio;
       allActiveAudioElementsRef.current.add(audio);
-
-      isBusyRef.current = true;
-      isSpeakingTTSRef.current = true;
-      setActiveVoiceEngine(`Voice: Gemini Live (${voiceLabel})`);
-      transitionToState("SPEAKING");
 
       return await new Promise<boolean>((resolve) => {
         let settled = false;
@@ -5160,7 +5306,7 @@ export function App() {
             } catch (e) {}
             finish(false);
           }
-        }, Math.max(1200, startTimeoutMs));
+        }, Math.max(1500, startTimeoutMs));
 
         audio.onplaying = () => {
           didStartPlaying = true;
@@ -5179,12 +5325,6 @@ export function App() {
             return;
           }
           didStartPlaying = true;
-          if (startWatchTimer) {
-            try {
-              clearTimeout(startWatchTimer);
-            } catch (e) {}
-            startWatchTimer = null;
-          }
           lastWordBoundaryTimeRef.current = performance.now();
           mouthWordPulseRef.current = 0.75 + Math.random() * 0.2;
         };
@@ -5200,7 +5340,7 @@ export function App() {
     [pcmInt16ToWavBlobUrl, transitionToState]
   );
 
-  // Speak a single sentence using phone speechSynthesis (preferring female Bengali voice) and return true if spoken
+  // Speak a single sentence using browser speechSynthesis (preferring female Bengali voice) and return true if spoken
   const speakSentenceWithPhoneVoice = useCallback(
     async (clean: string, token: number): Promise<boolean> => {
       if (!clean || speechTokenRef.current !== token) return false;
@@ -5208,10 +5348,48 @@ export function App() {
         return false;
       }
 
+      const vol = prefsRef.current.voiceVolume ?? 100;
+      if (vol <= 0) {
+        setToast("ভলিউম শূন্য");
+        return false;
+      }
+
       const voices = await waitForVoices();
       if (speechTokenRef.current !== token) return false;
 
-      const targetVoice = selectPreferredVoice(voices);
+      const hasBengali = /[\u0980-\u09FF]/.test(clean);
+      const requestedLang =
+        prefsRef.current.language && prefsRef.current.language !== "auto"
+          ? prefsRef.current.language
+          : "bn-BD";
+      const targetLang = hasBengali ? "bn-BD" : requestedLang;
+      const langPrefix = targetLang.toLowerCase().split(/[-_]/)[0];
+
+      const isFemale = (v: SpeechSynthesisVoice) =>
+        /female|woman|girl|lekha|veena|kalpana|heera|raveena|aditi|priya|tanishaa|nabanita|sangeeta|samantha|zira|aria|jenny|google|natural/i.test(
+          `${v.name || ""} ${v.voiceURI || ""}`
+        );
+      const isMale = (v: SpeechSynthesisVoice) =>
+        /\b(male|man|boy|david|mark|alex|daniel|fred|hemant|prabhat|pradeep)\b/i.test(
+          `${v.name || ""} ${v.voiceURI || ""}`
+        );
+
+      const matchingLangVoices = voices.filter(
+        (v) => v.lang && v.lang.toLowerCase().replace("_", "-").startsWith(langPrefix)
+      );
+      const hindiVoices =
+        hasBengali && matchingLangVoices.length === 0
+          ? voices.filter((v) => v.lang && v.lang.toLowerCase().startsWith("hi"))
+          : [];
+      const voicePool = matchingLangVoices.length > 0 ? matchingLangVoices : hindiVoices;
+
+      // Only assign utterance.voice if its language matches the text (never assign an English voice to Bengali text!)
+      const matchedVoice =
+        voicePool.find((v) => isFemale(v) && !isMale(v)) ||
+        voicePool.find((v) => !isMale(v)) ||
+        voicePool[0] ||
+        (!hasBengali && langPrefix === "en" ? selectPreferredVoice(voices) : null);
+
       const savedPitchVal = (() => {
         try {
           const p = parseFloat(localStorage.getItem("rose_tts_pitch") || "1.2");
@@ -5234,6 +5412,7 @@ export function App() {
 
         let settled = false;
         let didStart = false;
+        let startedAt = 0;
         let safetyTimer: any = null;
         const finishSentence = (ok: boolean) => {
           if (settled) return;
@@ -5244,27 +5423,27 @@ export function App() {
           resolve(ok);
         };
 
-        // Safety timeout so speechSynthesis never hangs if onend fails to fire
         safetyTimer = setTimeout(() => {
-          finishSentence(true);
-        }, 12000);
+          finishSentence(didStart);
+        }, Math.max(9000, clean.length * 120));
         fallbackTimersRef.current.add(safetyTimer);
 
         const utterance = new SpeechSynthesisUtterance(clean);
         currentUtteranceRef.current = utterance;
-        utterance.lang = targetVoice?.lang || "bn-BD";
+        utterance.lang = matchedVoice?.lang || targetLang;
+        if (matchedVoice) {
+          utterance.voice = matchedVoice;
+        }
         const isEmotional = settingsRef.current?.personality === "Emotional";
         utterance.rate = isEmotional
           ? (emotionalSlowRateRef.current ? 0.9 : 1.0)
           : clampSpeechSpeed(prefsRef.current.speechSpeed ?? 1.1);
         utterance.pitch = isEmotional ? 1.08 : savedPitchVal;
-        utterance.volume = (prefsRef.current.voiceVolume ?? 100) / 100;
-        if (targetVoice) {
-          utterance.voice = targetVoice;
-        }
+        utterance.volume = Math.min(1, Math.max(0.05, vol / 100));
 
         utterance.onstart = () => {
           didStart = true;
+          startedAt = Date.now();
           if (speechTokenRef.current !== token) {
             try { window.speechSynthesis.cancel(); } catch (e) {}
             finishSentence(true);
@@ -5285,22 +5464,40 @@ export function App() {
         };
 
         utterance.onend = () => {
-          finishSentence(true);
+          const elapsed = startedAt > 0 ? Date.now() - startedAt : 0;
+          if (clean.length > 2 && (!didStart || elapsed < 50)) {
+            finishSentence(false);
+          } else {
+            finishSentence(true);
+          }
         };
 
         utterance.onerror = (ev: any) => {
           const errCode = String(ev?.error || "").toLowerCase();
-          if (didStart || errCode === "interrupted" || errCode === "canceled") {
+          if (errCode === "interrupted" || errCode === "canceled") {
             finishSentence(true);
           } else {
             finishSentence(false);
           }
         };
 
+        const speakNow = () => {
+          if (settled || speechTokenRef.current !== token) return;
+          try {
+            window.speechSynthesis.speak(utterance);
+            window.speechSynthesis.resume();
+          } catch (e) {
+            finishSentence(false);
+          }
+        };
+
         try {
-          window.speechSynthesis.cancel();
-          window.speechSynthesis.speak(utterance);
-          window.speechSynthesis.resume();
+          if (window.speechSynthesis.speaking || window.speechSynthesis.pending) {
+            window.speechSynthesis.cancel();
+            setTimeout(speakNow, 45);
+          } else {
+            speakNow();
+          }
         } catch (e) {
           finishSentence(false);
         }
@@ -5309,7 +5506,7 @@ export function App() {
     [waitForVoices, selectPreferredVoice, transitionToState]
   );
 
-  // Guaranteed Voice: speak with Gemini TTS first; if Gemini TTS fails or is silent within 6 seconds, speak the same text with phone's speechSynthesis (female Bengali voice preferred)
+  // Guaranteed Voice: speak with Gemini TTS first; if Gemini TTS fails, immediately fallback to browser speechSynthesis
   const speakSingleSentenceWithToken = useCallback(
     async (
       item: {
@@ -5327,6 +5524,12 @@ export function App() {
       const clean = sentence.trim();
       if (!clean || speechTokenRef.current !== token) return;
 
+      const vol = prefsRef.current.voiceVolume ?? 100;
+      if (vol <= 0) {
+        setToast("ভলিউম শূন্য");
+        return;
+      }
+
       isBusyRef.current = true;
       isSpeakingTTSRef.current = true;
       // Never listen while speaking: abort both SpeechRecognition and any active MediaRecorder clip
@@ -5340,13 +5543,13 @@ export function App() {
       transitionToState("SPEAKING");
 
       const ttsStartMs = Date.now();
-      const TTS_OVERALL_BUDGET_MS = 6000;
+      const TTS_OVERALL_BUDGET_MS = 9000;
       let ttsTimeoutId: any = null;
       const result = await Promise.race([
         ttsPromise ? ttsPromise : requestGeminiTTSAudio(clean, token),
         new Promise<{ audio?: string; error?: string }>((resolve) => {
           ttsTimeoutId = setTimeout(() => {
-            resolve({ error: "Gemini TTS timed out after 6s" });
+            resolve({ error: "TTS সময় শেষ" });
           }, TTS_OVERALL_BUDGET_MS);
         }),
       ]);
@@ -5359,14 +5562,19 @@ export function App() {
 
       let playedGeminiOk = false;
       if (result.audio) {
-        const remainingStartMs = Math.max(1500, TTS_OVERALL_BUDGET_MS - (Date.now() - ttsStartMs));
+        const remainingStartMs = Math.max(2000, TTS_OVERALL_BUDGET_MS - (Date.now() - ttsStartMs));
         playedGeminiOk = await playPrefetchedGeminiAudio(result.audio, token, remainingStartMs);
       }
 
       if (!playedGeminiOk && speechTokenRef.current === token) {
         const playedPhoneOk = await speakSentenceWithPhoneVoice(clean, token);
         if (!playedPhoneOk && speechTokenRef.current === token) {
-          setToast("Gemini কণ্ঠ লোড হয়নি, Settings → Connections-এ key দেখুন");
+          const reason = result.error
+            ? result.error.includes("TTS মডেল পাওয়া যায়নি")
+              ? "TTS মডেল পাওয়া যায়নি"
+              : result.error
+            : "অডিও চালু হয়নি";
+          setToast(reason);
         }
       }
     },
@@ -5729,9 +5937,8 @@ export function App() {
           });
           generatedText = engineResult.text;
           fullAccumulatedText = generatedText;
-          sentenceBuffer = generatedText;
+          sentenceBuffer = "";
           updateSharedRoseBubble(generatedText);
-          extractCompletedSentences();
         } else {
           // Gemini selected engine (or voice): no fallback to other providers!
           const geminiRes: any = await directGeminiGenerate(payload);
@@ -5746,9 +5953,8 @@ export function App() {
             "";
           if (fullReplyText) {
             fullAccumulatedText = fullReplyText;
-            sentenceBuffer = fullReplyText;
+            sentenceBuffer = "";
             updateSharedRoseBubble(fullAccumulatedText);
-            extractCompletedSentences();
           }
 
           const candidates = geminiRes?.candidates || [];
@@ -5799,14 +6005,10 @@ export function App() {
           throw new Error("Empty reply received from assistant");
         }
 
-        // Always show the text reply first before enqueuing remaining TTS
+        // Always show the text reply and speak the full reply once (avoids parallel multi-sentence TTS 429s)
         updateSharedRoseBubble(finalCleanedReply);
-        const remainingSentence = sentenceBuffer.replace(/[*#_~`]/g, "").trim();
         sentenceBuffer = "";
-        if (remainingSentence) {
-          anySentenceEnqueued = true;
-          enqueueSentenceForToken(remainingSentence, turnToken, lockedEngineMode);
-        } else if (!anySentenceEnqueued) {
+        if (!anySentenceEnqueued) {
           anySentenceEnqueued = true;
           enqueueSentenceForToken(finalCleanedReply, turnToken, lockedEngineMode);
         }
@@ -7202,6 +7404,9 @@ export function App() {
     if (currentCtx && currentCtx.state !== 'running') {
       try { await currentCtx.resume(); } catch(e) {}
     }
+    if (outputAudioCtxRef.current && outputAudioCtxRef.current.state !== 'running') {
+      try { await outputAudioCtxRef.current.resume(); } catch(e) {}
+    }
 
     // Requirement 2a & 3: getUserMedia call & error handling
     let micStream: MediaStream | null = null;
@@ -7248,6 +7453,8 @@ export function App() {
       customPersonalityText: prefsRef.current.customPersonalityText,
       systemInstruction: buildSystemInstruction(settingsRef.current, prefsRef.current, true),
       audioContext: currentCtx as AudioContext,
+      playbackAudioContext: (outputAudioCtxRef.current || currentCtx) as AudioContext,
+      onToast: (msg) => setToast(msg),
       micStream: micStream,
       onStateChange: (state) => {
         if (state === 'listening') transitionToState("LISTENING");
@@ -7729,18 +7936,51 @@ export function App() {
 
   const playPcmBuffer = (pcm: Int16Array, voiceId: string, rateOverride?: number) => {
     try {
+      const vol = prefsRef.current.voiceVolume ?? 100;
+      if (vol <= 0) {
+        setToast("ভলিউম শূন্য");
+        return;
+      }
       ensureAudioContext();
       cancelAllSpeechAndAudio(true);
-      const wavUrl = pcmInt16ToWavBlobUrl(pcm, 24000);
       const clampedRate = clampSpeechSpeed(rateOverride ?? prefsRef.current.speechSpeed ?? 1.1);
 
+      const ctx = outputAudioCtxRef.current;
+      if (ctx) {
+        if (ctx.state !== "running") {
+          ctx.resume().catch(() => {});
+        }
+        const float32 = new Float32Array(pcm.length);
+        for (let i = 0; i < pcm.length; i++) {
+          float32[i] = pcm[i] / 32768.0;
+        }
+        const buffer = ctx.createBuffer(1, float32.length, 24000);
+        buffer.copyToChannel(float32, 0);
+        const source = ctx.createBufferSource();
+        source.buffer = buffer;
+        source.playbackRate.value = clampedRate;
+        const gainNode = ctx.createGain();
+        gainNode.gain.value = Math.min(1, Math.max(0.05, vol / 100));
+        source.connect(gainNode);
+        gainNode.connect(ctx.destination);
+        allActiveAudioNodesRef.current.add(source);
+        setPlayingVoiceId(voiceId);
+        source.onended = () => {
+          allActiveAudioNodesRef.current.delete(source);
+          setPlayingVoiceId(null);
+        };
+        source.start(0);
+        return;
+      }
+
+      const wavUrl = pcmInt16ToWavBlobUrl(pcm, 24000);
       const audio = new Audio(wavUrl);
       audio.preservesPitch = true;
       (audio as any).mozPreservesPitch = true;
       (audio as any).webkitPreservesPitch = true;
       audio.defaultPlaybackRate = clampedRate;
       audio.playbackRate = clampedRate;
-      audio.volume = Math.min(1, Math.max(0, (prefsRef.current.voiceVolume ?? 100) / 100));
+      audio.volume = Math.min(1, Math.max(0.05, vol / 100));
 
       allActiveAudioElementsRef.current.add(audio);
       setPlayingVoiceId(voiceId);
@@ -7754,13 +7994,14 @@ export function App() {
       };
       audio.onended = cleanup;
       audio.onerror = cleanup;
-      audio.play().catch((playErr) => {
+      audio.play().catch(() => {
         cleanup();
-        setToast("ব্রাউজারে অডিও প্লে করার অনুমতি দিন");
+        setToast("অডিও চালু হয়নি");
       });
     } catch (e) {
       console.error("PCM playback error:", e);
       setPlayingVoiceId(null);
+      setToast("অডিও চালু হয়নি");
     }
   };
 
@@ -8698,16 +8939,80 @@ export function App() {
     </svg>
   );
 
+  const [voiceSettingsTestResult, setVoiceSettingsTestResult] = useState<string | null>(null);
+  const [isTestingVoiceSettings, setIsTestingVoiceSettings] = useState<boolean>(false);
+
+  const handleVoiceSettingsTestButton = async () => {
+    if (isTestingVoiceSettings) return;
+    ensureAudioContext();
+    const vol = prefsRef.current.voiceVolume ?? 100;
+    if (vol <= 0) {
+      setVoiceSettingsTestResult("ভলিউম শূন্য");
+      setToast("ভলিউম শূন্য");
+      return;
+    }
+    setIsTestingVoiceSettings(true);
+    setVoiceSettingsTestResult(null);
+    const token = cancelAllSpeechAndAudio(true);
+    const sampleText = "হ্যালো, আমি রোজ";
+
+    try {
+      const cleanKey = (getGeminiKey() || apiKeysRef.current.gemini || "").replace(/["'\r\n\t\s]+/g, "").trim();
+      let geminiSpoke = false;
+      let geminiErrMsg = "";
+
+      if (cleanKey) {
+        try {
+          const voiceLabel = getVoicePreset(prefsRef.current.voiceName).voiceName || "Leda";
+          const data = await directGeminiTTS({
+            text: sampleText,
+            voiceName: voiceLabel,
+            apiKey: cleanKey,
+          });
+          if (data?.audio && speechTokenRef.current === token) {
+            geminiSpoke = await playPrefetchedGeminiAudio(data.audio, token, 6000);
+          }
+        } catch (err: any) {
+          geminiErrMsg = String(err?.message || "");
+        }
+      } else {
+        geminiErrMsg = "Gemini key নেই";
+      }
+
+      if (geminiSpoke) {
+        setVoiceSettingsTestResult("Gemini TTS");
+        setToast("Gemini TTS");
+        return;
+      }
+
+      const browserSpoke = await speakSentenceWithPhoneVoice(sampleText, token);
+      if (browserSpoke) {
+        setVoiceSettingsTestResult("ব্রাউজার");
+        setToast("ব্রাউজার");
+      } else {
+        const failMsg = geminiErrMsg.includes("TTS মডেল পাওয়া যায়নি")
+          ? "TTS মডেল পাওয়া যায়নি"
+          : geminiErrMsg || "অডিও চালু হয়নি";
+        setVoiceSettingsTestResult(failMsg);
+        setToast(failMsg);
+      }
+    } finally {
+      setIsTestingVoiceSettings(false);
+      isBusyRef.current = false;
+      isSpeakingTTSRef.current = false;
+      transitionToState("IDLE");
+    }
+  };
+
   const sendTypedMessageToRose = (rawText: string) => {
     const text = rawText.trim();
     if (!text) return;
     setInputText("");
+    isSilentModeRef.current = false;
     ensureAudioContext();
     try {
       if (typeof window !== "undefined" && "speechSynthesis" in window) {
-        const unlockUtterance = new SpeechSynthesisUtterance(" ");
-        unlockUtterance.volume = 0;
-        window.speechSynthesis.speak(unlockUtterance);
+        window.speechSynthesis.getVoices();
         window.speechSynthesis.resume();
       }
     } catch (e) {}
@@ -9615,6 +9920,48 @@ export function App() {
             </div>
             <ChevronRight className="w-5 h-5 text-slate-500 shrink-0" />
           </button>
+
+          {/* TEST VOICE BUTTON IN VOICE SETTINGS */}
+          <div className="w-full p-5 bg-[#0F172A]/80 rounded-[2.5rem] border border-purple-500/30 shadow-2xl flex items-center justify-between text-left">
+            <div className="flex items-center gap-4 min-w-0 pr-2">
+              <div className="w-12 h-12 rounded-full bg-purple-600/10 border border-purple-500/20 flex items-center justify-center text-purple-400 shrink-0">
+                <Volume2 className="w-6 h-6" />
+              </div>
+              <div className="min-w-0">
+                <h4 className="text-base font-black uppercase tracking-wider text-white leading-none mb-1">
+                  Test voice
+                </h4>
+                <p className="text-[11px] text-slate-400 font-bold tracking-wide truncate">
+                  {voiceSettingsTestResult
+                    ? `কণ্ঠ: ${voiceSettingsTestResult}`
+                    : 'চাপলে "হ্যালো, আমি রোজ" বলে শোনাবে'}
+                </p>
+              </div>
+            </div>
+            <button
+              type="button"
+              disabled={isTestingVoiceSettings}
+              onClick={handleVoiceSettingsTestButton}
+              className={
+                "px-4 py-2.5 rounded-2xl text-xs font-black uppercase tracking-wider transition-all shrink-0 flex items-center gap-1.5 " +
+                (isTestingVoiceSettings
+                  ? "bg-slate-700 text-slate-300"
+                  : "bg-purple-600 hover:bg-purple-500 text-white shadow-lg active:scale-95")
+              }
+            >
+              {isTestingVoiceSettings ? (
+                <>
+                  <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                  <span>বলছে...</span>
+                </>
+              ) : (
+                <>
+                  <Play className="w-3.5 h-3.5 fill-current" />
+                  <span>Test voice</span>
+                </>
+              )}
+            </button>
+          </div>
 
           {/* VOICE CHECK */}
           <button

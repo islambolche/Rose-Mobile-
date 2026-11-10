@@ -99,28 +99,36 @@ export const Developer = ({
         </h2>
       </header>
 
-      <div className="flex-1 overflow-y-auto px-4 pt-4 pb-[calc(80px+env(safe-area-inset-bottom,0px)+80px)] space-y-5 no-scrollbar">
-        {/* Developer Banner Image */}
-        <div className="w-full rounded-[16px] overflow-hidden border border-purple-500/40 shadow-[0_8px_28px_rgba(168,85,247,0.35)] bg-[#020617]">
+      <div className="flex-1 overflow-y-auto pb-[calc(80px+env(safe-area-inset-bottom,0px)+80px)] no-scrollbar bg-[#020617]">
+        {/* Edge-to-Edge Developer Image blended into page background */}
+        <div className="relative w-screen left-1/2 -translate-x-1/2 bg-[#020617] overflow-hidden">
           <img
             src="/developer.jpg"
             alt="MD YOUSUF KHAN"
-            className="w-full h-auto object-contain block rounded-[16px]"
+            className="w-full h-auto object-contain block"
+          />
+          {/* Left & Right 10% Side Fade Overlay into page background (#020617) */}
+          <div
+            className="absolute inset-0 pointer-events-none bg-[linear-gradient(to_right,#020617_0%,rgba(2,6,23,0.55)_4%,transparent_10%,transparent_90%,rgba(2,6,23,0.55)_96%,#020617_100%)]"
+          />
+          {/* Smooth Multi-stop Bottom 50% Fade Overlay into page background (#020617) */}
+          <div
+            className="absolute inset-x-0 top-0 -bottom-[2px] pointer-events-none bg-[linear-gradient(to_bottom,transparent_0%,transparent_50%,rgba(2,6,23,0.35)_68%,rgba(2,6,23,0.75)_85%,#020617_98%,#020617_100%)]"
           />
         </div>
 
-        {/* Centered Name & Role */}
-        <div className="flex flex-col items-center text-center">
-          <h1 className="text-lg font-bold text-white tracking-wide">
+        {/* Centered Name & Role below collar/tie over blended dark area */}
+        <div className="relative z-10 -mt-[15px] mb-[20px] px-4 flex flex-col items-center text-center">
+          <h1 className="text-[32px] font-extrabold tracking-[1px] text-white leading-tight [text-shadow:0_2px_18px_rgba(168,85,247,0.55)]">
             {DEVELOPER_INFO.name}
           </h1>
-          <p className="text-xs text-slate-400 font-medium mt-0.5">
+          <p className="text-[16px] text-slate-400 font-medium mt-1">
             {DEVELOPER_INFO.role}
           </p>
         </div>
 
         {/* Vertical Settings-style Contact & Social Bars */}
-        <div className="space-y-4">
+        <div className="px-4 space-y-4">
           {developerBars.map((item) => {
             const hasLink = Boolean(item.link && item.link.trim());
             const isMailto = hasLink && item.link.startsWith("mailto:");
