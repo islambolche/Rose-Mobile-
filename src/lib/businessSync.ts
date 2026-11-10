@@ -133,15 +133,17 @@ export async function validateGeminiApiKey(
 
   const testModel = async (m: string) => {
     tried.add(m);
-    const url = `/api/gemini/generate`;
+    const cleanM = m.replace(/^models\//, "").trim();
+    const url = `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(cleanM)}:generateContent?key=${encodeURIComponent(cleanKey)}`;
     const res = await fetch(url, {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: {
+        "Content-Type": "application/json",
+        "x-goog-api-key": cleanKey,
+      },
       body: JSON.stringify({
-        model: m,
         contents: [{ role: "user", parts: [{ text: "hi" }] }],
         generationConfig: { maxOutputTokens: 10 },
-        apiKey: cleanKey || undefined,
       }),
     });
 

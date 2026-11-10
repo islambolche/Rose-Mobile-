@@ -54,7 +54,7 @@ export const formatGeminiErrorForUI = (
   apiKey?: string
 ): { bengaliMessage: string; debugLine: string } => {
   const modelName = String(
-    err?.modelName || getSavedWorkingTextModel() || TEXT_MODELS[0]
+    err?.modelName || getSavedWorkingTextModel() || TEXT_MODELS[0] || 'gemini'
   )
     .replace(/^models\//, '')
     .trim();
@@ -109,47 +109,52 @@ export const formatGeminiErrorForUI = (
 
   if (/Add your Gemini key in Settings/i.test(sanitizedFullText)) {
     return {
-      bengaliMessage: 'Add your Gemini key in Settings > Connections.',
-      debugLine,
-    };
-  }
-
-  const isKeyError =
-    statusVal === '401' ||
-    statusVal === '403' ||
-    /API key|api_key|key_invalid|invalid_key/i.test(sanitizedFullText);
-
-  if (isKeyError) {
-    return {
-      bengaliMessage: 'Gemini key ভুল বা বন্ধ, Settings → Connections-এ নতুন key দিন',
+      bengaliMessage: 'Settings > Connections-এ আপনার Gemini API Key বসান।',
       debugLine,
     };
   }
 
   const numStatus = Number(statusVal);
-  if (
-    numStatus === 429 ||
-    /\b429\b|quota|resource_exhausted|rate\s*limit/i.test(sanitizedFullText)
-  ) {
+  const isKeyError =
+    numStatus === 400 ||
+    numStatus === 401 ||
+    numStatus === 403 ||
+    /API key|api_key|key_invalid|invalid_key/i.test(sanitizedFullText);
+
+  if (isKeyError) {
     return {
-      bengaliMessage: 'Gemini key-র ফ্রি সীমা শেষ, কিছুক্ষণ পরে চেষ্টা করুন',
+      bengaliMessage: 'API key ঠিক নেই',
       debugLine,
     };
   }
 
   if (
-    numStatus === 400 ||
-    /\b400\b|invalid\s*argument|invalid_argument/i.test(sanitizedFullText)
+    numStatus === 429 ||
+    /\b429\b|quota|resource_exhausted|rate\s*limit/i.test(sanitizedFullText)
   ) {
     return {
-      bengaliMessage: 'অনুরোধের গড়নে সমস্যা, অ্যাপ নিজে ঠিক করার চেষ্টা করছে',
+      bengaliMessage: 'ফ্রি সীমা শেষ, কিছুক্ষণ পরে চেষ্টা করুন',
       debugLine,
     };
   }
 
   if (numStatus === 404 || /\b404\b|not\s*found|not_found/i.test(sanitizedFullText)) {
     return {
-      bengaliMessage: 'মডেলের নাম পুরনো, অ্যাপ নতুন মডেল খুঁজছে',
+      bengaliMessage: 'মডেল পাওয়া যায়নি, অন্য মডেল বেছে নেওয়া হচ্ছে',
+      debugLine,
+    };
+  }
+
+  if (numStatus === 503 || /\b503\b|unavailable|busy/i.test(sanitizedFullText)) {
+    return {
+      bengaliMessage: 'মডেল ব্যস্ত, আবার চেষ্টা করা হচ্ছে',
+      debugLine,
+    };
+  }
+
+  if (statusVal === 'network_error' || /network|failed to fetch/i.test(sanitizedFullText)) {
+    return {
+      bengaliMessage: 'ইন্টারনেট সমস্যা',
       debugLine,
     };
   }
@@ -162,7 +167,7 @@ export const formatGeminiErrorForUI = (
   }
 
   return {
-    bengaliMessage: 'নেটওয়ার্ক ধীর বা মডেল ব্যস্ত',
+    bengaliMessage: `সমস্যা: HTTP ${statusVal} - ${sanitizedFullText.slice(0, 50)}`,
     debugLine,
   };
 };
@@ -298,6 +303,7 @@ export const discoverAvailableFlashModels = async (
   const cleanKey = String(apiKey || getGeminiKey() || '')
     .replace(/[\r\n\t\s"']+/g, '')
     .trim();
+  if (!cleanKey) return [];
   try {
     const controller = new AbortController();
     const timer = setTimeout(() => {
@@ -305,8 +311,11 @@ export const discoverAvailableFlashModels = async (
         controller.abort();
       } catch (e) {}
     }, 6000);
-    const query = cleanKey ? `?apiKey=${encodeURIComponent(cleanKey)}` : '';
-    const res = await fetch(`/api/gemini/models${query}`, { signal: controller.signal });
+    const url = `https://generativelanguage.googleapis.com/v1beta/models?pageSize=200&key=${cleanKey}`;
+    const res = await fetch(url, {
+      headers: { 'x-goog-api-key': cleanKey },
+      signal: controller.signal,
+    });
     clearTimeout(timer);
     if (!res.ok) return [];
     const data = await res.json();
@@ -344,7 +353,7 @@ const fetchWithSignalTimeout = async (
   input: RequestInfo | URL,
   init: RequestInit,
   timeoutMs: number,
-  modelName = TEXT_MODELS[0],
+  modelName = TEXT_MODELS[0] || 'gemini-2.0-flash',
   reqStartTime = Date.now(),
   cleanKey = '',
   externalSignal?: AbortSignal
@@ -516,8 +525,15 @@ const callGeminiTextEndpoint = async (params: {
     .replace(/[\r\n\t\s"']+/g, '')
     .trim();
 
+  if (!cleanKey) {
+    const missingErr: any = new Error('Add your Gemini key in Settings > Connections.');
+    missingErr.status = 400;
+    missingErr.googleMessage = 'API key ঠিক নেই';
+    throw missingErr;
+  }
+
   const cleanModel =
-    String(model || TEXT_MODELS[0]).replace(/^models\//, '').trim() || TEXT_MODELS[0];
+    String(model || 'gemini-2.0-flash').replace(/^models\//, '').trim() || 'gemini-2.0-flash';
 
   const startMinimal = isMinimalBodyStoredForModel(cleanModel);
   const directBody = buildBodyForRequest(
@@ -527,15 +543,7 @@ const callGeminiTextEndpoint = async (params: {
     startMinimal
   );
 
-  const payload: any = {
-    model: cleanModel,
-    contents: directBody.contents,
-    systemInstruction: directBody.systemInstruction?.parts?.[0]?.text,
-    generationConfig: directBody.generationConfig,
-    apiKey: cleanKey || undefined,
-  };
-
-  const url = `/api/gemini/generate`;
+  const url = `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(cleanModel)}:generateContent?key=${cleanKey}`;
   const reqStartTime = Date.now();
   const perReqTimeout = Math.min(GEMINI_PER_REQUEST_TIMEOUT_MS, Math.max(1000, timeoutMs));
 
@@ -543,8 +551,11 @@ const callGeminiTextEndpoint = async (params: {
     url,
     {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(payload),
+      headers: {
+        'Content-Type': 'application/json',
+        'x-goog-api-key': cleanKey,
+      },
+      body: JSON.stringify(directBody),
     },
     perReqTimeout,
     cleanModel,
@@ -561,20 +572,16 @@ const callGeminiTextEndpoint = async (params: {
       generationConfig,
       true
     );
-    const minimalPayload: any = {
-      model: cleanModel,
-      contents: minimalBody.contents,
-      systemInstruction: minimalBody.systemInstruction?.parts?.[0]?.text,
-      generationConfig: minimalBody.generationConfig,
-      apiKey: cleanKey || undefined,
-    };
     const remainingMs = Math.max(2000, perReqTimeout - (Date.now() - reqStartTime));
     const retryRes = await fetchWithSignalTimeout(
       url,
       {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(minimalPayload),
+        headers: {
+          'Content-Type': 'application/json',
+          'x-goog-api-key': cleanKey,
+        },
+        body: JSON.stringify(minimalBody),
       },
       remainingMs,
       cleanModel,
@@ -669,8 +676,8 @@ export const directGeminiGenerate = async (payload: any) => {
   if (!cleanKey) {
     const missingErr: any = new Error('Add your Gemini key in Settings > Connections.');
     missingErr.bodyText = 'Add your Gemini key in Settings > Connections.';
-    missingErr.googleMessage = 'Add your Gemini key in Settings > Connections.';
-    missingErr.modelName = getSavedWorkingTextModel() || TEXT_MODELS[0];
+    missingErr.googleMessage = 'API key ঠিক নেই';
+    missingErr.modelName = getSavedWorkingTextModel() || 'gemini-2.0-flash';
     missingErr.status = 400;
     missingErr.elapsedSeconds = '0.0';
     missingErr.attempts = [
@@ -931,20 +938,23 @@ export const runGeminiSpeedTest = async (
   let fastestModel: string | null = null;
   let fastestMs = Infinity;
 
-  for (const model of TEXT_MODELS) {
+  const testModels = TEXT_MODELS.length > 0 ? TEXT_MODELS : ['gemini-2.0-flash'];
+
+  for (const model of testModels) {
     const start = Date.now();
     try {
-      const url = `/api/gemini/generate`;
+      const url = `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(model)}:generateContent?key=${cleanKey}`;
       const res = await fetchWithSignalTimeout(
         url,
         {
           method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
+          headers: {
+            'Content-Type': 'application/json',
+            'x-goog-api-key': cleanKey,
+          },
           body: JSON.stringify({
-            model,
             contents: [{ role: 'user', parts: [{ text: 'Hi' }] }],
             generationConfig: { maxOutputTokens: 10 },
-            apiKey: cleanKey || undefined,
           }),
         },
         12000,
@@ -1023,9 +1033,12 @@ const saveWorkingTtsModel = (modelName: string) => {
 
 export const discoverAvailableTtsModels = async (apiKey?: string): Promise<string[]> => {
   const cleanKey = String(apiKey || getGeminiKey() || '').replace(/[\r\n\t\s"']+/g, '').trim();
+  if (!cleanKey) return [];
   try {
-    const query = cleanKey ? `?apiKey=${encodeURIComponent(cleanKey)}` : '';
-    const res = await fetch(`/api/gemini/models${query}`);
+    const url = `https://generativelanguage.googleapis.com/v1beta/models?pageSize=200&key=${cleanKey}`;
+    const res = await fetch(url, {
+      headers: { 'x-goog-api-key': cleanKey },
+    });
     if (!res.ok) return [];
     const data = await res.json();
     const modelsList: any[] = Array.isArray(data?.models) ? data.models : [];
@@ -1052,16 +1065,29 @@ export const directGeminiTTS = async (payload: any) => {
 
   const rawText = String(text || '').trim();
   if (!rawText) throw new Error('Empty text for TTS');
+  if (!cleanKey) throw new Error('Add your Gemini key in Settings > Connections.');
 
-  const res = await fetch('/api/gemini/tts', {
+  const targetModel = model || 'gemini-2.0-flash';
+  const url = `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(targetModel)}:generateContent?key=${cleanKey}`;
+
+  const res = await fetch(url, {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
+    headers: {
+      'Content-Type': 'application/json',
+      'x-goog-api-key': cleanKey,
+    },
     body: JSON.stringify({
-      text: rawText,
-      voiceName: voiceName || 'Sulafat',
-      style: style || '',
-      apiKey: cleanKey || undefined,
-      model: model || undefined,
+      contents: [{ parts: [{ text: rawText }] }],
+      generationConfig: {
+        responseModalities: ['AUDIO'],
+        speechConfig: {
+          voiceConfig: {
+            prebuiltVoiceConfig: {
+              voiceName: voiceName || 'Puck',
+            },
+          },
+        },
+      },
     }),
   });
 
@@ -1071,20 +1097,21 @@ export const directGeminiTTS = async (payload: any) => {
     data = rawBodyText ? JSON.parse(rawBodyText) : null;
   } catch {}
 
-  if (!res.ok || !data?.audio) {
-    const errMsg = data?.error?.message || data?.exactError || `TTS failed (HTTP ${res.status})`;
+  const audioPart = data?.candidates?.[0]?.content?.parts?.find((p: any) => p?.inlineData || p?.inline_data);
+  const audioData = audioPart?.inlineData?.data || audioPart?.inline_data?.data;
+
+  if (!res.ok || !audioData) {
+    const errMsg = data?.error?.message || `TTS failed (HTTP ${res.status})`;
     const err: any = new Error(errMsg);
     err.status = res.status;
     err.googleMessage = errMsg;
     throw err;
   }
 
-  if (data.modelUsed) {
-    saveWorkingTtsModel(data.modelUsed);
-  }
+  saveWorkingTtsModel(targetModel);
 
   return {
-    audio: data.audio,
-    modelUsed: data.modelUsed || 'gemini-1.5-flash-lite-tts',
+    audio: audioData,
+    modelUsed: targetModel,
   };
 };

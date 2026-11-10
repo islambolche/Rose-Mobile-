@@ -25,7 +25,7 @@ export const FREE_CHAT_PROVIDERS: ChatProviderConfig[] = [
     name: 'Gemini',
     badgeLabel: 'চ্যাট ও ভয়েস',
     tier: 'free',
-    baseURL: '/api/gemini',
+    baseURL: 'https://generativelanguage.googleapis.com/v1beta',
     defaultModel: '',
     storageKey: 'gemini_api_key',
     statusStorageKey: 'connection_status_gemini',
@@ -419,10 +419,13 @@ export const getDynamicGeminiLiveModels = async (
       attemptCount++;
       const controller = new AbortController();
       const timer = setTimeout(() => controller.abort(), 8000);
-      let url = `/api/gemini/models?apiKey=${encodeURIComponent(cleanKey)}&pageSize=200`;
+      let url = `https://generativelanguage.googleapis.com/v1beta/models?key=${encodeURIComponent(cleanKey)}&pageSize=200`;
       if (nextToken) url += `&pageToken=${encodeURIComponent(nextToken)}`;
 
-      const res = await fetch(url, { signal: controller.signal });
+      const res = await fetch(url, {
+        headers: { 'x-goog-api-key': cleanKey },
+        signal: controller.signal
+      });
       clearTimeout(timer);
 
       if (!res.ok) {
@@ -516,42 +519,60 @@ export const callGeminiDirectChat = async (params: {
     parts: [{ text: m.text }],
   }));
 
-  const payload: any = {
-    model: cleanModel,
+  const body: any = {
     contents,
-    systemInstruction: systemPrompt,
     generationConfig: {
       maxOutputTokens: maxTokens,
       temperature: 0.7,
     },
-    apiKey: cleanKey,
   };
-
-  try {
-    const res = await fetch('/api/gemini/generate', {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify(payload),
-    });
-
-    const data = await res.json().catch(() => null);
-
-    if (!res.ok) {
-      const errorMsg = data?.error?.message || `HTTP ${res.status}`;
-      const err: any = new Error(errorMsg);
-      err.status = res.status;
-      err.code = data?.error?.code || res.status;
-      throw err;
-    }
-
-    const reply = data?.text || data?.candidates?.[0]?.content?.parts?.map((p: any) => p?.text || '').join('').trim();
-    if (reply) return reply;
-    throw new Error('Gemini থেকে ফাঁকা উত্তর এসেছে');
-  } catch (directErr: any) {
-    throw directErr;
+  if (systemPrompt && systemPrompt.trim()) {
+    body.systemInstruction = {
+      parts: [{ text: systemPrompt.trim() }],
+    };
   }
+
+  const url = `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(cleanModel)}:generateContent?key=${encodeURIComponent(cleanKey)}`;
+
+  let attempts = 0;
+  while (attempts < 2) {
+    attempts++;
+    try {
+      const res = await fetch(url, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'x-goog-api-key': cleanKey,
+        },
+        body: JSON.stringify(body),
+      });
+
+      const data = await res.json().catch(() => null);
+
+      if (!res.ok) {
+        const rawMsg = data?.error?.message || `HTTP ${res.status}`;
+        if (res.status === 503 && attempts === 1) {
+          await new Promise((r) => setTimeout(r, 2000));
+          continue;
+        }
+
+        const err: any = new Error(`HTTP ${res.status}: ${rawMsg}`);
+        err.status = res.status;
+        err.code = data?.error?.code || res.status;
+        throw err;
+      }
+
+      const reply = data?.candidates?.[0]?.content?.parts?.map((p: any) => p?.text || '').join('').trim();
+      if (reply) return reply;
+      throw new Error('Gemini থেকে ফাঁকা উত্তর এসেছে');
+    } catch (directErr: any) {
+      if (attempts >= 2 || (directErr.status && directErr.status !== 503)) {
+        throw directErr;
+      }
+    }
+  }
+
+  throw new Error('Gemini request failed');
 };
 
 /**

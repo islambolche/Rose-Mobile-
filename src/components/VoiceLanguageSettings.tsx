@@ -496,15 +496,16 @@ export const VoiceLanguageSettings: React.FC<VoiceLanguageSettingsProps> = ({
                       const key = (settings.geminiApiKey || localStorage.getItem("gemini_api_key") || "").replace(/[\r\n\t\s"']+/g, "").trim();
                       if (!key) { showToast("Add your Gemini key in Settings > Connections."); return; }
                       try {
-                          const url = `/api/gemini/generate`;
+                          const url = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=${encodeURIComponent(key)}`;
                           const res = await fetch(url, {
                             method: "POST",
-                            headers: { "Content-Type": "application/json" },
+                            headers: {
+                              "Content-Type": "application/json",
+                              "x-goog-api-key": key,
+                            },
                             body: JSON.stringify({
-                                model: "gemini-1.5-flash",
                                 contents: [{ role: "user", parts: [{ text: "হাই" }] }],
                                 generationConfig: { maxOutputTokens: 30 },
-                                apiKey: key || undefined
                             })
                           });
                           const raw = await res.text().catch(() => "");

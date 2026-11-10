@@ -216,25 +216,26 @@ export async function generateVoiceAnswer(payload: {
     triedModels.add(modelCandidate);
     const answerStartTime = Date.now();
     const cleanModel = modelCandidate.replace(/^models\//, "").trim();
-    const url = `/api/gemini/generate`;
+    const url = `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(cleanModel)}:generateContent?key=${encodeURIComponent(userKey)}`;
 
     const body: any = {
-      model: cleanModel,
       contents: history,
       generationConfig: {
         maxOutputTokens: 150,
       },
-      apiKey: userKey || undefined,
     };
     if (strictSystemInstruction.trim()) {
-      body.systemInstruction = strictSystemInstruction.trim();
+      body.systemInstruction = { parts: [{ text: strictSystemInstruction.trim() }] };
     }
 
     const res = await fetchWithTimeoutAndRetry(
       url,
       {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: { 
+          "Content-Type": "application/json",
+          "x-goog-api-key": userKey,
+        },
         body: JSON.stringify(body),
       },
       7000
@@ -359,18 +360,28 @@ export async function generateVoiceTTS(payload: {
   const tryTtsModel = async (ttsModelCandidate: string): Promise<TTSResult | null> => {
     triedTts.add(ttsModelCandidate);
     const cleanModel = ttsModelCandidate.replace(/^models\//, "").trim();
-    const url = `/api/gemini/tts`;
+    const url = `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(cleanModel)}:generateContent?key=${encodeURIComponent(userKey)}`;
 
     const res = await fetchWithTimeoutAndRetry(
       url,
       {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: {
+          "Content-Type": "application/json",
+          "x-goog-api-key": userKey,
+        },
         body: JSON.stringify({
-          model: cleanModel,
-          text: String(text || "").trim(),
-          voiceName: voiceName || "Sulafat",
-          apiKey: userKey || undefined,
+          contents: [{ parts: [{ text: String(text || "").trim() }] }],
+          generationConfig: {
+            responseModalities: ["AUDIO"],
+            speechConfig: {
+              voiceConfig: {
+                prebuiltVoiceConfig: {
+                  voiceName: voiceName || "Puck",
+                },
+              },
+            },
+          },
         }),
       },
       10000

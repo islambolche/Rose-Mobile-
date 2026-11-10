@@ -1,5 +1,6 @@
 import { logVoiceEvent } from './voiceLogger';
 import { getGeminiKey } from './geminiKey';
+import { getDynamicGeminiLiveModels } from './chatEngines';
 
 export interface GeminiLiveOptions {
   assistantName?: string;
@@ -11,6 +12,7 @@ export interface GeminiLiveOptions {
   responseStyle?: string;
   apiKey: string;
   systemInstruction?: string;
+  model?: string;
   onStateChange?: (state: 'connecting' | 'listening' | 'thinking' | 'speaking' | 'off') => void;
   onTranscription?: (role: 'user' | 'assistant', text: string, isFinal?: boolean) => void;
   onVolume?: (volume: number) => void;
@@ -22,6 +24,27 @@ export interface GeminiLiveOptions {
   onInterrupted?: () => void;
   audioContext?: AudioContext;
   micStream?: MediaStream;
+}
+
+export function parseAndFormatGeminiError(status: number | string, rawMsg: string): { bengali: string; original: string } {
+  const code = Number(status) || 0;
+  const lowerMsg = (rawMsg || '').toLowerCase();
+
+  let bengali = "সমস্যা হয়েছে";
+  if (code === 400 || code === 403 || lowerMsg.includes("api key") || lowerMsg.includes("invalid key") || lowerMsg.includes("permission_denied") || lowerMsg.includes("unauthenticated")) {
+    bengali = "API key ঠিক নেই";
+  } else if (code === 404 || lowerMsg.includes("not found")) {
+    bengali = "মডেল পাওয়া যায়নি, অন্য মডেল বেছে নেওয়া হচ্ছে";
+  } else if (code === 429 || lowerMsg.includes("quota") || lowerMsg.includes("resource_exhausted")) {
+    bengali = "ফ্রি সীমা শেষ, কিছুক্ষণ পরে চেষ্টা করুন";
+  } else if (code === 503 || lowerMsg.includes("unavailable") || lowerMsg.includes("overloaded")) {
+    bengali = "মডেল ব্যস্ত, আবার চেষ্টা করা হচ্ছে";
+  } else if (code === 0 || lowerMsg.includes("fetch") || lowerMsg.includes("network") || lowerMsg.includes("failed to fetch")) {
+    bengali = "ইন্টারনেট সমস্যা";
+  }
+
+  const original = status ? `[HTTP ${status}] ${rawMsg}` : rawMsg;
+  return { bengali, original };
 }
 
 function downsampleToPCM16(
@@ -71,6 +94,8 @@ export class GeminiLiveSession {
   private reconnectAttempts = 0;
   private maxReconnectAttempts = 3;
   private isMuted = false;
+  private isSetupComplete = false;
+  private activeModelName = "";
 
   // Live diagnostics tracking
   public socketStatus: 'open' | 'closed' | 'connecting' = 'closed';
@@ -103,25 +128,52 @@ export class GeminiLiveSession {
     };
   }
 
+  public sendTextMessage(text: string) {
+    if (!this.ws || this.ws.readyState !== WebSocket.OPEN) return;
+    try {
+      this.ws.send(JSON.stringify({
+        realtimeInput: { text }
+      }));
+    } catch (e) {}
+  }
+
   public async start() {
     if (this.ws) return;
     this.wasStoppedByUser = false;
+    this.isSetupComplete = false;
     this.updateState('connecting');
     this.socketStatus = 'connecting';
 
     const apiKey = (this.options.apiKey || getGeminiKey() || '').replace(/[\r\n\t\s"']+/g, '').trim();
+    if (!apiKey) {
+      const err = parseAndFormatGeminiError(400, 'API key missing');
+      this.lastError = `${err.bengali} (${err.original})`;
+      this.options.onError?.(err.bengali, err.original);
+      this.updateState('off');
+      this.socketStatus = 'closed';
+      return;
+    }
 
-    const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-    const wsUrl = `${protocol}//${window.location.host}/api/live?assistantName=${encodeURIComponent(this.options.assistantName || 'Rose AI')}&ownerName=${encodeURIComponent(this.options.ownerName || 'MD YOUSUF KHAN')}&voiceName=${encodeURIComponent(this.options.voiceName || 'Sulafat')}&personality=${encodeURIComponent(this.options.personality || 'Normal')}&customPersonalityText=${encodeURIComponent(this.options.customPersonalityText || '')}${apiKey ? `&apiKey=${encodeURIComponent(apiKey)}` : ''}`;
+    // Determine model
+    let selectedModel = (this.options.model || localStorage.getItem('voice_model') || '').replace(/^models\//, '').trim();
+    if (!selectedModel) {
+      const liveRes = await getDynamicGeminiLiveModels(apiKey);
+      selectedModel = liveRes.models[0] || 'gemini-2.0-flash-exp';
+    }
+    this.activeModelName = selectedModel;
 
-    logVoiceEvent("Live WS", "Connecting to Live WebSocket proxy...");
+    // Direct Google Gemini WebSocket URL (No server proxy)
+    const wsUrl = `wss://generativelanguage.googleapis.com/ws/google.ai.generativelanguage.v1beta.GenerativeService.BidiGenerateContent?key=${encodeURIComponent(apiKey)}`;
+
+    logVoiceEvent("Live WS", `Connecting directly to ${selectedModel}...`);
 
     try {
       this.ws = new WebSocket(wsUrl);
     } catch (e: any) {
       this.socketStatus = 'closed';
-      this.lastError = e?.message || 'WebSocket connection failed';
-      this.options.onError?.(`WebSocket connection failed: ${e?.message}`);
+      const err = parseAndFormatGeminiError(0, e?.message || 'WebSocket connection failed');
+      this.lastError = `${err.bengali} (${err.original})`;
+      this.options.onError?.(err.bengali, err.original);
       this.updateState('off');
       return;
     }
@@ -129,7 +181,30 @@ export class GeminiLiveSession {
     this.ws.onopen = () => {
       this.reconnectAttempts = 0;
       this.socketStatus = 'open';
-      logVoiceEvent("Live WS", "Connected to Live WebSocket proxy", "success");
+      logVoiceEvent("Live WS", `Direct WebSocket connection open. Sending setup...`, "success");
+
+      // Requirement 3: Send setup message on open
+      const setupMsg = {
+        setup: {
+          model: `models/${selectedModel}`,
+          generationConfig: {
+            responseModalities: ["AUDIO"],
+            speechConfig: {
+              voiceConfig: {
+                prebuiltVoiceConfig: {
+                  voiceName: this.options.voiceName || 'Sulafat',
+                },
+              },
+            },
+          },
+          systemInstruction: {
+            parts: [{ text: this.options.systemInstruction || "You are Rose, a helpful assistant." }],
+          },
+          inputAudioTranscription: {},
+          outputAudioTranscription: {}
+        },
+      };
+      this.ws?.send(JSON.stringify(setupMsg));
     };
 
     this.ws.onmessage = async (event) => {
@@ -138,7 +213,8 @@ export class GeminiLiveSession {
         const raw = typeof event.data === 'string' ? event.data : await (event.data as Blob).text();
         const msg = JSON.parse(raw);
 
-        if (msg.setupComplete || msg.connected) {
+        if (msg.setupComplete) {
+          this.isSetupComplete = true;
           this.updateState('listening');
           this.startMicCapture();
           return;
@@ -147,8 +223,8 @@ export class GeminiLiveSession {
         if (msg.serverContent) {
           const content = msg.serverContent;
           
-          // Handle User Transcription
-          const inTrans = content.inputAudioTranscription || content.inputTranscription || content.input_audio_transcription;
+          // User Transcription
+          const inTrans = content.inputTranscription || content.inputAudioTranscription || content.input_audio_transcription || content.userTurn?.parts?.find((p: any) => p.text);
           if (inTrans) {
             const textVal = typeof inTrans === 'string' ? inTrans : (inTrans.text || inTrans.parts?.[0]?.text);
             if (textVal) {
@@ -157,10 +233,13 @@ export class GeminiLiveSession {
             }
           }
 
-          // Handle Assistant Transcription
-          const outTrans = content.outputAudioTranscription || content.outputTranscription || content.output_audio_transcription;
+          // Assistant Transcription
+          const outTrans = content.outputTranscription || content.outputAudioTranscription || content.output_audio_transcription;
           if (outTrans) {
-            this.options.onTranscription?.('assistant', outTrans.text, true);
+            const textVal = typeof outTrans === 'string' ? outTrans : (outTrans.text || outTrans.parts?.[0]?.text);
+            if (textVal) {
+              this.options.onTranscription?.('assistant', textVal, true);
+            }
           }
 
           if (content.modelTurn) {
@@ -190,9 +269,18 @@ export class GeminiLiveSession {
 
         if (msg.error) {
           logVoiceEvent("Live WS", `Error: ${msg.error.message || msg.error}`, "error");
-          const errMsg = typeof msg.error === 'string' ? msg.error : (msg.error.message || JSON.stringify(msg.error));
-          this.lastError = errMsg;
-          this.options.onError?.(errMsg);
+          const rawMsg = typeof msg.error === 'string' ? msg.error : (msg.error.message || JSON.stringify(msg.error));
+          const code = msg.error?.code || msg.error?.status || 500;
+          const formatted = parseAndFormatGeminiError(code, rawMsg);
+          this.lastError = `${formatted.bengali} (${formatted.original})`;
+          this.options.onError?.(formatted.bengali, formatted.original);
+
+          // Retry on 503 after 2s once
+          if (code === 503 && this.reconnectAttempts < 1) {
+            this.reconnectAttempts++;
+            setTimeout(() => this.start(), 2000);
+            return;
+          }
         }
       } catch (e) {}
     };
@@ -200,18 +288,22 @@ export class GeminiLiveSession {
     this.ws.onclose = (ev) => {
       this.ws = null;
       this.socketStatus = 'closed';
-      if (!this.wasStoppedByUser && this.reconnectAttempts < this.maxReconnectAttempts) {
-        this.reconnectAttempts++;
-        setTimeout(() => this.start(), 2000);
-      } else {
-        this.updateState('off');
-        this.options.onClose?.(ev);
+      this.isSetupComplete = false;
+
+      if (ev?.code === 1006 || ev?.code === 1008 || ev?.code === 4004) {
+        const formatted = parseAndFormatGeminiError(ev?.code || 500, ev?.reason || 'Connection closed');
+        this.lastError = `${formatted.bengali} (${formatted.original})`;
+        this.options.onError?.(formatted.bengali, formatted.original);
       }
+
+      this.updateState('off');
+      this.options.onClose?.(ev);
     };
 
-    this.ws.onerror = () => {
+    this.ws.onerror = (err: any) => {
       this.socketStatus = 'closed';
-      this.lastError = 'WebSocket Error';
+      const formatted = parseAndFormatGeminiError(0, err?.message || 'WebSocket Error');
+      this.lastError = `${formatted.bengali} (${formatted.original})`;
       logVoiceEvent("Live WS", "WebSocket Error", "error");
     };
   }
@@ -243,8 +335,9 @@ export class GeminiLiveSession {
       }
 
       if (this.audioCtx.state !== 'running') {
-        this.lastError = "অডিও সেশন চালু করা যায়নি। মাইক অনুমতি দিন।";
-        this.options.onError?.("অডিও সেশন চালু করা যায়নি। মাইক অনুমতি দিন।");
+        const formatted = parseAndFormatGeminiError(0, "AudioContext state is not running");
+        this.lastError = `${formatted.bengali} (${formatted.original})`;
+        this.options.onError?.(formatted.bengali, formatted.original);
         return;
       }
 
@@ -260,7 +353,6 @@ export class GeminiLiveSession {
       this.outputAnalyser.fftSize = 256;
 
       const processBuffer = (float32Samples: Float32Array) => {
-        // Calculate mic level (0.00 to 1.00)
         let sumSq = 0;
         for (let i = 0; i < float32Samples.length; i++) {
           sumSq += float32Samples[i] * float32Samples[i];
@@ -268,16 +360,13 @@ export class GeminiLiveSession {
         const rms = Math.sqrt(sumSq / float32Samples.length);
         this.currentMicLevel = Math.min(1.0, Math.max(0.0, rms * 4.0));
 
-        // Requirement 2c & 2d: Drop silently if muted or socket is not open
-        if (!this.ws || this.ws.readyState !== WebSocket.OPEN || this.isMuted) {
+        if (!this.ws || this.ws.readyState !== WebSocket.OPEN || this.isMuted || !this.isSetupComplete) {
           return;
         }
 
-        // Downsample to 16000Hz PCM16
         const pcm16 = downsampleToPCM16(float32Samples, sourceSampleRate, 16000);
         if (pcm16.length === 0) return;
 
-        // Safe Base64 encoding without stack overflow
         const u8 = new Uint8Array(pcm16.buffer, pcm16.byteOffset, pcm16.byteLength);
         let binary = '';
         const len = u8.byteLength;
@@ -288,8 +377,8 @@ export class GeminiLiveSession {
 
         try {
           this.ws.send(JSON.stringify({
-            realtime_input: {
-              media_chunks: [{ data: base64, mime_type: "audio/pcm;rate=16000" }]
+            realtimeInput: {
+              audio: { data: base64, mimeType: "audio/pcm;rate=16000" }
             }
           }));
           this.chunksSent++;
@@ -298,7 +387,6 @@ export class GeminiLiveSession {
         }
       };
 
-      // Try AudioWorklet first, fall back to ScriptProcessor(4096)
       let workletActive = false;
       try {
         const processorCode = `
@@ -339,7 +427,6 @@ export class GeminiLiveSession {
         };
         source.connect(this.scriptProcessor);
         
-        // Connect through silent gain to destination so WebAudio process loop fires reliably without echo
         const silentGain = this.audioCtx.createGain();
         silentGain.gain.value = 0;
         this.scriptProcessor.connect(silentGain);
@@ -350,8 +437,9 @@ export class GeminiLiveSession {
       this.startVisualizer();
     } catch (e: any) {
       logVoiceEvent("Mic", `Capture Error: ${e.message}`, "error");
-      this.lastError = `মাইক্রোফোন সংযোগ করা যায়নি: ${e.message}`;
-      this.options.onError?.(`মাইক্রোফোন সংযোগ করা যায়নি: ${e.message}`);
+      const formatted = parseAndFormatGeminiError(0, e?.message || 'Mic error');
+      this.lastError = `${formatted.bengali} (${formatted.original})`;
+      this.options.onError?.(formatted.bengali, formatted.original);
     }
   }
 
@@ -445,6 +533,7 @@ export class GeminiLiveSession {
     this.wasStoppedByUser = true;
     this.updateState('off');
     this.socketStatus = 'closed';
+    this.isSetupComplete = false;
     this.ws?.close();
     this.ws = null;
     this.stopAllAudioPlayback();
