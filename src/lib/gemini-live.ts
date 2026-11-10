@@ -255,6 +255,7 @@ export class GeminiLiveSession {
   private audioCtx: AudioContext | null = null;
   private playbackAudioCtx: AudioContext | null = null;
   private micStream: MediaStream | null = null;
+  private micSourceNode: MediaStreamAudioSourceNode | null = null;
   private audioWorkletNode: AudioWorkletNode | null = null;
   private scriptProcessor: ScriptProcessorNode | null = null;
   private micAnalyser: AnalyserNode | null = null;
@@ -262,11 +263,24 @@ export class GeminiLiveSession {
   private nextStartTime = 0;
   private scheduledAudioSources: AudioBufferSourceNode[] = [];
   private currentState: 'connecting' | 'listening' | 'thinking' | 'speaking' | 'off' = 'off';
+  private stateEnteredAt = Date.now();
   private wasStoppedByUser = false;
   private isMuted = false;
   private isSetupComplete = false;
   private isFallbackMode = false;
   private lastTtsAttemptError: string | null = null;
+  private cachedApiKey = '';
+
+  // Watchdog & Reconnect timers
+  private watchdogTimer: any = null;
+  private reconnectTimer: any = null;
+  private isReconnecting = false;
+
+  // 250ms PCM Chunk Accumulation Buffer (24000Hz * 0.25s = 6000 samples)
+  private pendingPcmChunks: Float32Array[] = [];
+  private pendingPcmSamplesCount = 0;
+  private pcmFlushTimer: any = null;
+  private liveTurnCompleted = false;
 
   // Discovered models from ListModels
   private liveModels: string[] = [];
@@ -284,6 +298,7 @@ export class GeminiLiveSession {
   private vadTimer: any = null;
   private interruptFrames = 0;
   private isBrowserTtsSpeaking = false;
+  private isResumingMic = false;
   private conversationHistory: Array<{ role: 'user' | 'model'; parts: Array<{ text: string }> }> = [];
 
   // Live diagnostics tracking
@@ -340,10 +355,14 @@ export class GeminiLiveSession {
     this.wasStoppedByUser = false;
     this.isSetupComplete = false;
     this.isFallbackMode = false;
+    this.isProcessingClip = false;
+    this.isRecordingClip = false;
+    this.isBrowserTtsSpeaking = false;
     this.updateState('connecting');
     this.socketStatus = 'connecting';
 
     const apiKey = (this.options.apiKey || getGeminiKey() || '').replace(/[\r\n\t\s"']+/g, '').trim();
+    this.cachedApiKey = apiKey;
     if (!apiKey) {
       this.lastError = 'Gemini key নেই';
       this.options.onError?.('Gemini key নেই');
@@ -352,11 +371,14 @@ export class GeminiLiveSession {
       return;
     }
 
-    // 1. Initialize Microphone & AnalyserNode immediately so Orb and 6 Bars respond from second 0
+    // 1. Initialize Single AudioContext, Microphone & AnalyserNode immediately
     const audioReady = await this.initAudioAndAnalyzers();
     if (!audioReady || this.wasStoppedByUser) {
       return;
     }
+
+    // Start 15-second Watchdog for PROCESSING / SPEAKING states
+    this.startWatchdog();
 
     // 2. Fetch available models from Google ListModels dynamically
     try {
@@ -376,7 +398,6 @@ export class GeminiLiveSession {
     if (this.wasStoppedByUser) return;
 
     // 3. Try Path 1 (Live WebSocket): up to 3 bidiGenerateContent models, max 8 seconds total.
-    // If list is empty or 8s expires or connection fails, go directly to Path 2 (MediaRecorder + generateContent).
     if (this.liveModels.length > 0) {
       const connectedLive = await this.tryConnectLiveModels(apiKey, this.liveModels.slice(0, 3), 8000);
       if (connectedLive && !this.wasStoppedByUser) {
@@ -393,16 +414,67 @@ export class GeminiLiveSession {
     }
   }
 
+  private startWatchdog() {
+    if (this.watchdogTimer) clearInterval(this.watchdogTimer);
+    this.watchdogTimer = setInterval(() => {
+      if (this.wasStoppedByUser || this.currentState === 'off') return;
+      const isBusyState =
+        this.currentState === 'thinking' ||
+        this.currentState === 'speaking' ||
+        this.isProcessingClip ||
+        this.isBrowserTtsSpeaking;
+      if (isBusyState && Date.now() - this.stateEnteredAt > 15000) {
+        logVoiceEvent('Watchdog', 'Stuck in PROCESSING/SPEAKING > 15s, forcing reset to LISTENING', 'warn');
+        this.interruptPlayback();
+        this.isProcessingClip = false;
+        this.isRecordingClip = false;
+        this.discardClip = false;
+        this.isBrowserTtsSpeaking = false;
+        this.liveUserBuffer = '';
+        this.liveAssistantBuffer = '';
+        this.finishSpeakingAndReturnToListening();
+      }
+    }, 1000);
+  }
+
+  private attachMicStreamToAudioGraph(stream: MediaStream) {
+    if (!this.audioCtx || !this.micAnalyser) return;
+    try {
+      if (this.micSourceNode) {
+        try {
+          this.micSourceNode.disconnect();
+        } catch {}
+        this.micSourceNode = null;
+      }
+      const source = this.audioCtx.createMediaStreamSource(stream);
+      this.micSourceNode = source;
+      source.connect(this.micAnalyser);
+      if (this.audioWorkletNode) {
+        source.connect(this.audioWorkletNode);
+      } else if (this.scriptProcessor) {
+        source.connect(this.scriptProcessor);
+      }
+      this.options.onMicLive?.(true);
+    } catch (e) {
+      console.warn('[GeminiLiveSession] attachMicStreamToAudioGraph error:', e);
+    }
+  }
+
   private async initAudioAndAnalyzers(): Promise<boolean> {
     try {
-      if (this.options.micStream) {
+      const hasLiveOptionStream =
+        this.options.micStream &&
+        this.options.micStream.active &&
+        this.options.micStream.getAudioTracks().some((t) => t.readyState === 'live');
+
+      if (hasLiveOptionStream && this.options.micStream) {
         this.micStream = this.options.micStream;
       } else {
-        this.micStream = await navigator.mediaDevices.getUserMedia({
+        this.micStream = await getGlobalMicStream({
           audio: {
-            echoCancellation: true,
-            noiseSuppression: true,
-            autoGainControl: true,
+            echoCancellation: false,
+            noiseSuppression: false,
+            autoGainControl: false,
           },
         });
       }
@@ -412,9 +484,14 @@ export class GeminiLiveSession {
         throw new Error('মাইক সচল নয়');
       }
 
-      this.audioCtx =
+      // Single AudioContext used across the entire call (never recreated or closed until call ends)
+      const sharedCtx =
         this.options.audioContext ||
+        this.options.playbackAudioContext ||
         new (window.AudioContext || (window as any).webkitAudioContext)();
+
+      this.audioCtx = sharedCtx;
+      this.playbackAudioCtx = sharedCtx;
 
       if (this.audioCtx.state !== 'running') {
         try {
@@ -422,40 +499,35 @@ export class GeminiLiveSession {
         } catch {}
       }
 
-      this.playbackAudioCtx =
-        this.options.playbackAudioContext ||
-        new (window.AudioContext || (window as any).webkitAudioContext)();
-
-      if (this.playbackAudioCtx.state !== 'running') {
-        try {
-          await this.playbackAudioCtx.resume();
-        } catch {}
-      }
-
-      // Unlock playback AudioContext on user gesture with a tiny silent buffer
+      // Unlock AudioContext on user gesture with a tiny silent buffer
       try {
-        const silentBuf = this.playbackAudioCtx.createBuffer(1, 1, 24000);
-        const silentSrc = this.playbackAudioCtx.createBufferSource();
+        const silentBuf = this.audioCtx.createBuffer(1, 1, 24000);
+        const silentSrc = this.audioCtx.createBufferSource();
         silentSrc.buffer = silentBuf;
-        silentSrc.connect(this.playbackAudioCtx.destination);
+        silentSrc.connect(this.audioCtx.destination);
         silentSrc.start(0);
       } catch {}
 
-      const source = this.audioCtx.createMediaStreamSource(this.micStream);
       const sourceSampleRate = this.audioCtx.sampleRate;
 
       this.micAnalyser = this.audioCtx.createAnalyser();
       this.micAnalyser.fftSize = 256;
       this.micAnalyser.smoothingTimeConstant = 0.45;
-      source.connect(this.micAnalyser);
 
-      this.outputAnalyser = this.playbackAudioCtx.createAnalyser();
+      this.outputAnalyser = this.audioCtx.createAnalyser();
       this.outputAnalyser.fftSize = 256;
       this.outputAnalyser.smoothingTimeConstant = 0.45;
 
-      // Also attach PCM capture for Path 1 Live WebSocket (only sends if ws is open & setupComplete)
+      // Attach PCM capture for Path 1 Live WebSocket (only sends if ws is open & setupComplete)
       const processPcmBuffer = (float32Samples: Float32Array) => {
-        if (!this.ws || this.ws.readyState !== WebSocket.OPEN || this.isMuted || !this.isSetupComplete || this.isFallbackMode) {
+        if (
+          !this.ws ||
+          this.ws.readyState !== WebSocket.OPEN ||
+          this.isMuted ||
+          !this.isSetupComplete ||
+          this.isFallbackMode ||
+          this.currentState === 'speaking'
+        ) {
           return;
         }
         const pcm16 = downsampleToPCM16(float32Samples, sourceSampleRate, 16000);
@@ -505,7 +577,6 @@ export class GeminiLiveSession {
             processPcmBuffer(e.data);
           }
         };
-        source.connect(this.audioWorkletNode);
         workletActive = true;
       } catch {}
 
@@ -515,14 +586,13 @@ export class GeminiLiveSession {
           const input = e.inputBuffer.getChannelData(0);
           processPcmBuffer(input);
         };
-        source.connect(this.scriptProcessor);
         const silentGain = this.audioCtx.createGain();
         silentGain.gain.value = 0;
         this.scriptProcessor.connect(silentGain);
         silentGain.connect(this.audioCtx.destination);
       }
 
-      this.options.onMicLive?.(true);
+      this.attachMicStreamToAudioGraph(this.micStream);
       this.startVisualizer();
       return true;
     } catch (e: any) {
@@ -649,8 +719,7 @@ export class GeminiLiveSession {
               finish(false);
               return;
             }
-            // If error occurs after setupComplete, switch seamlessly to Path 2
-            this.switchFromLiveToFallback(apiKey);
+            this.handleLiveDisconnectAndAutoReconnect(apiKey);
             return;
           }
 
@@ -670,23 +739,22 @@ export class GeminiLiveSession {
         if (!settled) {
           finish(false);
         } else {
-          this.switchFromLiveToFallback(apiKey);
+          this.handleLiveDisconnectAndAutoReconnect(apiKey);
         }
       };
 
       socket.onclose = () => {
         if (!settled) {
           finish(false);
-        } else if (!this.wasStoppedByUser && !this.isFallbackMode) {
-          // Live socket dropped mid-call: seamlessly switch to Path 2 so call never breaks
-          this.switchFromLiveToFallback(apiKey);
+        } else if (!this.wasStoppedByUser) {
+          this.handleLiveDisconnectAndAutoReconnect(apiKey);
         }
       };
     });
   }
 
-  private switchFromLiveToFallback(apiKey: string) {
-    if (this.wasStoppedByUser || this.isFallbackMode) return;
+  private handleLiveDisconnectAndAutoReconnect(apiKey: string) {
+    if (this.wasStoppedByUser) return;
     this.isSetupComplete = false;
     if (this.ws) {
       try {
@@ -698,7 +766,36 @@ export class GeminiLiveSession {
       } catch {}
       this.ws = null;
     }
-    this.activateFallbackPath(apiKey);
+
+    // Ensure Path 2 is active immediately so the user can keep speaking without interruption
+    if (!this.isFallbackMode) {
+      this.activateFallbackPath(apiKey);
+    } else {
+      this.finishSpeakingAndReturnToListening();
+    }
+
+    // Auto-reconnect after 2 seconds without ending the call
+    if (this.reconnectTimer) clearTimeout(this.reconnectTimer);
+    this.reconnectTimer = setTimeout(async () => {
+      if (this.wasStoppedByUser || this.isReconnecting || this.liveModels.length === 0) return;
+      if (this.currentState === 'speaking' || this.isProcessingClip || this.isRecordingClip) return;
+      this.isReconnecting = true;
+      try {
+        const reconnected = await this.tryConnectLiveModels(apiKey, this.liveModels.slice(0, 2), 5000);
+        if (reconnected && !this.wasStoppedByUser) {
+          this.isFallbackMode = false;
+          this.activeMode = 'live';
+          this.socketStatus = 'open';
+          if (this.vadTimer) {
+            clearInterval(this.vadTimer);
+            this.vadTimer = null;
+          }
+          await this.finishSpeakingAndReturnToListening();
+        }
+      } catch {} finally {
+        this.isReconnecting = false;
+      }
+    }, 2000);
   }
 
   private liveUserBuffer = '';
@@ -758,8 +855,10 @@ export class GeminiLiveSession {
           continue;
         }
         if (part.inlineData?.data) {
+          this.liveTurnCompleted = false;
           this.pauseMicDuringSpeech();
           this.updateState('speaking');
+          this.stateEnteredAt = Date.now();
           this.playPcmAudioChunk(part.inlineData.data);
         }
         if (part.text && !outTrans) {
@@ -775,9 +874,9 @@ export class GeminiLiveSession {
     if (content.interrupted) {
       this.liveUserBuffer = '';
       this.liveAssistantBuffer = '';
+      this.liveTurnCompleted = true;
       this.stopAllAudioPlayback();
-      this.resumeMicAfterSpeech();
-      this.updateState('listening');
+      this.finishSpeakingAndReturnToListening();
       this.options.onInterrupted?.();
     }
 
@@ -797,6 +896,8 @@ export class GeminiLiveSession {
       }
       this.liveUserBuffer = '';
       this.liveAssistantBuffer = '';
+      this.liveTurnCompleted = true;
+      this.flushPendingPcmChunks(true);
       this.scheduleReturnToListening();
       this.options.onTurnComplete?.();
     }
@@ -806,11 +907,11 @@ export class GeminiLiveSession {
   // PATH 2: MediaRecorder VAD + Gemini generateContent + TTS/speechSynthesis
   // =========================================================================
   private activateFallbackPath(apiKey: string) {
-    if (this.wasStoppedByUser || this.isFallbackMode) return;
+    if (this.wasStoppedByUser) return;
     this.isFallbackMode = true;
     this.activeMode = 'fallback';
     this.socketStatus = 'open';
-    this.updateState('listening');
+    this.finishSpeakingAndReturnToListening();
     logVoiceEvent('Fallback Voice', 'Activated Path 2 (MediaRecorder + generateContent)');
 
     const SPEECH_START_THRESHOLD = 0.042;
@@ -823,7 +924,27 @@ export class GeminiLiveSession {
     if (this.vadTimer) clearInterval(this.vadTimer);
 
     this.vadTimer = setInterval(() => {
-      if (this.wasStoppedByUser || !this.micStream) return;
+      if (this.wasStoppedByUser) return;
+
+      // Ensure micStream is active when in LISTENING state
+      if (
+        this.currentState === 'listening' &&
+        !this.isMuted &&
+        !this.isProcessingClip &&
+        !this.isRecordingClip &&
+        !this.isResumingMic
+      ) {
+        const hasLiveTrack =
+          this.micStream &&
+          this.micStream.active &&
+          this.micStream.getAudioTracks().some((t) => t.readyState === 'live');
+        if (!hasLiveTrack) {
+          this.resumeMicAfterSpeech();
+          return;
+        }
+      }
+
+      if (!this.micStream) return;
 
       const level = this.currentMicLevel;
 
@@ -839,8 +960,7 @@ export class GeminiLiveSession {
         return;
       }
 
-      // 2. While Rose is speaking: pause recording so Rose doesn't hear herself,
-      //    UNLESS user speaks loudly to interrupt (barge-in)
+      // 2. While Rose is speaking: mic is stopped, but if level triggers interrupt
       if (this.currentState === 'speaking') {
         if (level >= INTERRUPT_THRESHOLD) {
           this.interruptFrames++;
@@ -848,7 +968,7 @@ export class GeminiLiveSession {
             this.interruptFrames = 0;
             this.interruptPlayback();
             this.options.onInterrupted?.();
-            this.updateState('listening');
+            this.finishSpeakingAndReturnToListening();
           }
         } else {
           this.interruptFrames = 0;
@@ -858,7 +978,7 @@ export class GeminiLiveSession {
 
       this.interruptFrames = 0;
 
-      // 3. Do not record while waiting for Gemini response ('thinking')
+      // 3. Do not record while waiting for Gemini response ('thinking' / PROCESSING)
       if (this.currentState === 'thinking' || this.isProcessingClip) {
         return;
       }
@@ -889,7 +1009,15 @@ export class GeminiLiveSession {
   }
 
   private startClipRecording(apiKey: string, minDurationMs: number) {
-    if (!this.micStream || this.isRecordingClip || this.isProcessingClip) return;
+    if (!this.micStream || this.isRecordingClip || this.isProcessingClip || this.currentState !== 'listening') return;
+
+    const hasLiveTrack =
+      this.micStream.active &&
+      this.micStream.getAudioTracks().some((t) => t.readyState === 'live');
+    if (!hasLiveTrack) {
+      this.resumeMicAfterSpeech();
+      return;
+    }
 
     try {
       const mimeType = getSupportedRecorderMimeType();
@@ -921,6 +1049,9 @@ export class GeminiLiveSession {
           this.recordedChunks.length === 0
         ) {
           this.recordedChunks = [];
+          if (!this.wasStoppedByUser && this.currentState !== 'speaking' && !this.isProcessingClip) {
+            this.updateState('listening');
+          }
           return;
         }
 
@@ -929,6 +1060,9 @@ export class GeminiLiveSession {
         this.recordedChunks = [];
 
         if (blob.size < 800) {
+          if (!this.wasStoppedByUser && this.currentState !== 'speaking' && !this.isProcessingClip) {
+            this.updateState('listening');
+          }
           return;
         }
 
@@ -940,9 +1074,11 @@ export class GeminiLiveSession {
     } catch (e: any) {
       this.isRecordingClip = false;
       logVoiceEvent('Recorder', `Failed starting MediaRecorder: ${e?.message}`, 'error');
+      this.resumeMicAfterSpeech();
     }
   }
 
+  // State Machine: LISTENING -> PROCESSING ('thinking') -> SPEAKING ('speaking') -> LISTENING ('listening')
   private async processAudioClipWithGemini(apiKey: string, audioBlob: Blob, mimeType: string) {
     if (this.wasStoppedByUser || this.isProcessingClip) return;
     this.isProcessingClip = true;
@@ -1072,7 +1208,6 @@ export class GeminiLiveSession {
       }
 
       if (!rawResponseText || this.wasStoppedByUser) {
-        if (!this.wasStoppedByUser) this.updateState('listening');
         return;
       }
 
@@ -1103,7 +1238,6 @@ export class GeminiLiveSession {
       // Validate transcript: discard foreign scripts (Korean/Turkish/etc), noise, duration < 1s
       if (!isValidVoiceTranscript(transcript, clipDurationSec)) {
         logVoiceEvent('STT Validation', `Discarded invalid/noise/foreign transcript: "${transcript}"`, 'warn');
-        if (!this.wasStoppedByUser) this.updateState('listening');
         return;
       }
 
@@ -1116,34 +1250,23 @@ export class GeminiLiveSession {
       if (reply && !this.wasStoppedByUser) {
         this.conversationHistory.push({ role: 'model', parts: [{ text: reply }] });
         this.options.onTranscription?.('assistant', reply, true);
-        
-        // Sentence-by-sentence fast speaking
-        const sentences = reply.split(/(?<=[।?!.\n])\s+/).filter(s => s.trim().length > 0);
-        if (sentences.length > 0) {
-          for (const s of sentences) {
-            if (this.wasStoppedByUser) break;
-            await this.speakReply(apiKey, s.trim());
-          }
-        } else {
-          await this.speakReply(apiKey, reply);
-        }
+        await this.speakReply(apiKey, reply);
       }
 
       if (!this.wasStoppedByUser) {
         this.options.onTurnComplete?.();
-        if (this.currentState !== 'speaking') {
-          this.updateState('listening');
-        }
       }
     } catch (err: any) {
       if (!this.wasStoppedByUser) {
         const formatted = parseAndFormatGeminiError(err?.status || 0, err?.message || 'Error');
         this.lastError = formatted.bengali;
         this.options.onError?.(formatted.bengali, formatted.original);
-        this.updateState('listening');
       }
     } finally {
       this.isProcessingClip = false;
+      if (!this.wasStoppedByUser) {
+        await this.finishSpeakingAndReturnToListening();
+      }
     }
   }
 
@@ -1156,25 +1279,58 @@ export class GeminiLiveSession {
         } catch {}
         this.isRecordingClip = false;
       }
-      pauseGlobalMicForSpeech([this.micStream]);
-      if (this.audioCtx && this.playbackAudioCtx && this.audioCtx !== this.playbackAudioCtx && this.audioCtx.state === 'running') {
-        this.audioCtx.suspend().catch(() => {});
+      if (this.micSourceNode) {
+        try {
+          this.micSourceNode.disconnect();
+        } catch {}
+        this.micSourceNode = null;
       }
+      pauseGlobalMicForSpeech([this.micStream]);
+      this.micStream = null;
     } catch {}
   }
 
   private async resumeMicAfterSpeech() {
-    if (this.wasStoppedByUser) return;
+    if (this.wasStoppedByUser || this.isResumingMic) return;
+    this.isResumingMic = true;
     try {
-      if (!this.isMuted) {
-        this.micStream = await getGlobalMicStream({
-          audio: { echoCancellation: false, noiseSuppression: false, autoGainControl: false }
-        });
-      }
       if (this.audioCtx && this.audioCtx.state === 'suspended') {
-        this.audioCtx.resume().catch(() => {});
+        await this.audioCtx.resume().catch(() => {});
       }
-    } catch {}
+      if (!this.isMuted) {
+        const hasLiveTrack =
+          this.micStream &&
+          this.micStream.active &&
+          this.micStream.getAudioTracks().some((t) => t.readyState === 'live');
+        if (!hasLiveTrack) {
+          this.micStream = await getGlobalMicStream({
+            audio: { echoCancellation: false, noiseSuppression: false, autoGainControl: false },
+          });
+          if (!this.wasStoppedByUser && this.micStream) {
+            this.attachMicStreamToAudioGraph(this.micStream);
+          }
+        } else if (!this.micSourceNode && this.micStream) {
+          this.attachMicStreamToAudioGraph(this.micStream);
+        }
+      }
+    } catch (e) {
+      console.warn('[GeminiLiveSession] resumeMicAfterSpeech error:', e);
+    } finally {
+      this.isResumingMic = false;
+    }
+  }
+
+  private async finishSpeakingAndReturnToListening() {
+    if (this.wasStoppedByUser) return;
+    this.isProcessingClip = false;
+    this.isRecordingClip = false;
+    this.discardClip = false;
+    this.isBrowserTtsSpeaking = false;
+    this.interruptFrames = 0;
+    await this.resumeMicAfterSpeech();
+    if (!this.wasStoppedByUser) {
+      this.updateState('listening');
+    }
   }
 
   private async speakReply(apiKey: string, text: string): Promise<void> {
@@ -1188,7 +1344,7 @@ export class GeminiLiveSession {
       return;
     }
 
-    // Cancel any previous speech so only the newest reply speaks
+    // Cancel any previous speech and completely stop mic tracks while Rose speaks
     this.interruptPlayback();
     this.pauseMicDuringSpeech();
     this.updateState('speaking');
@@ -1215,8 +1371,9 @@ export class GeminiLiveSession {
         this.lastTtsAttemptError = String(err?.message || 'TTS ব্যর্থ');
       }
 
-      // 2. Fallback to browser speechSynthesis (strictly female voice only, volume = 1.0)
+      // 2. Fallback to browser speechSynthesis (stop Web Audio first so both never play together)
       if (!this.wasStoppedByUser) {
+        this.stopAllAudioPlayback();
         const browserOk = await this.speakViaBrowserSpeechSynthesis(cleanText);
         if (!browserOk && !this.wasStoppedByUser) {
           const errMsg = this.lastTtsAttemptError || 'অডিও চালু হয়নি';
@@ -1225,8 +1382,7 @@ export class GeminiLiveSession {
       }
     } finally {
       if (!this.wasStoppedByUser) {
-        await this.resumeMicAfterSpeech();
-        this.updateState('listening');
+        await this.finishSpeakingAndReturnToListening();
       }
     }
   }
@@ -1245,6 +1401,14 @@ export class GeminiLiveSession {
             await ctx.resume().catch(() => {});
           }
 
+          // Ensure browser speechSynthesis is not running at the same time
+          if (typeof window !== 'undefined' && 'speechSynthesis' in window) {
+            try {
+              window.speechSynthesis.cancel();
+            } catch {}
+          }
+          this.isBrowserTtsSpeaking = false;
+
           const binaryStr = atob(base64Pcm);
           const len = binaryStr.length;
           const bytes = new Uint8Array(len);
@@ -1262,13 +1426,14 @@ export class GeminiLiveSession {
             float32[i] = view.getInt16(i * 2, true) / 32768.0;
           }
 
+          // SampleRate strictly 24000; browser resamples cleanly to ctx.sampleRate
           const audioBuffer = ctx.createBuffer(1, float32.length, 24000);
           audioBuffer.copyToChannel(float32, 0);
 
           const source = ctx.createBufferSource();
           source.buffer = audioBuffer;
 
-          const speed = Math.min(1.35, Math.max(0.85, this.options.speechSpeed || 1.05));
+          const speed = Math.min(1.25, Math.max(0.85, this.options.speechSpeed || 1.05));
           source.playbackRate.value = speed;
 
           const { gainNode } = connectBoostedOutputChain(
@@ -1278,16 +1443,19 @@ export class GeminiLiveSession {
             this.outputAnalyser
           );
 
-          const startTime = ctx.currentTime;
+          const startTime = Math.max(ctx.currentTime + 0.03, this.nextStartTime);
           const duration = audioBuffer.duration / speed;
+          this.nextStartTime = startTime + duration;
+
           const targetGain = volumeSliderToGain(this.options.voiceVolume ?? 80);
-          const fadeTime = 0.005;
+          const fadeTime = Math.min(0.005, duration * 0.25);
 
           gainNode.gain.setValueAtTime(0, startTime);
-          gainNode.gain.linearRampToValueAtTime(targetGain, startTime + Math.min(fadeTime, duration / 2));
-          gainNode.gain.setValueAtTime(targetGain, startTime + duration - Math.min(fadeTime, duration / 2));
+          gainNode.gain.linearRampToValueAtTime(targetGain, startTime + fadeTime);
+          gainNode.gain.setValueAtTime(targetGain, Math.max(startTime + fadeTime, startTime + duration - fadeTime));
           gainNode.gain.linearRampToValueAtTime(0, startTime + duration);
 
+          this.stateEnteredAt = Date.now();
           this.scheduledAudioSources.push(source);
           source.onended = () => {
             this.scheduledAudioSources = this.scheduledAudioSources.filter((s) => s !== source);
@@ -1311,6 +1479,9 @@ export class GeminiLiveSession {
         return;
       }
 
+      // Stop any Web Audio output so Web Audio and speechSynthesis never play simultaneously
+      this.stopAllAudioPlayback();
+
       const startSpeaking = (voices: SpeechSynthesisVoice[]) => {
         if (this.wasStoppedByUser) {
           resolve(false);
@@ -1327,7 +1498,7 @@ export class GeminiLiveSession {
         if (foundFemale && chosenVoice) {
           utterance.voice = chosenVoice;
           utterance.lang = chosenVoice.lang || requestedLang;
-          utterance.rate = Math.min(1.35, Math.max(0.85, this.options.speechSpeed || 1.05));
+          utterance.rate = Math.min(1.25, Math.max(0.85, this.options.speechSpeed || 1.05));
           utterance.pitch = Math.min(1.5, Math.max(0.85, this.options.speechPitch || 1.15));
         } else {
           utterance.lang = requestedLang;
@@ -1353,6 +1524,7 @@ export class GeminiLiveSession {
 
         utterance.onstart = () => {
           startedAt = Date.now();
+          this.stateEnteredAt = Date.now();
           this.isBrowserTtsSpeaking = true;
         };
         utterance.onend = () => {
@@ -1418,9 +1590,6 @@ export class GeminiLiveSession {
   }
 
   private playPcmAudioChunk(base64Pcm: string) {
-    const ctx = this.playbackAudioCtx || this.audioCtx;
-    if (!ctx) return;
-    if (ctx.state === 'suspended') ctx.resume().catch(() => {});
     try {
       const binaryStr = atob(base64Pcm);
       const len = binaryStr.length;
@@ -1435,8 +1604,52 @@ export class GeminiLiveSession {
         float32[i] = view.getInt16(i * 2, true) / 32768.0;
       }
 
-      const audioBuffer = ctx.createBuffer(1, float32.length, 24000);
-      audioBuffer.copyToChannel(float32, 0);
+      this.pendingPcmChunks.push(float32);
+      this.pendingPcmSamplesCount += float32.length;
+
+      // Minimum 250ms at 24000Hz = 6000 samples
+      if (this.pendingPcmSamplesCount >= 6000) {
+        this.flushPendingPcmChunks(false);
+      } else {
+        if (this.pcmFlushTimer) clearTimeout(this.pcmFlushTimer);
+        this.pcmFlushTimer = setTimeout(() => {
+          this.flushPendingPcmChunks(true);
+        }, 120);
+      }
+    } catch {}
+  }
+
+  private flushPendingPcmChunks(force: boolean) {
+    if (this.pcmFlushTimer) {
+      clearTimeout(this.pcmFlushTimer);
+      this.pcmFlushTimer = null;
+    }
+    if (this.pendingPcmSamplesCount <= 0 || this.pendingPcmChunks.length === 0) return;
+    if (!force && this.pendingPcmSamplesCount < 6000) return;
+
+    const ctx = this.playbackAudioCtx || this.audioCtx;
+    if (!ctx) {
+      this.pendingPcmChunks = [];
+      this.pendingPcmSamplesCount = 0;
+      return;
+    }
+    if (ctx.state === 'suspended') {
+      ctx.resume().catch(() => {});
+    }
+
+    try {
+      const merged = new Float32Array(this.pendingPcmSamplesCount);
+      let offset = 0;
+      for (const chunk of this.pendingPcmChunks) {
+        merged.set(chunk, offset);
+        offset += chunk.length;
+      }
+      this.pendingPcmChunks = [];
+      this.pendingPcmSamplesCount = 0;
+
+      // Create 24000Hz AudioBuffer (browser natively resamples to AudioContext.sampleRate)
+      const audioBuffer = ctx.createBuffer(1, merged.length, 24000);
+      audioBuffer.copyToChannel(merged, 0);
 
       const source = ctx.createBufferSource();
       source.buffer = audioBuffer;
@@ -1448,23 +1661,33 @@ export class GeminiLiveSession {
         this.outputAnalyser
       );
 
-      const startTime = Math.max(ctx.currentTime, this.nextStartTime);
+      const startTime = Math.max(ctx.currentTime + 0.03, this.nextStartTime);
       const duration = audioBuffer.duration;
+      this.nextStartTime = startTime + duration;
+
       const targetGain = volumeSliderToGain(this.options.voiceVolume ?? 80);
-      const fadeTime = 0.005;
+      const fadeTime = Math.min(0.005, duration * 0.25);
 
       gainNode.gain.setValueAtTime(0, startTime);
-      gainNode.gain.linearRampToValueAtTime(targetGain, startTime + Math.min(fadeTime, duration / 2));
-      gainNode.gain.setValueAtTime(targetGain, startTime + duration - Math.min(fadeTime, duration / 2));
+      gainNode.gain.linearRampToValueAtTime(targetGain, startTime + fadeTime);
+      gainNode.gain.setValueAtTime(targetGain, Math.max(startTime + fadeTime, startTime + duration - fadeTime));
       gainNode.gain.linearRampToValueAtTime(0, startTime + duration);
 
-      source.start(startTime);
+      this.stateEnteredAt = Date.now();
       this.scheduledAudioSources.push(source);
       source.onended = () => {
         this.scheduledAudioSources = this.scheduledAudioSources.filter((s) => s !== source);
+        if (
+          this.scheduledAudioSources.length === 0 &&
+          this.pendingPcmSamplesCount === 0 &&
+          this.liveTurnCompleted &&
+          !this.wasStoppedByUser
+        ) {
+          this.finishSpeakingAndReturnToListening();
+        }
       };
 
-      this.nextStartTime = startTime + duration;
+      source.start(startTime);
     } catch {}
   }
 
@@ -1476,7 +1699,7 @@ export class GeminiLiveSession {
     const loop = () => {
       if (this.wasStoppedByUser || this.currentState === 'off') return;
 
-      if (this.micAnalyser && !this.isMuted) {
+      if (this.micAnalyser && !this.isMuted && this.currentState !== 'speaking') {
         this.micAnalyser.getByteFrequencyData(micFreqData);
         let freqSum = 0;
         for (let i = 0; i < micFreqData.length; i++) freqSum += micFreqData[i];
@@ -1506,8 +1729,6 @@ export class GeminiLiveSession {
         for (let i = 0; i < outFreqData.length; i++) outSum += outFreqData[i];
         let outLevel = Math.min(1.0, (outSum / (outFreqData.length * 255)) * 2.5);
 
-        // When browser speechSynthesis is speaking, WebAudio AnalyserNode cannot measure system TTS,
-        // so provide a gentle natural pulse as requested
         if (this.isBrowserTtsSpeaking && outLevel < 0.05) {
           const t = performance.now() * 0.01;
           outLevel = 0.22 + 0.14 * Math.sin(t) + 0.08 * Math.cos(t * 1.7);
@@ -1533,6 +1754,12 @@ export class GeminiLiveSession {
   }
 
   private stopAllAudioPlayback() {
+    if (this.pcmFlushTimer) {
+      clearTimeout(this.pcmFlushTimer);
+      this.pcmFlushTimer = null;
+    }
+    this.pendingPcmChunks = [];
+    this.pendingPcmSamplesCount = 0;
     this.scheduledAudioSources.forEach((s) => {
       try {
         s.stop();
@@ -1545,9 +1772,12 @@ export class GeminiLiveSession {
   private scheduleReturnToListening() {
     setTimeout(() => {
       if (this.wasStoppedByUser) return;
-      if (this.scheduledAudioSources.length === 0 && !this.isBrowserTtsSpeaking) {
-        this.resumeMicAfterSpeech();
-        this.updateState('listening');
+      if (
+        this.scheduledAudioSources.length === 0 &&
+        this.pendingPcmSamplesCount === 0 &&
+        !this.isBrowserTtsSpeaking
+      ) {
+        this.finishSpeakingAndReturnToListening();
       } else {
         this.scheduleReturnToListening();
       }
@@ -1555,6 +1785,7 @@ export class GeminiLiveSession {
   }
 
   private updateState(newState: 'connecting' | 'listening' | 'thinking' | 'speaking' | 'off') {
+    this.stateEnteredAt = Date.now();
     if (this.currentState !== newState) {
       this.currentState = newState;
       this.options.onStateChange?.(newState);
@@ -1567,6 +1798,18 @@ export class GeminiLiveSession {
     this.socketStatus = 'closed';
     this.isSetupComplete = false;
     this.isFallbackMode = false;
+    this.isProcessingClip = false;
+    this.isRecordingClip = false;
+
+    if (this.watchdogTimer) {
+      clearInterval(this.watchdogTimer);
+      this.watchdogTimer = null;
+    }
+
+    if (this.reconnectTimer) {
+      clearTimeout(this.reconnectTimer);
+      this.reconnectTimer = null;
+    }
 
     if (this.vadTimer) {
       clearInterval(this.vadTimer);
@@ -1580,7 +1823,6 @@ export class GeminiLiveSession {
       } catch {}
     }
     this.mediaRecorder = null;
-    this.isRecordingClip = false;
 
     this.interruptPlayback();
 
@@ -1593,6 +1835,13 @@ export class GeminiLiveSession {
         this.ws.close();
       } catch {}
       this.ws = null;
+    }
+
+    if (this.micSourceNode) {
+      try {
+        this.micSourceNode.disconnect();
+      } catch {}
+      this.micSourceNode = null;
     }
 
     if (this.scriptProcessor) {
@@ -1608,11 +1857,7 @@ export class GeminiLiveSession {
       this.audioWorkletNode = null;
     }
 
-    this.micStream?.getTracks().forEach((t) => {
-      try {
-        t.stop();
-      } catch {}
-    });
+    pauseGlobalMicForSpeech([this.micStream]);
     this.micStream = null;
   }
 }

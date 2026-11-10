@@ -632,23 +632,23 @@ export const extractNonThoughtTextFromParts = (
 };
 
 /**
- * Converts Settings Volume Slider (0-100, default 80%) to WebAudio Gain (1.0 - 3.0, default 2.5 at 80%).
+ * Converts Settings Volume Slider (0-100, default 80%) to WebAudio Gain (default 1.4 at 80%, max 1.8 at 100%).
  */
 export const volumeSliderToGain = (volumePercent?: number): number => {
   const v =
-    typeof volumePercent === 'number' && !isNaN(volumePercent) && volumePercent > 15
+    typeof volumePercent === 'number' && !isNaN(volumePercent) && volumePercent > 0
       ? volumePercent
       : 80;
   const clamped = Math.min(100, Math.max(1, v));
   if (clamped <= 80) {
-    return 1.0 + (clamped / 80) * 1.5; // 1.0 at min, 2.5 at 80%
+    return 0.35 + (clamped / 80) * 1.05; // 0.35 at min, 1.4 at 80%
   }
-  return 2.5 + ((clamped - 80) / 20) * 0.5; // 2.5 at 80%, 3.0 at 100%
+  return 1.4 + ((clamped - 80) / 20) * 0.4; // 1.4 at 80%, 1.8 at 100%
 };
 
 /**
- * Connects an AudioNode (source) through the unified loud, non-clipping chain:
- * source -> GainNode (1.0..3.0, default 2.5) -> DynamicsCompressorNode (-20dB, knee 20, ratio 8, attack 0.003, release 0.25) -> (AnalyserNode) -> destination
+ * Connects an AudioNode (source) through the clean, non-clipping limiter chain:
+ * source -> GainNode (default 1.4, max 1.8) -> DynamicsCompressorNode (threshold -12, knee 6, ratio 12, attack 0.003, release 0.1) -> (AnalyserNode) -> destination
  */
 export const connectBoostedOutputChain = (
   ctx: AudioContext,
@@ -661,11 +661,11 @@ export const connectBoostedOutputChain = (
   gainNode.gain.setValueAtTime(gainVal, ctx.currentTime);
 
   const compressor = ctx.createDynamicsCompressor();
-  compressor.threshold.setValueAtTime(-20, ctx.currentTime);
-  compressor.knee.setValueAtTime(20, ctx.currentTime);
-  compressor.ratio.setValueAtTime(8, ctx.currentTime);
+  compressor.threshold.setValueAtTime(-12, ctx.currentTime);
+  compressor.knee.setValueAtTime(6, ctx.currentTime);
+  compressor.ratio.setValueAtTime(12, ctx.currentTime);
   compressor.attack.setValueAtTime(0.003, ctx.currentTime);
-  compressor.release.setValueAtTime(0.25, ctx.currentTime);
+  compressor.release.setValueAtTime(0.1, ctx.currentTime);
 
   source.connect(gainNode);
   gainNode.connect(compressor);

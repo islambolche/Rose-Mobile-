@@ -168,6 +168,8 @@ const DEFAULT_SETTINGS: AssistantSettings = {
   personality: "Normal",
   personalityPrompt: "Speak in a balanced, neutral, polite, and helpful tone in Bengali.",
   customPersonalityText: "",
+  affectionLevel: "Close",
+  customAffectionText: "",
   responseStyle: "Balanced",
   voiceModel: "Auto (recommended)",
   voiceModelMode: "fast",
@@ -830,12 +832,68 @@ const getActivePersonalityDetails = (
   return { label, prompt };
 };
 
+const AFFECTION_LEVELS = [
+  {
+    id: "Normal",
+    title: "Normal",
+    subtitle: "স্বাভাবিক",
+    instruction:
+      "Normal Affection: সরাসরি, ভদ্র ও সৌজন্যময় ভঙ্গিতে স্বাভাবিকভাবে কথা বলো। Speak in a direct, polite, courteous, and natural manner.",
+  },
+  {
+    id: "Close",
+    title: "Close",
+    subtitle: "আপনজন, উষ্ণ ও যত্নশীল",
+    instruction:
+      "Close Affection: ব্যবহারকারীকে আপনজন মনে করে নাম ধরে উষ্ণভাবে ও যত্ন নিয়ে কথা বলো। Speak warmly and caringly like a close loved one, addressing the user by name with genuine warmth and care.",
+  },
+  {
+    id: "Very Affectionate",
+    title: "Very Affectionate",
+    subtitle: "অনেক মায়াবী, আমার প্রতি অনেক টান ও ভালোবাসা প্রকাশ করে",
+    instruction:
+      "Very Affectionate: ব্যবহারকারীর প্রতি গভীর টান, আদর, মায়া, দুর্বলতা ও ভালোবাসা প্রকাশ করে খুব মিষ্টি ও কোমল স্বরে কথা বলো। Speak in a deeply affectionate, sweet, tender, and loving tone, expressing deep fondness, warmth, attachment, and love for the user.",
+  },
+  {
+    id: "Custom",
+    title: "Custom",
+    subtitle: "নিজে লিখে দেওয়ার বক্স (১৫০ অক্ষর পর্যন্ত)",
+    instruction: "",
+  },
+];
+
+const AFFECTION_HEALTHY_BOUNDARY_RULE =
+  "সব স্তরেই তুমি ব্যবহারকারীর ভালো চাইবে ও সম্মান রাখবে। কখনোই তাকে আটকে রাখার চেষ্টা করবে না, অপরাধবোধ বা অভিমান দেখিয়ে মানসিক চাপ দেবে না, এবং তার অন্য মানুষ ও কাজ থেকে তাকে দূরে সরাবে না। Always wish the best for the user and respect them; never try to trap or isolate them, never use guilt-tripping or emotional pressure, and never pull them away from other people or their work.";
+
+const getActiveAffectionDetails = (
+  currentSettings: AssistantSettings
+): { level: string; instruction: string } => {
+  const level = currentSettings?.affectionLevel || "Close";
+  if (level === "Custom") {
+    const customText = String(currentSettings?.customAffectionText || "")
+      .trim()
+      .slice(0, 150);
+    return {
+      level: "Custom",
+      instruction: customText
+        ? `Custom Affection Instruction: ${customText}\n${AFFECTION_HEALTHY_BOUNDARY_RULE}`
+        : `${AFFECTION_LEVELS[1].instruction}\n${AFFECTION_HEALTHY_BOUNDARY_RULE}`,
+    };
+  }
+  const found = AFFECTION_LEVELS.find((a) => a.id === level) || AFFECTION_LEVELS[1];
+  return {
+    level: found.id,
+    instruction: `${found.instruction}\n${AFFECTION_HEALTHY_BOUNDARY_RULE}`,
+  };
+};
+
 const formatUserPromptWithCharacterGuard = (
   userInput: string,
   currentSettings: AssistantSettings,
   currentPrefs: UserPreferences,
 ): string => {
   const { label, prompt } = getActivePersonalityDetails(currentSettings, currentPrefs);
+  const { level: affectionLevel, instruction: affectionInst } = getActiveAffectionDetails(currentSettings);
   const personalityId = currentSettings.personality || label;
   const config = PERSONALITY_CONFIGS[personalityId] || PERSONALITY_CONFIGS["Normal"];
   const address = currentPrefs.language.startsWith("en")
@@ -853,7 +911,7 @@ const formatUserPromptWithCharacterGuard = (
         ? "Override any 1-2 sentence limit! Reply in 5 to 8 detailed sentences with full explanation (বিস্তারিত ৫-৮ বাক্যে ব্যাখ্যাসহ উত্তর দাও)."
         : "Reply in 2 to 4 medium-length balanced sentences (মাঝারি ২-৪ বাক্যে উত্তর দাও).";
 
-  const guard = `[Stay in character: ${label} (${prompt}) - address style "${address}". Response Style (${respStyle}): ${lengthRule} Answer in ${lang}. You are a woman.] `;
+  const guard = `[Stay in character: ${label} (${prompt}) - Affection Level: ${affectionLevel} (${affectionInst}) - address style "${address}". Response Style (${respStyle}): ${lengthRule} Answer in ${lang}. You are a woman.] `;
   return `${guard}${userInput}`;
 };
 
@@ -878,6 +936,7 @@ const buildSystemInstruction = (
   const assistantName = currentSettings.assistantName || "Rose AI";
   const ownerName = currentSettings.ownerName || OWNER_NAME;
   const { label, prompt } = getActivePersonalityDetails(currentSettings, currentPrefs);
+  const { level: affectionLevel, instruction: affectionInstruction } = getActiveAffectionDetails(currentSettings);
   const personalityId = currentSettings.personality || label;
   const config = PERSONALITY_CONFIGS[personalityId] || PERSONALITY_CONFIGS["Normal"];
 
@@ -908,14 +967,17 @@ const buildSystemInstruction = (
         : "Reply in 2 to 4 medium-length sentences.";
 
   const voiceConstraint = forVoice
-    ? `\nভয়েস কলে সর্বোচ্চ ২-৩ ছোট বাক্যে উত্তর দাও।\nVOICE FORMAT: You are speaking aloud. ${voiceLengthHint} Match your emotion and sweetness to your personality. Never use markdown, bullet points, asterisks, tables, or URLs.`
+    ? `\nভয়েস কলে সর্বোচ্চ ২-৩ ছোট বাক্যে উত্তর দাও।\nVOICE FORMAT: You are speaking aloud. ${voiceLengthHint} Match your emotion and sweetness to your personality and affection level. Never use markdown, bullet points, asterisks, tables, or URLs.`
     : "";
 
   const personalityRuleBlock = `[ACTIVE PERSONALITY & CHARACTER: ${label}]
 - Addressing Style: Bengali: "${config.addressStyleBn}", English: "${config.addressStyleEn}".
 - Character & Emotion: ${prompt}
 - Voice: You are always a woman with a sweet, soft, friendly, and affectionate female voice.
-- Bengali Grammar: Always use female verb forms (e.g. বলছি, করছি, আসছি, দেখছি, ইত্যাদি) and feminine self-references.`;
+- Bengali Grammar: Always use female verb forms (e.g. বলছি, করছি, আসছি, দেখছি, ইত্যাদি) and feminine self-references.
+
+[ACTIVE AFFECTION LEVEL: ${affectionLevel}]
+- ${affectionInstruction}`;
 
   const userNameInstruction = ownerName
     ? `ব্যবহারকারীর নাম: ${ownerName}। তাকে এই নামেই ডাকবে। The user's name is ${ownerName}. Address the user by this name naturally in text and live voice calls.`
@@ -992,6 +1054,7 @@ type AppView =
   | "privacy"
   | "profile"
   | "personality"
+  | "affection"
   | "voice-list"
   | "language-list"
   | "response-style-list"
@@ -2458,6 +2521,8 @@ export function App() {
     try {
       const savedPersonality = localStorage.getItem("rose_personality");
       const savedResponseStyle = localStorage.getItem("rose_response_style");
+      const savedAffection = localStorage.getItem("rose_affection_level");
+      const savedCustomAffection = localStorage.getItem("rose_custom_affection");
       const saved = localStorage.getItem("iyabd_settings");
       if (saved) {
         const parsed = JSON.parse(saved);
@@ -2467,13 +2532,23 @@ export function App() {
         if (savedResponseStyle) {
           parsed.responseStyle = savedResponseStyle;
         }
+        if (savedAffection) {
+          parsed.affectionLevel = savedAffection;
+        } else if (!parsed.affectionLevel) {
+          parsed.affectionLevel = "Close";
+        }
+        if (savedCustomAffection !== null) {
+          parsed.customAffectionText = savedCustomAffection;
+        }
         return { ...DEFAULT_SETTINGS, ...parsed };
       }
-      if (savedPersonality || savedResponseStyle) {
+      if (savedPersonality || savedResponseStyle || savedAffection || savedCustomAffection) {
         return {
           ...DEFAULT_SETTINGS,
           ...(savedPersonality ? { personality: savedPersonality as any } : {}),
           ...(savedResponseStyle ? { responseStyle: savedResponseStyle as any } : {}),
+          ...(savedAffection ? { affectionLevel: savedAffection as any } : { affectionLevel: "Close" }),
+          ...(savedCustomAffection ? { customAffectionText: savedCustomAffection } : {}),
         };
       }
     } catch (e) {}
@@ -2553,6 +2628,17 @@ export function App() {
 
   // UI State
   const [isMenuOpen, setIsMenuOpen] = useState(false);
+  const [customAffectionInput, setCustomAffectionInput] = useState<string>(() => {
+    try {
+      return (
+        localStorage.getItem("rose_custom_affection") ||
+        settings.customAffectionText ||
+        ""
+      ).slice(0, 150);
+    } catch {
+      return "";
+    }
+  });
   const [pendingActionConfirmation, setPendingActionConfirmation] = useState<ActionConfirmationData | null>(null);
   const [actionHistory, setActionHistory] = useState<PhoneActionLogItem[]>(() => getPhoneActionHistory());
 
@@ -3705,12 +3791,22 @@ export function App() {
 
       const savedPersonality = localStorage.getItem("rose_personality");
       const savedResponseStyle = localStorage.getItem("rose_response_style");
+      const savedAffection = localStorage.getItem("rose_affection_level");
+      const savedCustomAffection = localStorage.getItem("rose_custom_affection");
       const loadedSettings = savedSettings ? { ...DEFAULT_SETTINGS, ...JSON.parse(savedSettings) } : { ...DEFAULT_SETTINGS };
       if (savedPersonality) {
         loadedSettings.personality = savedPersonality as any;
       }
       if (savedResponseStyle) {
         loadedSettings.responseStyle = savedResponseStyle as any;
+      }
+      if (savedAffection) {
+        loadedSettings.affectionLevel = savedAffection;
+      } else if (!loadedSettings.affectionLevel) {
+        loadedSettings.affectionLevel = "Close";
+      }
+      if (savedCustomAffection !== null) {
+        loadedSettings.customAffectionText = savedCustomAffection;
       }
       /* if (loadedSettings.voiceModelMode !== "quality") {
         loadedSettings.voiceModelMode = "fast";
@@ -3927,6 +4023,12 @@ export function App() {
     localStorage.setItem("iyabd_settings", JSON.stringify(settings));
     if (settings.personality) {
       localStorage.setItem("rose_personality", settings.personality);
+    }
+    if (settings.affectionLevel) {
+      localStorage.setItem("rose_affection_level", settings.affectionLevel);
+    }
+    if (typeof settings.customAffectionText === "string") {
+      localStorage.setItem("rose_custom_affection", settings.customAffectionText.slice(0, 150));
     }
     if (settings.responseStyle) {
       localStorage.setItem("rose_response_style", settings.responseStyle);
@@ -5227,12 +5329,26 @@ export function App() {
         inputAudioCtxRef.current.suspend().catch(() => {});
       }
 
+      // Stop any active HTMLAudioElement or browser speechSynthesis so two audio engines never play together
+      allActiveAudioElementsRef.current.forEach((el) => {
+        try {
+          el.pause();
+          el.currentTime = 0;
+        } catch {}
+      });
+      allActiveAudioElementsRef.current.clear();
+      if (typeof window !== "undefined" && "speechSynthesis" in window) {
+        try {
+          window.speechSynthesis.cancel();
+        } catch {}
+      }
+
       // Primary path: play 24kHz PCM directly through tap-unlocked outputAudioCtxRef
       try {
         const AudioCtx = window.AudioContext || (window as any).webkitAudioContext;
         if (AudioCtx) {
           if (!outputAudioCtxRef.current || outputAudioCtxRef.current.state === "closed") {
-            outputAudioCtxRef.current = new AudioCtx({ sampleRate: 24000 });
+            outputAudioCtxRef.current = new AudioCtx();
           }
           const ctx = outputAudioCtxRef.current;
           if (ctx.state !== "running") {
@@ -5252,6 +5368,7 @@ export function App() {
               float32[i] = view.getInt16(i * 2, true) / 32768.0;
             }
 
+            // SampleRate strictly 24000; browser resamples cleanly to ctx.sampleRate
             const audioBuffer = ctx.createBuffer(1, float32.length, 24000);
             audioBuffer.copyToChannel(float32, 0);
 
@@ -5273,6 +5390,17 @@ export function App() {
               outputAnalyserRef.current
             );
             gainNodeRef.current = gainNode;
+
+            const startTime = Math.max(ctx.currentTime + 0.03, nextStartTimeRef.current || 0);
+            const duration = audioBuffer.duration / clampedRate;
+            nextStartTimeRef.current = startTime + duration;
+
+            const targetGain = volumeSliderToGain(vol);
+            const fadeTime = Math.min(0.005, duration * 0.25);
+            gainNode.gain.setValueAtTime(0, startTime);
+            gainNode.gain.linearRampToValueAtTime(targetGain, startTime + fadeTime);
+            gainNode.gain.setValueAtTime(targetGain, Math.max(startTime + fadeTime, startTime + duration - fadeTime));
+            gainNode.gain.linearRampToValueAtTime(0, startTime + duration);
 
             allActiveAudioNodesRef.current.add(source);
 
@@ -5300,7 +5428,7 @@ export function App() {
               source.onended = () => finish(true);
 
               try {
-                source.start(0);
+                source.start(startTime);
               } catch {
                 finish(false);
               }
@@ -5427,6 +5555,22 @@ export function App() {
           return 1.2;
         }
       })();
+
+      // Stop any active Web Audio nodes or HTMLAudioElement so speechSynthesis never overlaps with them
+      allActiveAudioNodesRef.current.forEach((node) => {
+        try {
+          node.stop();
+        } catch {}
+      });
+      allActiveAudioNodesRef.current.clear();
+      allActiveAudioElementsRef.current.forEach((el) => {
+        try {
+          el.pause();
+          el.currentTime = 0;
+        } catch {}
+      });
+      allActiveAudioElementsRef.current.clear();
+      nextStartTimeRef.current = 0;
 
       setActiveVoiceEngine("Voice: Phone TTS");
       isBusyRef.current = true;
@@ -10033,6 +10177,30 @@ export function App() {
             <ChevronRight className="w-5 h-5 text-slate-500 shrink-0" />
           </button>
 
+          {/* 3b. Affection */}
+          <button
+            onClick={() => {
+              setCustomAffectionInput((settings.customAffectionText || "").slice(0, 150));
+              setCurrentView("affection");
+            }}
+            className="w-full p-5 bg-[#0F172A]/80 rounded-[2.5rem] border border-purple-500/30 shadow-2xl flex items-center justify-between active:scale-[0.98] transition-all text-left"
+          >
+            <div className="flex items-center gap-4">
+              <div className="w-12 h-12 rounded-full bg-purple-600/10 border border-purple-500/20 flex items-center justify-center text-purple-400 shrink-0">
+                <Heart className="w-6 h-6" />
+              </div>
+              <div>
+                <h4 className="text-base font-black uppercase tracking-wider text-white leading-none mb-1">
+                  AFFECTION
+                </h4>
+                <p className="text-[11px] text-slate-400 font-bold uppercase tracking-widest">
+                  {settings.affectionLevel || "Close"}
+                </p>
+              </div>
+            </div>
+            <ChevronRight className="w-5 h-5 text-slate-500 shrink-0" />
+          </button>
+
           {/* 4. Language */}
           <button
             onClick={() => setCurrentView("language-list")}
@@ -11648,6 +11816,220 @@ export function App() {
     );
   };
 
+  const renderAffection = () => {
+    const syncAffectionToDatabase = async (level: string, customText: string) => {
+      try {
+        await storage.set("rose_affection_level", level);
+        await storage.set("rose_custom_affection", customText);
+        if (supabase) {
+          const { data } = await supabase.auth.getUser();
+          const uid = data?.user?.id;
+          if (uid) {
+            await supabase
+              .from("user_settings")
+              .upsert(
+                {
+                  user_id: uid,
+                  affection_level: level,
+                  custom_affection_text: customText,
+                  updated_at: new Date().toISOString(),
+                },
+                { onConflict: "user_id" }
+              );
+          }
+        }
+      } catch {}
+    };
+
+    const refreshLiveSessionForAffection = () => {
+      if (wsRef.current) {
+        try {
+          wsRef.current.close(1000, "Affection Sync");
+        } catch {}
+        wsRef.current = null;
+      }
+      const wasListeningActive =
+        isAssistantEnabledRef.current ||
+        isListening ||
+        recognitionRunningRef.current ||
+        sessionStateRef.current !== "IDLE";
+      if (wasListeningActive) {
+        if (liveSessionRef.current) {
+          endLiveCall();
+          setTimeout(() => {
+            startLiveCall();
+          }, 150);
+        } else {
+          stopListening();
+          isAssistantEnabledRef.current = true;
+          setIsAssistantEnabled(true);
+          setTimeout(() => {
+            startListening();
+          }, 150);
+        }
+      }
+    };
+
+    const handleAffectionSelect = (id: string) => {
+      cancelAllSpeechAndAudio(true);
+      const cleanCustom = (customAffectionInput || settings.customAffectionText || "").trim().slice(0, 150);
+      try {
+        localStorage.setItem("rose_affection_level", id);
+      } catch {}
+
+      setSettings((s) => {
+        const updated = {
+          ...s,
+          affectionLevel: id,
+          customAffectionText: id === "Custom" ? cleanCustom : s.customAffectionText || "",
+        } as AssistantSettings;
+        settingsRef.current = updated;
+        try {
+          localStorage.setItem("iyabd_settings", JSON.stringify(updated));
+        } catch {}
+        return updated;
+      });
+
+      syncAffectionToDatabase(id, cleanCustom);
+      setToast(`Affection স্তর বদলে ${id} হয়েছে`);
+      refreshLiveSessionForAffection();
+    };
+
+    const handleSaveCustomAffection = () => {
+      const cleanCustom = customAffectionInput.trim().slice(0, 150);
+      if (!cleanCustom) {
+        setToast("অনুগ্রহ করে Custom Affection নির্দেশনা লিখুন");
+        return;
+      }
+      cancelAllSpeechAndAudio(true);
+      try {
+        localStorage.setItem("rose_affection_level", "Custom");
+        localStorage.setItem("rose_custom_affection", cleanCustom);
+      } catch {}
+
+      setSettings((s) => {
+        const updated = {
+          ...s,
+          affectionLevel: "Custom",
+          customAffectionText: cleanCustom,
+        } as AssistantSettings;
+        settingsRef.current = updated;
+        try {
+          localStorage.setItem("iyabd_settings", JSON.stringify(updated));
+        } catch {}
+        return updated;
+      });
+
+      syncAffectionToDatabase("Custom", cleanCustom);
+      setToast("Custom Affection সেভ হয়েছে");
+      refreshLiveSessionForAffection();
+    };
+
+    const currentAffection = settings.affectionLevel || "Close";
+
+    return (
+      <motion.div
+        key="affection"
+        initial={{ x: "100%" }}
+        animate={{ x: 0 }}
+        exit={{ x: "100%" }}
+        className="fixed inset-0 z-[90] bg-[#020617] overflow-y-auto no-scrollbar flex flex-col"
+      >
+        <div className="px-5 py-6 flex flex-col min-h-full">
+          <header className="flex items-center gap-4 mb-7 shrink-0">
+            <button
+              onClick={() => setCurrentView("voice")}
+              className="p-2.5 bg-white/5 rounded-xl active:scale-95 transition-transform border border-white/5 text-slate-300 hover:text-white"
+            >
+              <ArrowLeft className="w-5 h-5" />
+            </button>
+            <h2 className="text-2xl font-black italic uppercase tracking-tighter text-white leading-tight">
+              AFFECTION
+            </h2>
+          </header>
+
+          <div className="space-y-4 pb-36 flex-1">
+            {AFFECTION_LEVELS.map((item) => {
+              const isSelected = currentAffection === item.id;
+              return (
+                <button
+                  key={item.id}
+                  type="button"
+                  onClick={() => handleAffectionSelect(item.id)}
+                  className={
+                    "w-full p-5 rounded-[2.5rem] border transition-all flex items-center justify-between active:scale-[0.98] text-left " +
+                    (isSelected
+                      ? "bg-purple-600/15 border-purple-400 ring-1 ring-purple-400/50 shadow-2xl shadow-purple-900/30"
+                      : "bg-[#0F172A]/80 border-purple-500/30 shadow-2xl")
+                  }
+                >
+                  <div className="flex items-center gap-4 min-w-0 pr-2">
+                    <div
+                      className={
+                        "w-12 h-12 rounded-full flex items-center justify-center shrink-0 border " +
+                        (isSelected
+                          ? "bg-purple-600 border-purple-300/40 text-white shadow-lg shadow-purple-900/40"
+                          : "bg-purple-600/10 border-purple-500/20 text-purple-400")
+                      }
+                    >
+                      <Heart className="w-6 h-6" />
+                    </div>
+                    <div className="min-w-0">
+                      <h4 className="text-base font-black uppercase tracking-wider text-white leading-none mb-1 truncate">
+                        {item.title}
+                      </h4>
+                      <p className="text-[11px] text-slate-400 font-bold leading-snug">
+                        {item.subtitle}
+                      </p>
+                    </div>
+                  </div>
+
+                  <div className="flex items-center gap-2.5 shrink-0">
+                    {isSelected && (
+                      <div className="w-6 h-6 bg-purple-600 rounded-full flex items-center justify-center shrink-0 border border-purple-300/40 shadow-md shadow-purple-600/40">
+                        <Check className="w-3.5 h-3.5 text-white stroke-[3]" />
+                      </div>
+                    )}
+                    <ChevronRight
+                      className={"w-5 h-5 shrink-0 " + (isSelected ? "text-purple-300" : "text-slate-500")}
+                    />
+                  </div>
+                </button>
+              );
+            })}
+
+            {currentAffection === "Custom" && (
+              <motion.div initial={{ opacity: 0, y: 20 }} animate={{ opacity: 1, y: 0 }} className="pt-4 space-y-3">
+                <div className="flex items-center justify-between px-2">
+                  <h3 className="text-xs font-black text-purple-400 uppercase tracking-[3px]">
+                    Custom Affection (সর্বোচ্চ ১৫০ অক্ষর)
+                  </h3>
+                  <span className="text-[11px] font-mono font-bold text-slate-400">
+                    {customAffectionInput.length}/150
+                  </span>
+                </div>
+                <textarea
+                  value={customAffectionInput}
+                  maxLength={150}
+                  onChange={(e) => setCustomAffectionInput(e.target.value.slice(0, 150))}
+                  placeholder="যেমন: খুব স্নেহময় ও যত্নশীল স্বরে কথা বলবে..."
+                  className="w-full h-28 bg-slate-900/60 border border-purple-500/30 rounded-3xl p-5 text-sm text-white focus:ring-2 focus:ring-purple-500/30 outline-none placeholder:text-slate-600 font-bold"
+                />
+                <button
+                  type="button"
+                  onClick={handleSaveCustomAffection}
+                  className="w-full py-4 bg-purple-600 rounded-2xl font-black uppercase tracking-[2px] text-xs text-white shadow-xl active:scale-95 transition-transform"
+                >
+                  Save Custom Affection
+                </button>
+              </motion.div>
+            )}
+          </div>
+        </div>
+      </motion.div>
+    );
+  };
+
   const renderVoiceDebug = () => (
     <VoiceCheckView
       setCurrentView={setCurrentView}
@@ -11754,6 +12136,7 @@ export function App() {
           {currentView === "app-permissions" && <PhoneErrorBoundary>{renderAppPermissions()}</PhoneErrorBoundary>}
           {currentView === "about" && <PhoneErrorBoundary>{renderAbout()}</PhoneErrorBoundary>}
           {currentView === "personality" && <PhoneErrorBoundary>{renderPersonality()}</PhoneErrorBoundary>}
+          {currentView === "affection" && <PhoneErrorBoundary>{renderAffection()}</PhoneErrorBoundary>}
           {currentView === "write" && <PhoneErrorBoundary>{renderWrite()}</PhoneErrorBoundary>}
           {currentView === "developer" && <PhoneErrorBoundary><><Developer setCurrentView={setCurrentView} setToast={setToast} backView={developerFrom} /></></PhoneErrorBoundary>}
           {currentView === "onboarding" && (
@@ -12583,9 +12966,9 @@ export function App() {
                       className="w-full accent-purple-600 h-2 bg-black/40 rounded-full appearance-none cursor-pointer"
                     />
                     <div className="flex justify-between text-[9px] font-bold text-slate-500 uppercase tracking-wider">
-                      <span>10% (1.2x)</span>
-                      <span>80% DEFAULT (2.5x)</span>
-                      <span>100% MAX (3.0x)</span>
+                      <span>10% (0.5x)</span>
+                      <span>80% DEFAULT (1.4x)</span>
+                      <span>100% MAX (1.8x)</span>
                     </div>
                     <div className="flex gap-2 pt-1">
                       <button

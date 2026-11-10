@@ -23,6 +23,8 @@ export interface AssistantSettings {
   personalityPrompt?: string;
   gfMode?: boolean;
   customPersonalityText?: string;
+  affectionLevel?: 'Normal' | 'Close' | 'Very Affectionate' | 'Custom' | string;
+  customAffectionText?: string;
   responseStyle: string;
   voiceModelMode?: string;
   voiceModel: string;
