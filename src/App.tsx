@@ -13191,41 +13191,8 @@ export function App() {
               </button>
             </div>
 
-            {/* Live Captions Section (Clear speech word-by-word) */}
-            <div className="relative z-10 flex-1 flex flex-col items-center justify-center px-4 text-center my-2 min-h-[90px] max-h-[140px] overflow-hidden">
-              <AnimatePresence mode="wait">
-                {activeCaption ? (
-                  <motion.div
-                    key={activeCaption.speaker + '-' + activeCaption.text}
-                    initial={{ opacity: 0, y: 8 }}
-                    animate={{ opacity: 1, y: 0 }}
-                    exit={{ opacity: 0, y: -8 }}
-                    transition={{ duration: 0.25, ease: "easeOut" }}
-                    className="max-w-md mx-auto w-full"
-                  >
-                    {activeCaption.speaker === 'user' ? (
-                      <>
-                        <span className="text-[11px] font-bold text-slate-400 uppercase tracking-widest mb-1.5 block">
-                          আপনি
-                        </span>
-                        <p className="text-[20px] font-medium text-white leading-snug line-clamp-3 break-words drop-shadow-md">
-                          {activeCaption.text}
-                        </p>
-                      </>
-                    ) : (
-                      <>
-                        <span className="text-[11px] font-bold text-pink-300/80 uppercase tracking-widest mb-1.5 block">
-                          Rose
-                        </span>
-                        <p className="text-[22px] font-medium text-pink-50/95 leading-snug line-clamp-3 break-words drop-shadow-md">
-                          {activeCaption.text}
-                        </p>
-                      </>
-                    )}
-                  </motion.div>
-                ) : null}
-              </AnimatePresence>
-            </div>
+            {/* Empty spacer to preserve exact orb and bottom controls position */}
+            <div className="my-2 min-h-[90px] max-h-[140px] flex-1 pointer-events-none" aria-hidden="true" />
 
             {/* Center Orb Section */}
             <div className="relative z-10 flex-1 flex flex-col items-center justify-center my-2">
