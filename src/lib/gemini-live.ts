@@ -1,7 +1,5 @@
 import { logVoiceEvent } from './voiceLogger';
 import { getGeminiKey } from './geminiKey';
-import { getGlobalMicStream } from './audio-manager';
-import { getDynamicGeminiLiveModels } from './chatEngines';
 
 export interface GeminiLiveOptions {
   assistantName?: string;
@@ -23,6 +21,39 @@ export interface GeminiLiveOptions {
   onTurnComplete?: () => void;
   onInterrupted?: () => void;
   audioContext?: AudioContext;
+  micStream?: MediaStream;
+}
+
+function downsampleToPCM16(
+  inputData: Float32Array,
+  sourceRate: number,
+  targetRate: number = 16000
+): Int16Array {
+  if (sourceRate === targetRate) {
+    const pcm16 = new Int16Array(inputData.length);
+    for (let i = 0; i < inputData.length; i++) {
+      const s = Math.max(-1, Math.min(1, inputData[i]));
+      pcm16[i] = s < 0 ? s * 0x8000 : s * 0x7FFF;
+    }
+    return pcm16;
+  }
+  const ratio = sourceRate / targetRate;
+  const newLength = Math.floor(inputData.length / ratio);
+  const result = new Int16Array(newLength);
+  for (let i = 0; i < newLength; i++) {
+    const start = Math.floor(i * ratio);
+    const end = Math.floor((i + 1) * ratio);
+    let sum = 0;
+    let count = 0;
+    for (let j = start; j < end && j < inputData.length; j++) {
+      sum += inputData[j];
+      count++;
+    }
+    const avg = count > 0 ? sum / count : (inputData[start] || 0);
+    const s = Math.max(-1, Math.min(1, avg));
+    result[i] = s < 0 ? s * 0x8000 : s * 0x7FFF;
+  }
+  return result;
 }
 
 export class GeminiLiveSession {
@@ -33,103 +64,81 @@ export class GeminiLiveSession {
   private scriptProcessor: ScriptProcessorNode | null = null;
   private micAnalyser: AnalyserNode | null = null;
   private outputAnalyser: AnalyserNode | null = null;
-
-  public getMicAnalyser() { return this.micAnalyser; }
-  public getOutputAnalyser() { return this.outputAnalyser; }
   private nextStartTime = 0;
   private scheduledAudioSources: AudioBufferSourceNode[] = [];
   private currentState: 'connecting' | 'listening' | 'thinking' | 'speaking' | 'off' = 'off';
   private wasStoppedByUser = false;
   private reconnectAttempts = 0;
   private maxReconnectAttempts = 3;
-  private activeModel = "";
+  private isMuted = false;
+
+  // Live diagnostics tracking
+  public socketStatus: 'open' | 'closed' | 'connecting' = 'closed';
+  public chunksSent = 0;
+  public messagesReceived = 0;
+  public lastHeardText = '';
+  public lastError: string | null = null;
+  public currentMicLevel = 0;
 
   constructor(private options: GeminiLiveOptions) {}
 
-  private isMuted = false;
+  public getMicAnalyser() { return this.micAnalyser; }
+  public getOutputAnalyser() { return this.outputAnalyser; }
+
   public setMuted(muted: boolean) {
     this.isMuted = muted;
     logVoiceEvent("Mic", muted ? "Muted" : "Unmuted");
+  }
+
+  public getDiagnostics() {
+    return {
+      socketStatus: this.socketStatus,
+      chunksSent: this.chunksSent,
+      messagesReceived: this.messagesReceived,
+      lastHeardText: this.lastHeardText,
+      lastError: this.lastError,
+      audioCtxState: this.audioCtx ? this.audioCtx.state : 'off',
+      sampleRate: this.audioCtx ? this.audioCtx.sampleRate : 0,
+      micLevel: this.currentMicLevel,
+    };
   }
 
   public async start() {
     if (this.ws) return;
     this.wasStoppedByUser = false;
     this.updateState('connecting');
+    this.socketStatus = 'connecting';
 
     const apiKey = (this.options.apiKey || getGeminiKey() || '').replace(/[\r\n\t\s"']+/g, '').trim();
-    if (!apiKey) {
-      this.options.onError?.("Gemini Key খুঁজে পাওয়া যায়নি। Connections-এ Key দিন।");
+
+    const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+    const wsUrl = `${protocol}//${window.location.host}/api/live?assistantName=${encodeURIComponent(this.options.assistantName || 'Rose AI')}&ownerName=${encodeURIComponent(this.options.ownerName || 'MD YOUSUF KHAN')}&voiceName=${encodeURIComponent(this.options.voiceName || 'Sulafat')}&personality=${encodeURIComponent(this.options.personality || 'Normal')}&customPersonalityText=${encodeURIComponent(this.options.customPersonalityText || '')}${apiKey ? `&apiKey=${encodeURIComponent(apiKey)}` : ''}`;
+
+    logVoiceEvent("Live WS", "Connecting to Live WebSocket proxy...");
+
+    try {
+      this.ws = new WebSocket(wsUrl);
+    } catch (e: any) {
+      this.socketStatus = 'closed';
+      this.lastError = e?.message || 'WebSocket connection failed';
+      this.options.onError?.(`WebSocket connection failed: ${e?.message}`);
       this.updateState('off');
       return;
     }
-
-    // 1. Get Models (Override or Dynamic)
-    let models: string[] = [];
-    const override = localStorage.getItem('voice_model');
-    if (override) {
-      models = [override];
-    } else {
-      const res = await getDynamicGeminiLiveModels(apiKey);
-      models = res.models.slice(0, 3);
-      if (models.length === 0) {
-        this.options.onError?.(`Live মডেল পাওয়া যায়নি। ${res.error || ""}`, res);
-        this.updateState('off');
-        return;
-      }
-    }
-
-    this.connectWithRetry(apiKey, models, 0);
-  }
-
-  private connectWithRetry(apiKey: string, models: string[], index: number) {
-    if (index >= models.length) {
-      this.options.onError?.("সবচেয়ে আধুনিক ৩টি মডেলেও সংযোগ ব্যর্থ হয়েছে। পরে চেষ্টা করুন।");
-      this.updateState('off');
-      return;
-    }
-
-    const model = models[index].replace(/^models\//, '').trim();
-    this.activeModel = model;
-    const url = `wss://generativelanguage.googleapis.com/ws/google.ai.generativelanguage.v1beta.GenerativeService.BidiGenerateContent?key=${apiKey}`;
-
-    logVoiceEvent("Live WS", `Connecting to ${model}...`);
-    this.ws = new WebSocket(url);
 
     this.ws.onopen = () => {
       this.reconnectAttempts = 0;
-      logVoiceEvent("Live WS", `Connected to ${model}`, "success");
-      
-      const setupMsg = {
-        setup: {
-          model: `models/${model}`,
-          generation_config: {
-            response_modalities: ["AUDIO"],
-            speech_config: {
-              voice_config: {
-                prebuilt_voice_config: {
-                  voice_name: this.options.voiceName || 'Sulafat',
-                },
-              },
-            },
-          },
-          system_instruction: {
-            parts: [{ text: this.options.systemInstruction || "You are Rose, a helpful assistant." }],
-          },
-          // Enable transcriptions
-          input_audio_transcription: {},
-          output_audio_transcription: {}
-        },
-      };
-      this.ws?.send(JSON.stringify(setupMsg));
+      this.socketStatus = 'open';
+      logVoiceEvent("Live WS", "Connected to Live WebSocket proxy", "success");
     };
 
     this.ws.onmessage = async (event) => {
+      this.messagesReceived++;
       try {
         const raw = typeof event.data === 'string' ? event.data : await (event.data as Blob).text();
         const msg = JSON.parse(raw);
 
-        if (msg.setupComplete) {
+        if (msg.setupComplete || msg.connected) {
           this.updateState('listening');
           this.startMicCapture();
           return;
@@ -138,10 +147,14 @@ export class GeminiLiveSession {
         if (msg.serverContent) {
           const content = msg.serverContent;
           
-          // Handle User Transcription (check both camel and snake case)
+          // Handle User Transcription
           const inTrans = content.inputAudioTranscription || content.inputTranscription || content.input_audio_transcription;
           if (inTrans) {
-            this.options.onTranscription?.('user', inTrans.text, inTrans.isFinal || inTrans.is_final);
+            const textVal = typeof inTrans === 'string' ? inTrans : (inTrans.text || inTrans.parts?.[0]?.text);
+            if (textVal) {
+              this.lastHeardText = textVal;
+              this.options.onTranscription?.('user', textVal, inTrans.isFinal || inTrans.is_final || true);
+            }
           }
 
           // Handle Assistant Transcription
@@ -176,19 +189,17 @@ export class GeminiLiveSession {
         }
 
         if (msg.error) {
-          logVoiceEvent("Live WS", `Error: ${msg.error.message}`, "error");
-          if (msg.error.message.includes("not found") || msg.error.message.includes("unsupported")) {
-             this.ws?.close();
-             this.connectWithRetry(apiKey, models, index + 1);
-             return;
-          }
-          this.options.onError?.(`Gemini Live ব্যর্থ। মডেল: ${model}, Google এরর: ${msg.error.message}`);
+          logVoiceEvent("Live WS", `Error: ${msg.error.message || msg.error}`, "error");
+          const errMsg = typeof msg.error === 'string' ? msg.error : (msg.error.message || JSON.stringify(msg.error));
+          this.lastError = errMsg;
+          this.options.onError?.(errMsg);
         }
       } catch (e) {}
     };
 
     this.ws.onclose = (ev) => {
       this.ws = null;
+      this.socketStatus = 'closed';
       if (!this.wasStoppedByUser && this.reconnectAttempts < this.maxReconnectAttempts) {
         this.reconnectAttempts++;
         setTimeout(() => this.start(), 2000);
@@ -199,6 +210,8 @@ export class GeminiLiveSession {
     };
 
     this.ws.onerror = () => {
+      this.socketStatus = 'closed';
+      this.lastError = 'WebSocket Error';
       logVoiceEvent("Live WS", "WebSocket Error", "error");
     };
   }
@@ -206,13 +219,17 @@ export class GeminiLiveSession {
   private async startMicCapture() {
     logVoiceEvent("Mic", "Starting mic capture...");
     try {
-      this.micStream = await navigator.mediaDevices.getUserMedia({
-        audio: { 
-          echoCancellation: true, 
-          noiseSuppression: true, 
-          autoGainControl: true 
-        }
-      });
+      if (this.options.micStream) {
+        this.micStream = this.options.micStream;
+      } else {
+        this.micStream = await navigator.mediaDevices.getUserMedia({
+          audio: { 
+            echoCancellation: true, 
+            noiseSuppression: true, 
+            autoGainControl: true 
+          }
+        });
+      }
       logVoiceEvent("Mic", "Mic stream acquired");
 
       const micTrack = this.micStream.getAudioTracks()[0];
@@ -221,18 +238,20 @@ export class GeminiLiveSession {
       }
 
       this.audioCtx = this.options.audioContext || new (window.AudioContext || (window as any).webkitAudioContext)();
-      await this.audioCtx.resume();
-      logVoiceEvent("Mic", `AudioContext state: ${this.audioCtx.state}`);
+      if (this.audioCtx.state !== 'running') {
+        await this.audioCtx.resume();
+      }
 
       if (this.audioCtx.state !== 'running') {
+        this.lastError = "অডিও সেশন চালু করা যায়নি। মাইক অনুমতি দিন।";
         this.options.onError?.("অডিও সেশন চালু করা যায়নি। মাইক অনুমতি দিন।");
         return;
       }
 
       const source = this.audioCtx.createMediaStreamSource(this.micStream);
-      const sampleRate = this.audioCtx.sampleRate;
-      logVoiceEvent("Mic", `Capture started at ${sampleRate}Hz`);
-      
+      const sourceSampleRate = this.audioCtx.sampleRate;
+      logVoiceEvent("Mic", `Capture started at ${sourceSampleRate}Hz`);
+
       this.micAnalyser = this.audioCtx.createAnalyser();
       this.micAnalyser.fftSize = 256;
       source.connect(this.micAnalyser);
@@ -240,84 +259,100 @@ export class GeminiLiveSession {
       this.outputAnalyser = this.audioCtx.createAnalyser();
       this.outputAnalyser.fftSize = 256;
 
+      const processBuffer = (float32Samples: Float32Array) => {
+        // Calculate mic level (0.00 to 1.00)
+        let sumSq = 0;
+        for (let i = 0; i < float32Samples.length; i++) {
+          sumSq += float32Samples[i] * float32Samples[i];
+        }
+        const rms = Math.sqrt(sumSq / float32Samples.length);
+        this.currentMicLevel = Math.min(1.0, Math.max(0.0, rms * 4.0));
+
+        // Requirement 2c & 2d: Drop silently if muted or socket is not open
+        if (!this.ws || this.ws.readyState !== WebSocket.OPEN || this.isMuted) {
+          return;
+        }
+
+        // Downsample to 16000Hz PCM16
+        const pcm16 = downsampleToPCM16(float32Samples, sourceSampleRate, 16000);
+        if (pcm16.length === 0) return;
+
+        // Safe Base64 encoding without stack overflow
+        const u8 = new Uint8Array(pcm16.buffer, pcm16.byteOffset, pcm16.byteLength);
+        let binary = '';
+        const len = u8.byteLength;
+        for (let i = 0; i < len; i++) {
+          binary += String.fromCharCode(u8[i]);
+        }
+        const base64 = btoa(binary);
+
+        try {
+          this.ws.send(JSON.stringify({
+            realtime_input: {
+              media_chunks: [{ data: base64, mime_type: "audio/pcm;rate=16000" }]
+            }
+          }));
+          this.chunksSent++;
+        } catch (e) {
+          // Drop silently if send fails
+        }
+      };
+
+      // Try AudioWorklet first, fall back to ScriptProcessor(4096)
+      let workletActive = false;
       try {
         const processorCode = `
           class AudioProcessor extends AudioWorkletProcessor {
-            constructor() { 
-              super(); 
-              this.targetRate = 16000;
-              this.sourceRate = ${this.audioCtx.sampleRate};
-              this.buffer = [];
-            }
             process(inputs) {
               const input = inputs[0];
-              if (!input || input.length === 0) return true;
-              const channel = input[0];
-              
-              for (let i = 0; i < channel.length; i++) this.buffer.push(channel[i]);
-              
-              const ratio = this.sourceRate / this.targetRate;
-              const outLength = Math.floor(this.buffer.length / ratio);
-              
-              if (outLength >= 160) {
-                const pcm16 = new Int16Array(outLength);
-                for (let i = 0; i < outLength; i++) {
-                  const idx = Math.floor(i * ratio);
-                  const s = Math.max(-1, Math.min(1, this.buffer[idx]));
-                  pcm16[i] = s < 0 ? s * 0x8000 : s * 0x7FFF;
-                }
-                this.port.postMessage(pcm16.buffer, [pcm16.buffer]);
-                this.buffer = this.buffer.slice(Math.floor(outLength * ratio));
+              if (input && input.length > 0 && input[0].length > 0) {
+                this.port.postMessage(input[0]);
               }
               return true;
             }
           }
           registerProcessor('audio-processor', AudioProcessor);
         `;
-
         const blob = new Blob([processorCode], { type: 'application/javascript' });
         const url = URL.createObjectURL(blob);
         await this.audioCtx.audioWorklet.addModule(url);
         URL.revokeObjectURL(url);
-        
+
         this.audioWorkletNode = new AudioWorkletNode(this.audioCtx, 'audio-processor');
-        this.audioWorkletNode.port.onmessage = (e) => this.sendAudio(e.data);
+        this.audioWorkletNode.port.onmessage = (e) => {
+          if (e.data && e.data instanceof Float32Array) {
+            processBuffer(e.data);
+          }
+        };
         source.connect(this.audioWorkletNode);
-        logVoiceEvent("Mic", "Inline Worklet active");
+        workletActive = true;
+        logVoiceEvent("Mic", "AudioWorklet active");
       } catch (e) {
         logVoiceEvent("Mic", "Worklet failed, fallback to ScriptProcessor", "warn");
-        console.error("Worklet error:", e);
+      }
+
+      if (!workletActive) {
         this.scriptProcessor = this.audioCtx.createScriptProcessor(4096, 1, 1);
         this.scriptProcessor.onaudioprocess = (e) => {
           const input = e.inputBuffer.getChannelData(0);
-          const pcm16 = new Int16Array(input.length);
-          for (let i = 0; i < input.length; i++) {
-            const s = Math.max(-1, Math.min(1, input[i]));
-            pcm16[i] = s < 0 ? s * 0x8000 : s * 0x7FFF;
-          }
-          this.sendAudio(pcm16.buffer);
+          processBuffer(input);
         };
         source.connect(this.scriptProcessor);
-        this.scriptProcessor.connect(this.audioCtx.destination);
+        
+        // Connect through silent gain to destination so WebAudio process loop fires reliably without echo
+        const silentGain = this.audioCtx.createGain();
+        silentGain.gain.value = 0;
+        this.scriptProcessor.connect(silentGain);
+        silentGain.connect(this.audioCtx.destination);
       }
 
       this.options.onMicLive?.(true);
       this.startVisualizer();
     } catch (e: any) {
       logVoiceEvent("Mic", `Capture Error: ${e.message}`, "error");
+      this.lastError = `মাইক্রোফোন সংযোগ করা যায়নি: ${e.message}`;
       this.options.onError?.(`মাইক্রোফোন সংযোগ করা যায়নি: ${e.message}`);
     }
-  }
-
-  private sendAudio(buffer: ArrayBuffer) {
-    if (!this.ws || this.ws.readyState !== WebSocket.OPEN || this.isMuted) return;
-    const base64 = btoa(String.fromCharCode(...new Uint8Array(buffer)));
-    logVoiceEvent("Mic", `Sending audio chunk: ${base64.length} bytes`);
-    this.ws.send(JSON.stringify({
-      realtime_input: {
-        media_chunks: [{ data: base64, mime_type: "audio/pcm;rate=16000" }]
-      }
-    }));
   }
 
   private playPcmAudio(base64Pcm: string) {
@@ -330,7 +365,7 @@ export class GeminiLiveSession {
       const bytes = new Uint8Array(len);
       for (let i = 0; i < len; i++) bytes[i] = binaryStr.charCodeAt(i);
 
-      const pcm16 = new Int16Array(bytes.buffer);
+      const pcm16 = new Int16Array(bytes.buffer, bytes.byteOffset, Math.floor(len / 2));
       const float32 = new Float32Array(pcm16.length);
       for (let i = 0; i < pcm16.length; i++) float32[i] = pcm16[i] / 32768.0;
 
@@ -344,11 +379,17 @@ export class GeminiLiveSession {
       gainNode.gain.value = 1.0; 
 
       source.connect(gainNode);
-      gainNode.connect(this.outputAnalyser!);
+      if (this.outputAnalyser) gainNode.connect(this.outputAnalyser);
       gainNode.connect(this.audioCtx.destination);
 
-      source.start(Math.max(this.audioCtx.currentTime, this.nextStartTime));
-      this.nextStartTime = Math.max(this.audioCtx.currentTime, this.nextStartTime) + audioBuffer.duration;
+      const startTime = Math.max(this.audioCtx.currentTime, this.nextStartTime);
+      source.start(startTime);
+      this.scheduledAudioSources.push(source);
+      source.onended = () => {
+        this.scheduledAudioSources = this.scheduledAudioSources.filter(s => s !== source);
+      };
+
+      this.nextStartTime = startTime + audioBuffer.duration;
       logVoiceEvent("Audio", "Playing audio chunk");
     } catch (e) {
       logVoiceEvent("Audio", `Playback error: ${e}`, "error");
@@ -403,12 +444,23 @@ export class GeminiLiveSession {
   public stop() {
     this.wasStoppedByUser = true;
     this.updateState('off');
+    this.socketStatus = 'closed';
     this.ws?.close();
     this.ws = null;
     this.stopAllAudioPlayback();
+    if (this.scriptProcessor) {
+      try { this.scriptProcessor.disconnect(); } catch (e) {}
+      this.scriptProcessor = null;
+    }
+    if (this.audioWorkletNode) {
+      try { this.audioWorkletNode.disconnect(); } catch (e) {}
+      this.audioWorkletNode = null;
+    }
     this.micStream?.getTracks().forEach(t => t.stop());
     this.micStream = null;
-    this.audioCtx?.close();
+    if (this.audioCtx && this.audioCtx.state !== 'closed') {
+      try { this.audioCtx.close(); } catch(e) {}
+    }
     this.audioCtx = null;
   }
 }

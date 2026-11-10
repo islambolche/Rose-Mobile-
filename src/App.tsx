@@ -3341,6 +3341,16 @@ export function App() {
   const chunksSentRef = useRef(0);
   const [hasReceivedAudio, setHasReceivedAudio] = useState(false);
   const [liveErrorMsg, setLiveErrorMsg] = useState<string | null>(null);
+  const [diagMicPermission, setDiagMicPermission] = useState<string>("unknown");
+  const [diagGetUserMediaStatus, setDiagGetUserMediaStatus] = useState<string>("pending");
+  const [diagAudioCtxState, setDiagAudioCtxState] = useState<string>("off");
+  const [diagSampleRate, setDiagSampleRate] = useState<number>(0);
+  const [diagMicLevel, setDiagMicLevel] = useState<number>(0);
+  const [diagChunksSent, setDiagChunksSent] = useState<number>(0);
+  const [diagSocketStatus, setDiagSocketStatus] = useState<string>("closed");
+  const [diagMessagesReceived, setDiagMessagesReceived] = useState<number>(0);
+  const [diagHeardText, setDiagHeardText] = useState<string>("");
+  const [diagLastError, setDiagLastError] = useState<string | null>(null);
   const callGlowRef = useRef<HTMLDivElement>(null);
   const callOrbWrapperRef = useRef<HTMLButtonElement>(null);
 
@@ -3370,6 +3380,41 @@ export function App() {
   const [isCallMinimized, setIsCallMinimized] = useState(false);
   const [isMuted, setIsMuted] = useState(false);
   const isMutedRef = useRef(false);
+
+  useEffect(() => {
+    if (!isCallScreenOpen) return;
+
+    const updateDiagnostics = async () => {
+      if (typeof navigator !== 'undefined' && navigator.permissions && (navigator.permissions as any).query) {
+        try {
+          const res = await (navigator.permissions as any).query({ name: 'microphone' });
+          setDiagMicPermission(res.state || 'unknown');
+        } catch (e) {
+          setDiagMicPermission('unknown');
+        }
+      } else {
+        setDiagMicPermission('unknown');
+      }
+
+      if (liveSessionRef.current) {
+        const diag = liveSessionRef.current.getDiagnostics();
+        setDiagSocketStatus(diag.socketStatus);
+        setDiagChunksSent(diag.chunksSent);
+        setDiagMessagesReceived(diag.messagesReceived);
+        if (diag.lastHeardText) setDiagHeardText(diag.lastHeardText);
+        if (diag.lastError) setDiagLastError(diag.lastError);
+        setDiagAudioCtxState(diag.audioCtxState);
+        setDiagSampleRate(diag.sampleRate);
+        setDiagMicLevel(diag.micLevel);
+      } else {
+        setDiagSocketStatus("closed");
+      }
+    };
+
+    updateDiagnostics();
+    const interval = setInterval(updateDiagnostics, 1000);
+    return () => clearInterval(interval);
+  }, [isCallScreenOpen]);
 
   // Live Debug Metrics State
   const [liveDebug, setLiveDebug] = useState({
@@ -3550,9 +3595,9 @@ export function App() {
       if (savedResponseStyle) {
         loadedSettings.responseStyle = savedResponseStyle as any;
       }
-      if (loadedSettings.voiceModelMode !== "quality") {
+      /* if (loadedSettings.voiceModelMode !== "quality") {
         loadedSettings.voiceModelMode = "fast";
-      }
+      } */
       if (savedAssistantName) loadedSettings.assistantName = savedAssistantName;
       if (savedUserName) loadedSettings.ownerName = savedUserName;
       const loadedPrefs = savedPrefs ? { ...DEFAULT_PREFS, ...JSON.parse(savedPrefs) } : DEFAULT_PREFS;
@@ -7069,30 +7114,61 @@ export function App() {
 
   const startLiveCall = useCallback(async () => {
     if (!settingsRef.current.masterAccess) return;
+
+    // Requirement 2c: Make sure mic is NOT muted by default when call starts
+    setIsMuted(false);
+    isMutedRef.current = false;
+    setLiveErrorMsg(null);
+    setDiagGetUserMediaStatus("pending");
+
+    // Requirement 2a: Create AudioContext and call await ctx.resume()
     ensureAudioContext();
+    const currentCtx = inputAudioCtxRef.current || outputAudioCtxRef.current;
+    if (currentCtx && currentCtx.state !== 'running') {
+      try { await currentCtx.resume(); } catch(e) {}
+    }
+
+    // Requirement 2a & 3: getUserMedia call & error handling
+    let micStream: MediaStream | null = null;
+    try {
+      micStream = await navigator.mediaDevices.getUserMedia({
+        audio: {
+          echoCancellation: true,
+          noiseSuppression: true,
+          autoGainControl: true,
+        }
+      });
+      setDiagGetUserMediaStatus("ok");
+    } catch (err: any) {
+      console.error("getUserMedia error:", err);
+      const isDenied = err?.name === 'NotAllowedError' || err?.name === 'PermissionDeniedError' || String(err?.message || '').toLowerCase().includes('denied');
+      const errText = isDenied
+        ? "মাইক্রোফোনের অনুমতি নেই। Chrome এর তালা আইকনে চেপে Microphone Allow করুন।"
+        : `getUserMedia error: ${err?.message || err}`;
+      setDiagGetUserMediaStatus(`error ${err?.message || 'denied'}`);
+      setLiveErrorMsg(errText);
+      setToast(errText);
+      return;
+    }
+
     if (liveSessionRef.current) {
       liveSessionRef.current.stop();
       liveSessionRef.current = null;
     }
 
-    const currentCtx = inputAudioCtxRef.current || outputAudioCtxRef.current;
-    if (currentCtx && currentCtx.state !== 'running') {
-      try { await currentCtx.resume(); } catch(e) {}
-    }
-    if (!currentCtx || currentCtx.state !== 'running') {
-      setToast("অডিও চালু করা যায়নি। মাইক পারমিশন চেক করুন।");
-      return;
-    }
-
-    setLiveErrorMsg(null);
     setIsAssistantEnabled(true);
     isAssistantEnabledRef.current = true;
 
     const session = new GeminiLiveSession({
       apiKey: getGeminiKey() || "",
+      assistantName: settingsRef.current.assistantName,
+      ownerName: settingsRef.current.ownerName,
       voiceName: prefs.voiceName || 'Sulafat',
+      personality: prefs.personality,
+      customPersonalityText: prefs.customPersonalityText,
       systemInstruction: buildSystemInstruction(settingsRef.current, prefsRef.current, true),
       audioContext: currentCtx as AudioContext,
+      micStream: micStream,
       onStateChange: (state) => {
         if (state === 'listening') transitionToState("LISTENING");
         else if (state === 'thinking') transitionToState("THINKING");
@@ -7108,25 +7184,24 @@ export function App() {
         setChatHistory(prev => {
           const mappedRole = role === 'assistant' ? "rose" : "user";
           const last = prev[prev.length - 1];
-          // If we are in the same turn (same role), update the message
           if (last && last.role === mappedRole) {
             const next = [...prev];
             next[next.length - 1] = { ...last, content: text };
             return next;
           }
-          // New turn
           return [...prev, { role: mappedRole, content: text }];
         });
         if (role === 'user') {
           setInterimSpeechText(text);
+          setDiagHeardText(text);
         }
       },
       onTurnComplete: () => {
-        // Chat history is updated live and saved via useEffect
         setInterimSpeechText("");
       },
       onError: (msg) => {
         setLiveErrorMsg(msg);
+        setDiagLastError(msg);
         setToast(msg);
       },
       onClose: () => {
@@ -7134,12 +7209,11 @@ export function App() {
       }
     });
 
-    session.setMuted(isMutedRef.current);
+    session.setMuted(false);
 
     liveSessionRef.current = session;
     await session.start();
 
-    // Use a small loop to wait for analysers to be populated after mic capture starts
     let checkCount = 0;
     const checkInterval = setInterval(() => {
       const micAn = session.getMicAnalyser();
@@ -7152,7 +7226,7 @@ export function App() {
       }
       checkCount++;
     }, 100);
-  }, [transitionToState, ensureAudioContext]);
+  }, [transitionToState, ensureAudioContext, prefs.voiceName, prefs.personality, prefs.customPersonalityText]);
 
   const endLiveCall = useCallback(() => {
     if (chatHistory.length > 0) {
@@ -12165,6 +12239,47 @@ export function App() {
                   isAssistantEnabled={isAssistantEnabled}
                 />
               </div>
+            </div>
+
+            {/* 11px Diagnostic Panel */}
+            <div className="relative z-10 max-w-sm mx-auto w-full mb-3 px-3 py-2 bg-slate-900/90 border border-slate-800 rounded-xl text-[11px] font-mono text-slate-400 leading-tight space-y-0.5 shadow-lg backdrop-blur-md">
+              <div className="flex justify-between">
+                <span className="text-slate-500">Mic permission:</span>
+                <span className={diagMicPermission === 'granted' ? 'text-emerald-400 font-semibold' : diagMicPermission === 'denied' ? 'text-red-400 font-semibold' : 'text-amber-400'}>{diagMicPermission}</span>
+              </div>
+              <div className="flex justify-between">
+                <span className="text-slate-500">getUserMedia:</span>
+                <span className={diagGetUserMediaStatus === 'ok' ? 'text-emerald-400 font-semibold' : 'text-red-400 font-semibold'}>{diagGetUserMediaStatus}</span>
+              </div>
+              <div className="flex justify-between">
+                <span className="text-slate-500">AudioContext:</span>
+                <span>{diagAudioCtxState} {diagSampleRate ? `(${diagSampleRate}Hz)` : ''}</span>
+              </div>
+              <div className="flex justify-between">
+                <span className="text-slate-500">Mic level:</span>
+                <span className="text-slate-200">{diagMicLevel.toFixed(2)}</span>
+              </div>
+              <div className="flex justify-between">
+                <span className="text-slate-500">Audio chunks sent:</span>
+                <span className="text-slate-200">{diagChunksSent}</span>
+              </div>
+              <div className="flex justify-between">
+                <span className="text-slate-500">Socket:</span>
+                <span className={diagSocketStatus === 'open' ? 'text-emerald-400 font-semibold' : 'text-slate-400'}>{diagSocketStatus}</span>
+              </div>
+              <div className="flex justify-between">
+                <span className="text-slate-500">Messages received:</span>
+                <span className="text-slate-200">{diagMessagesReceived}</span>
+              </div>
+              <div className="flex justify-between gap-2 overflow-hidden">
+                <span className="text-slate-500 shrink-0">Heard text:</span>
+                <span className="text-slate-200 truncate">{diagHeardText || <span className="italic text-slate-600">none</span>}</span>
+              </div>
+              {(diagLastError || liveErrorMsg) && (
+                <div className="text-red-400 font-semibold pt-1 mt-1 border-t border-slate-800 text-[10px] break-words">
+                  Error: {diagLastError || liveErrorMsg}
+                </div>
+              )}
             </div>
 
             {/* Bottom 3 Action Buttons */}

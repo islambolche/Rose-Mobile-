@@ -419,7 +419,7 @@ export const getDynamicGeminiLiveModels = async (
       attemptCount++;
       const controller = new AbortController();
       const timer = setTimeout(() => controller.abort(), 8000);
-      let url = `https://generativelanguage.googleapis.com/v1beta/models?key=${encodeURIComponent(cleanKey)}&pageSize=200`;
+      let url = `/api/gemini/models?apiKey=${encodeURIComponent(cleanKey)}&pageSize=200`;
       if (nextToken) url += `&pageToken=${encodeURIComponent(nextToken)}`;
 
       const res = await fetch(url, { signal: controller.signal });
@@ -511,32 +511,29 @@ export const callGeminiDirectChat = async (params: {
   const cleanKey = apiKey.trim();
   const cleanModel = model.replace(/^models\//, '').trim();
 
-  const url = `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(cleanModel)}:generateContent?key=${encodeURIComponent(cleanKey)}`;
   const contents = messages.map((m) => ({
     role: m.role === 'assistant' ? 'model' : 'user',
     parts: [{ text: m.text }],
   }));
 
-  const body: any = {
+  const payload: any = {
+    model: cleanModel,
     contents,
+    systemInstruction: systemPrompt,
     generationConfig: {
       maxOutputTokens: maxTokens,
       temperature: 0.7,
     },
+    apiKey: cleanKey,
   };
-  if (systemPrompt && systemPrompt.trim()) {
-    body.systemInstruction = {
-      parts: [{ text: systemPrompt.trim() }],
-    };
-  }
 
   try {
-    const res = await fetch(url, {
+    const res = await fetch('/api/gemini/generate', {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
       },
-      body: JSON.stringify(body),
+      body: JSON.stringify(payload),
     });
 
     const data = await res.json().catch(() => null);
@@ -549,33 +546,10 @@ export const callGeminiDirectChat = async (params: {
       throw err;
     }
 
-    const reply = data?.candidates?.[0]?.content?.parts?.map((p: any) => p?.text || '').join('').trim();
+    const reply = data?.text || data?.candidates?.[0]?.content?.parts?.map((p: any) => p?.text || '').join('').trim();
     if (reply) return reply;
     throw new Error('Gemini থেকে ফাঁকা উত্তর এসেছে');
   } catch (directErr: any) {
-    // If 404, throw immediately so next model is tried
-    if (directErr.status === 404 || String(directErr.message).includes('404') || String(directErr.message).toLowerCase().includes('not found')) {
-      directErr.status = 404;
-      throw directErr;
-    }
-    // Fallback attempt via proxy
-    try {
-      const proxyRes: any = await directGeminiGenerate({
-        model: cleanModel,
-        contents,
-        systemInstruction: systemPrompt,
-        generationConfig: {
-          maxOutputTokens: maxTokens,
-          temperature: 0.7,
-        },
-        apiKey: cleanKey,
-      });
-      const proxyReply =
-        proxyRes?.text ||
-        proxyRes?.candidates?.[0]?.content?.parts?.map((p: any) => p?.text || '').join('').trim() ||
-        '';
-      if (proxyReply) return proxyReply;
-    } catch (proxyErr) {}
     throw directErr;
   }
 };

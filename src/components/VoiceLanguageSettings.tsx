@@ -890,11 +890,11 @@ export const VoiceLanguageSettings: React.FC<VoiceLanguageSettingsProps> = ({
                           setActiveSheet(null);
                           localStorage.setItem("voice_model_mode", mode.id);
                         }}
-                        className={`w-full p-4 mb-2 rounded-[16px] border-[1.5px] cursor-pointer ${settings.voiceModelMode === mode.id || (!settings.voiceModelMode && mode.id === 'fast') ? 'bg-[#181830] border-[#8b5cf6]' : 'bg-[#0f0f23] border-[#2e2160]'}`}
+                        className={`w-full p-4 mb-2 rounded-[16px] border-[1.5px] cursor-pointer ${settings.voiceModelMode === mode.id  ? 'bg-[#181830] border-[#8b5cf6]' : 'bg-[#0f0f23] border-[#2e2160]'}`}
                       >
                         <h4 className="text-sm font-bold text-white flex items-center justify-between">
                           {mode.title}
-                          {(settings.voiceModelMode === mode.id || (!settings.voiceModelMode && mode.id === 'fast')) && (
+                          {(settings.voiceModelMode === mode.id ) && (
                             <Check className="w-4 h-4 text-[#8b5cf6]" />
                           )}
                         </h4>

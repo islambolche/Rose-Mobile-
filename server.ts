@@ -1604,6 +1604,55 @@ IMPORTANT: You must ALWAYS respond in valid JSON format matching the requested s
   }
 });
 
+// New endpoint for text generation
+app.post('/api/gemini/generate', async (req, res) => {
+  try {
+    const { model, contents, systemInstruction, generationConfig, apiKey } = req.body;
+    
+    // In callGeminiTextEndpoint, contents are mapped to roles. 
+    // The server-side code I added expected prompt/history, but the client sends contents/systemInstruction/generationConfig.
+    // Let's adjust to match.
+    
+    const client = getGenAIClient(apiKey);
+    const modelName = model || 'gemini-1.5-flash';
+    
+    const config: any = {};
+    if (systemInstruction) {
+        config.systemInstruction = systemInstruction;
+    }
+    if (generationConfig) {
+        config.generationConfig = generationConfig;
+    }
+
+    const result = await client.models.generateContent({
+        model: modelName,
+        contents: contents,
+        config: config
+    });
+
+    res.json({ text: result.text, candidates: result.candidates, usageMetadata: result.usageMetadata });
+  } catch (err: any) {
+    console.error('Server Gemini generate error:', err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// New endpoint for model discovery
+app.get('/api/gemini/models', async (req, res) => {
+  try {
+    const customKey = req.query.apiKey as string;
+    const key = resolveGeminiApiKey(customKey);
+    if (!key || key === 'placeholder') {
+      return res.status(401).json({ error: "API key not configured" });
+    }
+    const response = await fetch(`https://generativelanguage.googleapis.com/v1beta/models?key=${encodeURIComponent(key)}`);
+    const data = await response.json();
+    res.json(data);
+  } catch (error: any) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
 app.get('/api/keys/get-live-token', async (req, res) => {
   try {
     const key = process.env.GEMINI_API_KEY; 
