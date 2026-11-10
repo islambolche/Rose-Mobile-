@@ -402,13 +402,11 @@ export const PcControlSettings: React.FC<PcControlSettingsProps> = ({ onClose })
       doc.text("4. Enter the 6-character pairing code from the app.", 14, 75);
       doc.text("5. Verify security permissions in Master Safety.", 14, 85);
       doc.save("Rose-PC-Agent-Guide.pdf");
-      logActivity("PC Control", "Downloaded PC Agent Guide PDF");
-    });
+      });
   };
 
   const handleEmergencyStop = async () => {
     setMasterControl(false);
-    if (navigator.vibrate) navigator.vibrate([200, 100, 200]);
 
     // Audio synth alarm
     try {

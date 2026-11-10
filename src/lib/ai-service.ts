@@ -307,6 +307,73 @@ export const discoverAvailableFlashModels = async (
   }
 };
 
+export const isValidVoiceTranscript = (text?: string, durationSec?: number): boolean => {
+  if (!text) return false;
+  if (typeof durationSec === 'number' && durationSec < 1.0) {
+    return false;
+  }
+  const clean = String(text).trim();
+  if (clean.length < 2) return false;
+
+  const lower = clean.toLowerCase();
+  if (/^(los|um|uh|ah|er|hm|hmm|ঁ|h|a|o|e|buraya|los\.?)$/i.test(lower)) {
+    return false;
+  }
+
+  // Allow Bengali script (\u0980-\u09FF), Latin script (a-zA-Z), ASCII & Bengali digits (0-9\u09E6-\u09EF), whitespace, standard punctuation
+  const invalidCharRegex = /[^\u0980-\u09FFa-zA-Z0-9\u09E6-\u09EF\s\.,!\?\-'"’`:;()।]/;
+  if (invalidCharRegex.test(clean)) {
+    return false;
+  }
+
+  return true;
+};
+
+export const discoverLightestFlashModel = async (apiKey?: string): Promise<string> => {
+  const cleanKey = String(apiKey || getGeminiKey() || '').replace(/[\r\n\t\s"']+/g, '').trim();
+  if (!cleanKey) return 'gemini-1.5-flash';
+  try {
+    const url = `https://generativelanguage.googleapis.com/v1beta/models?pageSize=200&key=${cleanKey}`;
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), 6000);
+    const res = await fetch(url, {
+      headers: { 'x-goog-api-key': cleanKey },
+      signal: controller.signal,
+    });
+    clearTimeout(timer);
+    if (!res.ok) return 'gemini-1.5-flash';
+    const data = await res.json();
+    const models: any[] = Array.isArray(data?.models) ? data.models : [];
+
+    const flashLite: string[] = [];
+    const flashStd: string[] = [];
+
+    for (const m of models) {
+      const rawName = String(m?.name || '').replace(/^models\//, '').trim();
+      const lower = rawName.toLowerCase();
+      const methods: string[] = Array.isArray(m?.supportedGenerationMethods) ? m.supportedGenerationMethods : [];
+      if (
+        rawName &&
+        methods.includes('generateContent') &&
+        lower.includes('flash') &&
+        !isDeprecatedOrLiveModel(rawName) &&
+        !lower.includes('image') &&
+        !lower.includes('vision')
+      ) {
+        if (lower.includes('flash-lite') || lower.includes('lite')) {
+          flashLite.push(rawName);
+        } else {
+          flashStd.push(rawName);
+        }
+      }
+    }
+
+    if (flashLite.length > 0) return flashLite[0];
+    if (flashStd.length > 0) return flashStd[0];
+  } catch {}
+  return 'gemini-1.5-flash';
+};
+
 const fetchWithSignalTimeout = async (
   input: RequestInfo | URL,
   init: RequestInit,
@@ -384,7 +451,7 @@ const fetchWithSignalTimeout = async (
 };
 
 export const NO_THOUGHT_INSTRUCTION =
-  'নিজের ভাবনা, পরিকল্পনা বা কী করবে তা লিখবে না। শুধু সরাসরি উত্তর দাও, ব্যবহারকারীর ভাষায়।';
+  'নিজের ভাবনা, পরিকল্পনা বা কী করবে তা লিখবে না। শুধু সরাসরি উত্তর দাও, ব্যবহারকারীর ভাষায়। ভয়েস কলে সর্বোচ্চ ২-৩ ছোট বাক্যে উত্তর দাও।';
 
 export const ensureNoThoughtSystemInstruction = (sysText?: string): string => {
   const base = String(sysText || '').trim();

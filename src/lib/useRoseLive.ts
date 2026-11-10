@@ -140,11 +140,11 @@ export function useRoseLive(getOpts: () => Opts) {
     setError(""); setStatus("connecting"); R.current.retries = 0;
     try {
       s.active = true; s.sentN = 0; s.recvN = 0; setSent(0); setRecv(0);
-      s.ctxIn = new AudioContext();
-      s.ctxOut = new AudioContext({ sampleRate: 24000 });
+      s.ctxIn = new AudioContext({ latencyHint: 'interactive' });
+      s.ctxOut = new AudioContext({ sampleRate: 24000, latencyHint: 'interactive' });
       await s.ctxIn.resume(); await s.ctxOut.resume();
       s.stream = await getGlobalMicStream({
-        audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true },
+        audio: { echoCancellation: false, noiseSuppression: false, autoGainControl: false },
       });
       s.gain = s.ctxOut.createGain();
       s.anOut = s.ctxOut.createAnalyser(); s.anOut.fftSize = 256;

@@ -15,19 +15,20 @@ export async function stopGlobalMicStream() {
 export function pauseGlobalMicForSpeech(extraStreams?: Array<MediaStream | null | undefined>) {
   try {
     if (globalStream) {
-      globalStream.getAudioTracks().forEach((track) => {
-        if (track.readyState === "live") {
-          track.enabled = false;
-        }
+      globalStream.getTracks().forEach((track) => {
+        try {
+          track.stop();
+        } catch {}
       });
+      globalStream = null;
     }
     if (Array.isArray(extraStreams)) {
       for (const s of extraStreams) {
         if (!s) continue;
-        s.getAudioTracks().forEach((track) => {
-          if (track.readyState === "live") {
-            track.enabled = false;
-          }
+        s.getTracks().forEach((track) => {
+          try {
+            track.stop();
+          } catch {}
         });
       }
     }
@@ -35,25 +36,7 @@ export function pauseGlobalMicForSpeech(extraStreams?: Array<MediaStream | null 
 }
 
 export function resumeGlobalMicAfterSpeech(extraStreams?: Array<MediaStream | null | undefined>) {
-  try {
-    if (globalStream) {
-      globalStream.getAudioTracks().forEach((track) => {
-        if (track.readyState === "live") {
-          track.enabled = true;
-        }
-      });
-    }
-    if (Array.isArray(extraStreams)) {
-      for (const s of extraStreams) {
-        if (!s) continue;
-        s.getAudioTracks().forEach((track) => {
-          if (track.readyState === "live") {
-            track.enabled = true;
-          }
-        });
-      }
-    }
-  } catch {}
+  // Mic re-acquisition will be requested when speech finishes
 }
 
 export async function getGlobalMicStream(
@@ -61,13 +44,11 @@ export async function getGlobalMicStream(
   retryCount = 0,
   onErrorToast?: (msg: string) => void
 ): Promise<MediaStream> {
-  // If already initializing, wait a bit
   if (isInitializing) {
-    await new Promise((r) => setTimeout(r, 500));
+    await new Promise((r) => setTimeout(r, 400));
     return getGlobalMicStream(options, retryCount, onErrorToast);
   }
 
-  // Check if existing stream is alive
   if (globalStream && globalStream.active) {
     const liveTracks = globalStream.getAudioTracks().filter(t => t.readyState === 'live');
     if (liveTracks.length > 0) {
@@ -78,25 +59,27 @@ export async function getGlobalMicStream(
 
   isInitializing = true;
   try {
-    // Ensure old tracks are stopped before requesting new ones to avoid NotReadableError on some devices
     await stopGlobalMicStream();
 
-    const stream = await navigator.mediaDevices.getUserMedia(options || {
-      audio: {
-        echoCancellation: true,
-        noiseSuppression: true,
-        autoGainControl: true
-      }
+    const audioConstraints: MediaTrackConstraints = {
+      ...(typeof options?.audio === 'object' ? options.audio : {}),
+      echoCancellation: false,
+      noiseSuppression: false,
+      autoGainControl: false,
+    };
+
+    const stream = await navigator.mediaDevices.getUserMedia({
+      ...options,
+      audio: audioConstraints,
     });
     globalStream = stream;
     return stream;
   } catch (err: any) {
     const errName = String(err?.name || "");
 
-    // Point 2: NotReadableError retry logic
     if (errName === "NotReadableError" && retryCount < 3) {
       console.warn(`[AudioManager] NotReadableError, retrying ${retryCount + 1}/3...`);
-      await new Promise((r) => setTimeout(r, 1500));
+      await new Promise((r) => setTimeout(r, 1200));
       isInitializing = false;
       return getGlobalMicStream(options, retryCount + 1, onErrorToast);
     }
@@ -114,4 +97,3 @@ export async function getGlobalMicStream(
 export function isMicActive() {
   return !!(globalStream && globalStream.active && globalStream.getAudioTracks().some(t => t.readyState === 'live'));
 }
-

@@ -7,8 +7,11 @@ import {
   extractNonThoughtTextFromParts,
   ensureNoThoughtSystemInstruction,
   connectBoostedOutputChain,
+  volumeSliderToGain,
+  isValidVoiceTranscript,
+  discoverLightestFlashModel,
 } from './ai-service';
-import { pauseGlobalMicForSpeech, resumeGlobalMicAfterSpeech } from './audio-manager';
+import { pauseGlobalMicForSpeech, resumeGlobalMicAfterSpeech, getGlobalMicStream } from './audio-manager';
 
 export interface GeminiLiveOptions {
   assistantName?: string;
@@ -601,6 +604,7 @@ export class GeminiLiveSession {
           finish(false);
           return;
         }
+        const STT_LANG_PROMPT = "ব্যবহারকারী বাংলা (bn-BD) অথবা ইংরেজিতে কথা বলেন। অডিওটা শুধু বাংলা বা ইংরেজিতে লেখো। কোরিয়ান, তুর্কি বা অন্য কোনো ভাষায় লিখবে না। অস্পষ্ট হলে বাংলায় লেখো।";
         const setupMsg = {
           setup: {
             model: `models/${modelName}`,
@@ -617,13 +621,15 @@ export class GeminiLiveSession {
             systemInstruction: {
               parts: [
                 {
-                  text: ensureNoThoughtSystemInstruction(
+                  text: `${STT_LANG_PROMPT}\n\n${ensureNoThoughtSystemInstruction(
                     this.options.systemInstruction || 'You are Rose, a helpful assistant.'
-                  ),
+                  )}`,
                 },
               ],
             },
-            inputAudioTranscription: {},
+            inputAudioTranscription: {
+              model: "models/gemini-2.0-flash",
+            },
             outputAudioTranscription: {},
           },
         };
@@ -708,11 +714,13 @@ export class GeminiLiveSession {
       content.userTurn?.parts?.find((p: any) => p.text);
     if (inTrans) {
       const textVal = typeof inTrans === 'string' ? inTrans : inTrans.text || inTrans.parts?.[0]?.text;
-      if (textVal) {
+      if (textVal && isValidVoiceTranscript(textVal)) {
         this.liveUserBuffer += textVal;
         const combined = this.liveUserBuffer.trim();
-        this.lastHeardText = combined;
-        this.options.onTranscription?.('user', combined, false);
+        if (isValidVoiceTranscript(combined)) {
+          this.lastHeardText = combined;
+          this.options.onTranscription?.('user', combined, false);
+        }
       }
     }
 
@@ -789,7 +797,7 @@ export class GeminiLiveSession {
     const SPEECH_START_THRESHOLD = 0.042;
     const SPEECH_KEEP_THRESHOLD = 0.028;
     const INTERRUPT_THRESHOLD = 0.22;
-    const SILENCE_DURATION_MS = 1000;
+    const SILENCE_DURATION_MS = 600;
     const MIN_CLIP_DURATION_MS = 600;
     const MAX_CLIP_DURATION_MS = 20000;
 
@@ -922,23 +930,22 @@ export class GeminiLiveSession {
     this.updateState('thinking');
 
     try {
+      const clipDurationSec = (Date.now() - this.clipStartTime) / 1000;
+      const lightestModel = await discoverLightestFlashModel(apiKey);
       if (this.flashModels.length === 0) {
         const redetected = await discoverVoiceModelsFromListModels(apiKey);
         this.flashModels = redetected.flashModels;
         this.ttsModels = redetected.ttsModels;
       }
 
-      if (this.flashModels.length === 0) {
-        throw new Error('উপযুক্ত Flash মডেল পাওয়া যায়নি');
-      }
-
-      const base64Audio = await blobToBase64(audioBlob);
-      const candidates = this.flashModels.slice(0, 3);
+      const candidateList = [lightestModel, ...this.flashModels.filter(m => m !== lightestModel)];
+      const candidates = candidateList.slice(0, 3);
       let rawResponseText = '';
       let lastErr: any = null;
-
       const promptInstruction =
-        'ব্যবহারকারীর কথা লিখে দাও এবং Rose হিসেবে সেই ভাষায় উত্তর দাও। শুধু JSON ফেরত দাও: {"transcript":"...","reply":"..."}';
+        'ব্যবহারকারী বাংলা (bn-BD) অথবা ইংরেজিতে কথা বলেন। অডিওটা শুধু বাংলা বা ইংরেজিতে লেখো। কোরিয়ান, তুর্কি বা অন্য কোনো ভাষায় লিখবে না। অস্পষ্ট হলে বাংলায় লেখো। ব্যবহারকারীর কথা লিখে দাও এবং Rose হিসেবে সেই ভাষায় সর্বোচ্চ ২-৩ ছোট বাক্যে উত্তর দাও। শুধু JSON ফেরত দাও: {"transcript":"...","reply":"..."}';
+
+      const base64Audio = await blobToBase64(audioBlob);
 
       const contents = [
         ...this.conversationHistory.slice(-6),
@@ -1074,7 +1081,9 @@ export class GeminiLiveSession {
 
       reply = cleanAssistantReplyText(reply, this.options.language);
 
-      if (!transcript && !reply) {
+      // Validate transcript: discard foreign scripts (Korean/Turkish/etc), noise, duration < 1s
+      if (!isValidVoiceTranscript(transcript, clipDurationSec)) {
+        logVoiceEvent('STT Validation', `Discarded invalid/noise/foreign transcript: "${transcript}"`, 'warn');
         if (!this.wasStoppedByUser) this.updateState('listening');
         return;
       }
@@ -1088,7 +1097,17 @@ export class GeminiLiveSession {
       if (reply && !this.wasStoppedByUser) {
         this.conversationHistory.push({ role: 'model', parts: [{ text: reply }] });
         this.options.onTranscription?.('assistant', reply, true);
-        await this.speakReply(apiKey, reply);
+        
+        // Sentence-by-sentence fast speaking
+        const sentences = reply.split(/(?<=[।?!.\n])\s+/).filter(s => s.trim().length > 0);
+        if (sentences.length > 0) {
+          for (const s of sentences) {
+            if (this.wasStoppedByUser) break;
+            await this.speakReply(apiKey, s.trim());
+          }
+        } else {
+          await this.speakReply(apiKey, reply);
+        }
       }
 
       if (!this.wasStoppedByUser) {
@@ -1125,11 +1144,13 @@ export class GeminiLiveSession {
     } catch {}
   }
 
-  private resumeMicAfterSpeech() {
+  private async resumeMicAfterSpeech() {
     if (this.wasStoppedByUser) return;
     try {
       if (!this.isMuted) {
-        resumeGlobalMicAfterSpeech([this.micStream]);
+        this.micStream = await getGlobalMicStream({
+          audio: { echoCancellation: false, noiseSuppression: false, autoGainControl: false }
+        });
       }
       if (this.audioCtx && this.audioCtx.state === 'suspended') {
         this.audioCtx.resume().catch(() => {});
@@ -1185,7 +1206,7 @@ export class GeminiLiveSession {
       }
     } finally {
       if (!this.wasStoppedByUser) {
-        this.resumeMicAfterSpeech();
+        await this.resumeMicAfterSpeech();
         this.updateState('listening');
       }
     }
@@ -1231,12 +1252,22 @@ export class GeminiLiveSession {
           const speed = Math.min(1.35, Math.max(0.85, this.options.speechSpeed || 1.05));
           source.playbackRate.value = speed;
 
-          connectBoostedOutputChain(
+          const { gainNode } = connectBoostedOutputChain(
             ctx,
             source,
             this.options.voiceVolume ?? 80,
             this.outputAnalyser
           );
+
+          const startTime = ctx.currentTime;
+          const duration = audioBuffer.duration / speed;
+          const targetGain = volumeSliderToGain(this.options.voiceVolume ?? 80);
+          const fadeTime = 0.005;
+
+          gainNode.gain.setValueAtTime(0, startTime);
+          gainNode.gain.linearRampToValueAtTime(targetGain, startTime + Math.min(fadeTime, duration / 2));
+          gainNode.gain.setValueAtTime(targetGain, startTime + duration - Math.min(fadeTime, duration / 2));
+          gainNode.gain.linearRampToValueAtTime(0, startTime + duration);
 
           this.scheduledAudioSources.push(source);
           source.onended = () => {
@@ -1244,7 +1275,7 @@ export class GeminiLiveSession {
             resolve(true);
           };
 
-          source.start(0);
+          source.start(startTime);
         } catch {
           resolve(false);
         }
@@ -1391,7 +1422,7 @@ export class GeminiLiveSession {
       const source = ctx.createBufferSource();
       source.buffer = audioBuffer;
 
-      connectBoostedOutputChain(
+      const { gainNode } = connectBoostedOutputChain(
         ctx,
         source,
         this.options.voiceVolume ?? 80,
@@ -1399,13 +1430,22 @@ export class GeminiLiveSession {
       );
 
       const startTime = Math.max(ctx.currentTime, this.nextStartTime);
+      const duration = audioBuffer.duration;
+      const targetGain = volumeSliderToGain(this.options.voiceVolume ?? 80);
+      const fadeTime = 0.005;
+
+      gainNode.gain.setValueAtTime(0, startTime);
+      gainNode.gain.linearRampToValueAtTime(targetGain, startTime + Math.min(fadeTime, duration / 2));
+      gainNode.gain.setValueAtTime(targetGain, startTime + duration - Math.min(fadeTime, duration / 2));
+      gainNode.gain.linearRampToValueAtTime(0, startTime + duration);
+
       source.start(startTime);
       this.scheduledAudioSources.push(source);
       source.onended = () => {
         this.scheduledAudioSources = this.scheduledAudioSources.filter((s) => s !== source);
       };
 
-      this.nextStartTime = startTime + audioBuffer.duration;
+      this.nextStartTime = startTime + duration;
     } catch {}
   }
 

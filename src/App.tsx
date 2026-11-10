@@ -3189,15 +3189,7 @@ export function App() {
   }, [isAssistantEnabled, requestWakeLock, releaseWakeLock]);
 
 
-  // Rose Speaking Vibration Feedback ([20, 40, 20])
   useEffect(() => {
-    if (prevSpeakingStateRef.current !== "speaking" && speakingState === "speaking") {
-      try {
-        if (typeof window !== "undefined" && "vibrate" in navigator && localStorage.getItem("vs_vibrate") !== "false") {
-          navigator.vibrate([20, 40, 20]);
-        }
-      } catch (e) {}
-    }
     prevSpeakingStateRef.current = speakingState;
   }, [speakingState]);
 
@@ -3286,11 +3278,6 @@ export function App() {
         const now = Date.now();
         if (now - lastUserVibrateRef.current > 400) {
           lastUserVibrateRef.current = now;
-          try {
-            if (typeof window !== "undefined" && "vibrate" in navigator && localStorage.getItem("vs_vibrate") !== "false") {
-              navigator.vibrate(30);
-            }
-          } catch (e) {}
         }
       } else {
         resetTopOrb();
@@ -3458,9 +3445,6 @@ export function App() {
     if (titlePressTimerRef.current) clearTimeout(titlePressTimerRef.current);
     titlePressTimerRef.current = setTimeout(() => {
       setShowDiagnosticPanel(prev => !prev);
-      if (typeof navigator !== 'undefined' && (navigator as any).vibrate) {
-        try { (navigator as any).vibrate(50); } catch(e) {}
-      }
     }, 3000);
   }, []);
 
@@ -6207,13 +6191,13 @@ export function App() {
       const AudioCtx = window.AudioContext || (window as any).webkitAudioContext;
       if (!AudioCtx) return;
       if (!inputAudioCtxRef.current || inputAudioCtxRef.current.state === "closed") {
-        inputAudioCtxRef.current = new AudioCtx({ sampleRate: 16000 });
+        inputAudioCtxRef.current = new AudioCtx({ sampleRate: 16000, latencyHint: "interactive" });
       }
       if (inputAudioCtxRef.current.state === "suspended") {
         inputAudioCtxRef.current.resume().catch((e) => console.warn("[Audio] Resume input error:", e));
       }
       if (!outputAudioCtxRef.current || outputAudioCtxRef.current.state === "closed") {
-        outputAudioCtxRef.current = new AudioCtx({ sampleRate: 24000 });
+        outputAudioCtxRef.current = new AudioCtx({ sampleRate: 24000, latencyHint: "interactive" });
       }
       if (outputAudioCtxRef.current.state === "suspended") {
         outputAudioCtxRef.current.resume().catch((e) => console.warn("[Audio] Resume output error:", e));
@@ -6290,9 +6274,9 @@ export function App() {
       try {
         stream = await getGlobalMicStream({
           audio: {
-            echoCancellation: true,
-            noiseSuppression: true,
-            autoGainControl: true
+            echoCancellation: false,
+            noiseSuppression: false,
+            autoGainControl: false,
           },
         }, 0, setToast);
         if (!isAssistantEnabledRef.current) {
@@ -6438,7 +6422,7 @@ export function App() {
 
       const SPEECH_START_THRESHOLD = 0.032;
       const SPEECH_CONTINUE_THRESHOLD = 0.024;
-      const SILENCE_LIMIT_MS = 1200;
+      const SILENCE_LIMIT_MS = 600;
       const MAX_RECORD_MS = 15000;
       const MIN_CLIP_MS = 500;
       const now = Date.now();
@@ -7455,7 +7439,12 @@ export function App() {
     isMutedRef.current = false;
     setLiveErrorMsg(null);
     setLiveBottomError(null);
-    setDiagGetUserMediaStatus("pending");
+    // Requirement 4.6: Warm up TTS & API connections on call start
+    if (geminiKey) {
+      try {
+        fetch(`https://generativelanguage.googleapis.com/v1beta/models?pageSize=1&key=${encodeURIComponent(geminiKey)}`, { mode: 'no-cors' }).catch(() => {});
+      } catch (e) {}
+    }
 
     // Requirement 2a: Create AudioContext and call await ctx.resume()
     ensureAudioContext();
@@ -7472,9 +7461,9 @@ export function App() {
     try {
       micStream = await navigator.mediaDevices.getUserMedia({
         audio: {
-          echoCancellation: true,
-          noiseSuppression: true,
-          autoGainControl: true,
+          echoCancellation: false,
+          noiseSuppression: false,
+          autoGainControl: false,
         }
       });
       setDiagGetUserMediaStatus("ok");
