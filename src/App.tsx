@@ -3341,6 +3341,49 @@ export function App() {
   const chunksSentRef = useRef(0);
   const [hasReceivedAudio, setHasReceivedAudio] = useState(false);
   const [liveErrorMsg, setLiveErrorMsg] = useState<string | null>(null);
+  const [showDiagnosticPanel, setShowDiagnosticPanel] = useState<boolean>(false);
+  const [activeCaption, setActiveCaption] = useState<{ speaker: 'user' | 'rose'; text: string } | null>(null);
+  const captionFadeTimerRef = useRef<any>(null);
+  const [liveBottomError, setLiveBottomError] = useState<string | null>(null);
+  const liveBottomErrorTimerRef = useRef<any>(null);
+  const titlePressTimerRef = useRef<any>(null);
+
+  const triggerLiveBottomError = useCallback((msg: string) => {
+    setLiveBottomError(msg);
+    if (liveBottomErrorTimerRef.current) clearTimeout(liveBottomErrorTimerRef.current);
+    liveBottomErrorTimerRef.current = setTimeout(() => {
+      setLiveBottomError(null);
+    }, 4000);
+  }, []);
+
+  const updateLiveCaption = useCallback((speaker: 'user' | 'rose', text: string) => {
+    if (!text || !text.trim()) return;
+    setActiveCaption({ speaker, text: text.trim() });
+    if (captionFadeTimerRef.current) {
+      clearTimeout(captionFadeTimerRef.current);
+    }
+    captionFadeTimerRef.current = setTimeout(() => {
+      setActiveCaption(null);
+    }, 3000);
+  }, []);
+
+  const handleTitlePressStart = useCallback(() => {
+    if (titlePressTimerRef.current) clearTimeout(titlePressTimerRef.current);
+    titlePressTimerRef.current = setTimeout(() => {
+      setShowDiagnosticPanel(prev => !prev);
+      if (typeof navigator !== 'undefined' && (navigator as any).vibrate) {
+        try { (navigator as any).vibrate(50); } catch(e) {}
+      }
+    }, 3000);
+  }, []);
+
+  const handleTitlePressEnd = useCallback(() => {
+    if (titlePressTimerRef.current) {
+      clearTimeout(titlePressTimerRef.current);
+      titlePressTimerRef.current = null;
+    }
+  }, []);
+
   const [diagMicPermission, setDiagMicPermission] = useState<string>("unknown");
   const [diagGetUserMediaStatus, setDiagGetUserMediaStatus] = useState<string>("pending");
   const [diagAudioCtxState, setDiagAudioCtxState] = useState<string>("off");
@@ -7115,10 +7158,21 @@ export function App() {
   const startLiveCall = useCallback(async () => {
     if (!settingsRef.current.masterAccess) return;
 
+    // Requirement 1: If Gemini key is missing, do NOT start the call: close call screen and open Settings > Connections with message
+    const geminiKey = (getGeminiKey() || "").trim();
+    if (!geminiKey) {
+      setIsCallScreenOpen(false);
+      isCallScreenOpenRef.current = false;
+      setCurrentView("connections");
+      setToast("প্রথমে আপনার Gemini API key বসান।");
+      return;
+    }
+
     // Requirement 2c: Make sure mic is NOT muted by default when call starts
     setIsMuted(false);
     isMutedRef.current = false;
     setLiveErrorMsg(null);
+    setLiveBottomError(null);
     setDiagGetUserMediaStatus("pending");
 
     // Requirement 2a: Create AudioContext and call await ctx.resume()
@@ -7146,8 +7200,7 @@ export function App() {
         ? "মাইক্রোফোনের অনুমতি নেই। Chrome এর তালা আইকনে চেপে Microphone Allow করুন।"
         : `getUserMedia error: ${err?.message || err}`;
       setDiagGetUserMediaStatus(`error ${err?.message || 'denied'}`);
-      setLiveErrorMsg(errText);
-      setToast(errText);
+      triggerLiveBottomError(errText);
       return;
     }
 
@@ -7160,7 +7213,7 @@ export function App() {
     isAssistantEnabledRef.current = true;
 
     const session = new GeminiLiveSession({
-      apiKey: getGeminiKey() || "",
+      apiKey: geminiKey,
       assistantName: settingsRef.current.assistantName,
       ownerName: settingsRef.current.ownerName,
       voiceName: prefs.voiceName || 'Sulafat',
@@ -7181,6 +7234,9 @@ export function App() {
       },
       onTranscription: (role, text, isFinal) => {
         if (!text) return;
+        const speaker = role === 'assistant' ? 'rose' : 'user';
+        updateLiveCaption(speaker, text);
+
         setChatHistory(prev => {
           const mappedRole = role === 'assistant' ? "rose" : "user";
           const last = prev[prev.length - 1];
@@ -7198,11 +7254,14 @@ export function App() {
       },
       onTurnComplete: () => {
         setInterimSpeechText("");
+        if (captionFadeTimerRef.current) clearTimeout(captionFadeTimerRef.current);
+        captionFadeTimerRef.current = setTimeout(() => {
+          setActiveCaption(null);
+        }, 1500);
       },
       onError: (msg) => {
-        setLiveErrorMsg(msg);
         setDiagLastError(msg);
-        setToast(msg);
+        triggerLiveBottomError(msg);
       },
       onClose: () => {
         liveSessionRef.current = null;
@@ -7226,7 +7285,7 @@ export function App() {
       }
       checkCount++;
     }, 100);
-  }, [transitionToState, ensureAudioContext, prefs.voiceName, prefs.personality, prefs.customPersonalityText]);
+  }, [transitionToState, ensureAudioContext, prefs.voiceName, prefs.personality, prefs.customPersonalityText, updateLiveCaption, triggerLiveBottomError]);
 
   const endLiveCall = useCallback(() => {
     if (chatHistory.length > 0) {
@@ -12172,7 +12231,16 @@ export function App() {
 
             {/* Top Bar */}
             <div className="relative z-10 flex items-center justify-between">
-              <div className="flex items-center gap-2.5">
+              <div
+                onMouseDown={handleTitlePressStart}
+                onMouseUp={handleTitlePressEnd}
+                onMouseLeave={handleTitlePressEnd}
+                onTouchStart={handleTitlePressStart}
+                onTouchEnd={handleTitlePressEnd}
+                onTouchCancel={handleTitlePressEnd}
+                className="flex items-center gap-2.5 cursor-pointer touch-none select-none"
+                title="Hold for 3 seconds to toggle diagnostics"
+              >
                 <h2 className="text-2xl font-black italic text-purple-200 tracking-tight">Rose 🌹</h2>
                 <div className="w-2.5 h-2.5 rounded-full bg-teal-400 animate-pulse shadow-sm shadow-teal-400" />
               </div>
@@ -12185,15 +12253,44 @@ export function App() {
               </button>
             </div>
 
-            {/* Error Message Notice if Connection Fails */}
-            {liveErrorMsg && (
-              <p className="relative z-10 text-center text-xs font-medium text-purple-200/90 my-2 px-4 py-1">
-                {liveErrorMsg}
-              </p>
-            )}
+            {/* Live Captions Section (Clear speech word-by-word) */}
+            <div className="relative z-10 flex-1 flex flex-col items-center justify-center px-4 text-center my-2 min-h-[90px] max-h-[140px] overflow-hidden">
+              <AnimatePresence mode="wait">
+                {activeCaption ? (
+                  <motion.div
+                    key={activeCaption.speaker + '-' + activeCaption.text}
+                    initial={{ opacity: 0, y: 8 }}
+                    animate={{ opacity: 1, y: 0 }}
+                    exit={{ opacity: 0, y: -8 }}
+                    transition={{ duration: 0.25, ease: "easeOut" }}
+                    className="max-w-md mx-auto w-full"
+                  >
+                    {activeCaption.speaker === 'user' ? (
+                      <>
+                        <span className="text-[11px] font-bold text-slate-400 uppercase tracking-widest mb-1.5 block">
+                          আপনি
+                        </span>
+                        <p className="text-[20px] font-medium text-white leading-snug line-clamp-3 break-words drop-shadow-md">
+                          {activeCaption.text}
+                        </p>
+                      </>
+                    ) : (
+                      <>
+                        <span className="text-[11px] font-bold text-pink-300/80 uppercase tracking-widest mb-1.5 block">
+                          Rose
+                        </span>
+                        <p className="text-[22px] font-medium text-pink-50/95 leading-snug line-clamp-3 break-words drop-shadow-md">
+                          {activeCaption.text}
+                        </p>
+                      </>
+                    )}
+                  </motion.div>
+                ) : null}
+              </AnimatePresence>
+            </div>
 
             {/* Center Orb Section */}
-            <div className="relative z-10 flex flex-col items-center justify-center flex-1 my-4">
+            <div className="relative z-10 flex flex-col items-center justify-center my-4">
               <div className="relative w-64 h-64 sm:w-72 sm:h-72 flex items-center justify-center">
                 {/* Outer Glow Rings driven by live volume rAF */}
                 <div
@@ -12241,46 +12338,55 @@ export function App() {
               </div>
             </div>
 
-            {/* 11px Diagnostic Panel */}
-            <div className="relative z-10 max-w-sm mx-auto w-full mb-3 px-3 py-2 bg-slate-900/90 border border-slate-800 rounded-xl text-[11px] font-mono text-slate-400 leading-tight space-y-0.5 shadow-lg backdrop-blur-md">
-              <div className="flex justify-between">
-                <span className="text-slate-500">Mic permission:</span>
-                <span className={diagMicPermission === 'granted' ? 'text-emerald-400 font-semibold' : diagMicPermission === 'denied' ? 'text-red-400 font-semibold' : 'text-amber-400'}>{diagMicPermission}</span>
-              </div>
-              <div className="flex justify-between">
-                <span className="text-slate-500">getUserMedia:</span>
-                <span className={diagGetUserMediaStatus === 'ok' ? 'text-emerald-400 font-semibold' : 'text-red-400 font-semibold'}>{diagGetUserMediaStatus}</span>
-              </div>
-              <div className="flex justify-between">
-                <span className="text-slate-500">AudioContext:</span>
-                <span>{diagAudioCtxState} {diagSampleRate ? `(${diagSampleRate}Hz)` : ''}</span>
-              </div>
-              <div className="flex justify-between">
-                <span className="text-slate-500">Mic level:</span>
-                <span className="text-slate-200">{diagMicLevel.toFixed(2)}</span>
-              </div>
-              <div className="flex justify-between">
-                <span className="text-slate-500">Audio chunks sent:</span>
-                <span className="text-slate-200">{diagChunksSent}</span>
-              </div>
-              <div className="flex justify-between">
-                <span className="text-slate-500">Socket:</span>
-                <span className={diagSocketStatus === 'open' ? 'text-emerald-400 font-semibold' : 'text-slate-400'}>{diagSocketStatus}</span>
-              </div>
-              <div className="flex justify-between">
-                <span className="text-slate-500">Messages received:</span>
-                <span className="text-slate-200">{diagMessagesReceived}</span>
-              </div>
-              <div className="flex justify-between gap-2 overflow-hidden">
-                <span className="text-slate-500 shrink-0">Heard text:</span>
-                <span className="text-slate-200 truncate">{diagHeardText || <span className="italic text-slate-600">none</span>}</span>
-              </div>
-              {(diagLastError || liveErrorMsg) && (
-                <div className="text-red-400 font-semibold pt-1 mt-1 border-t border-slate-800 text-[10px] break-words">
-                  Error: {diagLastError || liveErrorMsg}
+            {/* 11px Diagnostic Panel (Shown only when long-pressing Rose title for 3 seconds) */}
+            {showDiagnosticPanel && (
+              <div className="relative z-10 max-w-sm mx-auto w-full mb-3 px-3 py-2 bg-slate-900/90 border border-slate-800 rounded-xl text-[11px] font-mono text-slate-400 leading-tight space-y-0.5 shadow-lg backdrop-blur-md">
+                <div className="flex justify-between">
+                  <span className="text-slate-500">Mic permission:</span>
+                  <span className={diagMicPermission === 'granted' ? 'text-emerald-400 font-semibold' : diagMicPermission === 'denied' ? 'text-red-400 font-semibold' : 'text-amber-400'}>{diagMicPermission}</span>
                 </div>
-              )}
-            </div>
+                <div className="flex justify-between">
+                  <span className="text-slate-500">getUserMedia:</span>
+                  <span className={diagGetUserMediaStatus === 'ok' ? 'text-emerald-400 font-semibold' : 'text-red-400 font-semibold'}>{diagGetUserMediaStatus}</span>
+                </div>
+                <div className="flex justify-between">
+                  <span className="text-slate-500">AudioContext:</span>
+                  <span>{diagAudioCtxState} {diagSampleRate ? `(${diagSampleRate}Hz)` : ''}</span>
+                </div>
+                <div className="flex justify-between">
+                  <span className="text-slate-500">Mic level:</span>
+                  <span className="text-slate-200">{diagMicLevel.toFixed(2)}</span>
+                </div>
+                <div className="flex justify-between">
+                  <span className="text-slate-500">Audio chunks sent:</span>
+                  <span className="text-slate-200">{diagChunksSent}</span>
+                </div>
+                <div className="flex justify-between">
+                  <span className="text-slate-500">Socket:</span>
+                  <span className={diagSocketStatus === 'open' ? 'text-emerald-400 font-semibold' : 'text-slate-400'}>{diagSocketStatus}</span>
+                </div>
+                <div className="flex justify-between">
+                  <span className="text-slate-500">Messages received:</span>
+                  <span className="text-slate-200">{diagMessagesReceived}</span>
+                </div>
+                <div className="flex justify-between gap-2 overflow-hidden">
+                  <span className="text-slate-500 shrink-0">Heard text:</span>
+                  <span className="text-slate-200 truncate">{diagHeardText || <span className="italic text-slate-600">none</span>}</span>
+                </div>
+                {diagLastError && (
+                  <div className="text-red-400 font-semibold pt-1 mt-1 border-t border-slate-800 text-[10px] break-words">
+                    Error: {diagLastError}
+                  </div>
+                )}
+              </div>
+            )}
+
+            {/* Tiny 11px Grey Line Error (Auto-hides after 4s) */}
+            {liveBottomError && (
+              <div className="relative z-10 text-[11px] text-slate-400 text-center py-1 font-mono tracking-tight animate-fade-in">
+                {liveBottomError}
+              </div>
+            )}
 
             {/* Bottom 3 Action Buttons */}
             <div className="relative z-10 flex items-center justify-evenly max-w-sm mx-auto w-full pb-4">
