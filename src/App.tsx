@@ -908,7 +908,7 @@ const buildSystemInstruction = (
         : "Reply in 2 to 4 medium-length sentences.";
 
   const voiceConstraint = forVoice
-    ? `\nVOICE FORMAT: You are speaking aloud. ${voiceLengthHint} Match your emotion and sweetness to your personality. Never use markdown, bullet points, asterisks, tables, or URLs.`
+    ? `\nভয়েস কলে সর্বোচ্চ ২-৩ ছোট বাক্যে উত্তর দাও।\nVOICE FORMAT: You are speaking aloud. ${voiceLengthHint} Match your emotion and sweetness to your personality. Never use markdown, bullet points, asterisks, tables, or URLs.`
     : "";
 
   const personalityRuleBlock = `[ACTIVE PERSONALITY & CHARACTER: ${label}]
@@ -2644,6 +2644,7 @@ export function App() {
       time?: string;
       debugLine?: string;
       retryText?: string;
+      replyMode?: "text" | "voice";
     }) => {
       const cleanText = String(msg.text ?? "").trim();
       if (!cleanText) return;
@@ -2661,6 +2662,7 @@ export function App() {
         text: cleanText,
         content: cleanText,
         time: nowTime,
+        replyMode: msg.replyMode,
         ...(msg.debugLine ? { debugLine: msg.debugLine } : {}),
         ...(msg.retryText ? { retryText: msg.retryText } : {}),
       };
@@ -4330,14 +4332,18 @@ export function App() {
     }
   };
 
-  const processCommand = async (text: string) => {
+  const processCommand = async (text: string, mode: "text" | "voice" = "text") => {
     if (!settings.masterAccess) {
-      speak("Master Access is disabled.");
+      if (mode === "voice") speak("Master Access is disabled.");
       return;
     }
 
     setStatus("processing");
-    const userMsg: Message = { role: "user", content: text };
+    const userMsg: Message = { 
+      role: "user", 
+      content: text,
+      replyMode: mode 
+    };
     setChatHistory((prev) => [...prev, userMsg]);
 
     try {
@@ -4356,7 +4362,7 @@ export function App() {
           const result = await directGeminiGenerate({
             model: model,
             contents: [{ role: "user", parts: [{ text: formatUserPromptWithCharacterGuard(text, settings, prefs) }] }],
-            systemInstruction: buildSystemInstruction(settings, prefs, false),
+            systemInstruction: buildSystemInstruction(settings, prefs, mode === "voice"),
             generationConfig: {
               temperature: 0.9,
               maxOutputTokens:
@@ -4392,14 +4398,18 @@ export function App() {
       }
 
       if (data.app === "chat") {
-        const assistMsg: Message = { role: "assistant", content: data.message };
+        const assistMsg: Message = { 
+          role: "assistant", 
+          content: data.message,
+          replyMode: mode 
+        };
         setChatHistory((prev) => [...prev, assistMsg]);
-        speakSentenceViaGeminiTTS(data.message);
+        if (mode === "voice") speakSentenceViaGeminiTTS(data.message);
         setStatus("idle");
       } else {
         setCurrentAction(data);
         setStatus("confirming");
-        speakSentenceViaGeminiTTS(data.message);
+        if (mode === "voice") speakSentenceViaGeminiTTS(data.message);
       }
     } catch (error) {
       console.error(error);
@@ -5090,7 +5100,7 @@ export function App() {
       inputAudioCtxRef.current.resume().catch(() => {});
     }
 
-    if (isAssistantEnabledRef.current && !micNotAllowedRef.current) {
+    if (isAssistantEnabledRef.current && !micNotAllowedRef.current && !liveSessionRef.current) {
       if (voiceModeRef.current === "recorder" || browserFallbackForcedRef.current) {
         startRecorderModeListeningRef.current();
       } else {
@@ -5742,21 +5752,27 @@ export function App() {
       }
       lastSentUserMsgRef.current = { text: userText, time: now };
 
-      // Create ONE speech controller session with a unique token per reply
-      const turnToken = cancelAllSpeechAndAudio(true);
-      const lockedEngineMode: "fast" | "quality" = "quality";
-      setActiveVoiceEngine(`Voice: Gemini Live (${getVoicePreset(prefsRef.current.voiceName).voiceName || "Leda"})`);
+      const replyMode: "text" | "voice" = isTypedChat ? "text" : "voice";
 
-      streamFinishedForTokenRef.current = { token: turnToken, done: false };
-      isBusyRef.current = true;
+      // Create ONE speech controller session with a unique token per reply only when speaking (voice mode)
+      const turnToken =
+        replyMode === "voice" ? cancelAllSpeechAndAudio(true) : speechTokenRef.current;
+      const lockedEngineMode: "fast" | "quality" = "quality";
+      if (replyMode === "voice") {
+        setActiveVoiceEngine(`Voice: Gemini Live (${getVoicePreset(prefsRef.current.voiceName).voiceName || "Leda"})`);
+        streamFinishedForTokenRef.current = { token: turnToken, done: false };
+        isBusyRef.current = true;
+        transitionToState("THINKING");
+      }
+
       isProcessingGeminiRef.current = true;
       setStatus("processing");
-      transitionToState("THINKING");
 
       if (!userAlreadyPushed) {
         pushSharedMessage({
           role: "user",
           text: userText,
+          replyMode,
         });
       }
 
@@ -5781,10 +5797,16 @@ export function App() {
                 text: cleanDisplay,
                 content: cleanDisplay,
                 time: roseMsgTime,
+                replyMode,
                 actionConfirmation: confirmation,
               },
             ];
             chatHistoryRef.current = next;
+            try {
+              const serialized = JSON.stringify(next);
+              localStorage.setItem("iyabd_chat_history", serialized);
+              localStorage.setItem("rose_messages", serialized);
+            } catch (e) {}
             return next;
           });
         } else {
@@ -5795,11 +5817,17 @@ export function App() {
                     ...m,
                     text: cleanDisplay,
                     content: cleanDisplay,
+                    replyMode,
                     actionConfirmation: confirmation || m.actionConfirmation,
                   }
                 : m
             );
             chatHistoryRef.current = next;
+            try {
+              const serialized = JSON.stringify(next);
+              localStorage.setItem("iyabd_chat_history", serialized);
+              localStorage.setItem("rose_messages", serialized);
+            } catch (e) {}
             return next;
           });
         }
@@ -5811,7 +5839,7 @@ export function App() {
         while ((match = sentenceRegex.exec(sentenceBuffer)) !== null) {
           const completedSentence = match[1].replace(/[*#_~`]/g, "").trim();
           sentenceBuffer = match[2];
-          if (completedSentence) {
+          if (completedSentence && replyMode === "voice") {
             anySentenceEnqueued = true;
             enqueueSentenceForToken(completedSentence, turnToken, lockedEngineMode);
           }
@@ -5870,7 +5898,7 @@ export function App() {
         const baseSystemInst = buildSystemInstruction(
           settingsRef.current,
           prefsRef.current,
-          true
+          replyMode === "voice"
         );
         const activeRespStyle = settingsRef.current?.responseStyle || "Balanced";
         const respStyleDirective =
@@ -5972,7 +6000,7 @@ export function App() {
         } else {
           // Gemini selected engine (or voice): no fallback to other providers!
           const geminiRes: any = await directGeminiGenerate(payload);
-          if (speechTokenRef.current !== turnToken) return;
+          if (replyMode === "voice" && speechTokenRef.current !== turnToken) return;
 
           const candidates = geminiRes?.candidates || [];
           const rawParts = candidates[0]?.content?.parts || [];
@@ -6002,23 +6030,31 @@ export function App() {
               setPendingActionConfirmation(conf);
               fullAccumulatedText = conf.cardPrompt;
               updateSharedRoseBubble(conf.cardPrompt, conf);
-              anySentenceEnqueued = true;
-              enqueueSentenceForToken(conf.cardPrompt, turnToken, lockedEngineMode);
+              if (replyMode === "voice") {
+                anySentenceEnqueued = true;
+                enqueueSentenceForToken(conf.cardPrompt, turnToken, lockedEngineMode);
+              }
             } else if (actionRes.status === "refused") {
               fullAccumulatedText = actionRes.message;
               updateSharedRoseBubble(actionRes.message);
-              anySentenceEnqueued = true;
-              enqueueSentenceForToken(actionRes.message, turnToken, lockedEngineMode);
+              if (replyMode === "voice") {
+                anySentenceEnqueued = true;
+                enqueueSentenceForToken(actionRes.message, turnToken, lockedEngineMode);
+              }
             } else if (actionRes.status === "unsupported") {
               fullAccumulatedText = "Needs Android app";
               updateSharedRoseBubble("Needs Android app");
-              anySentenceEnqueued = true;
-              enqueueSentenceForToken("Needs Android app", turnToken, lockedEngineMode);
+              if (replyMode === "voice") {
+                anySentenceEnqueued = true;
+                enqueueSentenceForToken("Needs Android app", turnToken, lockedEngineMode);
+              }
             } else {
               fullAccumulatedText = actionRes.message;
               updateSharedRoseBubble(actionRes.message);
-              anySentenceEnqueued = true;
-              enqueueSentenceForToken(actionRes.message, turnToken, lockedEngineMode);
+              if (replyMode === "voice") {
+                anySentenceEnqueued = true;
+                enqueueSentenceForToken(actionRes.message, turnToken, lockedEngineMode);
+              }
             }
             return;
           } else {
@@ -6034,10 +6070,10 @@ export function App() {
           throw new Error("Empty reply received from assistant");
         }
 
-        // Always show the text reply and speak the full reply once (avoids parallel multi-sentence TTS 429s)
+        // Always show the text reply; ONLY speak when replyMode === "voice"
         updateSharedRoseBubble(finalCleanedReply);
         sentenceBuffer = "";
-        if (!anySentenceEnqueued) {
+        if (replyMode === "voice" && !anySentenceEnqueued) {
           anySentenceEnqueued = true;
           enqueueSentenceForToken(finalCleanedReply, turnToken, lockedEngineMode);
         }
@@ -6048,7 +6084,7 @@ export function App() {
 
         setLiveErrorMsg(null);
       } catch (err: any) {
-        if (speechTokenRef.current !== turnToken) return;
+        if (replyMode === "voice" && speechTokenRef.current !== turnToken) return;
         console.error("[ChatEngine] Error:", err);
 
         const currentKey = getGeminiKey() || apiKeysRef.current.gemini || "";
@@ -6060,12 +6096,14 @@ export function App() {
           updateSharedRoseBubble(partialReply);
           const trailingFragment = cleanAssistantReplyText(sentenceBuffer, prefsRef.current.language).replace(/[*#_~`]/g, "").trim();
           sentenceBuffer = "";
-          if (trailingFragment) {
-            anySentenceEnqueued = true;
-            enqueueSentenceForToken(trailingFragment, turnToken, lockedEngineMode);
-          } else if (!anySentenceEnqueued) {
-            anySentenceEnqueued = true;
-            enqueueSentenceForToken(partialReply, turnToken, lockedEngineMode);
+          if (replyMode === "voice") {
+            if (trailingFragment) {
+              anySentenceEnqueued = true;
+              enqueueSentenceForToken(trailingFragment, turnToken, lockedEngineMode);
+            } else if (!anySentenceEnqueued) {
+              anySentenceEnqueued = true;
+              enqueueSentenceForToken(partialReply, turnToken, lockedEngineMode);
+            }
           }
         } else {
           let bengaliMessage = "";
@@ -6107,7 +6145,7 @@ export function App() {
         // Always reset thinking/processing status in finally block so Rose is NEVER stuck on thinking
         isProcessingGeminiRef.current = false;
         setStatus("idle");
-        if (speechTokenRef.current === turnToken) {
+        if (replyMode === "voice" && speechTokenRef.current === turnToken) {
           streamFinishedForTokenRef.current = { token: turnToken, done: true };
           if (!isQueueSpeakingRef.current && sentenceQueueRef.current.length === 0) {
             resumeRecognitionAfterSpeech();
@@ -7525,35 +7563,81 @@ export function App() {
         const speaker = role === 'assistant' ? 'rose' : 'user';
         updateLiveCaption(speaker, cleanText);
 
+        const streamId = speaker === "user" ? "live-stream-user" : "live-stream-rose";
+        const nowTime = new Date().toLocaleTimeString([], {
+          hour: "2-digit",
+          minute: "2-digit",
+        });
+
         if (isFinal) {
-          pushSharedMessageRef.current({
-            role: speaker,
-            text: cleanText,
-          });
-        } else {
-          const nowTime = new Date().toLocaleTimeString([], {
-            hour: "2-digit",
-            minute: "2-digit",
-          });
-          setChatHistory(prev => {
+          setChatHistory((prev) => {
             const last = prev[prev.length - 1];
+            const finalId = `msg-${Date.now()}-${Math.random().toString(36).substring(2, 7)}`;
             let next: Message[];
-            if (last && last.role === speaker) {
-              next = [...prev];
-              next[next.length - 1] = {
-                ...last,
-                text: cleanText,
-                content: cleanText,
-              };
+            if (last && last.id === streamId) {
+              next = [
+                ...prev.slice(0, -1),
+                {
+                  ...last,
+                  id: finalId,
+                  role: speaker,
+                  text: cleanText,
+                  content: cleanText,
+                  time: last.time || nowTime,
+                  replyMode: "voice",
+                },
+              ];
+            } else if (
+              last &&
+              last.role === speaker &&
+              (last.text || last.content || "").trim() === cleanText
+            ) {
+              return prev;
             } else {
               next = [
                 ...prev,
                 {
-                  id: `msg-${Date.now()}-${Math.random().toString(36).substring(2, 7)}`,
+                  id: finalId,
                   role: speaker,
                   text: cleanText,
                   content: cleanText,
                   time: nowTime,
+                  replyMode: "voice",
+                },
+              ];
+            }
+            chatHistoryRef.current = next;
+            try {
+              const serialized = JSON.stringify(next);
+              localStorage.setItem("iyabd_chat_history", serialized);
+              localStorage.setItem("rose_messages", serialized);
+            } catch (e) {}
+            return next;
+          });
+        } else {
+          setChatHistory((prev) => {
+            const last = prev[prev.length - 1];
+            let next: Message[];
+            if (last && last.id === streamId) {
+              next = [
+                ...prev.slice(0, -1),
+                {
+                  ...last,
+                  text: cleanText,
+                  content: cleanText,
+                  replyMode: "voice",
+                },
+              ];
+            } else {
+              next = [
+                ...prev,
+                {
+                  id: streamId,
+                  role: speaker,
+                  text: cleanText,
+                  content: cleanText,
+                  time: nowTime,
+                  replyMode: "voice",
                 },
               ];
             }
@@ -7568,7 +7652,7 @@ export function App() {
         }
 
         if (role === 'user') {
-          setInterimSpeechText(cleanText);
+          setInterimSpeechText(isFinal ? "" : cleanText);
           setDiagHeardText(cleanText);
         }
       },
@@ -7773,6 +7857,7 @@ export function App() {
   const FeatureCard = ({ label, subtitle, icon: Icon }: any) => (
     <button
       onClick={() => {
+        if (isCallScreenOpen) setIsCallMinimized(true);
         setCurrentView("home");
         setActiveTab("chat");
       }}
@@ -9063,17 +9148,10 @@ export function App() {
     const text = rawText.trim();
     if (!text) return;
     setInputText("");
-    isSilentModeRef.current = false;
-    ensureAudioContext();
-    try {
-      if (typeof window !== "undefined" && "speechSynthesis" in window) {
-        window.speechSynthesis.getVoices();
-        window.speechSynthesis.resume();
-      }
-    } catch (e) {}
     pushSharedMessage({
       role: "user",
       text,
+      replyMode: "text",
     });
     processVoiceInputWithGemini(text, true, true);
   };
@@ -9210,6 +9288,7 @@ export function App() {
                 }
 
                 const isUser = msg.role === "user";
+                const isVoice = msg.replyMode === "voice";
                 return (
                   <div
                     key={msg.id || idx}
@@ -9217,18 +9296,28 @@ export function App() {
                   >
                     <div className={"flex items-end gap-2 w-full " + (isUser ? "justify-end" : "justify-start")}>
                       {!isUser && (
-                        <div className="w-7 h-7 rounded-full bg-[#0F172A] border border-purple-500/30 flex items-center justify-center shrink-0 shadow-md mb-1">
+                        <div className="w-7 h-7 rounded-full bg-[#0F172A] border border-purple-500/30 flex items-center justify-center shrink-0 shadow-md mb-1 relative">
                           {renderRoseFlowerSvg("w-4 h-4")}
+                          {isVoice && (
+                            <div className="absolute -top-1 -right-1 bg-purple-600 rounded-full p-0.5 border border-[#0F172A]">
+                              <Mic className="w-2 h-2 text-white" />
+                            </div>
+                          )}
                         </div>
                       )}
                       <div
                         className={
-                          "max-w-[82%] px-4 py-3 text-[15px] font-medium leading-relaxed shadow-lg " +
+                          "max-w-[82%] px-4 py-3 text-[15px] font-medium leading-relaxed shadow-lg relative " +
                           (isUser
                             ? "bg-gradient-to-r from-purple-600 to-indigo-600 text-white rounded-2xl rounded-tr-sm"
                             : "bg-[#0F172A]/85 backdrop-blur-md border border-purple-500/25 text-white rounded-2xl rounded-tl-sm whitespace-pre-wrap")
                         }
                       >
+                        {isUser && isVoice && (
+                          <div className="absolute -top-2 -left-2 bg-purple-500 rounded-full p-1 border-2 border-[#020617] shadow-sm z-10">
+                            <Mic className="w-2.5 h-2.5 text-white" />
+                          </div>
+                        )}
                         {renderMessageContent(msgText)}
                         {msg.actionConfirmation && (
                           <div className="mt-3 p-3 bg-purple-950/60 border border-purple-500/30 rounded-xl space-y-2 text-xs">
@@ -11385,12 +11474,19 @@ export function App() {
         recognitionRunningRef.current ||
         sessionStateRef.current !== "IDLE";
       if (wasListeningActive) {
-        stopListening();
-        isAssistantEnabledRef.current = true;
-        setIsAssistantEnabled(true);
-        setTimeout(() => {
-          startListening();
-        }, 150);
+        if (liveSessionRef.current) {
+          endLiveCall();
+          setTimeout(() => {
+            startLiveCall();
+          }, 150);
+        } else {
+          stopListening();
+          isAssistantEnabledRef.current = true;
+          setIsAssistantEnabled(true);
+          setTimeout(() => {
+            startListening();
+          }, 150);
+        }
       }
     };
 
@@ -11442,12 +11538,19 @@ export function App() {
         recognitionRunningRef.current ||
         sessionStateRef.current !== "IDLE";
       if (wasListeningActive) {
-        stopListening();
-        isAssistantEnabledRef.current = true;
-        setIsAssistantEnabled(true);
-        setTimeout(() => {
-          startListening();
-        }, 150);
+        if (liveSessionRef.current) {
+          endLiveCall();
+          setTimeout(() => {
+            startLiveCall();
+          }, 150);
+        } else {
+          stopListening();
+          isAssistantEnabledRef.current = true;
+          setIsAssistantEnabled(true);
+          setTimeout(() => {
+            startListening();
+          }, 150);
+        }
       }
     };
 
@@ -12826,6 +12929,7 @@ export function App() {
         <nav className="h-20 bg-[#020617]/95 backdrop-blur-3xl border-t border-white/5 px-8 flex items-center justify-between z-[100] shrink-0">
           <button
             onClick={() => {
+              if (isCallScreenOpen) setIsCallMinimized(true);
               setActiveTab("home");
               setCurrentView("home");
             }}
@@ -12836,6 +12940,7 @@ export function App() {
           </button>
           <button
             onClick={() => {
+              if (isCallScreenOpen) setIsCallMinimized(true);
               setActiveTab("chat");
               setCurrentView("home");
             }}

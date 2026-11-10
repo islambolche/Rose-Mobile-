@@ -604,7 +604,7 @@ export class GeminiLiveSession {
           finish(false);
           return;
         }
-        const STT_LANG_PROMPT = "ব্যবহারকারী বাংলা (bn-BD) অথবা ইংরেজিতে কথা বলেন। অডিওটা শুধু বাংলা বা ইংরেজিতে লেখো। কোরিয়ান, তুর্কি বা অন্য কোনো ভাষায় লিখবে না। অস্পষ্ট হলে বাংলায় লেখো।";
+        const STT_LANG_PROMPT = "ব্যবহারকারী বাংলা বা ইংরেজিতে কথা বলেন, শুধু বাংলা বা ইংরেজিতে লেখো, কোরিয়ান বা অন্য ভাষায় নয়। অস্পষ্ট হলে বাংলায় লেখো। ভয়েস কলে সর্বোচ্চ ২-৩ ছোট বাক্যে উত্তর দাও।";
         const setupMsg = {
           setup: {
             model: `models/${modelName}`,
@@ -627,9 +627,7 @@ export class GeminiLiveSession {
                 },
               ],
             },
-            inputAudioTranscription: {
-              model: "models/gemini-2.0-flash",
-            },
+            inputAudioTranscription: {},
             outputAudioTranscription: {},
           },
         };
@@ -729,6 +727,13 @@ export class GeminiLiveSession {
       content.outputAudioTranscription ||
       content.output_audio_transcription;
     if (outTrans) {
+      if (this.liveUserBuffer.trim()) {
+        const finalUser = this.liveUserBuffer.trim();
+        this.liveUserBuffer = '';
+        if (isValidVoiceTranscript(finalUser)) {
+          this.options.onTranscription?.('user', finalUser, true);
+        }
+      }
       const textVal = typeof outTrans === 'string' ? outTrans : outTrans.text || outTrans.parts?.[0]?.text;
       if (textVal) {
         this.liveAssistantBuffer += textVal;
@@ -740,6 +745,13 @@ export class GeminiLiveSession {
     }
 
     if (content.modelTurn) {
+      if (this.liveUserBuffer.trim()) {
+        const finalUser = this.liveUserBuffer.trim();
+        this.liveUserBuffer = '';
+        if (isValidVoiceTranscript(finalUser)) {
+          this.options.onTranscription?.('user', finalUser, true);
+        }
+      }
       const parts = content.modelTurn.parts || [];
       for (const part of parts) {
         if (part?.thought === true) {
@@ -770,6 +782,13 @@ export class GeminiLiveSession {
     }
 
     if (content.turnComplete) {
+      if (this.liveUserBuffer.trim()) {
+        const finalUser = this.liveUserBuffer.trim();
+        this.liveUserBuffer = '';
+        if (isValidVoiceTranscript(finalUser)) {
+          this.options.onTranscription?.('user', finalUser, true);
+        }
+      }
       if (this.liveAssistantBuffer.trim()) {
         const finalCleaned = cleanAssistantReplyText(this.liveAssistantBuffer.trim(), this.options.language);
         if (finalCleaned) {
@@ -938,12 +957,12 @@ export class GeminiLiveSession {
         this.ttsModels = redetected.ttsModels;
       }
 
-      const candidateList = [lightestModel, ...this.flashModels.filter(m => m !== lightestModel)];
+      const candidateList = [lightestModel, ...this.flashModels.filter(m => m !== lightestModel)].filter(Boolean);
       const candidates = candidateList.slice(0, 3);
       let rawResponseText = '';
       let lastErr: any = null;
       const promptInstruction =
-        'ব্যবহারকারী বাংলা (bn-BD) অথবা ইংরেজিতে কথা বলেন। অডিওটা শুধু বাংলা বা ইংরেজিতে লেখো। কোরিয়ান, তুর্কি বা অন্য কোনো ভাষায় লিখবে না। অস্পষ্ট হলে বাংলায় লেখো। ব্যবহারকারীর কথা লিখে দাও এবং Rose হিসেবে সেই ভাষায় সর্বোচ্চ ২-৩ ছোট বাক্যে উত্তর দাও। শুধু JSON ফেরত দাও: {"transcript":"...","reply":"..."}';
+        'ব্যবহারকারী বাংলা বা ইংরেজিতে কথা বলেন, শুধু বাংলা বা ইংরেজিতে লেখো, কোরিয়ান বা অন্য ভাষায় নয়। অস্পষ্ট হলে বাংলায় লেখো। ব্যবহারকারীর কথা লিখে দাও এবং Rose হিসেবে সেই ভাষায় সর্বোচ্চ ২-৩ ছোট বাক্যে উত্তর দাও। শুধু JSON ফেরত দাও: {"transcript":"...","reply":"..."}';
 
       const base64Audio = await blobToBase64(audioBlob);
 
@@ -965,7 +984,7 @@ export class GeminiLiveSession {
         },
       ];
 
-      const sysInstructionText = ensureNoThoughtSystemInstruction(this.options.systemInstruction);
+      const sysInstructionText = `${ensureNoThoughtSystemInstruction(this.options.systemInstruction)}\nভয়েস কলে সর্বোচ্চ ২-৩ ছোট বাক্যে উত্তর দাও।`;
 
       const buildClipBody = (withThinkingConfig: boolean) => {
         const genCfg: any = {

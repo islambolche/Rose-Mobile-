@@ -331,7 +331,7 @@ export const isValidVoiceTranscript = (text?: string, durationSec?: number): boo
 
 export const discoverLightestFlashModel = async (apiKey?: string): Promise<string> => {
   const cleanKey = String(apiKey || getGeminiKey() || '').replace(/[\r\n\t\s"']+/g, '').trim();
-  if (!cleanKey) return 'gemini-1.5-flash';
+  if (!cleanKey) return '';
   try {
     const url = `https://generativelanguage.googleapis.com/v1beta/models?pageSize=200&key=${cleanKey}`;
     const controller = new AbortController();
@@ -341,7 +341,7 @@ export const discoverLightestFlashModel = async (apiKey?: string): Promise<strin
       signal: controller.signal,
     });
     clearTimeout(timer);
-    if (!res.ok) return 'gemini-1.5-flash';
+    if (!res.ok) return '';
     const data = await res.json();
     const models: any[] = Array.isArray(data?.models) ? data.models : [];
 
@@ -371,7 +371,7 @@ export const discoverLightestFlashModel = async (apiKey?: string): Promise<strin
     if (flashLite.length > 0) return flashLite[0];
     if (flashStd.length > 0) return flashStd[0];
   } catch {}
-  return 'gemini-1.5-flash';
+  return '';
 };
 
 const fetchWithSignalTimeout = async (
@@ -451,7 +451,7 @@ const fetchWithSignalTimeout = async (
 };
 
 export const NO_THOUGHT_INSTRUCTION =
-  'নিজের ভাবনা, পরিকল্পনা বা কী করবে তা লিখবে না। শুধু সরাসরি উত্তর দাও, ব্যবহারকারীর ভাষায়। ভয়েস কলে সর্বোচ্চ ২-৩ ছোট বাক্যে উত্তর দাও।';
+  'নিজের ভাবনা, পরিকল্পনা বা কী করবে তা লিখবে না। শুধু সরাসরি উত্তর দাও, ব্যবহারকারীর ভাষায়।';
 
 export const ensureNoThoughtSystemInstruction = (sysText?: string): string => {
   const base = String(sysText || '').trim();

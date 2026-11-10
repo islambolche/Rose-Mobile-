@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { ArrowLeft, Send } from 'lucide-react';
+import { ArrowLeft, Send, Mic } from 'lucide-react';
 import { Message } from '../types';
 import rosePortraitImg from '../assets/images/rose_portrait_1793010994175.jpg';
 
@@ -11,7 +11,7 @@ export const ChatView = ({
     isThinking
 }: { 
     chatHistory: Message[], 
-    processCommand: (text: string) => void, 
+    processCommand: (text: string, mode?: "text" | "voice") => void, 
     settings: any,
     setCurrentView: (v: any) => void,
     isThinking: boolean
@@ -72,6 +72,7 @@ export const ChatView = ({
                     const textContent = m.content || m.text || "";
                     const isSystem = m.role === "system" || (m as any).isError || textContent.toLowerCase().includes("gemini error") || textContent === "Mic heard nothing";
                     const timeStr = m.time || (m.timestamp ? (typeof m.timestamp === 'string' ? m.timestamp : new Date(m.timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })) : "");
+                    const isVoice = m.replyMode === "voice";
 
                     if (isSystem) {
                         const fallbackUser = chatHistory.slice(0, idx).reverse().find((u) => u.role === "user" || (u as any).sender === "user");
@@ -106,15 +107,25 @@ export const ChatView = ({
                         <div key={m.id || idx} className={`flex flex-col w-full ${isUser ? "items-end" : "items-start"}`}>
                             <div className={`flex items-end gap-2 w-full ${isUser ? "justify-end" : "justify-start"}`}>
                                 {!isUser && (
-                                    <div className="w-7 h-7 rounded-full bg-[#0F172A] border border-purple-500/30 flex items-center justify-center shrink-0 shadow-md mb-1">
+                                    <div className="w-7 h-7 rounded-full bg-[#0F172A] border border-purple-500/30 flex items-center justify-center shrink-0 shadow-md mb-1 relative">
                                         <span className="text-xs">🌹</span>
+                                        {isVoice && (
+                                            <div className="absolute -top-1 -right-1 bg-purple-600 rounded-full p-0.5 border border-[#0F172A]">
+                                                <Mic className="w-2 h-2 text-white" />
+                                            </div>
+                                        )}
                                     </div>
                                 )}
-                                <div className={`max-w-[82%] px-4 py-3 text-[15px] font-medium leading-relaxed shadow-lg ${
+                                <div className={`max-w-[82%] px-4 py-3 text-[15px] font-medium leading-relaxed shadow-lg relative ${
                                     isUser
                                         ? "bg-gradient-to-r from-purple-600 to-indigo-600 text-white rounded-2xl rounded-tr-sm"
                                         : "bg-[#0F172A]/85 backdrop-blur-md border border-purple-500/25 text-white rounded-2xl rounded-tl-sm whitespace-pre-wrap"
                                 }`}>
+                                    {isUser && isVoice && (
+                                        <div className="absolute -top-2 -left-2 bg-purple-500 rounded-full p-1 border-2 border-[#020617] shadow-sm">
+                                            <Mic className="w-2.5 h-2.5 text-white" />
+                                        </div>
+                                    )}
                                     {textContent}
                                 </div>
                             </div>

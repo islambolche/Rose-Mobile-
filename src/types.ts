@@ -48,6 +48,7 @@ export interface Message {
   timestamp?: Date | string;
   content?: string;
   source?: 'voice' | 'chat' | 'system' | string;
+  replyMode?: 'text' | 'voice';
   [key: string]: any;
 }
 
