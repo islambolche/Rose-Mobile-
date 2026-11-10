@@ -95,8 +95,31 @@ import { storage } from "./lib/storage";
 import rosePortraitImg from "./assets/images/rose_portrait_1793010994175.jpg";
 import realisticAssistantImg from "./assets/images/iyabd_realistic_assistant_1792805556831.jpg";
 import * as Permissions from "./lib/permissions";
-import { getGlobalMicStream, stopGlobalMicStream } from "./lib/audio-manager";
-import { directGeminiGenerate, directGeminiStream, directGeminiTTS, formatGeminiErrorForUI, TEXT_MODELS, getSavedWorkingTextModel, discoverAvailableFlashModels } from "./lib/ai-service";
+import {
+  getGlobalMicStream,
+  stopGlobalMicStream,
+  pauseGlobalMicForSpeech,
+  resumeGlobalMicAfterSpeech,
+} from "./lib/audio-manager";
+import {
+  directGeminiGenerate,
+  directGeminiStream,
+  directGeminiTTS,
+  formatGeminiErrorForUI,
+  TEXT_MODELS,
+  getSavedWorkingTextModel,
+  discoverAvailableFlashModels,
+  discoverAvailableTtsModels,
+  getCustomTtsModel,
+  setCustomTtsModel,
+  getLastUsedTtsModel,
+  getCachedTtsModelsList,
+  pickStrictFemaleVoice,
+  cleanAssistantReplyText,
+  extractNonThoughtTextFromParts,
+  volumeSliderToGain,
+  connectBoostedOutputChain,
+} from "./lib/ai-service";
 import {
   generateTextWithSelectedEngine,
   getSelectedChatEngine,
@@ -782,35 +805,7 @@ const getSafeFemaleBrowserVoice = (targetLang?: string): SpeechSynthesisVoice | 
   if (typeof window === "undefined" || !("speechSynthesis" in window)) return null;
   const voices = window.speechSynthesis.getVoices();
   if (!voices || voices.length === 0) return null;
-
-  const isFemaleName = (v: SpeechSynthesisVoice) => {
-    const s = `${v.name} ${v.voiceURI}`.toLowerCase();
-    return (
-      s.includes("female") ||
-      s.includes("woman") ||
-      s.includes("girl") ||
-      s.includes("zira") ||
-      s.includes("samantha") ||
-      s.includes("karen") ||
-      s.includes("tessa") ||
-      s.includes("moira") ||
-      s.includes("fiona") ||
-      s.includes("victoria") ||
-      s.includes("bangla female") ||
-      s.includes("bengali female") ||
-      s.includes("veena") ||
-      s.includes("sangeeta")
-    );
-  };
-
-  const primaryLang = (targetLang || "bn").toLowerCase().split("-")[0];
-  const langVoice = voices.find((v) => v.lang.toLowerCase().startsWith(primaryLang) && isFemaleName(v));
-  if (langVoice) return langVoice;
-
-  const anyFemale = voices.find((v) => isFemaleName(v));
-  if (anyFemale) return anyFemale;
-
-  return null; // A male voice must NEVER be played!
+  return pickStrictFemaleVoice(voices, targetLang || "bn").voice;
 };
 
 const getActivePersonalityDetails = (
@@ -939,6 +934,7 @@ CORE IDENTITY & MANDATES:
 
 - SILENT MODE RULE (CRITICAL): ব্যবহারকারী তোমার নাম ধরে চুপ থাকতে বললে (যেমন "Rose/রোজ চুপ করো", "Rose কথা বলো না", "Rose stop talking") তুমি সংক্ষেপে "ঠিক আছে" বলে নীরব হয়ে থাকবে এবং নাম ধরে না ডাকা পর্যন্ত কোনো উত্তর দিয়ো না। আবার নাম ধরে ডাকলে (যেমন "Rose", "Rose শোনো", "রোজ কথা বলো") সাথে সাথে স্বাভাবিকভাবে সাড়া দেওয়া শুরু করবে।
 - PHONE CONTROL: You can open apps, find contacts, call, and prepare messages on the user's phone using your tools. Always confirm before calling or messaging. Do it right away for opening apps. Keep spoken replies short.
+- DIRECT REPLY ONLY (CRITICAL): নিজের ভাবনা, পরিকল্পনা বা কী করবে তা লিখবে না। শুধু সরাসরি উত্তর দাও, ব্যবহারকারীর ভাষায়। Never output internal thoughts, headings like **Crafting a Response**, or English meta-commentary.
 
 ${personalityRuleBlock}
 
@@ -1380,10 +1376,7 @@ const VoiceCheckView = ({
             const src = ctx.createBufferSource();
             src.buffer = audioBuffer;
             src.playbackRate.value = clampSpeechSpeed(prefs.speechSpeed ?? 1.1);
-            const gain = ctx.createGain();
-            gain.gain.value = Math.min(1, Math.max(0.1, vol / 100));
-            src.connect(gain);
-            gain.connect(ctx.destination);
+            connectBoostedOutputChain(ctx, src, vol, null);
             await new Promise<void>((resolve) => {
               src.onended = () => {
                 ctx.close().catch(() => {});
@@ -1401,14 +1394,20 @@ const VoiceCheckView = ({
 
       if (typeof window !== "undefined" && "speechSynthesis" in window) {
         const voices = window.speechSynthesis.getVoices() || [];
-        const bnVoices = voices.filter((v) => v.lang && (v.lang.toLowerCase().startsWith("bn") || v.lang.toLowerCase().startsWith("hi")));
-        const matchedVoice = bnVoices.find((v) => /female|woman|girl|google|natural|tanishaa|kalpana|lekha|veena/i.test(`${v.name} ${v.voiceURI}`)) || bnVoices[0] || null;
+        const { voice: matchedVoice, foundFemale } = pickStrictFemaleVoice(voices, prefs.language || "bn-BD");
         const u = new SpeechSynthesisUtterance(sampleText);
-        if (matchedVoice) u.voice = matchedVoice;
-        u.lang = matchedVoice?.lang || "bn-BD";
-        u.pitch = ttsPitch ?? 1.15;
-        u.rate = clampSpeechSpeed(prefs.speechSpeed ?? 1.1);
-        u.volume = Math.min(1, Math.max(0.1, vol / 100));
+        if (foundFemale && matchedVoice) {
+          u.voice = matchedVoice;
+          u.lang = matchedVoice.lang || "bn-BD";
+          u.pitch = ttsPitch ?? 1.15;
+          u.rate = clampSpeechSpeed(prefs.speechSpeed ?? 1.1);
+        } else {
+          u.lang = "bn-BD";
+          u.pitch = 1.25;
+          u.rate = 1.0;
+          setToast("ফোনে নারী কণ্ঠ পাওয়া যায়নি, Gemini TTS ঠিক করুন");
+        }
+        u.volume = 1.0;
 
         await new Promise<void>((resolve, reject) => {
           u.onend = () => resolve();
@@ -2490,15 +2489,18 @@ export function App() {
           VOICE_PRESETS.some(v => v.voiceName === parsed.voiceName)
             ? parsed.voiceName
             : "Kore";
+        const rawVol = Number(parsed.voiceVolume);
+        const safeVolume = !isNaN(rawVol) && rawVol > 20 ? Math.min(100, rawVol) : 80;
         return {
           ...DEFAULT_PREFS,
           ...parsed,
           voiceName: safeVoiceName,
+          voiceVolume: safeVolume,
           speechSpeed: clampSpeechSpeed(parsed.speechSpeed ?? 1.1),
         };
       }
     } catch (e) {}
-    return { ...DEFAULT_PREFS, voiceName: "Kore" };
+    return { ...DEFAULT_PREFS, voiceName: "Kore", voiceVolume: 80 };
   });
 
   const [onlyFemaleVoices, setOnlyFemaleVoices] = useState<boolean>(() => {
@@ -3125,6 +3127,10 @@ export function App() {
   const [tempVolume, setTempVolume] = useState<number>(80);
   const [tempPitch, setTempPitch] = useState<number>(1.15);
   const [micStream, setMicStream] = useState<MediaStream | null>(null);
+  const micStreamRef = useRef<MediaStream | null>(null);
+  useEffect(() => {
+    micStreamRef.current = micStream;
+  }, [micStream]);
   const [profileSettings, setProfileSettings] = useState<any>(() => {
     try {
       const saved = localStorage.getItem("iyabd_admin_profile_v3");
@@ -3725,8 +3731,15 @@ export function App() {
       } */
       if (savedAssistantName) loadedSettings.assistantName = savedAssistantName;
       if (savedUserName) loadedSettings.ownerName = savedUserName;
-      const loadedPrefs = savedPrefs ? { ...DEFAULT_PREFS, ...JSON.parse(savedPrefs) } : DEFAULT_PREFS;
+      const loadedPrefs = savedPrefs ? { ...DEFAULT_PREFS, ...JSON.parse(savedPrefs) } : { ...DEFAULT_PREFS };
       loadedPrefs.speechSpeed = clampSpeechSpeed(loadedPrefs.speechSpeed ?? 1.1);
+      const parsedVol = Number(loadedPrefs.voiceVolume);
+      if (isNaN(parsedVol) || parsedVol <= 20) {
+        loadedPrefs.voiceVolume = 80;
+        try {
+          localStorage.setItem("iyabd_prefs", JSON.stringify(loadedPrefs));
+        } catch (e) {}
+      }
       let loadedKeys: ApiKeys = savedKeys
         ? JSON.parse(savedKeys)
         : {
@@ -3759,8 +3772,10 @@ export function App() {
 
       if (!loadedPrefs.voiceName || !FEMALE_VOICE_IDS.includes(loadedPrefs.voiceName)) {
         loadedPrefs.voiceName = "Leda";
-        localStorage.setItem("iyabd_prefs", JSON.stringify(loadedPrefs));
       }
+      try {
+        localStorage.setItem("iyabd_prefs", JSON.stringify(loadedPrefs));
+      } catch (e) {}
 
       setSettings(loadedSettings);
       setPrefs(loadedPrefs);
@@ -4065,19 +4080,11 @@ export function App() {
       nextStartTimeRef.current = outputAudioCtxRef.current.currentTime;
     }
 
-    if (!gainNodeRef.current && outputAudioCtxRef.current) {
-      gainNodeRef.current = outputAudioCtxRef.current.createGain();
-      gainNodeRef.current.connect(outputAudioCtxRef.current.destination);
-    }
-
     isPlayingRef.current = true;
+    pauseGlobalMicForSpeech([activeStreamRef.current, micStreamRef.current]);
 
     const ctx = outputAudioCtxRef.current;
     if (ctx.state === "suspended") await ctx.resume();
-
-    if (gainNodeRef.current) {
-      gainNodeRef.current.gain.setValueAtTime(prefs.voiceVolume / 100, ctx.currentTime);
-    }
 
     const pcm = audioQueueRef.current.shift()!;
     updateDebugLog("Audio playing", "success");
@@ -4093,7 +4100,13 @@ export function App() {
     const rate = Math.max(0.8, Math.min(1.25, prefs.speechSpeed));
     source.playbackRate.setValueAtTime(rate, ctx.currentTime);
 
-    source.connect(gainNodeRef.current || ctx.destination);
+    const { gainNode } = connectBoostedOutputChain(
+      ctx,
+      source,
+      prefs.voiceVolume ?? 80,
+      outputAnalyserRef.current
+    );
+    gainNodeRef.current = gainNode;
 
     const startTime = Math.max(ctx.currentTime, nextStartTimeRef.current);
     source.start(startTime);
@@ -4104,6 +4117,7 @@ export function App() {
     source.onended = () => {
       if (audioQueueRef.current.length === 0) {
         isPlayingRef.current = false;
+        resumeGlobalMicAfterSpeech([activeStreamRef.current, micStreamRef.current]);
         setTimeout(() => returnToListening(), 300);
       } else {
         processAudioQueue();
@@ -4136,26 +4150,25 @@ export function App() {
       return;
     }
 
+    const cleanedText = cleanAssistantReplyText(text, prefs.language);
     const lang = prefs.language === "auto" ? "bn-BD" : prefs.language;
-    const femaleVoice = getSafeFemaleBrowserVoice(lang);
+    const voices = window.speechSynthesis.getVoices() || [];
+    const { voice: femaleVoice, foundFemale } = pickStrictFemaleVoice(voices, lang);
 
-    if (!femaleVoice) {
-      console.warn("No female phone voice found. Refusing to speak with male voice.");
-      setToast("Voice unavailable, check your Gemini key");
-      lastSpeakerTypeRef.current = "none";
-      setLastSpeakerType("none");
-      setSpeakingState("idle");
-      if (onEnd) onEnd();
-      setTimeout(() => returnToListening(), 300);
-      return;
-    }
-
+    pauseGlobalMicForSpeech([activeStreamRef.current, micStreamRef.current]);
     window.speechSynthesis.cancel();
-    const utterance = new SpeechSynthesisUtterance(text);
-    utterance.voice = femaleVoice;
-    utterance.lang = femaleVoice.lang || lang;
-    utterance.rate = Math.max(0.8, Math.min(1.25, prefs.speechSpeed));
-    utterance.volume = prefs.voiceVolume / 100;
+    const utterance = new SpeechSynthesisUtterance(cleanedText);
+    if (foundFemale && femaleVoice) {
+      utterance.voice = femaleVoice;
+      utterance.lang = femaleVoice.lang || lang;
+      utterance.rate = Math.max(0.8, Math.min(1.25, prefs.speechSpeed));
+    } else {
+      utterance.lang = lang;
+      utterance.pitch = 1.25;
+      utterance.rate = 1.0;
+      setToast("ফোনে নারী কণ্ঠ পাওয়া যায়নি, Gemini TTS ঠিক করুন");
+    }
+    utterance.volume = 1.0;
 
     lastSpeakerTypeRef.current = "phone voice (female)";
     setLastSpeakerType("phone voice (female)");
@@ -4163,11 +4176,13 @@ export function App() {
 
     utterance.onstart = () => {};
     utterance.onend = () => {
+      resumeGlobalMicAfterSpeech([activeStreamRef.current, micStreamRef.current]);
       setSpeakingState("idle");
       if (onEnd) onEnd();
       setTimeout(() => returnToListening(), 300);
     };
     utterance.onerror = () => {
+      resumeGlobalMicAfterSpeech([activeStreamRef.current, micStreamRef.current]);
       setSpeakingState("idle");
       setTimeout(() => returnToListening(), 300);
     };
@@ -4431,41 +4446,14 @@ export function App() {
       const savedName = localStorage.getItem("rose_tts_voice_name") || "";
       if (savedName) {
         const savedMatch = voices.find((v) => v.name === savedName);
-        if (savedMatch) return savedMatch;
+        if (savedMatch) {
+          const check = pickStrictFemaleVoice([savedMatch], prefsRef.current?.language || "bn-BD");
+          if (check.foundFemale && check.voice) return check.voice;
+        }
       }
     } catch (e) {}
 
-    const isFemaleVoice = (v: SpeechSynthesisVoice) =>
-      /female|woman|girl|lekha|veena|kalpana|heera|raveena|aditi|priya|samantha|zira|aria|jenny|susan|hazel|karen|moira|tessa/i.test(
-        v.name || ""
-      );
-
-    // 1. Prefer female voice in Bengali or Hindi
-    const bnFemale = voices.find(
-      (v) => v.lang && v.lang.toLowerCase().startsWith("bn") && isFemaleVoice(v)
-    );
-    if (bnFemale) return bnFemale;
-
-    const hiFemale = voices.find(
-      (v) => v.lang && v.lang.toLowerCase().startsWith("hi") && isFemaleVoice(v)
-    );
-    if (hiFemale) return hiFemale;
-
-    // 2. Any Bengali or Hindi voice
-    const bnVoice = voices.find((v) => v.lang && v.lang.toLowerCase().startsWith("bn"));
-    if (bnVoice) return bnVoice;
-
-    const hiVoice =
-      voices.find((v) => v.lang && v.lang.toLowerCase() === "hi-in") ||
-      voices.find((v) => v.lang && v.lang.toLowerCase().startsWith("hi"));
-    if (hiVoice) return hiVoice;
-
-    // 3. Any voice with "female" in its name
-    const anyFemale = voices.find((v) => isFemaleVoice(v));
-    if (anyFemale) return anyFemale;
-
-    const defaultVoice = voices.find((v) => v.default) || voices[0] || null;
-    return defaultVoice;
+    return pickStrictFemaleVoice(voices, prefsRef.current?.language || "bn-BD").voice;
   }, []);
 
   useEffect(() => {
@@ -5113,6 +5101,10 @@ export function App() {
     setStatus("idle");
     setSpeakingState("idle");
     transitionToState("IDLE");
+    resumeGlobalMicAfterSpeech([activeStreamRef.current, micStreamRef.current]);
+    if (inputAudioCtxRef.current && inputAudioCtxRef.current !== outputAudioCtxRef.current && inputAudioCtxRef.current.state === "suspended") {
+      inputAudioCtxRef.current.resume().catch(() => {});
+    }
 
     if (isAssistantEnabledRef.current && !micNotAllowedRef.current) {
       if (voiceModeRef.current === "recorder" || browserFallbackForcedRef.current) {
@@ -5124,6 +5116,48 @@ export function App() {
   }, [transitionToState, startSingletonRecognitionSafely]);
 
   const [activeVoiceEngine, setActiveVoiceEngine] = useState<string>("Voice: Phone TTS");
+  const [customTtsModelInput, setCustomTtsModelInput] = useState<string>(() => getCustomTtsModel());
+  const [savedCustomTtsModel, setSavedCustomTtsModel] = useState<string>(() => getCustomTtsModel());
+  const [detectedTtsModels, setDetectedTtsModels] = useState<string[]>(() => getCachedTtsModelsList());
+  const [isDetectingTtsModels, setIsDetectingTtsModels] = useState<boolean>(false);
+  const [ttsDetectAttempted, setTtsDetectAttempted] = useState<boolean>(false);
+  const [activeTtsModelDisplay, setActiveTtsModelDisplay] = useState<string>(() => getLastUsedTtsModel());
+
+  const handleAutoDetectTtsModels = useCallback(async () => {
+    const key = (getGeminiKey() || apiKeysRef.current.gemini || "").replace(/[\r\n\t\s"']+/g, "").trim();
+    if (!key) {
+      setToast("Gemini API Key দেওয়া হয়নি, Settings → Connections-এ key দিন");
+      return;
+    }
+    setIsDetectingTtsModels(true);
+    setTtsDetectAttempted(true);
+    try {
+      const models = await discoverAvailableTtsModels(key, true);
+      setDetectedTtsModels(models);
+      if (models.length > 0 && !getLastUsedTtsModel()) {
+        setActiveTtsModelDisplay(models[0]);
+      }
+    } catch (err: any) {
+      setToast(String(err?.message || "TTS মডেল খোঁজা ব্যর্থ হয়েছে"));
+    } finally {
+      setIsDetectingTtsModels(false);
+    }
+  }, []);
+
+  const handleSaveCustomTtsModel = useCallback((modelToSave?: string) => {
+    const clean = (typeof modelToSave === "string" ? modelToSave : customTtsModelInput)
+      .trim()
+      .replace(/^models\//i, "");
+    setCustomTtsModel(clean);
+    setCustomTtsModelInput(clean);
+    setSavedCustomTtsModel(clean);
+    if (clean) {
+      setActiveTtsModelDisplay(clean);
+      setToast(`TTS মডেল সেভ হয়েছে: ${clean}`);
+    } else {
+      setToast("TTS মডেল Auto মোডে সেট হয়েছে");
+    }
+  }, [customTtsModelInput]);
 
   // Prefetch Gemini TTS audio for a sentence
   const requestGeminiTTSAudio = useCallback(
@@ -5136,13 +5170,16 @@ export function App() {
           return { error: "Gemini key নেই। Settings → Connections-এ key দিন।" };
         }
         const preset = getVoicePreset(prefsRef.current.voiceName);
-        const voiceLabel = preset.voiceName || "Leda";
+        const voiceLabel = (prefsRef.current.voiceName || preset.voiceName || "Leda").trim();
         const data = await directGeminiTTS({
           text,
           voiceName: voiceLabel,
           apiKey: sanitizedKey,
         });
         if (speechTokenRef.current !== token) return {};
+        if (data?.modelUsed) {
+          setActiveTtsModelDisplay(data.modelUsed);
+        }
         if (data?.audio) {
           return { audio: data.audio, modelUsed: data.modelUsed };
         }
@@ -5154,27 +5191,47 @@ export function App() {
     []
   );
 
-  // Play prefetched 24kHz PCM audio via unlocked AudioContext (+ AnalyserNode for Orb/6 bars)
+  // Play prefetched 24kHz PCM audio via unlocked AudioContext (+ GainNode 1.0-3.0 + DynamicsCompressorNode + AnalyserNode for Orb/6 bars)
   const playPrefetchedGeminiAudio = useCallback(
-    async (base64Audio: string, token: number, startTimeoutMs: number = 5000): Promise<boolean> => {
+    async (
+      base64Audio: string,
+      token: number,
+      startTimeoutMs: number = 5000,
+      overrideVol?: number,
+      overrideRate?: number
+    ): Promise<boolean> => {
       if (!base64Audio || speechTokenRef.current !== token) return false;
 
-      const vol = prefsRef.current.voiceVolume ?? 100;
+      const vol = overrideVol ?? prefsRef.current.voiceVolume ?? 80;
       if (vol <= 0) {
         setToast("ভলিউম শূন্য");
         return false;
       }
 
       const isEmotional = settingsRef.current?.personality === "Emotional";
-      const clampedRate = isEmotional
-        ? (emotionalSlowRateRef.current ? 0.9 : 1.0)
-        : clampSpeechSpeed(prefsRef.current.speechSpeed ?? 1.1);
+      const clampedRate =
+        overrideRate !== undefined
+          ? clampSpeechSpeed(overrideRate)
+          : isEmotional
+            ? (emotionalSlowRateRef.current ? 0.9 : 1.0)
+            : clampSpeechSpeed(prefsRef.current.speechSpeed ?? 1.1);
       const voiceLabel = getVoicePreset(prefsRef.current.voiceName).voiceName || "Leda";
 
       isBusyRef.current = true;
       isSpeakingTTSRef.current = true;
       setActiveVoiceEngine(`Voice: Gemini TTS (${voiceLabel})`);
       transitionToState("SPEAKING");
+
+      // Pause mic stream during speech so mobile OS keeps audio on loud Media volume instead of Call volume
+      stopActiveMediaRecorder(true);
+      pauseGlobalMicForSpeech([activeStreamRef.current, micStreamRef.current]);
+      if (
+        inputAudioCtxRef.current &&
+        inputAudioCtxRef.current !== outputAudioCtxRef.current &&
+        inputAudioCtxRef.current.state === "running"
+      ) {
+        inputAudioCtxRef.current.suspend().catch(() => {});
+      }
 
       // Primary path: play 24kHz PCM directly through tap-unlocked outputAudioCtxRef
       try {
@@ -5208,9 +5265,6 @@ export function App() {
             source.buffer = audioBuffer;
             source.playbackRate.value = clampedRate;
 
-            const gainNode = ctx.createGain();
-            gainNode.gain.value = Math.min(1, Math.max(0.05, vol / 100));
-
             if (!outputAnalyserRef.current || outputAnalyserRef.current.context !== ctx) {
               const analyser = ctx.createAnalyser();
               analyser.fftSize = 256;
@@ -5218,9 +5272,13 @@ export function App() {
               outputAnalyserRef.current = analyser;
             }
 
-            source.connect(gainNode);
-            gainNode.connect(outputAnalyserRef.current);
-            outputAnalyserRef.current.connect(ctx.destination);
+            const { gainNode } = connectBoostedOutputChain(
+              ctx,
+              source,
+              vol,
+              outputAnalyserRef.current
+            );
+            gainNodeRef.current = gainNode;
 
             allActiveAudioNodesRef.current.add(source);
 
@@ -5272,7 +5330,7 @@ export function App() {
       (audio as any).webkitPreservesPitch = true;
       audio.defaultPlaybackRate = clampedRate;
       audio.playbackRate = clampedRate;
-      audio.volume = Math.min(1, Math.max(0.05, vol / 100));
+      audio.volume = 1.0;
 
       ttsFallbackAudioRef.current = audio;
       allActiveAudioElementsRef.current.add(audio);
@@ -5337,7 +5395,7 @@ export function App() {
         });
       });
     },
-    [pcmInt16ToWavBlobUrl, transitionToState]
+    [pcmInt16ToWavBlobUrl, transitionToState, stopActiveMediaRecorder]
   );
 
   // Speak a single sentence using browser speechSynthesis (preferring female Bengali voice) and return true if spoken
@@ -5357,38 +5415,15 @@ export function App() {
       const voices = await waitForVoices();
       if (speechTokenRef.current !== token) return false;
 
-      const hasBengali = /[\u0980-\u09FF]/.test(clean);
       const requestedLang =
         prefsRef.current.language && prefsRef.current.language !== "auto"
           ? prefsRef.current.language
           : "bn-BD";
-      const targetLang = hasBengali ? "bn-BD" : requestedLang;
-      const langPrefix = targetLang.toLowerCase().split(/[-_]/)[0];
 
-      const isFemale = (v: SpeechSynthesisVoice) =>
-        /female|woman|girl|lekha|veena|kalpana|heera|raveena|aditi|priya|tanishaa|nabanita|sangeeta|samantha|zira|aria|jenny|google|natural/i.test(
-          `${v.name || ""} ${v.voiceURI || ""}`
-        );
-      const isMale = (v: SpeechSynthesisVoice) =>
-        /\b(male|man|boy|david|mark|alex|daniel|fred|hemant|prabhat|pradeep)\b/i.test(
-          `${v.name || ""} ${v.voiceURI || ""}`
-        );
-
-      const matchingLangVoices = voices.filter(
-        (v) => v.lang && v.lang.toLowerCase().replace("_", "-").startsWith(langPrefix)
-      );
-      const hindiVoices =
-        hasBengali && matchingLangVoices.length === 0
-          ? voices.filter((v) => v.lang && v.lang.toLowerCase().startsWith("hi"))
-          : [];
-      const voicePool = matchingLangVoices.length > 0 ? matchingLangVoices : hindiVoices;
-
-      // Only assign utterance.voice if its language matches the text (never assign an English voice to Bengali text!)
-      const matchedVoice =
-        voicePool.find((v) => isFemale(v) && !isMale(v)) ||
-        voicePool.find((v) => !isMale(v)) ||
-        voicePool[0] ||
-        (!hasBengali && langPrefix === "en" ? selectPreferredVoice(voices) : null);
+      const { voice: matchedVoice, foundFemale } = pickStrictFemaleVoice(voices, requestedLang);
+      if (!foundFemale) {
+        setToast("ফোনে নারী কণ্ঠ পাওয়া যায়নি, Gemini TTS ঠিক করুন");
+      }
 
       const savedPitchVal = (() => {
         try {
@@ -5403,6 +5438,8 @@ export function App() {
       isBusyRef.current = true;
       isSpeakingTTSRef.current = true;
       transitionToState("SPEAKING");
+      stopActiveMediaRecorder(true);
+      pauseGlobalMicForSpeech([activeStreamRef.current, micStreamRef.current]);
 
       return await new Promise<boolean>((resolve) => {
         if (speechTokenRef.current !== token) {
@@ -5430,16 +5467,20 @@ export function App() {
 
         const utterance = new SpeechSynthesisUtterance(clean);
         currentUtteranceRef.current = utterance;
-        utterance.lang = matchedVoice?.lang || targetLang;
-        if (matchedVoice) {
+        if (foundFemale && matchedVoice) {
           utterance.voice = matchedVoice;
+          utterance.lang = matchedVoice.lang || requestedLang;
+          const isEmotional = settingsRef.current?.personality === "Emotional";
+          utterance.rate = isEmotional
+            ? (emotionalSlowRateRef.current ? 0.9 : 1.0)
+            : clampSpeechSpeed(prefsRef.current.speechSpeed ?? 1.1);
+          utterance.pitch = isEmotional ? 1.08 : savedPitchVal;
+        } else {
+          utterance.lang = requestedLang;
+          utterance.pitch = 1.25;
+          utterance.rate = 1.0;
         }
-        const isEmotional = settingsRef.current?.personality === "Emotional";
-        utterance.rate = isEmotional
-          ? (emotionalSlowRateRef.current ? 0.9 : 1.0)
-          : clampSpeechSpeed(prefsRef.current.speechSpeed ?? 1.1);
-        utterance.pitch = isEmotional ? 1.08 : savedPitchVal;
-        utterance.volume = Math.min(1, Math.max(0.05, vol / 100));
+        utterance.volume = 1.0;
 
         utterance.onstart = () => {
           didStart = true;
@@ -5503,7 +5544,7 @@ export function App() {
         }
       });
     },
-    [waitForVoices, selectPreferredVoice, transitionToState]
+    [waitForVoices, selectPreferredVoice, transitionToState, stopActiveMediaRecorder]
   );
 
   // Guaranteed Voice: speak with Gemini TTS first; if Gemini TTS fails, immediately fallback to browser speechSynthesis
@@ -5521,10 +5562,10 @@ export function App() {
       item.spoken = true;
 
       const { sentence, token, ttsPromise } = item;
-      const clean = sentence.trim();
+      const clean = cleanAssistantReplyText(sentence, prefsRef.current.language).replace(/[*#_~`]/g, "").trim();
       if (!clean || speechTokenRef.current !== token) return;
 
-      const vol = prefsRef.current.voiceVolume ?? 100;
+      const vol = prefsRef.current.voiceVolume ?? 80;
       if (vol <= 0) {
         setToast("ভলিউম শূন্য");
         return;
@@ -5532,7 +5573,7 @@ export function App() {
 
       isBusyRef.current = true;
       isSpeakingTTSRef.current = true;
-      // Never listen while speaking: abort both SpeechRecognition and any active MediaRecorder clip
+      // Never listen while speaking: abort both SpeechRecognition and any active MediaRecorder clip, and pause mic tracks
       if (recognitionRef.current) {
         try {
           recognitionRef.current.abort();
@@ -5540,6 +5581,7 @@ export function App() {
         recognitionRunningRef.current = false;
       }
       stopActiveMediaRecorder(true);
+      pauseGlobalMicForSpeech([activeStreamRef.current, micStreamRef.current]);
       transitionToState("SPEAKING");
 
       const ttsStartMs = Date.now();
@@ -5917,6 +5959,10 @@ export function App() {
           generationConfig: {
             maxOutputTokens: targetMaxTokens,
             temperature: 0.7,
+            thinkingConfig: {
+              includeThoughts: false,
+              thinkingBudget: 0,
+            },
           },
           apiKey: sanitizedKey,
         };
@@ -5935,7 +5981,7 @@ export function App() {
             historyWithoutSystem: simplifiedHistory,
             maxTokens: targetMaxTokens,
           });
-          generatedText = engineResult.text;
+          generatedText = cleanAssistantReplyText(engineResult.text, prefsRef.current.language);
           fullAccumulatedText = generatedText;
           sentenceBuffer = "";
           updateSharedRoseBubble(generatedText);
@@ -5944,22 +5990,21 @@ export function App() {
           const geminiRes: any = await directGeminiGenerate(payload);
           if (speechTokenRef.current !== turnToken) return;
 
-          const fullReplyText =
-            geminiRes?.text ||
-            geminiRes?.candidates?.[0]?.content?.parts
-              ?.map((p: any) => p?.text || "")
-              .join("")
-              .trim() ||
-            "";
+          const candidates = geminiRes?.candidates || [];
+          const rawParts = candidates[0]?.content?.parts || [];
+          const nonThoughtParts = rawParts.filter((p: any) => p && p.thought !== true);
+
+          const fullReplyText = cleanAssistantReplyText(
+            geminiRes?.text || extractNonThoughtTextFromParts(nonThoughtParts, prefsRef.current.language) || "",
+            prefsRef.current.language
+          );
           if (fullReplyText) {
             fullAccumulatedText = fullReplyText;
             sentenceBuffer = "";
             updateSharedRoseBubble(fullAccumulatedText);
           }
 
-          const candidates = geminiRes?.candidates || [];
-          const parts = candidates[0]?.content?.parts || [];
-          const functionCallPart = parts.find((p: any) => Boolean(p.functionCall));
+          const functionCallPart = nonThoughtParts.find((p: any) => Boolean(p.functionCall));
 
           if (functionCallPart && functionCallPart.functionCall) {
             const { name: toolName, args: toolArgs } = functionCallPart.functionCall;
@@ -5995,11 +6040,11 @@ export function App() {
           } else {
             generatedText =
               fullAccumulatedText ||
-              parts.map((p: any) => p.text || "").join("").trim();
+              extractNonThoughtTextFromParts(nonThoughtParts, prefsRef.current.language);
           }
         }
 
-        fullAccumulatedText = generatedText;
+        fullAccumulatedText = cleanAssistantReplyText(generatedText, prefsRef.current.language);
         const finalCleanedReply = fullAccumulatedText.replace(/[*#_~`]/g, "").trim();
         if (!finalCleanedReply) {
           throw new Error("Empty reply received from assistant");
@@ -6026,10 +6071,10 @@ export function App() {
         const sanitizedKey = currentKey.replace(/["'\r\n\t\s]+/g, "").trim();
 
         // On partial response: show the reply text and move on
-        const partialReply = fullAccumulatedText.replace(/[*#_~`]/g, "").trim();
+        const partialReply = cleanAssistantReplyText(fullAccumulatedText, prefsRef.current.language).replace(/[*#_~`]/g, "").trim();
         if (partialReply) {
           updateSharedRoseBubble(partialReply);
-          const trailingFragment = sentenceBuffer.replace(/[*#_~`]/g, "").trim();
+          const trailingFragment = cleanAssistantReplyText(sentenceBuffer, prefsRef.current.language).replace(/[*#_~`]/g, "").trim();
           sentenceBuffer = "";
           if (trailingFragment) {
             anySentenceEnqueued = true;
@@ -6693,7 +6738,10 @@ export function App() {
   // Live Settings Sync: Volume
   useEffect(() => {
     if (gainNodeRef.current && outputAudioCtxRef.current) {
-      gainNodeRef.current.gain.setValueAtTime(prefs.voiceVolume / 100, outputAudioCtxRef.current.currentTime);
+      gainNodeRef.current.gain.setValueAtTime(
+        volumeSliderToGain(prefs.voiceVolume),
+        outputAudioCtxRef.current.currentTime
+      );
     }
   }, [prefs.voiceVolume]);
 
@@ -6900,7 +6948,10 @@ export function App() {
         systemInstruction: buildSystemInstruction(settings, prefs, true),
         apiKey: apiKey
       });
-      const generatedText = dataRes.candidates?.[0]?.content?.parts?.[0]?.text;
+      const generatedText = extractNonThoughtTextFromParts(
+        dataRes.candidates?.[0]?.content?.parts || [],
+        prefs.language
+      );
       answerTime = parseFloat(((Date.now() - turnStart) / 1000).toFixed(2));
       if (generatedText) {
         addVoiceLog('Answer received from Gemini (' + answerTime + 's): "' + generatedText + '"', "success");
@@ -6954,23 +7005,24 @@ export function App() {
     const source = ctx.createBufferSource();
     source.buffer = buffer;
 
-    if (!gainNodeRef.current) {
+    if (!outputAnalyserRef.current || outputAnalyserRef.current.context !== ctx) {
       const analyser = ctx.createAnalyser();
       analyser.fftSize = 256;
-      analyser.connect(ctx.destination);
       outputAnalyserRef.current = analyser;
-
-      const gain = ctx.createGain();
-      gain.connect(analyser);
-      gainNodeRef.current = gain;
     }
 
-    gainNodeRef.current.gain.setValueAtTime(prefs.voiceVolume / 100, ctx.currentTime);
-    source.connect(gainNodeRef.current);
+    const { gainNode } = connectBoostedOutputChain(
+      ctx,
+      source,
+      prefs.voiceVolume ?? 80,
+      outputAnalyserRef.current
+    );
+    gainNodeRef.current = gainNode;
 
     const rate = Math.max(0.8, Math.min(1.25, prefs.speechSpeed));
     source.playbackRate.setValueAtTime(rate, ctx.currentTime);
 
+    pauseGlobalMicForSpeech([activeStreamRef.current, micStreamRef.current]);
     activeAudioSourcesRef.current.push(source);
     isPlayingRef.current = true;
     setLiveDebug((d) => ({ ...d, isPlaying: true }));
@@ -6987,6 +7039,7 @@ export function App() {
       activeAudioSourcesRef.current = activeAudioSourcesRef.current.filter((s) => s !== source);
       if (activeAudioSourcesRef.current.length === 0) {
         isPlayingRef.current = false;
+        resumeGlobalMicAfterSpeech([activeStreamRef.current, micStreamRef.current]);
         setLiveDebug((d) => ({ ...d, isPlaying: false }));
         if (sessionStateRef.current === "SPEAKING") transitionToState("LISTENING");
       }
@@ -7175,12 +7228,6 @@ export function App() {
       const ctx = outputAudioCtxRef.current;
       if (ctx.state === "suspended") await ctx.resume();
 
-      if (!gainNodeRef.current) {
-        gainNodeRef.current = ctx.createGain();
-        gainNodeRef.current.connect(ctx.destination);
-      }
-      gainNodeRef.current.gain.setValueAtTime(prefs.voiceVolume / 100, ctx.currentTime);
-
       const float32 = new Float32Array(pcm.length);
       for (let i = 0; i < pcm.length; i++) float32[i] = pcm[i] / 0x8000;
 
@@ -7191,8 +7238,16 @@ export function App() {
       source.buffer = buffer;
       const rate = Math.max(0.8, Math.min(1.25, prefs.speechSpeed));
       source.playbackRate.setValueAtTime(rate, ctx.currentTime);
-      source.connect(gainNodeRef.current);
 
+      const { gainNode } = connectBoostedOutputChain(
+        ctx,
+        source,
+        prefs.voiceVolume ?? 80,
+        outputAnalyserRef.current
+      );
+      gainNodeRef.current = gainNode;
+
+      pauseGlobalMicForSpeech([activeStreamRef.current, micStreamRef.current]);
       const startTime = Math.max(ctx.currentTime, nextStartTimeRef.current);
       source.start(startTime);
       const effectiveDuration = buffer.duration / rate;
@@ -7207,6 +7262,7 @@ export function App() {
         activeAudioSourcesCountRef.current = Math.max(0, (activeAudioSourcesCountRef.current || 1) - 1);
         if (activeAudioSourcesCountRef.current === 0) {
           isPlayingRef.current = false;
+          resumeGlobalMicAfterSpeech([activeStreamRef.current, micStreamRef.current]);
           setSpeakingState("idle");
           setTimeout(() => returnToListening(), 300);
         }
@@ -7302,7 +7358,10 @@ export function App() {
               apiKey: cleanKey,
             });
 
-            const reply = dataRes.candidates?.[0]?.content?.parts?.[0]?.text;
+            const reply = extractNonThoughtTextFromParts(
+              dataRes.candidates?.[0]?.content?.parts || [],
+              prefs.language
+            );
             if (reply && reply.trim()) {
               generatedText = reply.trim();
               chosenModel = modelName;
@@ -7467,7 +7526,12 @@ export function App() {
         }
       },
       onTranscription: (role, text, isFinal) => {
-        const cleanText = (text || "").trim();
+        const rawClean = (text || "").trim();
+        if (!rawClean) return;
+        const cleanText =
+          role === "assistant"
+            ? cleanAssistantReplyText(rawClean, prefsRef.current.language)
+            : rawClean;
         if (!cleanText) return;
         const speaker = role === 'assistant' ? 'rose' : 'user';
         updateLiveCaption(speaker, cleanText);
@@ -7825,33 +7889,26 @@ export function App() {
       return "Gemini API Key দেওয়া হয়নি, Settings → Connections-এ key দিন";
     }
 
-    const rawMsg = String(err?.message || err?.exactError || err?.bodyText || err || "").toLowerCase();
-    const status = err?.status;
-
-    if (status === 429 || rawMsg.includes("429") || rawMsg.includes("quota") || rawMsg.includes("resource_exhausted")) {
-      return "আজকের Gemini কোটা শেষ, পরে চেষ্টা করুন";
-    }
-    if (status === 401 || rawMsg.includes("401") || rawMsg.includes("api key not valid") || rawMsg.includes("unauthenticated") || rawMsg.includes("invalid key")) {
-      return "Gemini API key সঠিক নয় (401 Unauthenticated)";
-    }
-    if (status === 403 || rawMsg.includes("403") || rawMsg.includes("permission_denied") || rawMsg.includes("forbidden")) {
-      return "Gemini API অনুমতি নেই (403 Permission Denied)";
-    }
-    if (status === 404 || rawMsg.includes("404") || rawMsg.includes("not_found")) {
-      return "Gemini TTS মডেলের নাম পাওয়া যায়নি (404)";
-    }
-    if (rawMsg.includes("decode") || rawMsg.includes("pcm") || rawMsg.includes("audio")) {
-      return "Gemini অডিও ডিকোড করতে সমস্যা হয়েছে";
-    }
-    if (rawMsg.includes("time out") || rawMsg.includes("timeout")) {
-      return "Gemini রিকোয়েস্ট সময়সীমা পার হয়েছে (Timeout)";
-    }
-    if (rawMsg.includes("network") || rawMsg.includes("failed to fetch")) {
-      return "ইন্টারনেট সংযোগ সমস্যা, আবার চেষ্টা করুন";
+    if (err?.isNoTtsModel) {
+      return "এই API key-তে কোনো Gemini TTS মডেল পাওয়া যায়নি।";
     }
 
-    const shortSummary = String(err?.message || err || "").replace(/^HTTP \d+:\s*/, "").slice(0, 50);
-    return shortSummary ? `Gemini ত্রুটি: ${shortSummary}` : "Gemini কণ্ঠ লোড করা সম্ভব হয়নি";
+    const modelName = err?.modelTried || getCustomTtsModel() || getLastUsedTtsModel() || "Auto";
+    const status = err?.status ? `HTTP ${err.status}` : "";
+    const googleMsg = String(err?.googleMessage || err?.message || err || "Unknown error")
+      .replace(/^\[TTS Model:[^\]]+\]\s*/i, "")
+      .replace(/^HTTP \d+:\s*/i, "")
+      .trim();
+
+    if (Array.isArray(err?.attempts) && err.attempts.length > 0) {
+      const triedSummary = err.attempts
+        .map((a: any) => `${a.model} (${a.status || "err"})`)
+        .join(", ");
+      const lastAttempt = err.attempts[err.attempts.length - 1];
+      return `মডেল: ${triedSummary} | HTTP ${lastAttempt?.status || "?"}: ${lastAttempt?.googleMessage || googleMsg}`;
+    }
+
+    return `মডেল: ${modelName}${status ? ` | ${status}` : ""} | ${googleMsg}`;
   };
 
   const playSampleVoice = async (voiceId: string) => {
@@ -7869,18 +7926,13 @@ export function App() {
     const sampleText = preset.sampleLine || "হ্যালো! আমি রোজ। আপনাকে কীভাবে সাহায্য করতে পারি?";
     const clampedPresetSpeed = clampSpeechSpeed(prefsRef.current.speechSpeed ?? preset.speed);
 
-    const cacheKey = "tts_v2_" + preset.voiceName + "_preset_sample_" + sampleText;
+    const activeModelKey = getCustomTtsModel() || getLastUsedTtsModel() || "auto";
+    const cacheKey = "tts_v3_" + activeModelKey + "_" + preset.voiceName + "_preset_sample_" + sampleText;
     const cachedB64 = await getAudioCacheDB(cacheKey);
     if (cachedB64) {
       setActiveVoiceEngine(`Voice: Gemini Live (${preset.voiceName})`);
       const pcm = base64ToPcm(cachedB64);
       playPcmBuffer(pcm, voiceId, clampedPresetSpeed);
-      return;
-    }
-
-    if (voiceSampleCacheRef.current[voiceId]) {
-      setActiveVoiceEngine(`Voice: Gemini Live (${preset.voiceName})`);
-      playPcmBuffer(voiceSampleCacheRef.current[voiceId], voiceId, clampedPresetSpeed);
       return;
     }
 
@@ -7892,35 +7944,20 @@ export function App() {
     let lastErr: any = null;
 
     try {
-      // Attempt 1
       data = await directGeminiTTS({
         text: sampleText,
         voiceName: preset.voiceName,
         apiKey: key,
       });
-      if (!data?.audio) {
-        // Attempt 2 (Silent Auto Retry)
-        data = await directGeminiTTS({
-          text: sampleText,
-          voiceName: preset.voiceName,
-          apiKey: key,
-        });
-      }
     } catch (firstErr) {
       lastErr = firstErr;
-      // Attempt 2 on exception (Silent Auto Retry)
-      try {
-        data = await directGeminiTTS({
-          text: sampleText,
-          voiceName: preset.voiceName,
-          apiKey: key,
-        });
-      } catch (retryErr) {
-        lastErr = retryErr;
-      }
     }
 
     setLoadingVoiceId(null);
+
+    if (data?.modelUsed) {
+      setActiveTtsModelDisplay(data.modelUsed);
+    }
 
     if (data?.audio) {
       setActiveVoiceEngine(`Voice: Gemini Live (${preset.voiceName})`);
@@ -7934,15 +7971,16 @@ export function App() {
     setToast(formatTTSErrorToast(lastErr || data, key));
   };
 
-  const playPcmBuffer = (pcm: Int16Array, voiceId: string, rateOverride?: number) => {
+  const playPcmBuffer = (pcm: Int16Array, voiceId: string, rateOverride?: number, volOverride?: number) => {
     try {
-      const vol = prefsRef.current.voiceVolume ?? 100;
+      const vol = volOverride ?? prefsRef.current.voiceVolume ?? 80;
       if (vol <= 0) {
         setToast("ভলিউম শূন্য");
         return;
       }
       ensureAudioContext();
       cancelAllSpeechAndAudio(true);
+      pauseGlobalMicForSpeech([activeStreamRef.current, micStreamRef.current]);
       const clampedRate = clampSpeechSpeed(rateOverride ?? prefsRef.current.speechSpeed ?? 1.1);
 
       const ctx = outputAudioCtxRef.current;
@@ -7959,15 +7997,21 @@ export function App() {
         const source = ctx.createBufferSource();
         source.buffer = buffer;
         source.playbackRate.value = clampedRate;
-        const gainNode = ctx.createGain();
-        gainNode.gain.value = Math.min(1, Math.max(0.05, vol / 100));
-        source.connect(gainNode);
-        gainNode.connect(ctx.destination);
+
+        const { gainNode } = connectBoostedOutputChain(
+          ctx,
+          source,
+          vol,
+          outputAnalyserRef.current
+        );
+        gainNodeRef.current = gainNode;
+
         allActiveAudioNodesRef.current.add(source);
         setPlayingVoiceId(voiceId);
         source.onended = () => {
           allActiveAudioNodesRef.current.delete(source);
           setPlayingVoiceId(null);
+          resumeGlobalMicAfterSpeech([activeStreamRef.current, micStreamRef.current]);
         };
         source.start(0);
         return;
@@ -7980,7 +8024,7 @@ export function App() {
       (audio as any).webkitPreservesPitch = true;
       audio.defaultPlaybackRate = clampedRate;
       audio.playbackRate = clampedRate;
-      audio.volume = Math.min(1, Math.max(0.05, vol / 100));
+      audio.volume = 1.0;
 
       allActiveAudioElementsRef.current.add(audio);
       setPlayingVoiceId(voiceId);
@@ -7988,6 +8032,7 @@ export function App() {
       const cleanup = () => {
         allActiveAudioElementsRef.current.delete(audio);
         setPlayingVoiceId(null);
+        resumeGlobalMicAfterSpeech([activeStreamRef.current, micStreamRef.current]);
         try {
           URL.revokeObjectURL(wavUrl);
         } catch (e) {}
@@ -8001,6 +8046,7 @@ export function App() {
     } catch (e) {
       console.error("PCM playback error:", e);
       setPlayingVoiceId(null);
+      resumeGlobalMicAfterSpeech([activeStreamRef.current, micStreamRef.current]);
       setToast("অডিও চালু হয়নি");
     }
   };
@@ -8942,10 +8988,17 @@ export function App() {
   const [voiceSettingsTestResult, setVoiceSettingsTestResult] = useState<string | null>(null);
   const [isTestingVoiceSettings, setIsTestingVoiceSettings] = useState<boolean>(false);
 
-  const handleVoiceSettingsTestButton = async () => {
+  const handleVoiceSettingsTestButton = async (
+    overrideVol?: number,
+    overrideSpeed?: number,
+    overridePitch?: number
+  ) => {
     if (isTestingVoiceSettings) return;
     ensureAudioContext();
-    const vol = prefsRef.current.voiceVolume ?? 100;
+    const vol =
+      typeof overrideVol === "number" && !isNaN(overrideVol)
+        ? overrideVol
+        : prefsRef.current.voiceVolume ?? 80;
     if (vol <= 0) {
       setVoiceSettingsTestResult("ভলিউম শূন্য");
       setToast("ভলিউম শূন্য");
@@ -8954,7 +9007,7 @@ export function App() {
     setIsTestingVoiceSettings(true);
     setVoiceSettingsTestResult(null);
     const token = cancelAllSpeechAndAudio(true);
-    const sampleText = "হ্যালো, আমি রোজ";
+    const sampleText = "হ্যালো, আমি রোজ। আপনার দিনটি কেমন কাটছে?";
 
     try {
       const cleanKey = (getGeminiKey() || apiKeysRef.current.gemini || "").replace(/["'\r\n\t\s]+/g, "").trim();
@@ -8970,7 +9023,13 @@ export function App() {
             apiKey: cleanKey,
           });
           if (data?.audio && speechTokenRef.current === token) {
-            geminiSpoke = await playPrefetchedGeminiAudio(data.audio, token, 6000);
+            geminiSpoke = await playPrefetchedGeminiAudio(
+              data.audio,
+              token,
+              6000,
+              vol,
+              overrideSpeed
+            );
           }
         } catch (err: any) {
           geminiErrMsg = String(err?.message || "");
@@ -8981,8 +9040,14 @@ export function App() {
 
       if (geminiSpoke) {
         setVoiceSettingsTestResult("Gemini TTS");
-        setToast("Gemini TTS");
+        setToast(`Gemini TTS (Volume ${vol}%)`);
         return;
+      }
+
+      if (typeof overridePitch === "number" && !isNaN(overridePitch)) {
+        try {
+          localStorage.setItem("rose_tts_pitch", String(overridePitch));
+        } catch {}
       }
 
       const browserSpoke = await speakSentenceWithPhoneVoice(sampleText, token);
@@ -9000,6 +9065,7 @@ export function App() {
       setIsTestingVoiceSettings(false);
       isBusyRef.current = false;
       isSpeakingTTSRef.current = false;
+      resumeGlobalMicAfterSpeech([activeStreamRef.current, micStreamRef.current]);
       transitionToState("IDLE");
     }
   };
@@ -9715,6 +9781,87 @@ export function App() {
     </motion.div>
   );
 
+  const renderTtsModelSection = () => {
+    const currentUsedModel =
+      savedCustomTtsModel ||
+      activeTtsModelDisplay ||
+      detectedTtsModels[0] ||
+      "Auto (তালিকা থেকে স্বয়ংক্রিয়)";
+
+    return (
+      <div className="p-5 bg-[#0F172A]/80 rounded-[2rem] border border-purple-500/30 shadow-2xl space-y-3.5 mb-4">
+        <div className="flex items-center justify-between gap-2">
+          <div>
+            <h4 className="text-sm font-black uppercase tracking-wider text-white leading-none mb-1">
+              TTS Model
+            </h4>
+            <p className="text-[11px] text-purple-300 font-bold break-all">
+              বর্তমানে ব্যবহৃত মডেল: <span className="text-white">{currentUsedModel}</span>
+            </p>
+          </div>
+          <button
+            type="button"
+            onClick={handleAutoDetectTtsModels}
+            disabled={isDetectingTtsModels}
+            className="px-3.5 py-2 rounded-xl bg-purple-600/20 border border-purple-500/40 text-purple-300 text-[11px] font-black uppercase tracking-wider active:scale-95 transition-all shrink-0 disabled:opacity-50"
+          >
+            {isDetectingTtsModels ? "খোঁজা হচ্ছে..." : "Auto detect"}
+          </button>
+        </div>
+
+        {ttsDetectAttempted && detectedTtsModels.length === 0 && !isDetectingTtsModels && (
+          <div className="p-3 rounded-xl bg-red-500/10 border border-red-500/30 text-red-300 text-xs font-bold">
+            এই API key-তে কোনো Gemini TTS মডেল পাওয়া যায়নি।
+          </div>
+        )}
+
+        {detectedTtsModels.length > 0 && (
+          <div className="space-y-1.5">
+            <p className="text-[10px] font-bold uppercase tracking-wider text-slate-400">
+              পাওয়া TTS মডেলসমূহ (ট্যাপ করে বেছে নিন):
+            </p>
+            <div className="flex flex-wrap gap-2">
+              {detectedTtsModels.map((m) => {
+                const isSelected = (savedCustomTtsModel || activeTtsModelDisplay) === m;
+                return (
+                  <button
+                    key={m}
+                    type="button"
+                    onClick={() => handleSaveCustomTtsModel(m)}
+                    className={`px-3 py-1.5 rounded-xl text-xs font-bold border transition-all active:scale-95 ${
+                      isSelected
+                        ? "bg-purple-600 text-white border-purple-400 shadow-lg shadow-purple-600/30"
+                        : "bg-slate-900/90 text-slate-300 border-white/10 hover:border-purple-500/40"
+                    }`}
+                  >
+                    {m}
+                  </button>
+                );
+              })}
+            </div>
+          </div>
+        )}
+
+        <div className="flex items-center gap-2 pt-1">
+          <input
+            type="text"
+            value={customTtsModelInput}
+            onChange={(e) => setCustomTtsModelInput(e.target.value)}
+            placeholder="মডেলের নাম লিখুন (খালি রাখলে Auto)"
+            className="flex-1 bg-slate-950/90 border border-white/10 rounded-xl px-3.5 py-2.5 text-xs text-white placeholder:text-slate-500 focus:outline-none focus:border-purple-500/50"
+          />
+          <button
+            type="button"
+            onClick={() => handleSaveCustomTtsModel()}
+            className="px-4 py-2.5 rounded-xl bg-purple-600 text-white text-xs font-black uppercase tracking-wider active:scale-95 transition-all shrink-0"
+          >
+            Save
+          </button>
+        </div>
+      </div>
+    );
+  };
+
   const renderVoice = () => (
     <motion.div
       key="voice"
@@ -9737,6 +9884,8 @@ export function App() {
         </header>
 
         <div className="space-y-4 pb-36">
+          {renderTtsModelSection()}
+
           {/* 1. Assistant name */}
           <button
             onClick={() => {
@@ -9899,7 +10048,8 @@ export function App() {
           <button
             onClick={() => {
               setTempSpeed(clampSpeechSpeed(prefs.speechSpeed));
-              setTempVolume(prefs.voiceVolume ?? 80);
+              const safeVol = prefs.voiceVolume && prefs.voiceVolume > 20 ? prefs.voiceVolume : 80;
+              setTempVolume(safeVol);
               setTempPitch(ttsPitch ?? 1.15);
               setCurrentView("voice-tuning");
             }}
@@ -9941,7 +10091,7 @@ export function App() {
             <button
               type="button"
               disabled={isTestingVoiceSettings}
-              onClick={handleVoiceSettingsTestButton}
+              onClick={() => handleVoiceSettingsTestButton()}
               className={
                 "px-4 py-2.5 rounded-2xl text-xs font-black uppercase tracking-wider transition-all shrink-0 flex items-center gap-1.5 " +
                 (isTestingVoiceSettings
@@ -11884,6 +12034,10 @@ export function App() {
                   </h2>
                 </header>
 
+                <div className="px-1">
+                  {renderTtsModelSection()}
+                </div>
+
                 {/* GENDER FILTER SWITCH */}
                 <div className="mb-6 px-1">
                   <div className="bg-[#0F172A]/80 rounded-[1.75rem] border border-purple-500/20 p-4 flex items-center justify-between shadow-xl">
@@ -12221,6 +12375,41 @@ export function App() {
                 </header>
 
                 <div className="space-y-4 pb-36 flex-1">
+                  {/* Top Test Voice Card in Voice Tuning */}
+                  <div className="w-full p-5 bg-[#0F172A]/80 rounded-[2rem] border border-purple-500/30 shadow-2xl flex items-center justify-between">
+                    <div>
+                      <h4 className="text-sm font-black uppercase tracking-wider text-white leading-none mb-1">
+                        Test voice
+                      </h4>
+                      <p className="text-[11px] text-slate-400 font-bold">
+                        বর্তমান ভলিউমে ({tempVolume}% · Gain {volumeSliderToGain(tempVolume).toFixed(2)}x) নমুনা শুনুন
+                      </p>
+                    </div>
+                    <button
+                      type="button"
+                      disabled={isTestingVoiceSettings}
+                      onClick={() => handleVoiceSettingsTestButton(tempVolume, tempSpeed, tempPitch)}
+                      className={
+                        "px-4 py-2.5 rounded-2xl text-xs font-black uppercase tracking-wider transition-all shrink-0 flex items-center gap-1.5 " +
+                        (isTestingVoiceSettings
+                          ? "bg-slate-700 text-slate-300"
+                          : "bg-purple-600 hover:bg-purple-500 text-white shadow-lg active:scale-95")
+                      }
+                    >
+                      {isTestingVoiceSettings ? (
+                        <>
+                          <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                          <span>বলছে...</span>
+                        </>
+                      ) : (
+                        <>
+                          <Play className="w-3.5 h-3.5 fill-current" />
+                          <span>Test voice</span>
+                        </>
+                      )}
+                    </button>
+                  </div>
+
                   {/* Card 1: Speech Speed */}
                   <div className="w-full p-5 bg-[#0F172A]/80 rounded-[2rem] border border-purple-500/30 shadow-2xl space-y-3">
                     <div className="flex justify-between items-center">
@@ -12244,28 +12433,12 @@ export function App() {
                       <button
                         type="button"
                         onClick={() => {
-                          try {
-                            cancelAllSpeechAndAudio(true);
-                            if (typeof window !== "undefined" && "speechSynthesis" in window) {
-                              const sampleText = "হ্যালো, আমি রোজ। আপনার দিনটি কেমন কাটছে?";
-                              const u = new SpeechSynthesisUtterance(sampleText);
-                              const femaleVoice = getSafeFemaleBrowserVoice("bn");
-                              if (femaleVoice) u.voice = femaleVoice;
-                              u.lang = femaleVoice?.lang || "bn-BD";
-                              u.pitch = ttsPitch;
-                              u.rate = clampSpeechSpeed(tempSpeed);
-                              u.volume = (prefs.voiceVolume || 100) / 100;
-                              window.speechSynthesis.speak(u);
-                              window.speechSynthesis.resume();
-                            }
-                          } catch (err) {
-                            console.error("Test voice error:", err);
-                          }
+                          handleVoiceSettingsTestButton(tempVolume, tempSpeed, tempPitch);
                         }}
                         className="flex-1 py-2 bg-purple-600/20 hover:bg-purple-600/30 border border-purple-500/40 rounded-xl font-black uppercase tracking-wider text-[11px] text-purple-300 flex items-center justify-center gap-1.5 active:scale-95 transition-transform"
                       >
                         <Play className="w-3.5 h-3.5 text-purple-400" />
-                        TEST
+                        Test voice
                       </button>
                       <button
                         type="button"
@@ -12295,54 +12468,54 @@ export function App() {
                   <div className="w-full p-5 bg-[#0F172A]/80 rounded-[2rem] border border-purple-500/30 shadow-2xl space-y-3">
                     <div className="flex justify-between items-center">
                       <span className="text-xs font-black uppercase tracking-wider text-slate-200">Voice Volume</span>
-                      <span className="text-xs font-mono font-bold text-purple-400">{tempVolume}%</span>
+                      <span className="text-xs font-mono font-bold text-purple-400">
+                        {tempVolume}% (Gain {volumeSliderToGain(tempVolume).toFixed(2)}x)
+                      </span>
                     </div>
                     <input
                       type="range"
-                      min="0"
+                      min="10"
                       max="100"
                       step="5"
                       value={tempVolume}
                       onChange={(e) => {
-                        setTempVolume(parseInt(e.target.value));
+                        const nextVol = Math.max(10, Math.min(100, parseInt(e.target.value) || 80));
+                        setTempVolume(nextVol);
+                        if (gainNodeRef.current && outputAudioCtxRef.current) {
+                          gainNodeRef.current.gain.setValueAtTime(
+                            volumeSliderToGain(nextVol),
+                            outputAudioCtxRef.current.currentTime
+                          );
+                        }
                       }}
                       className="w-full accent-purple-600 h-2 bg-black/40 rounded-full appearance-none cursor-pointer"
                     />
+                    <div className="flex justify-between text-[9px] font-bold text-slate-500 uppercase tracking-wider">
+                      <span>10% (1.2x)</span>
+                      <span>80% DEFAULT (2.5x)</span>
+                      <span>100% MAX (3.0x)</span>
+                    </div>
                     <div className="flex gap-2 pt-1">
                       <button
                         type="button"
                         onClick={() => {
-                          try {
-                            cancelAllSpeechAndAudio(true);
-                            if (typeof window !== "undefined" && "speechSynthesis" in window) {
-                              const sampleText = "হ্যালো, আমি রোজ। আপনার দিনটি কেমন কাটছে?";
-                              const u = new SpeechSynthesisUtterance(sampleText);
-                              const femaleVoice = getSafeFemaleBrowserVoice("bn");
-                              if (femaleVoice) u.voice = femaleVoice;
-                              u.lang = femaleVoice?.lang || "bn-BD";
-                              u.pitch = ttsPitch;
-                              u.rate = clampSpeechSpeed(prefs.speechSpeed);
-                              u.volume = (tempVolume || 0) / 100;
-                              window.speechSynthesis.speak(u);
-                              window.speechSynthesis.resume();
-                            }
-                          } catch (err) {
-                            console.error("Test voice error:", err);
-                          }
+                          handleVoiceSettingsTestButton(tempVolume, tempSpeed, tempPitch);
                         }}
                         className="flex-1 py-2 bg-purple-600/20 hover:bg-purple-600/30 border border-purple-500/40 rounded-xl font-black uppercase tracking-wider text-[11px] text-purple-300 flex items-center justify-center gap-1.5 active:scale-95 transition-transform"
                       >
                         <Play className="w-3.5 h-3.5 text-purple-400" />
-                        TEST
+                        Test voice
                       </button>
                       <button
                         type="button"
                         onClick={() => {
+                          const safeVol = tempVolume > 20 ? tempVolume : 80;
+                          setTempVolume(safeVol);
                           try {
                             localStorage.setItem("rose_user_saved_volume", "true");
                           } catch (err) {}
                           setPrefs((p) => {
-                            const updated = { ...p, voiceVolume: tempVolume };
+                            const updated = { ...p, voiceVolume: safeVol };
                             prefsRef.current = updated;
                             try {
                               localStorage.setItem("iyabd_prefs", JSON.stringify(updated));
@@ -12351,7 +12524,7 @@ export function App() {
                           });
                           if (gainNodeRef.current && outputAudioCtxRef.current) {
                             gainNodeRef.current.gain.setValueAtTime(
-                              tempVolume / 100,
+                              volumeSliderToGain(safeVol),
                               outputAudioCtxRef.current.currentTime
                             );
                           }
@@ -12390,28 +12563,12 @@ export function App() {
                       <button
                         type="button"
                         onClick={() => {
-                          try {
-                            cancelAllSpeechAndAudio(true);
-                            if (typeof window !== "undefined" && "speechSynthesis" in window) {
-                              const sampleText = "হ্যালো, আমি রোজ। আপনার দিনটি কেমন কাটছে?";
-                              const u = new SpeechSynthesisUtterance(sampleText);
-                              const femaleVoice = getSafeFemaleBrowserVoice("bn");
-                              if (femaleVoice) u.voice = femaleVoice;
-                              u.lang = femaleVoice?.lang || "bn-BD";
-                              u.pitch = tempPitch;
-                              u.rate = clampSpeechSpeed(prefs.speechSpeed);
-                              u.volume = (prefs.voiceVolume || 100) / 100;
-                              window.speechSynthesis.speak(u);
-                              window.speechSynthesis.resume();
-                            }
-                          } catch (err) {
-                            console.error("Test voice error:", err);
-                          }
+                          handleVoiceSettingsTestButton(tempVolume, tempSpeed, tempPitch);
                         }}
                         className="flex-1 py-2 bg-purple-600/20 hover:bg-purple-600/30 border border-purple-500/40 rounded-xl font-black uppercase tracking-wider text-[11px] text-purple-300 flex items-center justify-center gap-1.5 active:scale-95 transition-transform"
                       >
                         <Play className="w-3.5 h-3.5 text-purple-400" />
-                        TEST
+                        Test voice
                       </button>
                       <button
                         type="button"

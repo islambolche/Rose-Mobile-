@@ -383,16 +383,262 @@ const fetchWithSignalTimeout = async (
   }
 };
 
+export const NO_THOUGHT_INSTRUCTION =
+  'নিজের ভাবনা, পরিকল্পনা বা কী করবে তা লিখবে না। শুধু সরাসরি উত্তর দাও, ব্যবহারকারীর ভাষায়।';
+
+export const ensureNoThoughtSystemInstruction = (sysText?: string): string => {
+  const base = String(sysText || '').trim();
+  if (!base) return NO_THOUGHT_INSTRUCTION;
+  if (base.includes('নিজের ভাবনা, পরিকল্পনা বা কী করবে তা লিখবে না')) {
+    return base;
+  }
+  return `${base}\n\n${NO_THOUGHT_INSTRUCTION}`;
+};
+
+const ENGLISH_THOUGHT_PATTERNS =
+  /\b(i'm working on|i am working on|i'll make sure|i will make sure|the user|since '|since "|since the user|my goal is|i need to|i should|let's|let me|thinking about|crafting a|formulating a|responding to|addressing the|in bengali|in bangla|i'll respond|i will respond|i'll reply|i will reply|keeping it|make it sweet|affectionate tone|as rose|user asked|boss asked)\b/i;
+
+const isMostlyEnglishParagraph = (para: string): boolean => {
+  const trimmed = para.trim();
+  if (!trimmed) return false;
+  // If it contains any Bengali characters, it is NOT a pure-English paragraph
+  if (/[\u0980-\u09FF]/.test(trimmed)) return false;
+  const latinLetters = (trimmed.match(/[A-Za-z]/g) || []).length;
+  return latinLetters >= 3;
+};
+
+/**
+ * Safety filter that runs on all assistant reply paths:
+ * (a) Removes one-line **Heading** titles (e.g. **Crafting a Response**) and any English thought paragraph immediately following it.
+ * (b) If the user's language is Bengali (or the reply contains Bengali), removes pure-English paragraphs that appear before the Bengali reply.
+ * Never returns an empty string if the input was non-empty (falls back to original text).
+ */
+export const cleanAssistantReplyText = (
+  rawText: string,
+  preferredLang: string = 'bn'
+): string => {
+  const original = String(rawText || '').trim();
+  if (!original) return '';
+
+  let working = original;
+
+  // Remove <think>...</think> blocks if any model emits them
+  working = working.replace(/<think>[\s\S]*?<\/think>/gi, '').trim();
+
+  // (a1) Handle inline "**Heading** English thought... <Bengali text>" on the same line/paragraph
+  working = working.replace(
+    /^\s*\*\*[^*\n]{2,80}\*\*\s*([^\u0980-\u09FF\n]+)(?=[\u0980-\u09FF])/g,
+    (fullMatch, englishMiddle) => {
+      if (ENGLISH_THOUGHT_PATTERNS.test(englishMiddle) || isMostlyEnglishParagraph(englishMiddle)) {
+        return '';
+      }
+      return fullMatch;
+    }
+  ).trim();
+
+  // (a2) Split into paragraphs/lines to strip **Heading** and the following English thought paragraph(s)
+  const paragraphs = working.split(/\n\s*\n/);
+  const filteredParagraphs: string[] = [];
+  let skipNextIfEnglishThought = false;
+
+  for (let i = 0; i < paragraphs.length; i++) {
+    let p = paragraphs[i].trim();
+    if (!p) continue;
+
+    // Check if paragraph starts with a **Heading** line followed by a newline inside the same block
+    const lines = p.split('\n');
+    if (lines.length >= 2 && /^\*\*[^*\n]{2,80}\*\*$/.test(lines[0].trim())) {
+      const restOfBlock = lines.slice(1).join('\n').trim();
+      if (
+        !restOfBlock ||
+        ENGLISH_THOUGHT_PATTERNS.test(restOfBlock) ||
+        isMostlyEnglishParagraph(restOfBlock)
+      ) {
+        // Check if restOfBlock has Bengali at the end after English sentences
+        const firstBengaliIdx = restOfBlock.search(/[\u0980-\u09FF]/);
+        if (firstBengaliIdx > 0) {
+          const beforeBn = restOfBlock.slice(0, firstBengaliIdx);
+          if (ENGLISH_THOUGHT_PATTERNS.test(beforeBn) || !/[\u0980-\u09FF]/.test(beforeBn)) {
+            p = restOfBlock.slice(firstBengaliIdx).trim();
+          } else {
+            p = restOfBlock;
+          }
+        } else {
+          skipNextIfEnglishThought = true;
+          continue;
+        }
+      } else {
+        p = restOfBlock;
+      }
+    } else if (/^\*\*[^*\n]{2,80}\*\*$/.test(p)) {
+      // Single-line **Heading** paragraph
+      skipNextIfEnglishThought = true;
+      continue;
+    } else if (/^\*\*[^*\n]{2,80}\*\*\s+/.test(p)) {
+      // Paragraph starts with "**Heading** ..." on the same line
+      const withoutHeading = p.replace(/^\*\*[^*\n]{2,80}\*\*\s+/, '').trim();
+      const firstBengaliIdx = withoutHeading.search(/[\u0980-\u09FF]/);
+      if (firstBengaliIdx === -1) {
+        if (ENGLISH_THOUGHT_PATTERNS.test(withoutHeading) || isMostlyEnglishParagraph(withoutHeading)) {
+          skipNextIfEnglishThought = true;
+          continue;
+        }
+      } else if (firstBengaliIdx > 0) {
+        const englishPrefix = withoutHeading.slice(0, firstBengaliIdx);
+        if (ENGLISH_THOUGHT_PATTERNS.test(englishPrefix) || isMostlyEnglishParagraph(englishPrefix)) {
+          p = withoutHeading.slice(firstBengaliIdx).trim();
+        }
+      }
+    }
+
+    if (skipNextIfEnglishThought) {
+      skipNextIfEnglishThought = false;
+      if (ENGLISH_THOUGHT_PATTERNS.test(p) || isMostlyEnglishParagraph(p)) {
+        const firstBengaliIdx = p.search(/[\u0980-\u09FF]/);
+        if (firstBengaliIdx > 0) {
+          p = p.slice(firstBengaliIdx).trim();
+        } else {
+          continue;
+        }
+      }
+    }
+
+    // Also strip standalone English meta-thought paragraphs that match thought patterns
+    if (!/[\u0980-\u09FF]/.test(p) && ENGLISH_THOUGHT_PATTERNS.test(p)) {
+      continue;
+    }
+
+    filteredParagraphs.push(p);
+  }
+
+  working = filteredParagraphs.join('\n\n').trim();
+
+  // (b) If user's language is Bengali (or reply contains Bengali), remove pure-English paragraphs appearing BEFORE Bengali paragraphs
+  const isBengaliContext =
+    !preferredLang ||
+    preferredLang === 'auto' ||
+    preferredLang.toLowerCase().startsWith('bn') ||
+    /[\u0980-\u09FF]/.test(working);
+
+  if (isBengaliContext && /[\u0980-\u09FF]/.test(working)) {
+    const blocks = working.split(/\n+/).map((b) => b.trim()).filter(Boolean);
+    const firstBnBlockIdx = blocks.findIndex((b) => /[\u0980-\u09FF]/.test(b));
+    if (firstBnBlockIdx > 0) {
+      const leadingBlocks = blocks.slice(0, firstBnBlockIdx);
+      const allLeadingAreEnglish = leadingBlocks.every((b) => isMostlyEnglishParagraph(b));
+      if (allLeadingAreEnglish) {
+        working = blocks.slice(firstBnBlockIdx).join('\n\n').trim();
+      }
+    }
+
+    // Also if the first Bengali block itself starts with an English thought sentence (e.g. "I'm working on a sweet reply! আসসালামু আলাইকুম...")
+    const firstBnCharIdx = working.search(/[\u0980-\u09FF]/);
+    if (firstBnCharIdx > 0) {
+      const leadingSlice = working.slice(0, firstBnCharIdx).trim();
+      if (
+        ENGLISH_THOUGHT_PATTERNS.test(leadingSlice) ||
+        (leadingSlice.length > 20 && /^[A-Za-z0-9\s,.'":;!?()\-*]+$/.test(leadingSlice))
+      ) {
+        working = working.slice(firstBnCharIdx).trim();
+      }
+    }
+  }
+
+  return working.trim() || original;
+};
+
+/**
+ * Extracts text from Gemini response parts while strictly skipping any part with `thought === true`.
+ */
+export const extractNonThoughtTextFromParts = (
+  parts: any[],
+  preferredLang: string = 'bn'
+): string => {
+  if (!Array.isArray(parts) || parts.length === 0) return '';
+  const nonThoughtParts = parts.filter((p: any) => p && p.thought !== true);
+  const joined = nonThoughtParts
+    .map((p: any) => (typeof p?.text === 'string' ? p.text : ''))
+    .join('')
+    .trim();
+  if (!joined) return '';
+  return cleanAssistantReplyText(joined, preferredLang);
+};
+
+/**
+ * Converts Settings Volume Slider (0-100, default 80%) to WebAudio Gain (1.0 - 3.0, default 2.5 at 80%).
+ */
+export const volumeSliderToGain = (volumePercent?: number): number => {
+  const v =
+    typeof volumePercent === 'number' && !isNaN(volumePercent) && volumePercent > 15
+      ? volumePercent
+      : 80;
+  const clamped = Math.min(100, Math.max(1, v));
+  if (clamped <= 80) {
+    return 1.0 + (clamped / 80) * 1.5; // 1.0 at min, 2.5 at 80%
+  }
+  return 2.5 + ((clamped - 80) / 20) * 0.5; // 2.5 at 80%, 3.0 at 100%
+};
+
+/**
+ * Connects an AudioNode (source) through the unified loud, non-clipping chain:
+ * source -> GainNode (1.0..3.0, default 2.5) -> DynamicsCompressorNode (-20dB, knee 20, ratio 8, attack 0.003, release 0.25) -> (AnalyserNode) -> destination
+ */
+export const connectBoostedOutputChain = (
+  ctx: AudioContext,
+  source: AudioNode,
+  volumePercent?: number,
+  analyser?: AnalyserNode | null
+): { gainNode: GainNode; compressor: DynamicsCompressorNode } => {
+  const gainNode = ctx.createGain();
+  const gainVal = volumeSliderToGain(volumePercent);
+  gainNode.gain.setValueAtTime(gainVal, ctx.currentTime);
+
+  const compressor = ctx.createDynamicsCompressor();
+  compressor.threshold.setValueAtTime(-20, ctx.currentTime);
+  compressor.knee.setValueAtTime(20, ctx.currentTime);
+  compressor.ratio.setValueAtTime(8, ctx.currentTime);
+  compressor.attack.setValueAtTime(0.003, ctx.currentTime);
+  compressor.release.setValueAtTime(0.25, ctx.currentTime);
+
+  source.connect(gainNode);
+  gainNode.connect(compressor);
+
+  if (analyser && analyser.context === ctx) {
+    compressor.connect(analyser);
+    analyser.connect(ctx.destination);
+  } else {
+    compressor.connect(ctx.destination);
+  }
+
+  return { gainNode, compressor };
+};
+
 const buildBodyForRequest = (
   contents: any[],
   systemInstruction?: any,
   generationConfig?: any,
-  isMinimal = false
+  isMinimal = false,
+  thinkingMode: 'full' | 'no_budget' | 'none' = 'full'
 ) => {
-  const sysText =
+  const rawSysText =
     typeof systemInstruction === 'string'
       ? systemInstruction
       : (systemInstruction as any)?.parts?.[0]?.text || '';
+  const sysText = ensureNoThoughtSystemInstruction(rawSysText);
+
+  const applyThinkingConfig = (cfg: any) => {
+    if (thinkingMode === 'full') {
+      cfg.thinkingConfig = {
+        includeThoughts: false,
+        thinkingBudget: 0,
+      };
+    } else if (thinkingMode === 'no_budget') {
+      cfg.thinkingConfig = {
+        includeThoughts: false,
+      };
+    }
+    return cfg;
+  };
 
   const hasRichParts =
     Array.isArray(contents) &&
@@ -412,9 +658,9 @@ const buildBodyForRequest = (
             parts: Array.isArray(lastItem?.parts) ? lastItem.parts : [{ text: extractLastUserText(contents) }],
           },
         ],
-        generationConfig: {
+        generationConfig: applyThinkingConfig({
           maxOutputTokens: generationConfig?.maxOutputTokens ?? 150,
-        },
+        }),
       };
       if (sysText.trim()) {
         body.systemInstruction = {
@@ -427,9 +673,9 @@ const buildBodyForRequest = (
     const lastUserText = extractLastUserText(contents);
     const body: any = {
       contents: [{ role: 'user', parts: [{ text: lastUserText }] }],
-      generationConfig: {
+      generationConfig: applyThinkingConfig({
         maxOutputTokens: generationConfig?.maxOutputTokens ?? 150,
-      },
+      }),
     };
     if (sysText.trim()) {
       body.systemInstruction = {
@@ -439,9 +685,9 @@ const buildBodyForRequest = (
     return body;
   }
 
-  const genConfig: any = {
+  const genConfig: any = applyThinkingConfig({
     maxOutputTokens: generationConfig?.maxOutputTokens ?? 150,
-  };
+  });
   if (generationConfig?.temperature !== undefined) {
     genConfig.temperature = generationConfig.temperature;
   }
@@ -501,7 +747,8 @@ const callGeminiTextEndpoint = async (params: {
     contents,
     systemInstruction,
     generationConfig,
-    startMinimal
+    startMinimal,
+    'full'
   );
 
   const url = `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(cleanModel)}:generateContent?key=${cleanKey}`;
@@ -525,13 +772,14 @@ const callGeminiTextEndpoint = async (params: {
     signal
   );
 
-  // AUTO-RETRY ON 400: if standard request failed with 400 invalid argument, retry once with minimal body
-  if (res.status === 400 && !startMinimal && !signal?.aborted) {
-    const minimalBody = buildBodyForRequest(
+  // AUTO-RETRY ON 400: if model doesn't accept thinkingBudget: 0 or thinkingConfig, retry without it
+  if (res.status === 400 && !signal?.aborted) {
+    const fallbackBody = buildBodyForRequest(
       contents,
       systemInstruction,
       generationConfig,
-      true
+      startMinimal,
+      'none'
     );
     const remainingMs = Math.max(2000, perReqTimeout - (Date.now() - reqStartTime));
     const retryRes = await fetchWithSignalTimeout(
@@ -542,7 +790,7 @@ const callGeminiTextEndpoint = async (params: {
           'Content-Type': 'application/json',
           'x-goog-api-key': cleanKey,
         },
-        body: JSON.stringify(minimalBody),
+        body: JSON.stringify(fallbackBody),
       },
       remainingMs,
       cleanModel,
@@ -550,10 +798,38 @@ const callGeminiTextEndpoint = async (params: {
       cleanKey,
       signal
     );
-    if (retryRes.ok) {
-      storeMinimalBodyForModel(cleanModel);
-    }
     res = retryRes;
+
+    if (res.status === 400 && !startMinimal && !signal?.aborted) {
+      const minimalBody = buildBodyForRequest(
+        contents,
+        systemInstruction,
+        generationConfig,
+        true,
+        'none'
+      );
+      const remMs2 = Math.max(2000, perReqTimeout - (Date.now() - reqStartTime));
+      const retryRes2 = await fetchWithSignalTimeout(
+        url,
+        {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'x-goog-api-key': cleanKey,
+          },
+          body: JSON.stringify(minimalBody),
+        },
+        remMs2,
+        cleanModel,
+        reqStartTime,
+        cleanKey,
+        signal
+      );
+      if (retryRes2.ok) {
+        storeMinimalBodyForModel(cleanModel);
+      }
+      res = retryRes2;
+    }
   }
 
   const elapsedMs = Date.now() - reqStartTime;
@@ -603,13 +879,17 @@ const callGeminiTextEndpoint = async (params: {
     throw err;
   }
 
-  const replyText =
-    parsed?.candidates?.[0]?.content?.parts
-      ?.map((p: any) => p?.text || '')
-      .join('')
-      .trim() || '';
+  const rawParts = parsed?.candidates?.[0]?.content?.parts || [];
+  const nonThoughtParts = rawParts.filter((p: any) => p && p.thought !== true);
+  if (parsed?.candidates?.[0]?.content) {
+    parsed.candidates[0].content.parts = nonThoughtParts.map((p: any) =>
+      typeof p?.text === 'string' ? { ...p, text: cleanAssistantReplyText(p.text) } : p
+    );
+  }
 
-  if (!replyText && !parsed?.candidates?.[0]?.content?.parts?.some((p: any) => p?.functionCall)) {
+  const replyText = extractNonThoughtTextFromParts(rawParts);
+
+  if (!replyText && !nonThoughtParts.some((p: any) => p?.functionCall)) {
     const emptyErr: any = new Error(`Empty reply from ${cleanModel}`);
     emptyErr.status = 'empty';
     emptyErr.modelName = cleanModel;
@@ -976,47 +1256,114 @@ export const runGeminiSpeedTest = async (
   return results;
 };
 
-const WORKING_TTS_MODEL_STORAGE_KEY = 'working_gemini_tts_model';
+const CUSTOM_TTS_MODEL_STORAGE_KEY = 'rose_custom_tts_model';
+const TTS_MODELS_CACHE_STORAGE_KEY = 'rose_tts_models_cache_v2';
+const LAST_ACTIVE_TTS_MODEL_KEY = 'rose_last_active_tts_model';
+const TTS_CACHE_TTL_MS = 60 * 60 * 1000; // 1 hour
+
+// Clean up any stale legacy TTS model keys once on module load
+try {
+  if (typeof window !== 'undefined') {
+    localStorage.removeItem('working_gemini_tts_model');
+    localStorage.removeItem('iyabd_tts_model');
+  }
+} catch {}
+
 let cachedDiscoveredTtsModels: string[] = [];
 let lastTtsDiscoveryTime = 0;
+let lastTtsDiscoveryKeyPrefix = '';
+let lastActiveTtsModelMemory = '';
 
 function scoreTtsModelVersion(modelName: string): number {
   const lower = modelName.toLowerCase();
-  const match = lower.match(/-(\d+)(?:\.(\d+))?/);
-  if (!match) return 0;
-  const major = parseInt(match[1], 10) || 0;
-  const minor = parseInt(match[2] || '0', 10) || 0;
-  return major * 1000 + minor * 100;
+  const matches = Array.from(lower.matchAll(/(\d+)(?:\.(\d+))?/g));
+  if (matches.length === 0) return 0;
+  let best = 0;
+  for (const m of matches) {
+    const major = parseInt(m[1], 10) || 0;
+    const minor = parseInt(m[2] || '0', 10) || 0;
+    if (major <= 20) {
+      const score = major * 1000 + minor * 100;
+      if (score > best) best = score;
+    }
+  }
+  return best;
 }
 
-const getSavedWorkingTtsModel = (): string => {
+export const getCustomTtsModel = (): string => {
   try {
-    const saved = (localStorage.getItem(WORKING_TTS_MODEL_STORAGE_KEY) || '')
+    if (typeof window === 'undefined') return '';
+    return (localStorage.getItem(CUSTOM_TTS_MODEL_STORAGE_KEY) || '')
       .replace(/^models\//, '')
       .trim();
-    if (saved && saved.toLowerCase().includes('tts')) {
-      return saved;
-    }
-    return '';
-  } catch (e) {
+  } catch {
     return '';
   }
 };
 
-const saveWorkingTtsModel = (modelName: string) => {
-  if (!modelName || !modelName.toLowerCase().includes('tts')) return;
+export const setCustomTtsModel = (modelName: string): string => {
+  const clean = String(modelName || '').replace(/^models\//, '').trim();
   try {
-    localStorage.setItem(WORKING_TTS_MODEL_STORAGE_KEY, modelName.replace(/^models\//, '').trim());
-  } catch (e) {}
+    if (typeof window !== 'undefined') {
+      if (clean) {
+        localStorage.setItem(CUSTOM_TTS_MODEL_STORAGE_KEY, clean);
+      } else {
+        localStorage.removeItem(CUSTOM_TTS_MODEL_STORAGE_KEY);
+      }
+    }
+  } catch {}
+  return clean;
 };
 
-const clearWorkingTtsModelIfMatches = (failedModel: string) => {
+export const getLastUsedTtsModel = (): string => {
+  const custom = getCustomTtsModel();
+  if (custom) return custom;
+  if (lastActiveTtsModelMemory) return lastActiveTtsModelMemory;
   try {
-    const current = localStorage.getItem(WORKING_TTS_MODEL_STORAGE_KEY) || '';
-    if (current.replace(/^models\//, '').trim() === failedModel.replace(/^models\//, '').trim()) {
-      localStorage.removeItem(WORKING_TTS_MODEL_STORAGE_KEY);
+    if (typeof window !== 'undefined') {
+      const saved = (localStorage.getItem(LAST_ACTIVE_TTS_MODEL_KEY) || '')
+        .replace(/^models\//, '')
+        .trim();
+      if (saved) return saved;
     }
-  } catch (e) {}
+  } catch {}
+  if (cachedDiscoveredTtsModels.length > 0) return cachedDiscoveredTtsModels[0];
+  return '';
+};
+
+const setLastUsedTtsModel = (modelName: string) => {
+  const clean = String(modelName || '').replace(/^models\//, '').trim();
+  if (!clean) return;
+  lastActiveTtsModelMemory = clean;
+  try {
+    if (typeof window !== 'undefined') {
+      localStorage.setItem(LAST_ACTIVE_TTS_MODEL_KEY, clean);
+    }
+  } catch {}
+};
+
+export const getCachedTtsModelsList = (): string[] => {
+  if (cachedDiscoveredTtsModels.length > 0) return [...cachedDiscoveredTtsModels];
+  try {
+    if (typeof window !== 'undefined') {
+      const raw = localStorage.getItem(TTS_MODELS_CACHE_STORAGE_KEY);
+      if (raw) {
+        const parsed = JSON.parse(raw);
+        if (
+          parsed &&
+          Array.isArray(parsed.models) &&
+          typeof parsed.timestamp === 'number' &&
+          Date.now() - parsed.timestamp < TTS_CACHE_TTL_MS
+        ) {
+          cachedDiscoveredTtsModels = parsed.models;
+          lastTtsDiscoveryTime = parsed.timestamp;
+          lastTtsDiscoveryKeyPrefix = String(parsed.keyPrefix || '');
+          return [...cachedDiscoveredTtsModels];
+        }
+      }
+    }
+  } catch {}
+  return [];
 };
 
 export const discoverAvailableTtsModels = async (
@@ -1026,35 +1373,87 @@ export const discoverAvailableTtsModels = async (
   const cleanKey = String(apiKey || getGeminiKey() || '').replace(/[\r\n\t\s"']+/g, '').trim();
   if (!cleanKey) return [];
 
+  const keyPrefix = cleanKey.slice(0, 8);
   const now = Date.now();
-  if (!forceRefresh && cachedDiscoveredTtsModels.length > 0 && now - lastTtsDiscoveryTime < 120000) {
-    return cachedDiscoveredTtsModels;
+
+  if (!forceRefresh) {
+    if (
+      cachedDiscoveredTtsModels.length > 0 &&
+      lastTtsDiscoveryKeyPrefix === keyPrefix &&
+      now - lastTtsDiscoveryTime < TTS_CACHE_TTL_MS
+    ) {
+      return [...cachedDiscoveredTtsModels];
+    }
+    try {
+      if (typeof window !== 'undefined') {
+        const raw = localStorage.getItem(TTS_MODELS_CACHE_STORAGE_KEY);
+        if (raw) {
+          const parsed = JSON.parse(raw);
+          if (
+            parsed &&
+            Array.isArray(parsed.models) &&
+            parsed.models.length > 0 &&
+            parsed.keyPrefix === keyPrefix &&
+            typeof parsed.timestamp === 'number' &&
+            now - parsed.timestamp < TTS_CACHE_TTL_MS
+          ) {
+            cachedDiscoveredTtsModels = parsed.models;
+            lastTtsDiscoveryTime = parsed.timestamp;
+            lastTtsDiscoveryKeyPrefix = keyPrefix;
+            return [...cachedDiscoveredTtsModels];
+          }
+        }
+      }
+    } catch {}
   }
 
   try {
-    const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), 7000);
-    const url = `https://generativelanguage.googleapis.com/v1beta/models?key=${encodeURIComponent(cleanKey)}&pageSize=200`;
-    const res = await fetch(url, {
-      headers: { 'x-goog-api-key': cleanKey },
-      signal: controller.signal,
-    });
-    clearTimeout(timer);
-    if (!res.ok) return cachedDiscoveredTtsModels;
-    const data = await res.json();
-    const modelsList: any[] = Array.isArray(data?.models) ? data.models : [];
-    const found: string[] = [];
-    for (const m of modelsList) {
+    const allModels: any[] = [];
+    let nextPageToken = '';
+    let pageCount = 0;
+
+    while (pageCount < 10) {
+      pageCount++;
+      const controller = new AbortController();
+      const timer = setTimeout(() => controller.abort(), 8000);
+      const tokenParam = nextPageToken ? `&pageToken=${encodeURIComponent(nextPageToken)}` : '';
+      const url = `https://generativelanguage.googleapis.com/v1beta/models?key=${encodeURIComponent(cleanKey)}&pageSize=200${tokenParam}`;
+
+      const res = await fetch(url, {
+        headers: { 'x-goog-api-key': cleanKey },
+        signal: controller.signal,
+      });
+      clearTimeout(timer);
+
+      if (!res.ok) {
+        break;
+      }
+
+      const data = await res.json().catch(() => null);
+      const pageList: any[] = Array.isArray(data?.models) ? data.models : [];
+      allModels.push(...pageList);
+
+      if (data?.nextPageToken && typeof data.nextPageToken === 'string') {
+        nextPageToken = data.nextPageToken;
+      } else {
+        break;
+      }
+    }
+
+    const foundSet = new Set<string>();
+    for (const m of allModels) {
       const rawName = String(m?.name || '');
       const shortName = rawName.replace(/^models\//, '').trim();
       const methods: string[] = Array.isArray(m?.supportedGenerationMethods)
         ? m.supportedGenerationMethods
         : [];
       if (shortName && methods.includes('generateContent') && shortName.toLowerCase().includes('tts')) {
-        found.push(shortName);
+        foundSet.add(shortName);
       }
     }
-    // Sort newest version first, prefer flash-preview-tts / flash-tts over pro if same version
+
+    const found = Array.from(foundSet);
+    // Highest version number first; prefer flash over pro if same version
     found.sort((a, b) => {
       const diff = scoreTtsModelVersion(b) - scoreTtsModelVersion(a);
       if (diff !== 0) return diff;
@@ -1062,14 +1461,103 @@ export const discoverAvailableTtsModels = async (
       const bFlash = b.toLowerCase().includes('flash') ? 1 : 0;
       return bFlash - aFlash;
     });
-    if (found.length > 0) {
-      cachedDiscoveredTtsModels = found;
-      lastTtsDiscoveryTime = now;
+
+    cachedDiscoveredTtsModels = found;
+    lastTtsDiscoveryTime = now;
+    lastTtsDiscoveryKeyPrefix = keyPrefix;
+
+    try {
+      if (typeof window !== 'undefined') {
+        localStorage.setItem(
+          TTS_MODELS_CACHE_STORAGE_KEY,
+          JSON.stringify({
+            models: found,
+            timestamp: now,
+            keyPrefix,
+          })
+        );
+      }
+    } catch {}
+
+    if (found.length > 0 && !lastActiveTtsModelMemory) {
+      setLastUsedTtsModel(found[0]);
     }
+
     return found;
-  } catch (e) {
+  } catch {
     return cachedDiscoveredTtsModels;
   }
+};
+
+export interface StrictFemaleVoiceSelection {
+  voice: SpeechSynthesisVoice | null;
+  foundFemale: boolean;
+}
+
+export const pickStrictFemaleVoice = (
+  voices: SpeechSynthesisVoice[],
+  preferredLang?: string
+): StrictFemaleVoiceSelection => {
+  if (!Array.isArray(voices) || voices.length === 0) {
+    return { voice: null, foundFemale: false };
+  }
+
+  const isMaleVoice = (v: SpeechSynthesisVoice): boolean => {
+    const s = `${v.name || ''} ${v.voiceURI || ''}`.toLowerCase();
+    return /\b(male|man|men|boy|david|mark|daniel|alex|james|ravi|prabhat|hemant|guy|fred|george|richard|paul|sean|thomas|rishi|pradeep|madhur|subir|karthik|valluvar|niraj|arjun)\b/i.test(
+      s
+    );
+  };
+
+  const isFemaleVoice = (v: SpeechSynthesisVoice): boolean => {
+    if (isMaleVoice(v)) return false;
+    const s = `${v.name || ''} ${v.voiceURI || ''}`.toLowerCase();
+    return (
+      /\b(female|woman|women|girl|zira|samantha|aria|jenny|nova|ava|susan|sara|victoria|karen|tessa|moira|lekha|veena|hazel|heera|neerja|swara|kalpana|raveena|aditi|priya|tanishaa|nabanita|sangeeta|uma|pallavi|shruti|ananya|divya|kajal)\b/i.test(
+        s
+      ) ||
+      s.includes('female') ||
+      s.includes('woman')
+    );
+  };
+
+  const rawLang = String(preferredLang || 'bn-BD').toLowerCase();
+  const langPrefix = rawLang === 'auto' || !rawLang ? 'bn' : rawLang.split(/[-_]/)[0];
+
+  const allFemaleVoices = voices.filter((v) => isFemaleVoice(v));
+
+  // 1. Female voice matching Settings' Language (e.g. bn)
+  const matchingLangFemale = allFemaleVoices.find((v) =>
+    String(v.lang || '')
+      .toLowerCase()
+      .replace('_', '-')
+      .startsWith(langPrefix)
+  );
+  if (matchingLangFemale) {
+    return { voice: matchingLangFemale, foundFemale: true };
+  }
+
+  // 2. Language-mismatched female voice (prefer hi-IN, en-IN first, then any female voice)
+  const hiInFemale = allFemaleVoices.find((v) =>
+    String(v.lang || '').toLowerCase().replace('_', '-').startsWith('hi')
+  );
+  if (hiInFemale) {
+    return { voice: hiInFemale, foundFemale: true };
+  }
+
+  const enInFemale = allFemaleVoices.find(
+    (v) => String(v.lang || '').toLowerCase().replace('_', '-') === 'en-in'
+  );
+  if (enInFemale) {
+    return { voice: enInFemale, foundFemale: true };
+  }
+
+  if (allFemaleVoices.length > 0) {
+    return { voice: allFemaleVoices[0], foundFemale: true };
+  }
+
+  // 3. No female voice found at all: NEVER pick a male voice
+  return { voice: null, foundFemale: false };
 };
 
 export const directGeminiTTS = async (payload: any) => {
@@ -1081,33 +1569,53 @@ export const directGeminiTTS = async (payload: any) => {
   if (!cleanKey) {
     const err: any = new Error('Gemini key নেই। Settings → Connections-এ key দিন।');
     err.status = 'missing_key';
+    err.modelTried = 'none';
     throw err;
   }
 
   const candidateModels: string[] = [];
-  if (model && String(model).toLowerCase().includes('tts')) {
-    candidateModels.push(String(model).replace(/^models\//, '').trim());
+
+  // 1. User's custom saved TTS model in localStorage takes top priority if non-empty
+  const customSaved = getCustomTtsModel();
+  if (customSaved) {
+    candidateModels.push(customSaved);
   }
-  const savedTts = getSavedWorkingTtsModel();
-  if (savedTts && !candidateModels.includes(savedTts)) {
-    candidateModels.push(savedTts);
-  }
-  const discovered = await discoverAvailableTtsModels(cleanKey);
-  for (const dm of discovered) {
-    if (!candidateModels.includes(dm)) {
-      candidateModels.push(dm);
+
+  // 2. Explicit model in payload if passed
+  if (model && String(model).trim()) {
+    const cleanExplicit = String(model).replace(/^models\//, '').trim();
+    if (cleanExplicit && !candidateModels.includes(cleanExplicit)) {
+      candidateModels.push(cleanExplicit);
     }
   }
 
-  if (candidateModels.length === 0) {
-    const noModelErr: any = new Error('TTS মডেল পাওয়া যায়নি');
+  // 3. Auto-discovered TTS models from ListModels (cached 1 hour, highest version first)
+  const discovered = await discoverAvailableTtsModels(cleanKey);
+  for (const dm of discovered) {
+    const cleanDm = dm.replace(/^models\//, '').trim();
+    if (cleanDm && !candidateModels.includes(cleanDm)) {
+      candidateModels.push(cleanDm);
+    }
+  }
+
+  // Try up to 3 models maximum
+  const modelsToTry = candidateModels.slice(0, 3);
+
+  if (modelsToTry.length === 0) {
+    const noModelErr: any = new Error('এই API key-তে কোনো Gemini TTS মডেল পাওয়া যায়নি।');
     noModelErr.isNoTtsModel = true;
+    noModelErr.status = 404;
+    noModelErr.modelTried = 'none';
+    noModelErr.googleMessage = 'এই API key-তে কোনো Gemini TTS মডেল পাওয়া যায়নি।';
     throw noModelErr;
   }
 
+  const selectedVoiceName = String(voiceName || 'Leda').trim() || 'Leda';
+  const attempts: Array<{ model: string; status: number | string; message: string }> = [];
   let lastError: any = null;
 
-  for (const targetModel of candidateModels) {
+  for (const rawTargetModel of modelsToTry) {
+    const targetModel = rawTargetModel.replace(/^models\//, '').trim();
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), 9000);
     try {
@@ -1125,7 +1633,7 @@ export const directGeminiTTS = async (payload: any) => {
             speechConfig: {
               voiceConfig: {
                 prebuiltVoiceConfig: {
-                  voiceName: voiceName || 'Leda',
+                  voiceName: selectedVoiceName,
                 },
               },
             },
@@ -1147,16 +1655,30 @@ export const directGeminiTTS = async (payload: any) => {
       const audioData = audioPart?.inlineData?.data || audioPart?.inline_data?.data;
 
       if (!res.ok || !audioData) {
-        clearWorkingTtsModelIfMatches(targetModel);
-        const errMsg = data?.error?.message || `TTS ব্যর্থ (HTTP ${res.status})`;
-        const err: any = new Error(errMsg);
+        const googleMsg = sanitizeOutApiKey(
+          data?.error?.message || rawBodyText || `HTTP ${res.status}`,
+          cleanKey
+        ).trim();
+        attempts.push({
+          model: targetModel,
+          status: res.status,
+          message: googleMsg,
+        });
+        const err: any = new Error(`${targetModel} (HTTP ${res.status}): ${googleMsg}`);
         err.status = res.status;
-        err.googleMessage = errMsg;
+        err.modelTried = targetModel;
+        err.googleMessage = googleMsg;
+        err.attempts = [...attempts];
         lastError = err;
-        continue;
+
+        // If 404 (or 400/500/503), try the next model in the list (up to 3 total)
+        if (res.status === 404 || res.status === 400 || res.status === 500 || res.status === 503) {
+          continue;
+        }
+        break;
       }
 
-      saveWorkingTtsModel(targetModel);
+      setLastUsedTtsModel(targetModel);
 
       return {
         audio: audioData,
@@ -1164,11 +1686,26 @@ export const directGeminiTTS = async (payload: any) => {
       };
     } catch (err: any) {
       clearTimeout(timer);
-      clearWorkingTtsModelIfMatches(targetModel);
-      lastError = err;
+      const isTimeout = err?.name === 'AbortError';
+      const msg = sanitizeOutApiKey(
+        isTimeout ? 'Request timed out' : String(err?.message || 'Network error'),
+        cleanKey
+      );
+      attempts.push({
+        model: targetModel,
+        status: isTimeout ? 'timeout' : 'network_error',
+        message: msg,
+      });
+      const wrappedErr: any = new Error(`${targetModel} (${isTimeout ? 'Timeout' : 'Network'}): ${msg}`);
+      wrappedErr.status = isTimeout ? 408 : 0;
+      wrappedErr.modelTried = targetModel;
+      wrappedErr.googleMessage = msg;
+      wrappedErr.attempts = [...attempts];
+      lastError = wrappedErr;
     }
   }
 
-  throw lastError || new Error('TTS মডেল পাওয়া যায়নি');
+  throw lastError || new Error('এই API key-তে কোনো Gemini TTS মডেল পাওয়া যায়নি।');
 };
+
 

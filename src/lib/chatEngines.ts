@@ -1,5 +1,12 @@
 import { getGeminiKey, setGeminiKey } from './geminiKey';
-import { directGeminiGenerate, TEXT_MODELS, getSavedWorkingTextModel } from './ai-service';
+import {
+  directGeminiGenerate,
+  TEXT_MODELS,
+  getSavedWorkingTextModel,
+  cleanAssistantReplyText,
+  extractNonThoughtTextFromParts,
+  ensureNoThoughtSystemInstruction,
+} from './ai-service';
 import { storage } from './storage';
 
 export type ChatEngineId = 'gemini' | 'groq' | 'openrouter' | 'cerebras' | 'mistral';
@@ -544,30 +551,53 @@ export const callGeminiDirectChat = async (params: {
     parts: [{ text: m.text }],
   }));
 
-  const body: any = {
-    contents,
-    generationConfig: {
+  const finalSystemPrompt = ensureNoThoughtSystemInstruction(systemPrompt);
+
+  const buildChatBody = (includeThinkingBudget: boolean, includeThinkingConfig: boolean) => {
+    const genConfig: any = {
       maxOutputTokens: maxTokens,
       temperature: 0.7,
-    },
-  };
-  if (systemPrompt && systemPrompt.trim()) {
-    body.systemInstruction = {
-      parts: [{ text: systemPrompt.trim() }],
     };
-  }
+    if (includeThinkingConfig) {
+      genConfig.thinkingConfig = includeThinkingBudget
+        ? { includeThoughts: false, thinkingBudget: 0 }
+        : { includeThoughts: false };
+    }
+    const b: any = {
+      contents,
+      generationConfig: genConfig,
+    };
+    if (finalSystemPrompt) {
+      b.systemInstruction = {
+        parts: [{ text: finalSystemPrompt }],
+      };
+    }
+    return b;
+  };
 
   const url = `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(cleanModel)}:generateContent?key=${encodeURIComponent(cleanKey)}`;
 
   try {
-    const res = await fetch(url, {
+    let res = await fetch(url, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
         'x-goog-api-key': cleanKey,
       },
-      body: JSON.stringify(body),
+      body: JSON.stringify(buildChatBody(true, true)),
     });
+
+    // If model does not support thinkingBudget: 0 or thinkingConfig, retry without it
+    if (res.status === 400) {
+      res = await fetch(url, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'x-goog-api-key': cleanKey,
+        },
+        body: JSON.stringify(buildChatBody(false, false)),
+      });
+    }
 
     const rawText = await res.text().catch(() => '');
     let data: any = null;
@@ -582,7 +612,8 @@ export const callGeminiDirectChat = async (params: {
       throw err;
     }
 
-    const reply = data?.candidates?.[0]?.content?.parts?.map((p: any) => p?.text || '').join('').trim();
+    const parts = data?.candidates?.[0]?.content?.parts || [];
+    const reply = extractNonThoughtTextFromParts(parts);
     if (reply) return reply;
     throw new Error('Gemini থেকে ফাঁকা উত্তর এসেছে');
   } catch (err: any) {
@@ -725,8 +756,9 @@ export const callOpenAiCompatibleChat = async (params: {
   }
 
   const formattedMessages: Array<{ role: 'system' | 'user' | 'assistant'; content: string }> = [];
-  if (systemPrompt && systemPrompt.trim()) {
-    formattedMessages.push({ role: 'system', content: systemPrompt.trim() });
+  const finalSys = ensureNoThoughtSystemInstruction(systemPrompt);
+  if (finalSys) {
+    formattedMessages.push({ role: 'system', content: finalSys });
   }
 
   for (const msg of messages) {
@@ -791,11 +823,14 @@ export const callOpenAiCompatibleChat = async (params: {
     let reply = choice?.message?.content;
 
     if (Array.isArray(reply)) {
-      reply = reply.map((part: any) => part.text || part.content || '').join('');
+      reply = reply
+        .filter((part: any) => part && part.thought !== true)
+        .map((part: any) => part.text || part.content || '')
+        .join('');
     }
 
     if (typeof reply === 'string' && reply.trim()) {
-      return reply.trim();
+      return cleanAssistantReplyText(reply.trim());
     }
 
     throw new Error(`${providerName} থেকে ফাঁকা উত্তর এসেছে`);

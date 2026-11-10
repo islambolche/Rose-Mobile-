@@ -4,10 +4,56 @@ let isInitializing = false;
 export async function stopGlobalMicStream() {
   if (globalStream) {
     globalStream.getTracks().forEach((track) => {
-      track.stop();
+      try {
+        track.stop();
+      } catch {}
     });
     globalStream = null;
   }
+}
+
+export function pauseGlobalMicForSpeech(extraStreams?: Array<MediaStream | null | undefined>) {
+  try {
+    if (globalStream) {
+      globalStream.getAudioTracks().forEach((track) => {
+        if (track.readyState === "live") {
+          track.enabled = false;
+        }
+      });
+    }
+    if (Array.isArray(extraStreams)) {
+      for (const s of extraStreams) {
+        if (!s) continue;
+        s.getAudioTracks().forEach((track) => {
+          if (track.readyState === "live") {
+            track.enabled = false;
+          }
+        });
+      }
+    }
+  } catch {}
+}
+
+export function resumeGlobalMicAfterSpeech(extraStreams?: Array<MediaStream | null | undefined>) {
+  try {
+    if (globalStream) {
+      globalStream.getAudioTracks().forEach((track) => {
+        if (track.readyState === "live") {
+          track.enabled = true;
+        }
+      });
+    }
+    if (Array.isArray(extraStreams)) {
+      for (const s of extraStreams) {
+        if (!s) continue;
+        s.getAudioTracks().forEach((track) => {
+          if (track.readyState === "live") {
+            track.enabled = true;
+          }
+        });
+      }
+    }
+  } catch {}
 }
 
 export async function getGlobalMicStream(
@@ -23,8 +69,11 @@ export async function getGlobalMicStream(
 
   // Check if existing stream is alive
   if (globalStream && globalStream.active) {
-    const hasLiveTrack = globalStream.getAudioTracks().some(t => t.readyState === 'live' && t.enabled);
-    if (hasLiveTrack) return globalStream;
+    const liveTracks = globalStream.getAudioTracks().filter(t => t.readyState === 'live');
+    if (liveTracks.length > 0) {
+      liveTracks.forEach(t => { t.enabled = true; });
+      return globalStream;
+    }
   }
 
   isInitializing = true;
@@ -43,7 +92,6 @@ export async function getGlobalMicStream(
     return stream;
   } catch (err: any) {
     const errName = String(err?.name || "");
-    const errMsg = String(err?.message || err || "");
 
     // Point 2: NotReadableError retry logic
     if (errName === "NotReadableError" && retryCount < 3) {
@@ -66,3 +114,4 @@ export async function getGlobalMicStream(
 export function isMicActive() {
   return !!(globalStream && globalStream.active && globalStream.getAudioTracks().some(t => t.readyState === 'live'));
 }
+

@@ -1,5 +1,14 @@
 import { logVoiceEvent } from './voiceLogger';
 import { getGeminiKey } from './geminiKey';
+import {
+  directGeminiTTS,
+  pickStrictFemaleVoice,
+  cleanAssistantReplyText,
+  extractNonThoughtTextFromParts,
+  ensureNoThoughtSystemInstruction,
+  connectBoostedOutputChain,
+} from './ai-service';
+import { pauseGlobalMicForSpeech, resumeGlobalMicAfterSpeech } from './audio-manager';
 
 export interface GeminiLiveOptions {
   assistantName?: string;
@@ -606,7 +615,13 @@ export class GeminiLiveSession {
               },
             },
             systemInstruction: {
-              parts: [{ text: this.options.systemInstruction || 'You are Rose, a helpful assistant.' }],
+              parts: [
+                {
+                  text: ensureNoThoughtSystemInstruction(
+                    this.options.systemInstruction || 'You are Rose, a helpful assistant.'
+                  ),
+                },
+              ],
             },
             inputAudioTranscription: {},
             outputAudioTranscription: {},
@@ -709,20 +724,30 @@ export class GeminiLiveSession {
       const textVal = typeof outTrans === 'string' ? outTrans : outTrans.text || outTrans.parts?.[0]?.text;
       if (textVal) {
         this.liveAssistantBuffer += textVal;
-        this.options.onTranscription?.('assistant', this.liveAssistantBuffer.trim(), false);
+        const cleanedLive = cleanAssistantReplyText(this.liveAssistantBuffer.trim(), this.options.language);
+        if (cleanedLive) {
+          this.options.onTranscription?.('assistant', cleanedLive, false);
+        }
       }
     }
 
     if (content.modelTurn) {
       const parts = content.modelTurn.parts || [];
       for (const part of parts) {
+        if (part?.thought === true) {
+          continue;
+        }
         if (part.inlineData?.data) {
+          this.pauseMicDuringSpeech();
           this.updateState('speaking');
           this.playPcmAudioChunk(part.inlineData.data);
         }
         if (part.text && !outTrans) {
           this.liveAssistantBuffer += part.text;
-          this.options.onTranscription?.('assistant', this.liveAssistantBuffer.trim(), false);
+          const cleanedLive = cleanAssistantReplyText(this.liveAssistantBuffer.trim(), this.options.language);
+          if (cleanedLive) {
+            this.options.onTranscription?.('assistant', cleanedLive, false);
+          }
         }
       }
     }
@@ -731,11 +756,18 @@ export class GeminiLiveSession {
       this.liveUserBuffer = '';
       this.liveAssistantBuffer = '';
       this.stopAllAudioPlayback();
+      this.resumeMicAfterSpeech();
       this.updateState('listening');
       this.options.onInterrupted?.();
     }
 
     if (content.turnComplete) {
+      if (this.liveAssistantBuffer.trim()) {
+        const finalCleaned = cleanAssistantReplyText(this.liveAssistantBuffer.trim(), this.options.language);
+        if (finalCleaned) {
+          this.options.onTranscription?.('assistant', finalCleaned, true);
+        }
+      }
       this.liveUserBuffer = '';
       this.liveAssistantBuffer = '';
       this.scheduleReturnToListening();
@@ -926,33 +958,55 @@ export class GeminiLiveSession {
         },
       ];
 
-      const body: any = {
-        contents,
-        generationConfig: {
+      const sysInstructionText = ensureNoThoughtSystemInstruction(this.options.systemInstruction);
+
+      const buildClipBody = (withThinkingConfig: boolean) => {
+        const genCfg: any = {
           temperature: 0.7,
           maxOutputTokens: 350,
-        },
-      };
-
-      if (this.options.systemInstruction && this.options.systemInstruction.trim()) {
-        body.systemInstruction = {
-          parts: [{ text: this.options.systemInstruction.trim() }],
         };
-      }
+        if (withThinkingConfig) {
+          genCfg.thinkingConfig = {
+            includeThoughts: false,
+            thinkingBudget: 0,
+          };
+        }
+        const b: any = {
+          contents,
+          generationConfig: genCfg,
+        };
+        if (sysInstructionText) {
+          b.systemInstruction = {
+            parts: [{ text: sysInstructionText }],
+          };
+        }
+        return b;
+      };
 
       for (const flashModel of candidates) {
         if (this.wasStoppedByUser) return;
         const url = `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(flashModel)}:generateContent?key=${encodeURIComponent(apiKey)}`;
 
         try {
-          const res = await fetch(url, {
+          let res = await fetch(url, {
             method: 'POST',
             headers: {
               'Content-Type': 'application/json',
               'x-goog-api-key': apiKey,
             },
-            body: JSON.stringify(body),
+            body: JSON.stringify(buildClipBody(true)),
           });
+
+          if (res.status === 400 && !this.wasStoppedByUser) {
+            res = await fetch(url, {
+              method: 'POST',
+              headers: {
+                'Content-Type': 'application/json',
+                'x-goog-api-key': apiKey,
+              },
+              body: JSON.stringify(buildClipBody(false)),
+            });
+          }
 
           const rawText = await res.text().catch(() => '');
           let data: any = null;
@@ -972,11 +1026,8 @@ export class GeminiLiveSession {
           }
 
           this.messagesReceived++;
-          rawResponseText =
-            data?.candidates?.[0]?.content?.parts
-              ?.map((p: any) => p?.text || '')
-              .join('')
-              .trim() || '';
+          const rawParts = data?.candidates?.[0]?.content?.parts || [];
+          rawResponseText = extractNonThoughtTextFromParts(rawParts, this.options.language);
 
           if (rawResponseText) {
             lastErr = null;
@@ -1021,6 +1072,8 @@ export class GeminiLiveSession {
         reply = stripped;
       }
 
+      reply = cleanAssistantReplyText(reply, this.options.language);
+
       if (!transcript && !reply) {
         if (!this.wasStoppedByUser) this.updateState('listening');
         return;
@@ -1056,11 +1109,40 @@ export class GeminiLiveSession {
     }
   }
 
+  private pauseMicDuringSpeech() {
+    try {
+      if (this.isRecordingClip && this.mediaRecorder && this.mediaRecorder.state === 'recording') {
+        this.discardClip = true;
+        try {
+          this.mediaRecorder.stop();
+        } catch {}
+        this.isRecordingClip = false;
+      }
+      pauseGlobalMicForSpeech([this.micStream]);
+      if (this.audioCtx && this.playbackAudioCtx && this.audioCtx !== this.playbackAudioCtx && this.audioCtx.state === 'running') {
+        this.audioCtx.suspend().catch(() => {});
+      }
+    } catch {}
+  }
+
+  private resumeMicAfterSpeech() {
+    if (this.wasStoppedByUser) return;
+    try {
+      if (!this.isMuted) {
+        resumeGlobalMicAfterSpeech([this.micStream]);
+      }
+      if (this.audioCtx && this.audioCtx.state === 'suspended') {
+        this.audioCtx.resume().catch(() => {});
+      }
+    } catch {}
+  }
+
   private async speakReply(apiKey: string, text: string): Promise<void> {
-    const cleanText = text.replace(/[*#_~`]/g, '').trim();
+    const filteredText = cleanAssistantReplyText(text, this.options.language);
+    const cleanText = filteredText.replace(/[*#_~`]/g, '').trim();
     if (!cleanText || this.wasStoppedByUser) return;
 
-    const vol = this.options.voiceVolume ?? 100;
+    const vol = this.options.voiceVolume ?? 80;
     if (vol <= 0) {
       this.options.onToast?.('ভলিউম শূন্য');
       return;
@@ -1068,107 +1150,44 @@ export class GeminiLiveSession {
 
     // Cancel any previous speech so only the newest reply speaks
     this.interruptPlayback();
+    this.pauseMicDuringSpeech();
     this.updateState('speaking');
     this.lastTtsAttemptError = null;
 
-    // 1. Discover TTS models from ListModels if not yet loaded
-    if (this.ttsModels.length === 0) {
+    try {
+      // 1. Unified Gemini TTS path (uses custom model if saved, or 1-hour cached ListModels up to 3 models)
       try {
-        const discovered = await discoverVoiceModelsFromListModels(apiKey);
-        if (discovered.ttsModels.length > 0) {
-          this.ttsModels = discovered.ttsModels;
-        }
-      } catch {}
-    }
-
-    // 2. Try Gemini TTS models from ListModels (newest first)
-    if (this.ttsModels.length > 0) {
-      for (const ttsModel of this.ttsModels) {
+        const voiceName = this.options.voiceName || 'Leda';
+        const ttsData = await directGeminiTTS({
+          text: cleanText,
+          voiceName,
+          apiKey,
+        });
         if (this.wasStoppedByUser) return;
-        const playedViaGeminiTts = await this.trySpeakViaGeminiTts(apiKey, ttsModel, cleanText);
-        if (playedViaGeminiTts || this.wasStoppedByUser) {
-          if (!this.wasStoppedByUser) {
-            this.updateState('listening');
+        if (ttsData?.audio) {
+          const played = await this.playPcmAudioAndWait(ttsData.audio);
+          if (played || this.wasStoppedByUser) {
+            return;
           }
-          return;
+          this.lastTtsAttemptError = 'অডিও চালু হয়নি';
+        }
+      } catch (err: any) {
+        this.lastTtsAttemptError = String(err?.message || 'TTS ব্যর্থ');
+      }
+
+      // 2. Fallback to browser speechSynthesis (strictly female voice only, volume = 1.0)
+      if (!this.wasStoppedByUser) {
+        const browserOk = await this.speakViaBrowserSpeechSynthesis(cleanText);
+        if (!browserOk && !this.wasStoppedByUser) {
+          const errMsg = this.lastTtsAttemptError || 'অডিও চালু হয়নি';
+          this.options.onToast?.(errMsg);
         }
       }
-    } else {
-      this.lastTtsAttemptError = 'TTS মডেল পাওয়া যায়নি';
-    }
-
-    // 3. Fallback to browser speechSynthesis (same language, female voice preferred, same speed)
-    if (!this.wasStoppedByUser) {
-      const browserOk = await this.speakViaBrowserSpeechSynthesis(cleanText);
-      if (!browserOk && !this.wasStoppedByUser) {
-        const errMsg = this.lastTtsAttemptError || 'অডিও চালু হয়নি';
-        this.options.onToast?.(errMsg);
-      }
+    } finally {
       if (!this.wasStoppedByUser) {
+        this.resumeMicAfterSpeech();
         this.updateState('listening');
       }
-    }
-  }
-
-  private async trySpeakViaGeminiTts(apiKey: string, ttsModel: string, text: string): Promise<boolean> {
-    const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), 9000);
-
-    try {
-      const url = `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(ttsModel)}:generateContent?key=${encodeURIComponent(apiKey)}`;
-      const voiceName = this.options.voiceName || 'Leda';
-
-      const res = await fetch(url, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'x-goog-api-key': apiKey,
-        },
-        body: JSON.stringify({
-          contents: [{ parts: [{ text }] }],
-          generationConfig: {
-            responseModalities: ['AUDIO'],
-            speechConfig: {
-              voiceConfig: {
-                prebuiltVoiceConfig: {
-                  voiceName,
-                },
-              },
-            },
-          },
-        }),
-        signal: controller.signal,
-      });
-      clearTimeout(timer);
-
-      if (!res.ok) {
-        const errData = await res.json().catch(() => null);
-        this.lastTtsAttemptError =
-          errData?.error?.message
-            ? `TTS (${res.status}): ${errData.error.message}`
-            : `TTS ত্রুটি (${res.status})`;
-        return false;
-      }
-      const data = await res.json().catch(() => null);
-      const part = data?.candidates?.[0]?.content?.parts?.find(
-        (p: any) => p?.inlineData?.data || p?.inline_data?.data
-      );
-      const base64Audio = part?.inlineData?.data || part?.inline_data?.data;
-      if (!base64Audio || this.wasStoppedByUser) {
-        this.lastTtsAttemptError = 'TTS অডিও ডাটা পাওয়া যায়নি';
-        return false;
-      }
-
-      const played = await this.playPcmAudioAndWait(base64Audio);
-      if (!played) {
-        this.lastTtsAttemptError = 'অডিও চালু হয়নি';
-      }
-      return played;
-    } catch (e: any) {
-      this.lastTtsAttemptError = e?.name === 'AbortError' ? 'TTS সময় শেষ' : 'TTS সংযোগ ব্যর্থ';
-      return false;
-    } finally {
-      clearTimeout(timer);
     }
   }
 
@@ -1212,14 +1231,12 @@ export class GeminiLiveSession {
           const speed = Math.min(1.35, Math.max(0.85, this.options.speechSpeed || 1.05));
           source.playbackRate.value = speed;
 
-          const gainNode = ctx.createGain();
-          gainNode.gain.value = Math.min(1.0, Math.max(0.1, (this.options.voiceVolume ?? 100) / 100));
-
-          source.connect(gainNode);
-          if (this.outputAnalyser && this.outputAnalyser.context === ctx) {
-            gainNode.connect(this.outputAnalyser);
-          }
-          gainNode.connect(ctx.destination);
+          connectBoostedOutputChain(
+            ctx,
+            source,
+            this.options.voiceVolume ?? 80,
+            this.outputAnalyser
+          );
 
           this.scheduledAudioSources.push(source);
           source.onended = () => {
@@ -1250,60 +1267,25 @@ export class GeminiLiveSession {
           return;
         }
 
-        const hasBengali = /[\u0980-\u09FF]/.test(text);
-        const requestedLang = this.options.language || 'bn-BD';
-        const targetLang = hasBengali ? 'bn-BD' : requestedLang;
-        const langPrefix = targetLang.toLowerCase().split(/[-_]/)[0];
-
-        const isFemale = (v: SpeechSynthesisVoice) => {
-          const s = `${v.name} ${v.voiceURI}`.toLowerCase();
-          return (
-            s.includes('female') ||
-            s.includes('woman') ||
-            s.includes('girl') ||
-            s.includes('samantha') ||
-            s.includes('zira') ||
-            s.includes('veena') ||
-            s.includes('sangeeta') ||
-            s.includes('lekha') ||
-            s.includes('kalpana') ||
-            s.includes('tanishaa') ||
-            s.includes('nabanita') ||
-            s.includes('google') ||
-            s.includes('natural')
-          );
-        };
-
-        const isMale = (v: SpeechSynthesisVoice) =>
-          /\b(male|man|boy|david|mark|alex|daniel|fred|hemant|prabhat|pradeep)\b/i.test(
-            `${v.name} ${v.voiceURI}`
-          );
-
-        const langVoices = voices.filter((v) =>
-          v.lang.toLowerCase().replace('_', '-').startsWith(langPrefix)
-        );
-        const hindiFallbackVoices =
-          hasBengali && langVoices.length === 0
-            ? voices.filter((v) => v.lang.toLowerCase().startsWith('hi'))
-            : [];
-
-        const pool = langVoices.length > 0 ? langVoices : hindiFallbackVoices;
-        const chosenVoice =
-          pool.find((v) => isFemale(v) && !isMale(v)) ||
-          pool.find((v) => !isMale(v)) ||
-          pool[0] ||
-          (!hasBengali && langPrefix === 'en'
-            ? voices.find((v) => isFemale(v) && !isMale(v)) || voices[0] || null
-            : null);
+        const requestedLang =
+          this.options.language && this.options.language !== 'auto'
+            ? this.options.language
+            : 'bn-BD';
+        const { voice: chosenVoice, foundFemale } = pickStrictFemaleVoice(voices, requestedLang);
 
         const utterance = new SpeechSynthesisUtterance(text);
-        utterance.lang = chosenVoice?.lang || targetLang;
-        if (chosenVoice) {
+        if (foundFemale && chosenVoice) {
           utterance.voice = chosenVoice;
+          utterance.lang = chosenVoice.lang || requestedLang;
+          utterance.rate = Math.min(1.35, Math.max(0.85, this.options.speechSpeed || 1.05));
+          utterance.pitch = Math.min(1.5, Math.max(0.85, this.options.speechPitch || 1.15));
+        } else {
+          utterance.lang = requestedLang;
+          utterance.pitch = 1.25;
+          utterance.rate = 1.0;
+          this.options.onToast?.('ফোনে নারী কণ্ঠ পাওয়া যায়নি, Gemini TTS ঠিক করুন');
         }
-        utterance.rate = Math.min(1.35, Math.max(0.85, this.options.speechSpeed || 1.05));
-        utterance.pitch = Math.min(1.5, Math.max(0.85, this.options.speechPitch || 1.15));
-        utterance.volume = Math.min(1.0, Math.max(0.1, (this.options.voiceVolume ?? 100) / 100));
+        utterance.volume = 1.0;
 
         let settled = false;
         let startedAt = 0;
@@ -1409,14 +1391,12 @@ export class GeminiLiveSession {
       const source = ctx.createBufferSource();
       source.buffer = audioBuffer;
 
-      const gainNode = ctx.createGain();
-      gainNode.gain.value = Math.min(1.0, Math.max(0.1, (this.options.voiceVolume ?? 100) / 100));
-
-      source.connect(gainNode);
-      if (this.outputAnalyser && this.outputAnalyser.context === ctx) {
-        gainNode.connect(this.outputAnalyser);
-      }
-      gainNode.connect(ctx.destination);
+      connectBoostedOutputChain(
+        ctx,
+        source,
+        this.options.voiceVolume ?? 80,
+        this.outputAnalyser
+      );
 
       const startTime = Math.max(ctx.currentTime, this.nextStartTime);
       source.start(startTime);
@@ -1507,6 +1487,7 @@ export class GeminiLiveSession {
     setTimeout(() => {
       if (this.wasStoppedByUser) return;
       if (this.scheduledAudioSources.length === 0 && !this.isBrowserTtsSpeaking) {
+        this.resumeMicAfterSpeech();
         this.updateState('listening');
       } else {
         this.scheduleReturnToListening();
