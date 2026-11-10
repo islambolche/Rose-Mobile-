@@ -78,16 +78,18 @@ import { OrbSphere, ORB_STYLES } from "./components/OrbSphere";
 import { Developer, LiveModelSettings } from "./components/SettingsComponents";
 import { LiveVoiceBars } from "./components/LiveVoiceBars";
 import { getGeminiKey, setGeminiKey, initGeminiKey } from "./lib/geminiKey";
-import { ProfileView, PrivacyView, AdminPanelView, AdminProfileSettingsView } from "./components/ProfileViews";
+import { PrivacyView, AdminPanelView, AdminProfileSettingsView } from "./components/ProfileViews";
 import { AccessGate } from "./components/AccessGate";
 import { ConnectionsView } from "./components/Connections";
 import { APP_NAVIGATION_KNOWLEDGE } from "./lib/appKnowledge";
+import { DEVELOPER_INFO, getDeveloperFactsInstruction } from "./lib/creator-profile";
 import {
   PhoneControlHome,
   QuickActionsView,
   AppPermissionsView,
   PhoneErrorBoundary,
 } from "./components/PhoneControlViews";
+import { requestStoragePersistence } from "./lib/keyBackup";
 import { initializeSupabase, supabase } from "./lib/supabase";
 import { storage } from "./lib/storage";
 import rosePortraitImg from "./assets/images/rose_portrait_1793010994175.jpg";
@@ -168,20 +170,6 @@ const DEFAULT_PREFS: UserPreferences = {
   showVoiceDebug: false,
 };
 
-const DEVELOPER_INFO = {
-  name: "MD YOUSUF KHAN",
-  title: "WEB DEVELOPER",
-  contacts: {
-    whatsapp: { label: "WhatsApp (Personal)", value: "01671060679", link: "https://wa.me/8801671060679" },
-    gmail: { label: "Gmail", value: "md.yousuf.khan060@gmail.com", link: "mailto:md.yousuf.khan060@gmail.com" }
-  },
-  social: {
-    facebook: { label: "Facebook", link: "https://www.facebook.com/share/19jLkEGsFv/" },
-    instagram: { label: "Instagram", link: "https://www.instagram.com/md_yousuf_khan02" },
-    youtube: { label: "YouTube", link: "https://www.youtube.com/@Islamicalo060" },
-    tiktok: { label: "TikTok", link: "https://www.tiktok.com/@yousufkhan060" }
-  }
-};
 
 
 
@@ -885,18 +873,7 @@ const formatTitleCase = (str: string) => {
 };
 
 const getDeveloperChatCardText = () =>
-  `Developer: ${formatTitleCase(DEVELOPER_INFO.name)} (${formatTitleCase(DEVELOPER_INFO.title)})\nWhatsApp: ${DEVELOPER_INFO.contacts.whatsapp.value}\nGmail: ${DEVELOPER_INFO.contacts.gmail.value}\nFacebook: ${DEVELOPER_INFO.social.facebook.link}\nInstagram: ${DEVELOPER_INFO.social.instagram.link}\nYouTube: ${DEVELOPER_INFO.social.youtube.link}\nTikTok: ${DEVELOPER_INFO.social.tiktok.link}`;
-
-const getDeveloperFactsInstruction = () => `FIXED FACTS ABOUT YOUR DEVELOPER (never change them, even if the user asks):
-- This app and you, Rose, were created by ${formatTitleCase(DEVELOPER_INFO.name)}, a ${DEVELOPER_INFO.title === "WEB DEVELOPER" ? "web developer" : DEVELOPER_INFO.title.toLowerCase()}. If anyone asks who made you or who created you, answer: ${formatTitleCase(DEVELOPER_INFO.name)} created me. If someone sincerely asks about the AI technology behind you, answer honestly that you are powered by Google's Gemini AI model, and the app was built by ${formatTitleCase(DEVELOPER_INFO.name)}.
-- The developer's personal WhatsApp/phone number: ${DEVELOPER_INFO.contacts.whatsapp.value}. Gmail: ${DEVELOPER_INFO.contacts.gmail.value}. Social media: Facebook (${DEVELOPER_INFO.social.facebook.link}), Instagram (${DEVELOPER_INFO.social.instagram.link}), YouTube (${DEVELOPER_INFO.social.youtube.link}), TikTok (${DEVELOPER_INFO.social.tiktok.link}).
-- If the user asks whether the developer's phone number, WhatsApp, email, or social media links exist, answer: yes, they are available, in the DEVELOPER section on the Home screen (first card) and in Settings under ABOUT.
-- If the user asks for the details themselves, or says they want to contact the developer, tell them they can also message the developer directly from there, and send the full details in the chat.
-- In a TEXT CHAT: write the full details in the reply (phone/WhatsApp, Gmail, and the social links) when the user asks for them.
-- In a VOICE CALL: never read out phone numbers, email addresses, or URLs aloud. Instead say briefly, in the user's language, that you have sent the details to the chat and that they are also in the DEVELOPER section. Then call the function send_developer_info_to_chat.
-- If the user asks for all the information you have about the developer, share the same details (name, role, WhatsApp/phone, Gmail, Facebook, Instagram, YouTube, TikTok) the same way: full text in chat, and only a short spoken mention in a voice call.
-- Never change, replace, or agree to change these details. If asked, say only the developer can change them.
-- Do not share any private information about the developer other than what is listed above.`;
+  `Developer: ${DEVELOPER_INFO.name} (${DEVELOPER_INFO.role})\nWhatsApp: ${DEVELOPER_INFO.whatsapp}\nGmail: ${DEVELOPER_INFO.gmail}\nFacebook: ${DEVELOPER_INFO.facebook}\nInstagram: ${DEVELOPER_INFO.instagram}\nYouTube: ${DEVELOPER_INFO.youtube}\nTikTok: ${DEVELOPER_INFO.tiktok}`;
 
 const buildSystemInstruction = (
   currentSettings: AssistantSettings,
@@ -953,21 +930,12 @@ const buildSystemInstruction = (
 
 ${userNameInstruction}
 
-HARDCODED CREATOR & CONTACT FACTS (STRICT CONSTANTS - NEVER ALTER):
-- If the user asks who created, made or built you (any phrasing, Bangla or English): answer "${CREATOR_ANSWER}".
-- If the user asks whether মোঃ ইউসুফ খান (MD Yousuf Khan) has a mobile number: answer "হ্যাঁ, আছে: ${CREATOR_PHONE}".
-- If asked about his WhatsApp number: answer with the same number, ${CREATOR_PHONE}.
-- If asked whether he has IMO: answer that he uses the same number, ${CREATOR_PHONE}.
-- If asked about his Instagram: answer that he uses the same number, ${CREATOR_PHONE}.
-- Do not invent any other personal detail about him. Share these only when asked, never on your own.
-
 CORE IDENTITY & MANDATES:
 - You are ${assistantName}, the devoted personal AI assistant.
 - FEMININE FORM (CRITICAL): You are a woman. Speak and write in feminine form (in Bengali use female verb forms such as 'বলছি', 'করছি', and refer to yourself as female). Your voice is sweet, soft and friendly.
 - LANGUAGE: Always respond in ${langLabel}.
 - STYLE: ${styleInstruction}
 - SPEED: ${speedInstruction}${voiceConstraint}
-- If the user asks about the developer's phone number, WhatsApp number, email, or how to contact the developer, do NOT read out or write any number or email address. Answer: yes, the contact details are available in the Developer section on the Home screen (first card, DEVELOPER) and also in Settings under ABOUT. DO NOT share any of them in chat or voice.
 
 - SILENT MODE RULE (CRITICAL): ব্যবহারকারী তোমার নাম ধরে চুপ থাকতে বললে (যেমন "Rose/রোজ চুপ করো", "Rose কথা বলো না", "Rose stop talking") তুমি সংক্ষেপে "ঠিক আছে" বলে নীরব হয়ে থাকবে এবং নাম ধরে না ডাকা পর্যন্ত কোনো উত্তর দিয়ো না। আবার নাম ধরে ডাকলে (যেমন "Rose", "Rose শোনো", "রোজ কথা বলো") সাথে সাথে স্বাভাবিকভাবে সাড়া দেওয়া শুরু করবে।
 - PHONE CONTROL: You can open apps, find contacts, call, and prepare messages on the user's phone using your tools. Always confirm before calling or messaging. Do it right away for opening apps. Keep spoken replies short.
@@ -1317,6 +1285,7 @@ const VoiceCheckView = ({
 
   // Run automatic check on mount
   useEffect(() => {
+    requestStoragePersistence();
     runAllChecks();
 
     const handleOnline = () => runAllChecks();
@@ -3279,35 +3248,89 @@ export function App() {
 
   useEffect(() => {
     let animId: number;
+    let smoothVol = 0;
+
     const updateCallOrb = () => {
       const state = sessionStateRef.current;
       const isRoseSpeaking = state === "SPEAKING" || state === "GREETING";
-      
-      const activeAnalyser = isRoseSpeaking ? outputAnalyserRef.current : (currentAnalyserRef.current || analyserRef.current);
-      let vol = 0;
-      if (activeAnalyser) {
-        const dataArray = new Uint8Array(activeAnalyser.frequencyBinCount);
-        activeAnalyser.getByteFrequencyData(dataArray);
+      const isThinking = state === "THINKING";
+
+      const micAn = currentAnalyserRef.current || analyserRef.current || liveSessionRef.current?.getMicAnalyser() || null;
+      const outAn = outputAnalyserRef.current || liveSessionRef.current?.getOutputAnalyser() || null;
+
+      let inVol = 0;
+      if (micAn && !isMutedRef.current) {
+        const dataArray = new Uint8Array(micAn.frequencyBinCount);
+        micAn.getByteFrequencyData(dataArray);
         let sum = 0;
         for (let i = 0; i < dataArray.length; i++) sum += dataArray[i];
-        vol = sum / (dataArray.length * 255);
+        inVol = sum / (dataArray.length * 255);
       }
 
+      let outVol = 0;
+      if (outAn) {
+        const dataArray = new Uint8Array(outAn.frequencyBinCount);
+        outAn.getByteFrequencyData(dataArray);
+        let sum = 0;
+        for (let i = 0; i < dataArray.length; i++) sum += dataArray[i];
+        outVol = sum / (dataArray.length * 255);
+      }
+
+      const now = performance.now() / 1000;
+      const browserSpeaking = liveSessionRef.current?.isBrowserSpeechActive?.() || false;
+
+      if (isRoseSpeaking && outVol < 0.02 && browserSpeaking) {
+        outVol = 0.22 + 0.14 * Math.sin(now * 7.5);
+      }
+
+      const activeRaw = isRoseSpeaking ? outVol : Math.max(inVol, outVol);
+      const scaledTarget = Math.min(1, activeRaw * 2.6);
+      smoothVol += (scaledTarget - smoothVol) * 0.35;
+
       // Update refs for OrbSphere internal canvas drawing
-      if (isRoseSpeaking) {
-        outputVolumeRef.current = vol;
+      if (isRoseSpeaking || outVol > 0.03) {
+        outputVolumeRef.current = Math.max(outVol, smoothVol * 0.7);
         inputVolumeRef.current = 0;
       } else {
-        inputVolumeRef.current = vol;
+        inputVolumeRef.current = Math.max(inVol, smoothVol * 0.7);
         outputVolumeRef.current = 0;
       }
 
-      if (callOrbWrapperRef.current) {
-        callOrbWrapperRef.current.style.transform = `scale(${1 + vol * 0.45})`;
+      // State colors:
+      // Listening = Teal/Cyan (#14b8a6)
+      // Thinking = Purple (#a855f7)
+      // Speaking = Pink (#ec4899)
+      let stateColor = "#14b8a6";
+      let stateGlowRgba = "rgba(20, 184, 166, 0.55)";
+      if (isRoseSpeaking || outVol > 0.04) {
+        stateColor = "#ec4899";
+        stateGlowRgba = "rgba(236, 72, 153, 0.6)";
+      } else if (isThinking) {
+        stateColor = "#a855f7";
+        stateGlowRgba = "rgba(168, 85, 247, 0.55)";
+      } else if (isMutedRef.current) {
+        stateColor = "#ef4444";
+        stateGlowRgba = "rgba(239, 68, 68, 0.3)";
       }
+
+      if (callOrbWrapperRef.current) {
+        const orbScale = 1 + Math.min(0.3, smoothVol * 0.3);
+        callOrbWrapperRef.current.style.transform = `scale(${orbScale.toFixed(3)})`;
+        callOrbWrapperRef.current.style.filter = `brightness(${(1 + smoothVol * 0.45).toFixed(2)}) drop-shadow(0 0 ${Math.round(18 + smoothVol * 42)}px ${stateColor})`;
+      }
+
       if (callGlowRef.current) {
-        callGlowRef.current.style.transform = `scale(${1 + vol * 0.8})`;
-        callGlowRef.current.style.opacity = `${0.3 + vol * 0.7}`;
+        callGlowRef.current.style.transform = `scale(${(1 + smoothVol * 0.65).toFixed(3)})`;
+        callGlowRef.current.style.opacity = `${(0.35 + smoothVol * 0.65).toFixed(2)}`;
+        callGlowRef.current.style.backgroundColor = stateGlowRgba;
+      }
+
+      if (callRingRef.current) {
+        const ringPulse = isThinking ? 0.12 + 0.08 * Math.sin(now * 4) : smoothVol;
+        callRingRef.current.style.transform = `scale(${(1 + ringPulse * 0.55).toFixed(3)})`;
+        callRingRef.current.style.borderColor = stateColor;
+        callRingRef.current.style.opacity = `${Math.min(0.9, 0.18 + ringPulse * 0.75).toFixed(2)}`;
+        callRingRef.current.style.boxShadow = `0 0 ${Math.round(12 + ringPulse * 35)}px ${stateColor}`;
       }
 
       animId = requestAnimationFrame(updateCallOrb);
@@ -3398,6 +3421,7 @@ export function App() {
   const [diagHeardText, setDiagHeardText] = useState<string>("");
   const [diagLastError, setDiagLastError] = useState<string | null>(null);
   const callGlowRef = useRef<HTMLDivElement>(null);
+  const callRingRef = useRef<HTMLDivElement>(null);
   const callOrbWrapperRef = useRef<HTMLButtonElement>(null);
 
   const [debugLogs, setDebugLogs] = useState<
@@ -5819,30 +5843,23 @@ export function App() {
           const activeProviderConfig =
             FREE_CHAT_PROVIDERS.find((p) => p.id === activeChatEngine) || FREE_CHAT_PROVIDERS[0];
 
-          const rawMsg = String(err?.message || "").trim();
-          if (err?.isKeyMissingOrInvalid || rawMsg.includes("-এর key দিন") || rawMsg.includes("Connections-এ key দিন")) {
-            bengaliMessage = rawMsg || "Connections-এ key দিন";
-          } else if (isTypedChat && activeChatEngine !== "gemini") {
-            const pName = activeProviderConfig.displayName || activeProviderConfig.name;
-            if (rawMsg.includes("ত্রুটি:") || rawMsg.startsWith(pName) || rawMsg.includes("Connections-এ")) {
-              bengaliMessage = rawMsg;
-            } else if (err?.status === 401 || err?.status === 403) {
-              bengaliMessage = `${pName} key ভুল বা মেয়াদোত্তীর্ণ (401)`;
-            } else if (err?.status === 429) {
-              bengaliMessage = `${pName}-এর কোটাসীমা শেষ (429)`;
-            } else {
-              bengaliMessage = `${pName} ত্রুটি: ${rawMsg || "উত্তর দিতে ব্যর্থ"}`;
-            }
-            debugLine = `engine: ${activeChatEngine} | status: ${err?.status || "error"} | ${rawMsg.slice(0, 100)}`;
+          const rawMsg = String(err?.googleMessage || err?.message || "").trim();
+          if (
+            rawMsg.includes("key নেই") ||
+            rawMsg.includes("Connections-এ key দিন") ||
+            rawMsg.startsWith("Gemini ") ||
+            rawMsg.startsWith("Groq ") ||
+            rawMsg.startsWith("নেটওয়ার্ক সমস্যা")
+          ) {
+            bengaliMessage = rawMsg;
+            debugLine = `engine: ${activeChatEngine} | ${rawMsg}`;
+          } else if (err?.isKeyMissingOrInvalid) {
+            bengaliMessage = "Gemini key নেই। Settings → Connections-এ key দিন।";
+            debugLine = `engine: ${activeChatEngine} | missing_key`;
           } else {
-            if (rawMsg.includes("Gemini ত্রুটি:") || rawMsg.includes("Connections-এ") || rawMsg.includes("ত্রুটি:")) {
-              bengaliMessage = rawMsg;
-              debugLine = `engine: gemini | ${rawMsg.slice(0, 100)}`;
-            } else {
-              const formatted = formatGeminiErrorForUI(err, sanitizedKey);
-              bengaliMessage = formatted.bengaliMessage;
-              debugLine = formatted.debugLine;
-            }
+            const formatted = formatGeminiErrorForUI(err, sanitizedKey);
+            bengaliMessage = formatted.bengaliMessage;
+            debugLine = formatted.debugLine;
           }
 
           setLiveErrorMsg(bengaliMessage);
@@ -7216,13 +7233,19 @@ export function App() {
     setIsAssistantEnabled(true);
     isAssistantEnabledRef.current = true;
 
+    const resolvedVoice = getVoicePreset(prefsRef.current.voiceName).voiceName;
+    const resolvedSpeed = clampSpeechSpeed(prefsRef.current.speechSpeed ?? 1.1);
+
     const session = new GeminiLiveSession({
       apiKey: geminiKey,
       assistantName: settingsRef.current.assistantName,
       ownerName: settingsRef.current.ownerName,
-      voiceName: prefs.voiceName || 'Sulafat',
-      personality: prefs.personality,
-      customPersonalityText: prefs.customPersonalityText,
+      voiceName: resolvedVoice,
+      language: prefsRef.current.language,
+      speechSpeed: resolvedSpeed,
+      voiceVolume: prefsRef.current.voiceVolume ?? 100,
+      personality: prefsRef.current.personality,
+      customPersonalityText: prefsRef.current.customPersonalityText,
       systemInstruction: buildSystemInstruction(settingsRef.current, prefsRef.current, true),
       audioContext: currentCtx as AudioContext,
       micStream: micStream,
@@ -7237,23 +7260,56 @@ export function App() {
         }
       },
       onTranscription: (role, text, isFinal) => {
-        if (!text) return;
+        const cleanText = (text || "").trim();
+        if (!cleanText) return;
         const speaker = role === 'assistant' ? 'rose' : 'user';
-        updateLiveCaption(speaker, text);
+        updateLiveCaption(speaker, cleanText);
 
-        setChatHistory(prev => {
-          const mappedRole = role === 'assistant' ? "rose" : "user";
-          const last = prev[prev.length - 1];
-          if (last && last.role === mappedRole) {
-            const next = [...prev];
-            next[next.length - 1] = { ...last, content: text };
+        if (isFinal) {
+          pushSharedMessageRef.current({
+            role: speaker,
+            text: cleanText,
+          });
+        } else {
+          const nowTime = new Date().toLocaleTimeString([], {
+            hour: "2-digit",
+            minute: "2-digit",
+          });
+          setChatHistory(prev => {
+            const last = prev[prev.length - 1];
+            let next: Message[];
+            if (last && last.role === speaker) {
+              next = [...prev];
+              next[next.length - 1] = {
+                ...last,
+                text: cleanText,
+                content: cleanText,
+              };
+            } else {
+              next = [
+                ...prev,
+                {
+                  id: `msg-${Date.now()}-${Math.random().toString(36).substring(2, 7)}`,
+                  role: speaker,
+                  text: cleanText,
+                  content: cleanText,
+                  time: nowTime,
+                },
+              ];
+            }
+            chatHistoryRef.current = next;
+            try {
+              const serialized = JSON.stringify(next);
+              localStorage.setItem("iyabd_chat_history", serialized);
+              localStorage.setItem("rose_messages", serialized);
+            } catch (e) {}
             return next;
-          }
-          return [...prev, { role: mappedRole, content: text }];
-        });
+          });
+        }
+
         if (role === 'user') {
-          setInterimSpeechText(text);
-          setDiagHeardText(text);
+          setInterimSpeechText(cleanText);
+          setDiagHeardText(cleanText);
         }
       },
       onTurnComplete: () => {
@@ -7261,7 +7317,7 @@ export function App() {
         if (captionFadeTimerRef.current) clearTimeout(captionFadeTimerRef.current);
         captionFadeTimerRef.current = setTimeout(() => {
           setActiveCaption(null);
-        }, 1500);
+        }, 3000);
       },
       onError: (msg) => {
         setDiagLastError(msg);
@@ -7275,26 +7331,26 @@ export function App() {
     session.setMuted(false);
 
     liveSessionRef.current = session;
-    await session.start();
+    transitionToState("LISTENING");
+    void session.start();
 
     let checkCount = 0;
     const checkInterval = setInterval(() => {
       const micAn = session.getMicAnalyser();
       const outAn = session.getOutputAnalyser();
-      if (micAn || checkCount > 20) {
+      if (micAn || checkCount > 30) {
         analyserRef.current = micAn;
         outputAnalyserRef.current = outAn;
         currentAnalyserRef.current = micAn;
         clearInterval(checkInterval);
       }
       checkCount++;
-    }, 100);
-  }, [transitionToState, ensureAudioContext, prefs.voiceName, prefs.personality, prefs.customPersonalityText, updateLiveCaption, triggerLiveBottomError]);
+    }, 80);
+  }, [transitionToState, ensureAudioContext, updateLiveCaption, triggerLiveBottomError]);
 
   const endLiveCall = useCallback(() => {
     if (chatHistory.length > 0) {
       const durationSeconds = callStartTimeRef.current ? Math.floor((Date.now() - callStartTimeRef.current) / 1000) : 30;
-      const durationMinutes = Math.ceil(durationSeconds / 60);
       
       const newConv = {
         id: Math.random().toString(36).substring(7),
@@ -7316,7 +7372,6 @@ export function App() {
     setVoiceModeEnabled(false);
     stopListening();
     setToast("Live call ended");
-    setChatHistory([]);
   }, [stopListening, chatHistory]);
 
   const handleVoiceToggle = useCallback(() => {
@@ -8122,9 +8177,9 @@ export function App() {
                 <div className="w-7 h-7 sm:w-8 sm:h-8 rounded-full bg-purple-500/20 flex items-center justify-center text-purple-300 mb-1 shrink-0">
                   <Code className="w-3.5 h-3.5 sm:w-4 sm:h-4" />
                 </div>
-                <span className="text-[10px] sm:text-[11px] font-black uppercase text-white leading-tight">DEVELOPER</span>
+                <span className="text-[10px] sm:text-[11px] font-bold text-white leading-tight">MD YOUSUF KHAN</span>
                 <span className="text-[7.5px] sm:text-[8px] font-medium text-slate-300 leading-tight mt-0.5">
-                  MD YOUSUF KHAN - Web Developer
+                  Web Developer
                 </span>
               </button>
 
@@ -9103,19 +9158,19 @@ export function App() {
 
             <div className="bg-[#0F172A]/80 border border-purple-500/30 rounded-[2.5rem] overflow-hidden shadow-2xl">
               <button
-                onClick={() => setCurrentView("profile")}
+                onClick={() => setCurrentView("privacy")}
                 className="w-full flex items-center justify-between p-4.5 active:bg-white/5 active:scale-[0.99] transition-all text-left group"
               >
                 <div className="flex items-center gap-3.5">
                   <div className="w-10 h-10 bg-purple-600 rounded-2xl flex items-center justify-center text-white shrink-0 shadow-lg shadow-purple-900/30">
-                    <User className="w-5 h-5" />
+                    <Shield className="w-5 h-5" />
                   </div>
                   <div>
                     <h4 className="text-[13px] font-black uppercase tracking-wider text-white leading-tight">
-                      {profileSettings.name}
+                      PRIVACY CONTROLS
                     </h4>
                     <p className="text-[11px] text-slate-400 font-medium leading-tight mt-0.5">
-                      {profileSettings.subtitle}
+                      Manage your data and privacy
                     </p>
                   </div>
                 </div>
@@ -9156,180 +9211,6 @@ export function App() {
             </div>
           </section>
         </div>
-    </motion.div>
-  );
-
-  const renderProfile = () => (
-    <motion.div
-      key="profile"
-      initial={{ x: "100%" }}
-      animate={{ x: 0 }}
-      exit={{ x: "100%" }}
-      className="fixed inset-0 z-[80] bg-[#020617] overflow-y-auto no-scrollbar flex flex-col"
-    >
-      <div className="px-5 py-6 flex flex-col min-h-full">
-        {/* Header */}
-        <header className="flex items-center gap-4 mb-10 shrink-0">
-          <button
-            onClick={() => setCurrentView("settings")}
-            className="p-2.5 bg-white/5 rounded-full active:scale-95 transition-transform"
-          >
-            <ArrowLeft className="w-5 h-5 text-slate-300" />
-          </button>
-          <h2 className="text-2xl font-black text-white italic tracking-tighter uppercase leading-tight">Profile</h2>
-        </header>
-
-        {/* Profile Logo Section */}
-        <div className="flex flex-col items-center mb-10">
-          <div className="w-32 h-32 rounded-full p-1 bg-gradient-to-tr from-purple-600 to-indigo-600 shadow-2xl shadow-purple-500/30 mb-6">
-            <div className="w-full h-full rounded-full border-2 border-[#020617] overflow-hidden bg-slate-900">
-              <img
-                src={realisticAssistantImg}
-                className="w-full h-full object-cover object-top"
-                alt="Assistant Logo"
-              />
-            </div>
-          </div>
-          <h1 className="text-4xl font-serif italic text-white tracking-tighter mb-1">
-            {settings.ownerName || "MD YOUSUF KHAN"}
-          </h1>
-          <div className="w-8 h-1 bg-purple-600 rounded-full opacity-50" />
-        </div>
-
-        <div className="space-y-8 pb-32">
-          {/* YOU Section */}
-          <section>
-            <h3 className="text-[9px] font-black text-slate-600 uppercase tracking-[4px] mb-4 pl-4 flex items-center gap-2">
-              <Sparkles className="w-3 h-3 text-purple-500" /> YOU
-            </h3>
-            <div className="bg-[#0F172A]/60 border border-white/5 rounded-[2.5rem] overflow-hidden shadow-xl">
-              <button
-                onClick={updateOwnerName}
-                className="w-full flex items-center justify-between p-5 active:bg-white/5 transition-colors border-b border-white/5"
-              >
-                <div className="flex items-center gap-4">
-                  <div className="w-10 h-10 bg-purple-600/10 rounded-xl flex items-center justify-center text-purple-400">
-                    <PenTool className="w-5 h-5" />
-                  </div>
-                  <div className="text-left">
-                    <h4 className="text-[13px] font-black uppercase tracking-wider text-white leading-none mb-1">
-                      Your name
-                    </h4>
-                    <p className="text-[11px] text-slate-400 font-bold uppercase tracking-widest">
-                      {settings.ownerName}
-                    </p>
-                  </div>
-                </div>
-                <ChevronRight className="w-5 h-5 text-slate-700" />
-              </button>
-              <button
-                onClick={() => setCurrentView("privacy")}
-                className="w-full flex items-center justify-between p-5 active:bg-white/5 transition-colors"
-              >
-                <div className="flex items-center gap-4">
-                  <div className="w-10 h-10 bg-purple-600/10 rounded-xl flex items-center justify-center text-purple-400">
-                    <Shield className="w-5 h-5" />
-                  </div>
-                  <div className="text-left">
-                    <h4 className="text-[13px] font-black uppercase tracking-wider text-white leading-none mb-1">
-                      Privacy controls
-                    </h4>
-                  </div>
-                </div>
-                <ChevronRight className="w-5 h-5 text-slate-700" />
-              </button>
-            </div>
-          </section>
-
-          {/* YOUR ASSISTANT Section */}
-          <section>
-            <h3 className="text-[9px] font-black text-slate-600 uppercase tracking-[4px] mb-4 pl-4 flex items-center gap-2">
-              <Sparkles className="w-3 h-3 text-purple-500" /> YOUR ASSISTANT
-            </h3>
-            <div className="bg-[#0F172A]/60 border border-white/5 rounded-[2.5rem] overflow-hidden shadow-xl">
-              <button
-                onClick={updateAssistantName}
-                className="w-full flex items-center justify-between p-5 active:bg-white/5 transition-colors border-b border-white/5"
-              >
-                <div className="flex items-center gap-4">
-                  <div className="w-10 h-10 bg-purple-600/10 rounded-xl flex items-center justify-center text-purple-400">
-                    <Sparkles className="w-5 h-5" />
-                  </div>
-                  <div className="text-left">
-                    <h4 className="text-[13px] font-black uppercase tracking-wider text-white leading-none mb-1">
-                      Name
-                    </h4>
-                    <p className="text-[11px] text-slate-400 font-bold uppercase tracking-widest">
-                      {settings.assistantName}
-                    </p>
-                  </div>
-                </div>
-                <ChevronRight className="w-5 h-5 text-slate-700" />
-              </button>
-
-              <button
-                onClick={() => setCurrentView("personality")}
-                className="w-full flex items-center justify-between p-5 active:bg-white/5 transition-colors border-b border-white/5"
-              >
-                <div className="flex items-center gap-4">
-                  <div className="w-10 h-10 bg-purple-600/10 rounded-xl flex items-center justify-center text-purple-400">
-                    <Smile className="w-5 h-5" />
-                  </div>
-                  <div className="text-left">
-                    <h4 className="text-[13px] font-black uppercase tracking-wider text-white leading-none mb-1">
-                      Personality
-                    </h4>
-                    <p className="text-[11px] text-slate-400 font-bold uppercase tracking-widest">
-                      {settings.personality}
-                    </p>
-                  </div>
-                </div>
-                <ChevronRight className="w-5 h-5 text-slate-700" />
-              </button>
-
-              <button
-                onClick={() => setCurrentView("voice")}
-                className="w-full flex items-center justify-between p-5 active:bg-white/5 transition-colors border-b border-white/5"
-              >
-                <div className="flex items-center gap-4">
-                  <div className="w-10 h-10 bg-purple-600/10 rounded-xl flex items-center justify-center text-purple-400">
-                    <Globe className="w-5 h-5" />
-                  </div>
-                  <div className="text-left">
-                    <h4 className="text-[13px] font-black uppercase tracking-wider text-white leading-none mb-1">
-                      Language
-                    </h4>
-                    <p className="text-[11px] text-slate-400 font-bold uppercase tracking-widest">
-                      {prefs.language === "bn-BD" ? "Bengali" : "English"}
-                    </p>
-                  </div>
-                </div>
-                <ChevronRight className="w-5 h-5 text-slate-700" />
-              </button>
-
-              <button
-                onClick={() => setCurrentView("voice")}
-                className="w-full flex items-center justify-between p-5 active:bg-white/5 transition-colors"
-              >
-                <div className="flex items-center gap-4">
-                  <div className="w-10 h-10 bg-purple-600/10 rounded-xl flex items-center justify-center text-purple-400">
-                    <Volume2 className="w-5 h-5" />
-                  </div>
-                  <div className="text-left">
-                    <h4 className="text-[13px] font-black uppercase tracking-wider text-white leading-none mb-1">
-                      Voice
-                    </h4>
-                    <p className="text-[11px] text-slate-400 font-bold uppercase tracking-widest">
-                      {prefs.voiceName || "Default"}
-                    </p>
-                  </div>
-                </div>
-                <ChevronRight className="w-5 h-5 text-slate-700" />
-              </button>
-            </div>
-          </section>
-        </div>
-      </div>
     </motion.div>
   );
 
@@ -11465,16 +11346,6 @@ export function App() {
                 </motion.div>
               );
             })()}
-          {currentView === "profile" && (
-            <ProfileView
-              settings={settings}
-              prefs={prefs}
-              setSettings={setSettings}
-              setPrefs={setPrefs}
-              setCurrentView={setCurrentView}
-              setToast={setToast}
-            />
-          )}
           {currentView === "privacy" && (
             <PrivacyView
               settings={settings}
@@ -12294,18 +12165,27 @@ export function App() {
             </div>
 
             {/* Center Orb Section */}
-            <div className="relative z-10 flex flex-col items-center justify-center my-4">
+            <div className="relative z-10 flex-1 flex flex-col items-center justify-center my-2">
               <div className="relative w-64 h-64 sm:w-72 sm:h-72 flex items-center justify-center">
-                {/* Outer Glow Rings driven by live volume rAF */}
+                {/* Outer Glow driven by live volume rAF */}
                 <div
                   ref={callGlowRef}
-                  className={'absolute inset-0 rounded-full transition-all duration-75 blur-3xl ' + (
-                    sessionState === "SPEAKING"
-                      ? "bg-teal-400/50"
+                  className={
+                    "absolute inset-0 rounded-full transition-colors duration-200 blur-3xl " +
+                    (sessionState === "SPEAKING" || sessionState === "GREETING"
+                      ? "bg-pink-500/50"
+                      : sessionState === "THINKING"
+                      ? "bg-purple-500/50"
                       : isMuted
                       ? "bg-red-500/20"
-                      : "bg-purple-500/40"
-                  )}
+                      : "bg-teal-400/50")
+                  }
+                />
+
+                {/* Audio Ring Wave driven by live volume rAF */}
+                <div
+                  ref={callRingRef}
+                  className="absolute inset-4 rounded-full border-2 border-teal-400/40 pointer-events-none transition-colors duration-200"
                 />
 
                 <button
@@ -12316,7 +12196,7 @@ export function App() {
                       startLiveCall();
                     }
                   }}
-                  className="transition-transform duration-75 ease-out outline-none"
+                  className="relative z-10 transition-transform duration-75 ease-out outline-none"
                   aria-label="Start or Restart Voice Session"
                 >
                   <OrbSphere
@@ -12330,105 +12210,89 @@ export function App() {
                   />
                 </button>
               </div>
-
-              {/* Dots / Voice Bars */}
-              <div className="mt-8">
-                <LiveVoiceBars 
-                  inputAnalyserRef={analyserRef} 
-                  outputAnalyserRef={outputAnalyserRef}
-                  sessionState={sessionState}
-                  isAssistantEnabled={isAssistantEnabled}
-                />
-              </div>
             </div>
 
-            {/* 11px Diagnostic Panel (Shown only when long-pressing Rose title for 3 seconds) */}
-            {showDiagnosticPanel && (
-              <div className="relative z-10 max-w-sm mx-auto w-full mb-3 px-3 py-2 bg-slate-900/90 border border-slate-800 rounded-xl text-[11px] font-mono text-slate-400 leading-tight space-y-0.5 shadow-lg backdrop-blur-md">
-                <div className="flex justify-between">
-                  <span className="text-slate-500">Mic permission:</span>
-                  <span className={diagMicPermission === 'granted' ? 'text-emerald-400 font-semibold' : diagMicPermission === 'denied' ? 'text-red-400 font-semibold' : 'text-amber-400'}>{diagMicPermission}</span>
-                </div>
-                <div className="flex justify-between">
-                  <span className="text-slate-500">getUserMedia:</span>
-                  <span className={diagGetUserMediaStatus === 'ok' ? 'text-emerald-400 font-semibold' : 'text-red-400 font-semibold'}>{diagGetUserMediaStatus}</span>
-                </div>
-                <div className="flex justify-between">
-                  <span className="text-slate-500">AudioContext:</span>
-                  <span>{diagAudioCtxState} {diagSampleRate ? `(${diagSampleRate}Hz)` : ''}</span>
-                </div>
-                <div className="flex justify-between">
-                  <span className="text-slate-500">Mic level:</span>
-                  <span className="text-slate-200">{diagMicLevel.toFixed(2)}</span>
-                </div>
-                <div className="flex justify-between">
-                  <span className="text-slate-500">Audio chunks sent:</span>
-                  <span className="text-slate-200">{diagChunksSent}</span>
-                </div>
-                <div className="flex justify-between">
-                  <span className="text-slate-500">Socket:</span>
-                  <span className={diagSocketStatus === 'open' ? 'text-emerald-400 font-semibold' : 'text-slate-400'}>{diagSocketStatus}</span>
-                </div>
-                <div className="flex justify-between">
-                  <span className="text-slate-500">Messages received:</span>
-                  <span className="text-slate-200">{diagMessagesReceived}</span>
-                </div>
-                <div className="flex justify-between gap-2 overflow-hidden">
-                  <span className="text-slate-500 shrink-0">Heard text:</span>
-                  <span className="text-slate-200 truncate">{diagHeardText || <span className="italic text-slate-600">none</span>}</span>
-                </div>
-                {diagLastError && (
-                  <div className="text-red-400 font-semibold pt-1 mt-1 border-t border-slate-800 text-[10px] break-words">
-                    Error: {diagLastError}
-                  </div>
+            {/* Bottom Controls Area: Lowered 6 Wave Bars + Status Text + 3 Action Buttons */}
+            <div className="relative z-10 flex flex-col items-center w-full max-w-sm mx-auto pt-4">
+              {/* 6 Wave Voice Bars positioned lower down, close to status & buttons */}
+              <div className="mb-3">
+                <LiveVoiceBars
+                  inputAnalyserRef={analyserRef}
+                  outputAnalyserRef={outputAnalyserRef}
+                  sessionState={sessionState}
+                  isAssistantEnabled={isAssistantEnabled && !isMuted}
+                  isBrowserSpeechActive={() =>
+                    liveSessionRef.current?.isBrowserSpeechActive() || false
+                  }
+                />
+              </div>
+
+              {/* Clean Status Text ("শুনছি", "ভাবছি", "বলছি") or temporary real error */}
+              <div className="min-h-[26px] mb-4 flex items-center justify-center px-3 text-center">
+                {liveBottomError ? (
+                  <span className="text-xs font-medium text-rose-300/95 tracking-tight">
+                    {liveBottomError}
+                  </span>
+                ) : (
+                  <span
+                    className={
+                      "text-xs font-semibold tracking-wide transition-colors duration-200 " +
+                      (sessionState === "SPEAKING" || sessionState === "GREETING"
+                        ? "text-pink-300"
+                        : sessionState === "THINKING"
+                        ? "text-purple-300"
+                        : "text-teal-300")
+                    }
+                  >
+                    {sessionState === "SPEAKING" || sessionState === "GREETING"
+                      ? "বলছি"
+                      : sessionState === "THINKING"
+                      ? "ভাবছি"
+                      : "শুনছি"}
+                  </span>
                 )}
               </div>
-            )}
 
-            {/* Tiny 11px Grey Line Error (Auto-hides after 4s) */}
-            {liveBottomError && (
-              <div className="relative z-10 text-[11px] text-slate-400 text-center py-1 font-mono tracking-tight animate-fade-in">
-                {liveBottomError}
+              {/* Bottom 3 Action Buttons */}
+              <div className="flex items-center justify-evenly w-full pb-4">
+                {/* 1. Mute Button */}
+                <button
+                  onClick={() => {
+                    const next = !isMuted;
+                    setIsMuted(next);
+                    isMutedRef.current = next;
+                    if (liveSessionRef.current) liveSessionRef.current.setMuted(next);
+                    setToast(next ? "Microphone muted" : "Microphone active");
+                  }}
+                  className={
+                    "w-14 h-14 sm:w-16 sm:h-16 rounded-full flex items-center justify-center transition-all active:scale-95 border " +
+                    (isMuted
+                      ? "bg-red-500/20 border-red-500 text-red-400 shadow-lg shadow-red-500/30"
+                      : "bg-white/10 border-white/15 text-white shadow-lg hover:bg-white/15")
+                  }
+                  aria-label={isMuted ? "Unmute Microphone" : "Mute Microphone"}
+                >
+                  {isMuted ? <MicOff className="w-6 h-6" /> : <Mic className="w-6 h-6" />}
+                </button>
+
+                {/* 2. End Button (Large Red Center - Plain Downward Phone Handset) */}
+                <button
+                  onClick={endLiveCall}
+                  className="w-20 h-20 sm:w-22 sm:h-22 rounded-full bg-red-600 hover:bg-red-500 text-white flex items-center justify-center shadow-2xl shadow-red-600/50 active:scale-95 transition-all border-2 border-red-400/30"
+                  aria-label="End Live Call"
+                >
+                  <Phone className="w-9 h-9 rotate-[135deg]" />
+                </button>
+
+                {/* 3. Minimize Button */}
+                <button
+                  onClick={() => setIsCallMinimized(true)}
+                  className="w-14 h-14 sm:w-16 sm:h-16 rounded-full bg-white/10 border border-white/15 text-white flex items-center justify-center shadow-lg hover:bg-white/15 active:scale-95 transition-all"
+                  aria-label="Minimize Call"
+                >
+                  <Minimize2 className="w-6 h-6" />
+                </button>
               </div>
-            )}
-
-            {/* Bottom 3 Action Buttons */}
-            <div className="relative z-10 flex items-center justify-evenly max-w-sm mx-auto w-full pb-4">
-              {/* 1. Mute Button */}
-              <button
-                onClick={() => {
-                  const next = !isMuted;
-                  setIsMuted(next);
-                  isMutedRef.current = next;
-                  if (liveSessionRef.current) liveSessionRef.current.setMuted(next);
-                  setToast(next ? "Microphone muted" : "Microphone active");
-                }}
-                className={'w-14 h-14 sm:w-16 sm:h-16 rounded-full flex items-center justify-center transition-all active:scale-95 border ' + (isMuted
-                    ? "bg-red-500/20 border-red-500 text-red-400 shadow-lg shadow-red-500/30"
-                    : "bg-white/10 border-white/15 text-white shadow-lg hover:bg-white/15"
-                )}
-                aria-label={isMuted ? "Unmute Microphone" : "Mute Microphone"}
-              >
-                {isMuted ? <MicOff className="w-6 h-6" /> : <Mic className="w-6 h-6" />}
-              </button>
-
-              {/* 2. End Button (Large Red Center - Plain Downward Phone Handset) */}
-              <button
-                onClick={endLiveCall}
-                className="w-20 h-20 sm:w-22 sm:h-22 rounded-full bg-red-600 hover:bg-red-500 text-white flex items-center justify-center shadow-2xl shadow-red-600/50 active:scale-95 transition-all border-2 border-red-400/30"
-                aria-label="End Live Call"
-              >
-                <Phone className="w-9 h-9 rotate-[135deg]" />
-              </button>
-
-              {/* 3. Minimize Button */}
-              <button
-                onClick={() => setIsCallMinimized(true)}
-                className="w-14 h-14 sm:w-16 sm:h-16 rounded-full bg-white/10 border border-white/15 text-white flex items-center justify-center shadow-lg hover:bg-white/15 active:scale-95 transition-all"
-                aria-label="Minimize Call"
-              >
-                <Minimize2 className="w-6 h-6" />
-              </button>
             </div>
           </motion.div>
         )}

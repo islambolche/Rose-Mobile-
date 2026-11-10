@@ -79,25 +79,11 @@ export const formatGeminiErrorForUI = (
         ? '25.0'
         : '0.0';
 
-  let rawGoogleMsg = String(
-    err?.googleMessage || err?.bodyText || err?.message || err || 'Gemini request failed'
+  let rawMsg = String(
+    err?.googleMessage || err?.message || err?.bodyText || err || ''
   ).trim();
 
-  if (err?.errorDetails) {
-    try {
-      const detailsStr =
-        typeof err.errorDetails === 'string'
-          ? err.errorDetails
-          : JSON.stringify(err.errorDetails);
-      if (detailsStr && !rawGoogleMsg.includes(detailsStr)) {
-        rawGoogleMsg += ' | details: ' + detailsStr;
-      }
-    } catch (e) {}
-  }
-
-  const sanitizedFullText = sanitizeOutApiKey(rawGoogleMsg, apiKey)
-    .replace(/\s+/g, ' ')
-    .trim();
+  const sanitizedFullText = sanitizeOutApiKey(rawMsg, apiKey).trim();
 
   const attempts: GeminiAttemptLog[] = Array.isArray(err?.attempts) ? err.attempts : [];
   const debugLine =
@@ -107,67 +93,39 @@ export const formatGeminiErrorForUI = (
           .join('\n')
       : `${modelName} | ${statusVal} | ${String(timeSec).replace(/s$/i, '')}s`;
 
-  if (/Add your Gemini key in Settings/i.test(sanitizedFullText)) {
+  if (/key নেই|Add your Gemini key|missing_key/i.test(sanitizedFullText) || statusVal === 'missing_key') {
     return {
-      bengaliMessage: 'Settings > Connections-এ আপনার Gemini API Key বসান।',
+      bengaliMessage: 'Gemini key নেই। Settings → Connections-এ key দিন।',
+      debugLine,
+    };
+  }
+
+  if (sanitizedFullText.startsWith('Gemini ') || sanitizedFullText.startsWith('Groq ')) {
+    return {
+      bengaliMessage: sanitizedFullText,
+      debugLine,
+    };
+  }
+
+  if (sanitizedFullText.startsWith('নেটওয়ার্ক সমস্যা') || statusVal === 'network_error') {
+    return {
+      bengaliMessage: sanitizedFullText.startsWith('নেটওয়ার্ক সমস্যা:')
+        ? sanitizedFullText
+        : `নেটওয়ার্ক সমস্যা: ${sanitizedFullText}`,
       debugLine,
     };
   }
 
   const numStatus = Number(statusVal);
-  const isKeyError =
-    numStatus === 400 ||
-    numStatus === 401 ||
-    numStatus === 403 ||
-    /API key|api_key|key_invalid|invalid_key/i.test(sanitizedFullText);
-
-  if (isKeyError) {
+  if (!isNaN(numStatus) && numStatus > 0) {
     return {
-      bengaliMessage: 'API key ঠিক নেই',
-      debugLine,
-    };
-  }
-
-  if (
-    numStatus === 429 ||
-    /\b429\b|quota|resource_exhausted|rate\s*limit/i.test(sanitizedFullText)
-  ) {
-    return {
-      bengaliMessage: 'ফ্রি সীমা শেষ, কিছুক্ষণ পরে চেষ্টা করুন',
-      debugLine,
-    };
-  }
-
-  if (numStatus === 404 || /\b404\b|not\s*found|not_found/i.test(sanitizedFullText)) {
-    return {
-      bengaliMessage: 'মডেল পাওয়া যায়নি, অন্য মডেল বেছে নেওয়া হচ্ছে',
-      debugLine,
-    };
-  }
-
-  if (numStatus === 503 || /\b503\b|unavailable|busy/i.test(sanitizedFullText)) {
-    return {
-      bengaliMessage: 'মডেল ব্যস্ত, আবার চেষ্টা করা হচ্ছে',
-      debugLine,
-    };
-  }
-
-  if (statusVal === 'network_error' || /network|failed to fetch/i.test(sanitizedFullText)) {
-    return {
-      bengaliMessage: 'ইন্টারনেট সমস্যা',
-      debugLine,
-    };
-  }
-
-  if (isTimeout || statusVal === 'timeout') {
-    return {
-      bengaliMessage: 'নেটওয়ার্ক ধীর বা মডেল ব্যস্ত',
+      bengaliMessage: `Gemini ${numStatus}: ${sanitizedFullText}`,
       debugLine,
     };
   }
 
   return {
-    bengaliMessage: `সমস্যা: HTTP ${statusVal} - ${sanitizedFullText.slice(0, 50)}`,
+    bengaliMessage: `Gemini error: ${sanitizedFullText}`,
     debugLine,
   };
 };
@@ -674,11 +632,11 @@ export const directGeminiGenerate = async (payload: any) => {
     .trim();
 
   if (!cleanKey) {
-    const missingErr: any = new Error('Add your Gemini key in Settings > Connections.');
-    missingErr.bodyText = 'Add your Gemini key in Settings > Connections.';
-    missingErr.googleMessage = 'API key ঠিক নেই';
+    const missingErr: any = new Error('Gemini key নেই। Settings → Connections-এ key দিন।');
+    missingErr.bodyText = 'Gemini key নেই। Settings → Connections-এ key দিন।';
+    missingErr.googleMessage = 'Gemini key নেই। Settings → Connections-এ key দিন।';
     missingErr.modelName = getSavedWorkingTextModel() || 'gemini-2.0-flash';
-    missingErr.status = 400;
+    missingErr.status = 'missing_key';
     missingErr.elapsedSeconds = '0.0';
     missingErr.attempts = [
       {

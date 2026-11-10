@@ -176,6 +176,15 @@ export const ConnectionsView = ({
     elevenlabs: '',
   });
 
+  const [testResults, setTestResults] = useState<Record<AllProviderId, string>>({
+    gemini: '',
+    groq: '',
+    openrouter: '',
+    cerebras: '',
+    mistral: '',
+    elevenlabs: '',
+  });
+
   const [verifyingMap, setVerifyingMap] = useState<Record<AllProviderId, boolean>>({
     gemini: false,
     groq: false,
@@ -187,6 +196,49 @@ export const ConnectionsView = ({
 
   const [showKey, setShowKey] = useState<Record<string, boolean>>({});
   const [localToast, setLocalToast] = useState<string | null>(null);
+
+  const handleTestKey = async (id: AllProviderId) => {
+    const provider = ALL_PROVIDERS.find((p) => p.id === id);
+    if (!provider) return;
+
+    const cleanKey = String(typedKeys[id] || '').replace(/[\r\n\t\s\u200B\u200C\u200D\uFEFF]+/g, '').trim();
+    if (!cleanKey) {
+      const msg = `${provider.displayName} key নেই। Settings → Connections-এ key দিন।`;
+      setTestResults((prev) => ({ ...prev, [id]: msg }));
+      notifyToast(msg);
+      return;
+    }
+
+    setVerifyingMap((prev) => ({ ...prev, [id]: true }));
+    setTestResults((prev) => ({ ...prev, [id]: 'পরীক্ষা করা হচ্ছে...' }));
+
+    try {
+      let result: { ok: boolean; status: KeyStatus; errorText?: string };
+      if (id === 'elevenlabs') {
+        result = await verifyElevenLabs(cleanKey);
+      } else {
+        result = await verifyProviderKey(id as ChatEngineId, cleanKey);
+      }
+
+      if (result.ok) {
+        const okText = `${provider.displayName} ঠিক আছে`;
+        setTestResults((prev) => ({ ...prev, [id]: okText }));
+        setStatusMap((prev) => ({ ...prev, [id]: 'READY' }));
+        notifyToast(okText);
+      } else {
+        const errText = result.errorText || `${provider.displayName} পরীক্ষা ব্যর্থ`;
+        setTestResults((prev) => ({ ...prev, [id]: errText }));
+        setStatusMap((prev) => ({ ...prev, [id]: 'INVALID' }));
+        notifyToast(errText);
+      }
+    } catch (e: any) {
+      const errText = `নেটওয়ার্ক সমস্যা: ${e.message || e}`;
+      setTestResults((prev) => ({ ...prev, [id]: errText }));
+      notifyToast(errText);
+    } finally {
+      setVerifyingMap((prev) => ({ ...prev, [id]: false }));
+    }
+  };
 
   const notifyToast = (msg: string) => {
     if (setToast) {
@@ -789,27 +841,45 @@ export const ConnectionsView = ({
             </div>
           </div>
 
-          {/* 4. SAVE KEY Button */}
-          <button
-            type="button"
-            onClick={() => handleSave(selectedItem.id)}
-            disabled={verifyingMap[selectedItem.id]}
-            className="w-full p-4 bg-purple-600 hover:bg-purple-500 disabled:opacity-60 rounded-2xl border border-purple-400/40 shadow-xl shadow-purple-950/50 flex items-center justify-center gap-2.5 text-xs font-black uppercase tracking-widest text-white active:scale-[0.98] transition-all"
-          >
-            {verifyingMap[selectedItem.id] ? (
-              <Loader2 className="w-4 h-4 animate-spin text-white" />
-            ) : (
-              <Save className="w-4 h-4 text-white" />
-            )}
-            <span>SAVE KEY</span>
-          </button>
+          {/* 4. SAVE KEY & TEST Buttons */}
+          <div className="grid grid-cols-2 gap-3">
+            <button
+              type="button"
+              onClick={() => handleSave(selectedItem.id)}
+              disabled={verifyingMap[selectedItem.id]}
+              className="p-4 bg-purple-600 hover:bg-purple-500 disabled:opacity-60 rounded-2xl border border-purple-400/40 shadow-xl shadow-purple-950/50 flex items-center justify-center gap-2 text-xs font-black uppercase tracking-widest text-white active:scale-[0.98] transition-all"
+            >
+              {verifyingMap[selectedItem.id] ? (
+                <Loader2 className="w-4 h-4 animate-spin text-white" />
+              ) : (
+                <Save className="w-4 h-4 text-white" />
+              )}
+              <span>SAVE KEY</span>
+            </button>
 
-          {/* Brief error line if present */}
-          {selectedErrorMsg && (
-            <div className={`p-3 border rounded-2xl text-[11px] font-medium text-center ${
-              isSelectedInvalid ? 'bg-red-950/70 border-red-500/40 text-red-300' : 'bg-amber-950/70 border-amber-500/40 text-amber-300'
+            <button
+              type="button"
+              onClick={() => handleTestKey(selectedItem.id)}
+              disabled={verifyingMap[selectedItem.id]}
+              className="p-4 bg-slate-800 hover:bg-slate-700 disabled:opacity-60 rounded-2xl border border-purple-500/30 shadow-xl flex items-center justify-center gap-2 text-xs font-black uppercase tracking-widest text-white active:scale-[0.98] transition-all"
+            >
+              {verifyingMap[selectedItem.id] ? (
+                <Loader2 className="w-4 h-4 animate-spin text-purple-300" />
+              ) : (
+                <Sparkles className="w-4 h-4 text-purple-300" />
+              )}
+              <span>TEST</span>
+            </button>
+          </div>
+
+          {/* Result / Error Box */}
+          {(testResults[selectedItem.id] || selectedErrorMsg) && (
+            <div className={`p-3.5 border rounded-2xl text-xs font-medium text-center shadow-lg transition-all ${
+              (testResults[selectedItem.id] || '').includes('ঠিক আছে') || statusMap[selectedItem.id] === 'READY'
+                ? 'bg-emerald-950/80 border-emerald-500/50 text-emerald-300'
+                : 'bg-red-950/80 border-red-500/50 text-red-300'
             }`}>
-              {selectedErrorMsg}
+              {testResults[selectedItem.id] || selectedErrorMsg}
             </div>
           )}
         </div>

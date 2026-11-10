@@ -1,6 +1,5 @@
 import { logVoiceEvent } from './voiceLogger';
 import { getGeminiKey } from './geminiKey';
-import { getDynamicGeminiLiveModels } from './chatEngines';
 
 export interface GeminiLiveOptions {
   assistantName?: string;
@@ -10,6 +9,10 @@ export interface GeminiLiveOptions {
   personality?: string;
   customPersonalityText?: string;
   responseStyle?: string;
+  speechSpeed?: number;
+  speechPitch?: number;
+  voiceVolume?: number;
+  ttsStylePrefix?: string;
   apiKey: string;
   systemInstruction?: string;
   model?: string;
@@ -28,22 +31,29 @@ export interface GeminiLiveOptions {
 
 export function parseAndFormatGeminiError(status: number | string, rawMsg: string): { bengali: string; original: string } {
   const code = Number(status) || 0;
-  const lowerMsg = (rawMsg || '').toLowerCase();
+  const cleanRaw = String(rawMsg || '').trim();
+  const lowerMsg = cleanRaw.toLowerCase();
 
-  let bengali = "সমস্যা হয়েছে";
-  if (code === 400 || code === 403 || lowerMsg.includes("api key") || lowerMsg.includes("invalid key") || lowerMsg.includes("permission_denied") || lowerMsg.includes("unauthenticated")) {
-    bengali = "API key ঠিক নেই";
-  } else if (code === 404 || lowerMsg.includes("not found")) {
-    bengali = "মডেল পাওয়া যায়নি, অন্য মডেল বেছে নেওয়া হচ্ছে";
-  } else if (code === 429 || lowerMsg.includes("quota") || lowerMsg.includes("resource_exhausted")) {
-    bengali = "ফ্রি সীমা শেষ, কিছুক্ষণ পরে চেষ্টা করুন";
-  } else if (code === 503 || lowerMsg.includes("unavailable") || lowerMsg.includes("overloaded")) {
-    bengali = "মডেল ব্যস্ত, আবার চেষ্টা করা হচ্ছে";
-  } else if (code === 0 || lowerMsg.includes("fetch") || lowerMsg.includes("network") || lowerMsg.includes("failed to fetch")) {
-    bengali = "ইন্টারনেট সমস্যা";
+  let bengali = cleanRaw || 'সমস্যা হয়েছে';
+  if (
+    code === 400 ||
+    code === 401 ||
+    code === 403 ||
+    lowerMsg.includes('api key') ||
+    lowerMsg.includes('invalid key') ||
+    lowerMsg.includes('permission_denied') ||
+    lowerMsg.includes('unauthenticated')
+  ) {
+    bengali = `Key ভুল (${code || 400}): ${cleanRaw}`;
+  } else if (code === 429 || lowerMsg.includes('quota') || lowerMsg.includes('resource_exhausted')) {
+    bengali = `ফ্রি সীমা শেষ (429): ${cleanRaw}`;
+  } else if (code === 0 || lowerMsg.includes('fetch') || lowerMsg.includes('network') || lowerMsg.includes('failed to fetch')) {
+    bengali = `নেটওয়ার্ক সমস্যা: ${cleanRaw}`;
+  } else if (code > 0) {
+    bengali = `Gemini ${code}: ${cleanRaw}`;
   }
 
-  const original = status ? `[HTTP ${status}] ${rawMsg}` : rawMsg;
+  const original = status ? `[HTTP ${status}] ${cleanRaw}` : cleanRaw;
   return { bengali, original };
 }
 
@@ -79,6 +89,153 @@ function downsampleToPCM16(
   return result;
 }
 
+function parseVersionScore(modelName: string): number {
+  const lower = modelName.toLowerCase();
+  const match = lower.match(/-(\d+)(?:\.(\d+))?/);
+  if (!match) return 0;
+  const major = parseInt(match[1], 10) || 0;
+  const minor = parseInt(match[2] || '0', 10) || 0;
+  return major * 1000 + minor * 100;
+}
+
+interface DiscoveredVoiceModels {
+  liveModels: string[];
+  flashModels: string[];
+  ttsModels: string[];
+}
+
+async function discoverVoiceModelsFromListModels(apiKey: string): Promise<DiscoveredVoiceModels> {
+  const url = `https://generativelanguage.googleapis.com/v1beta/models?key=${encodeURIComponent(apiKey)}&pageSize=200`;
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), 7000);
+
+  try {
+    const res = await fetch(url, {
+      method: 'GET',
+      headers: { 'x-goog-api-key': apiKey },
+      signal: controller.signal,
+    });
+    clearTimeout(timer);
+
+    const rawText = await res.text().catch(() => '');
+    let data: any = null;
+    try {
+      data = rawText ? JSON.parse(rawText) : null;
+    } catch {}
+
+    if (!res.ok) {
+      const googleMsg = data?.error?.message || rawText || `HTTP ${res.status}`;
+      const err: any = new Error(googleMsg);
+      err.status = res.status;
+      throw err;
+    }
+
+    const list: any[] = Array.isArray(data?.models) ? data.models : [];
+
+    const liveCandidates: string[] = [];
+    const flashCandidates: string[] = [];
+    const ttsCandidates: string[] = [];
+
+    for (const item of list) {
+      const rawName = String(item?.name || '').replace(/^models\//, '').trim();
+      if (!rawName) continue;
+      const lower = rawName.toLowerCase();
+      const methods: string[] = Array.isArray(item?.supportedGenerationMethods)
+        ? item.supportedGenerationMethods
+        : [];
+
+      if (methods.includes('bidiGenerateContent')) {
+        liveCandidates.push(rawName);
+      }
+
+      if (methods.includes('generateContent')) {
+        if (lower.includes('tts')) {
+          ttsCandidates.push(rawName);
+        } else if (
+          lower.includes('flash') &&
+          !lower.includes('live') &&
+          !lower.includes('tts') &&
+          !lower.includes('image') &&
+          !lower.includes('embedding') &&
+          !lower.includes('vision') &&
+          !lower.includes('aqa') &&
+          !lower.includes('audio')
+        ) {
+          flashCandidates.push(rawName);
+        }
+      }
+    }
+
+    // Sort liveModels: "native-audio" first, then "live", then newest version
+    liveCandidates.sort((a, b) => {
+      const la = a.toLowerCase();
+      const lb = b.toLowerCase();
+      const scoreA =
+        (la.includes('native-audio') ? 100000 : la.includes('live') ? 50000 : 0) +
+        parseVersionScore(la);
+      const scoreB =
+        (lb.includes('native-audio') ? 100000 : lb.includes('live') ? 50000 : 0) +
+        parseVersionScore(lb);
+      return scoreB - scoreA;
+    });
+
+    // Sort flashModels: newest version first, prefer standard flash over lite/exp
+    flashCandidates.sort((a, b) => {
+      const la = a.toLowerCase();
+      const lb = b.toLowerCase();
+      const scoreA =
+        parseVersionScore(la) +
+        (!la.includes('lite') ? 30 : 0) +
+        (!la.includes('exp') && !la.includes('preview') ? 15 : 0);
+      const scoreB =
+        parseVersionScore(lb) +
+        (!lb.includes('lite') ? 30 : 0) +
+        (!lb.includes('exp') && !lb.includes('preview') ? 15 : 0);
+      return scoreB - scoreA;
+    });
+
+    // Sort ttsModels: newest version first
+    ttsCandidates.sort((a, b) => parseVersionScore(b) - parseVersionScore(a));
+
+    return {
+      liveModels: liveCandidates.slice(0, 3),
+      flashModels: flashCandidates,
+      ttsModels: ttsCandidates,
+    };
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+function getSupportedRecorderMimeType(): string {
+  if (typeof MediaRecorder === 'undefined') return '';
+  const candidates = [
+    'audio/webm;codecs=opus',
+    'audio/webm',
+    'audio/ogg;codecs=opus',
+    'audio/mp4',
+  ];
+  for (const mime of candidates) {
+    try {
+      if (MediaRecorder.isTypeSupported(mime)) return mime;
+    } catch {}
+  }
+  return '';
+}
+
+function blobToBase64(blob: Blob): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onloadend = () => {
+      const res = String(reader.result || '');
+      const commaIdx = res.indexOf(',');
+      resolve(commaIdx >= 0 ? res.slice(commaIdx + 1) : res);
+    };
+    reader.onerror = (e) => reject(e);
+    reader.readAsDataURL(blob);
+  });
+}
+
 export class GeminiLiveSession {
   private ws: WebSocket | null = null;
   private audioCtx: AudioContext | null = null;
@@ -91,11 +248,27 @@ export class GeminiLiveSession {
   private scheduledAudioSources: AudioBufferSourceNode[] = [];
   private currentState: 'connecting' | 'listening' | 'thinking' | 'speaking' | 'off' = 'off';
   private wasStoppedByUser = false;
-  private reconnectAttempts = 0;
-  private maxReconnectAttempts = 3;
   private isMuted = false;
   private isSetupComplete = false;
-  private activeModelName = "";
+  private isFallbackMode = false;
+
+  // Discovered models from ListModels
+  private liveModels: string[] = [];
+  private flashModels: string[] = [];
+  private ttsModels: string[] = [];
+
+  // Fallback Mode (Path 2) state
+  private mediaRecorder: MediaRecorder | null = null;
+  private recordedChunks: BlobPart[] = [];
+  private isRecordingClip = false;
+  private clipStartTime = 0;
+  private lastVoiceTime = 0;
+  private discardClip = false;
+  private isProcessingClip = false;
+  private vadTimer: any = null;
+  private interruptFrames = 0;
+  private isBrowserTtsSpeaking = false;
+  private conversationHistory: Array<{ role: 'user' | 'model'; parts: Array<{ text: string }> }> = [];
 
   // Live diagnostics tracking
   public socketStatus: 'open' | 'closed' | 'connecting' = 'closed';
@@ -104,15 +277,25 @@ export class GeminiLiveSession {
   public lastHeardText = '';
   public lastError: string | null = null;
   public currentMicLevel = 0;
+  public currentOutputLevel = 0;
+  public activeMode: 'live' | 'fallback' = 'fallback';
 
   constructor(private options: GeminiLiveOptions) {}
 
   public getMicAnalyser() { return this.micAnalyser; }
   public getOutputAnalyser() { return this.outputAnalyser; }
+  public isBrowserSpeechActive() { return this.isBrowserTtsSpeaking; }
 
   public setMuted(muted: boolean) {
     this.isMuted = muted;
-    logVoiceEvent("Mic", muted ? "Muted" : "Unmuted");
+    if (muted && this.isRecordingClip && this.mediaRecorder && this.mediaRecorder.state === 'recording') {
+      this.discardClip = true;
+      try {
+        this.mediaRecorder.stop();
+      } catch {}
+      this.isRecordingClip = false;
+    }
+    logVoiceEvent('Mic', muted ? 'Muted' : 'Unmuted');
   }
 
   public getDiagnostics() {
@@ -125,266 +308,141 @@ export class GeminiLiveSession {
       audioCtxState: this.audioCtx ? this.audioCtx.state : 'off',
       sampleRate: this.audioCtx ? this.audioCtx.sampleRate : 0,
       micLevel: this.currentMicLevel,
+      mode: this.activeMode,
     };
   }
 
   public sendTextMessage(text: string) {
-    if (!this.ws || this.ws.readyState !== WebSocket.OPEN) return;
-    try {
-      this.ws.send(JSON.stringify({
-        realtimeInput: { text }
-      }));
-    } catch (e) {}
+    if (this.ws && this.ws.readyState === WebSocket.OPEN && this.isSetupComplete) {
+      try {
+        this.ws.send(JSON.stringify({ realtimeInput: { text } }));
+      } catch {}
+    }
   }
 
   public async start() {
-    if (this.ws) return;
     this.wasStoppedByUser = false;
     this.isSetupComplete = false;
+    this.isFallbackMode = false;
     this.updateState('connecting');
     this.socketStatus = 'connecting';
 
     const apiKey = (this.options.apiKey || getGeminiKey() || '').replace(/[\r\n\t\s"']+/g, '').trim();
     if (!apiKey) {
-      const err = parseAndFormatGeminiError(400, 'API key missing');
-      this.lastError = `${err.bengali} (${err.original})`;
-      this.options.onError?.(err.bengali, err.original);
+      this.lastError = 'Gemini key নেই';
+      this.options.onError?.('Gemini key নেই');
       this.updateState('off');
       this.socketStatus = 'closed';
       return;
     }
 
-    // Determine model
-    let selectedModel = (this.options.model || localStorage.getItem('voice_model') || '').replace(/^models\//, '').trim();
-    if (!selectedModel) {
-      const liveRes = await getDynamicGeminiLiveModels(apiKey);
-      selectedModel = liveRes.models[0] || 'gemini-2.0-flash-exp';
+    // 1. Initialize Microphone & AnalyserNode immediately so Orb and 6 Bars respond from second 0
+    const audioReady = await this.initAudioAndAnalyzers();
+    if (!audioReady || this.wasStoppedByUser) {
+      return;
     }
-    this.activeModelName = selectedModel;
 
-    // Direct Google Gemini WebSocket URL (No server proxy)
-    const wsUrl = `wss://generativelanguage.googleapis.com/ws/google.ai.generativelanguage.v1beta.GenerativeService.BidiGenerateContent?key=${encodeURIComponent(apiKey)}`;
-
-    logVoiceEvent("Live WS", `Connecting directly to ${selectedModel}...`);
-
+    // 2. Fetch available models from Google ListModels dynamically
     try {
-      this.ws = new WebSocket(wsUrl);
-    } catch (e: any) {
-      this.socketStatus = 'closed';
-      const err = parseAndFormatGeminiError(0, e?.message || 'WebSocket connection failed');
-      this.lastError = `${err.bengali} (${err.original})`;
-      this.options.onError?.(err.bengali, err.original);
+      const discovered = await discoverVoiceModelsFromListModels(apiKey);
+      this.liveModels = discovered.liveModels;
+      this.flashModels = discovered.flashModels;
+      this.ttsModels = discovered.ttsModels;
+    } catch (err: any) {
+      const formatted = parseAndFormatGeminiError(err?.status || 0, err?.message || 'ListModels failed');
+      this.lastError = formatted.bengali;
+      this.options.onError?.(formatted.bengali, formatted.original);
       this.updateState('off');
+      this.socketStatus = 'closed';
       return;
     }
 
-    this.ws.onopen = () => {
-      this.reconnectAttempts = 0;
-      this.socketStatus = 'open';
-      logVoiceEvent("Live WS", `Direct WebSocket connection open. Sending setup...`, "success");
+    if (this.wasStoppedByUser) return;
 
-      // Requirement 3: Send setup message on open
-      const setupMsg = {
-        setup: {
-          model: `models/${selectedModel}`,
-          generationConfig: {
-            responseModalities: ["AUDIO"],
-            speechConfig: {
-              voiceConfig: {
-                prebuiltVoiceConfig: {
-                  voiceName: this.options.voiceName || 'Sulafat',
-                },
-              },
-            },
-          },
-          systemInstruction: {
-            parts: [{ text: this.options.systemInstruction || "You are Rose, a helpful assistant." }],
-          },
-          inputAudioTranscription: {},
-          outputAudioTranscription: {}
-        },
-      };
-      this.ws?.send(JSON.stringify(setupMsg));
-    };
-
-    this.ws.onmessage = async (event) => {
-      this.messagesReceived++;
-      try {
-        const raw = typeof event.data === 'string' ? event.data : await (event.data as Blob).text();
-        const msg = JSON.parse(raw);
-
-        if (msg.setupComplete) {
-          this.isSetupComplete = true;
-          this.updateState('listening');
-          this.startMicCapture();
-          return;
-        }
-
-        if (msg.serverContent) {
-          const content = msg.serverContent;
-          
-          // User Transcription
-          const inTrans = content.inputTranscription || content.inputAudioTranscription || content.input_audio_transcription || content.userTurn?.parts?.find((p: any) => p.text);
-          if (inTrans) {
-            const textVal = typeof inTrans === 'string' ? inTrans : (inTrans.text || inTrans.parts?.[0]?.text);
-            if (textVal) {
-              this.lastHeardText = textVal;
-              this.options.onTranscription?.('user', textVal, inTrans.isFinal || inTrans.is_final || true);
-            }
-          }
-
-          // Assistant Transcription
-          const outTrans = content.outputTranscription || content.outputAudioTranscription || content.output_audio_transcription;
-          if (outTrans) {
-            const textVal = typeof outTrans === 'string' ? outTrans : (outTrans.text || outTrans.parts?.[0]?.text);
-            if (textVal) {
-              this.options.onTranscription?.('assistant', textVal, true);
-            }
-          }
-
-          if (content.modelTurn) {
-            const parts = content.modelTurn.parts || [];
-            for (const part of parts) {
-              if (part.inlineData) {
-                this.updateState('speaking');
-                this.playPcmAudio(part.inlineData.data);
-              }
-              if (part.text) {
-                this.options.onTranscription?.('assistant', part.text, false);
-              }
-            }
-          }
-
-          if (content.interrupted) {
-            this.stopAllAudioPlayback();
-            this.updateState('listening');
-            this.options.onInterrupted?.();
-          }
-
-          if (content.turnComplete) {
-            this.scheduleReturnToListening();
-            this.options.onTurnComplete?.();
-          }
-        }
-
-        if (msg.error) {
-          logVoiceEvent("Live WS", `Error: ${msg.error.message || msg.error}`, "error");
-          const rawMsg = typeof msg.error === 'string' ? msg.error : (msg.error.message || JSON.stringify(msg.error));
-          const code = msg.error?.code || msg.error?.status || 500;
-          const formatted = parseAndFormatGeminiError(code, rawMsg);
-          this.lastError = `${formatted.bengali} (${formatted.original})`;
-          this.options.onError?.(formatted.bengali, formatted.original);
-
-          // Retry on 503 after 2s once
-          if (code === 503 && this.reconnectAttempts < 1) {
-            this.reconnectAttempts++;
-            setTimeout(() => this.start(), 2000);
-            return;
-          }
-        }
-      } catch (e) {}
-    };
-
-    this.ws.onclose = (ev) => {
-      this.ws = null;
-      this.socketStatus = 'closed';
-      this.isSetupComplete = false;
-
-      if (ev?.code === 1006 || ev?.code === 1008 || ev?.code === 4004) {
-        const formatted = parseAndFormatGeminiError(ev?.code || 500, ev?.reason || 'Connection closed');
-        this.lastError = `${formatted.bengali} (${formatted.original})`;
-        this.options.onError?.(formatted.bengali, formatted.original);
+    // 3. Try Path 1 (Live WebSocket): up to 3 bidiGenerateContent models, max 8 seconds total.
+    // If list is empty or 8s expires or connection fails, go directly to Path 2 (MediaRecorder + generateContent).
+    if (this.liveModels.length > 0) {
+      const connectedLive = await this.tryConnectLiveModels(apiKey, this.liveModels.slice(0, 3), 8000);
+      if (connectedLive && !this.wasStoppedByUser) {
+        this.activeMode = 'live';
+        this.socketStatus = 'open';
+        this.updateState('listening');
+        return;
       }
+    }
 
-      this.updateState('off');
-      this.options.onClose?.(ev);
-    };
-
-    this.ws.onerror = (err: any) => {
-      this.socketStatus = 'closed';
-      const formatted = parseAndFormatGeminiError(0, err?.message || 'WebSocket Error');
-      this.lastError = `${formatted.bengali} (${formatted.original})`;
-      logVoiceEvent("Live WS", "WebSocket Error", "error");
-    };
+    // 4. Activate Path 2 (Reliable Voice via MediaRecorder + generateContent + TTS/speechSynthesis)
+    if (!this.wasStoppedByUser) {
+      this.activateFallbackPath(apiKey);
+    }
   }
 
-  private async startMicCapture() {
-    logVoiceEvent("Mic", "Starting mic capture...");
+  private async initAudioAndAnalyzers(): Promise<boolean> {
     try {
       if (this.options.micStream) {
         this.micStream = this.options.micStream;
       } else {
         this.micStream = await navigator.mediaDevices.getUserMedia({
-          audio: { 
-            echoCancellation: true, 
-            noiseSuppression: true, 
-            autoGainControl: true 
-          }
+          audio: {
+            echoCancellation: true,
+            noiseSuppression: true,
+            autoGainControl: true,
+          },
         });
       }
-      logVoiceEvent("Mic", "Mic stream acquired");
 
       const micTrack = this.micStream.getAudioTracks()[0];
-      if (!micTrack || micTrack.readyState !== 'live' || !micTrack.enabled) {
-        throw new Error("মাইক ট্র্যাক সচল নয়।");
+      if (!micTrack || micTrack.readyState !== 'live') {
+        throw new Error('মাইক সচল নয়');
       }
 
-      this.audioCtx = this.options.audioContext || new (window.AudioContext || (window as any).webkitAudioContext)();
-      if (this.audioCtx.state !== 'running') {
-        await this.audioCtx.resume();
-      }
+      this.audioCtx =
+        this.options.audioContext ||
+        new (window.AudioContext || (window as any).webkitAudioContext)();
 
       if (this.audioCtx.state !== 'running') {
-        const formatted = parseAndFormatGeminiError(0, "AudioContext state is not running");
-        this.lastError = `${formatted.bengali} (${formatted.original})`;
-        this.options.onError?.(formatted.bengali, formatted.original);
-        return;
+        try {
+          await this.audioCtx.resume();
+        } catch {}
       }
 
       const source = this.audioCtx.createMediaStreamSource(this.micStream);
       const sourceSampleRate = this.audioCtx.sampleRate;
-      logVoiceEvent("Mic", `Capture started at ${sourceSampleRate}Hz`);
 
       this.micAnalyser = this.audioCtx.createAnalyser();
       this.micAnalyser.fftSize = 256;
+      this.micAnalyser.smoothingTimeConstant = 0.45;
       source.connect(this.micAnalyser);
 
       this.outputAnalyser = this.audioCtx.createAnalyser();
       this.outputAnalyser.fftSize = 256;
+      this.outputAnalyser.smoothingTimeConstant = 0.45;
 
-      const processBuffer = (float32Samples: Float32Array) => {
-        let sumSq = 0;
-        for (let i = 0; i < float32Samples.length; i++) {
-          sumSq += float32Samples[i] * float32Samples[i];
-        }
-        const rms = Math.sqrt(sumSq / float32Samples.length);
-        this.currentMicLevel = Math.min(1.0, Math.max(0.0, rms * 4.0));
-
-        if (!this.ws || this.ws.readyState !== WebSocket.OPEN || this.isMuted || !this.isSetupComplete) {
+      // Also attach PCM capture for Path 1 Live WebSocket (only sends if ws is open & setupComplete)
+      const processPcmBuffer = (float32Samples: Float32Array) => {
+        if (!this.ws || this.ws.readyState !== WebSocket.OPEN || this.isMuted || !this.isSetupComplete || this.isFallbackMode) {
           return;
         }
-
         const pcm16 = downsampleToPCM16(float32Samples, sourceSampleRate, 16000);
         if (pcm16.length === 0) return;
 
         const u8 = new Uint8Array(pcm16.buffer, pcm16.byteOffset, pcm16.byteLength);
         let binary = '';
-        const len = u8.byteLength;
-        for (let i = 0; i < len; i++) {
+        for (let i = 0; i < u8.byteLength; i++) {
           binary += String.fromCharCode(u8[i]);
         }
         const base64 = btoa(binary);
 
         try {
-          this.ws.send(JSON.stringify({
-            realtimeInput: {
-              audio: { data: base64, mimeType: "audio/pcm;rate=16000" }
-            }
-          }));
+          this.ws.send(
+            JSON.stringify({
+              realtimeInput: {
+                audio: { data: base64, mimeType: 'audio/pcm;rate=16000' },
+              },
+            })
+          );
           this.chunksSent++;
-        } catch (e) {
-          // Drop silently if send fails
-        }
+        } catch {}
       };
 
       let workletActive = false;
@@ -409,24 +467,20 @@ export class GeminiLiveSession {
         this.audioWorkletNode = new AudioWorkletNode(this.audioCtx, 'audio-processor');
         this.audioWorkletNode.port.onmessage = (e) => {
           if (e.data && e.data instanceof Float32Array) {
-            processBuffer(e.data);
+            processPcmBuffer(e.data);
           }
         };
         source.connect(this.audioWorkletNode);
         workletActive = true;
-        logVoiceEvent("Mic", "AudioWorklet active");
-      } catch (e) {
-        logVoiceEvent("Mic", "Worklet failed, fallback to ScriptProcessor", "warn");
-      }
+      } catch {}
 
       if (!workletActive) {
         this.scriptProcessor = this.audioCtx.createScriptProcessor(4096, 1, 1);
         this.scriptProcessor.onaudioprocess = (e) => {
           const input = e.inputBuffer.getChannelData(0);
-          processBuffer(input);
+          processPcmBuffer(input);
         };
         source.connect(this.scriptProcessor);
-        
         const silentGain = this.audioCtx.createGain();
         silentGain.gain.value = 0;
         this.scriptProcessor.connect(silentGain);
@@ -435,18 +489,782 @@ export class GeminiLiveSession {
 
       this.options.onMicLive?.(true);
       this.startVisualizer();
+      return true;
     } catch (e: any) {
-      logVoiceEvent("Mic", `Capture Error: ${e.message}`, "error");
-      const formatted = parseAndFormatGeminiError(0, e?.message || 'Mic error');
-      this.lastError = `${formatted.bengali} (${formatted.original})`;
-      this.options.onError?.(formatted.bengali, formatted.original);
+      const isDenied =
+        e?.name === 'NotAllowedError' ||
+        e?.name === 'PermissionDeniedError' ||
+        String(e?.message || '').toLowerCase().includes('denied');
+      const msg = isDenied ? 'মাইক অনুমতি নেই' : `মাইক ত্রুটি: ${e?.message || e}`;
+      this.lastError = msg;
+      this.options.onError?.(msg);
+      this.updateState('off');
+      return false;
     }
   }
 
-  private playPcmAudio(base64Pcm: string) {
+  private async tryConnectLiveModels(
+    apiKey: string,
+    candidates: string[],
+    totalBudgetMs: number
+  ): Promise<boolean> {
+    const deadline = Date.now() + totalBudgetMs;
+
+    for (const modelName of candidates) {
+      if (this.wasStoppedByUser) return false;
+      const remaining = deadline - Date.now();
+      if (remaining <= 600) break;
+
+      const perAttemptTimeout = Math.min(2800, remaining);
+      const ok = await this.trySingleLiveModel(apiKey, modelName, perAttemptTimeout);
+      if (ok) return true;
+    }
+
+    return false;
+  }
+
+  private trySingleLiveModel(
+    apiKey: string,
+    modelName: string,
+    timeoutMs: number
+  ): Promise<boolean> {
+    return new Promise((resolve) => {
+      let settled = false;
+      const wsUrl = `wss://generativelanguage.googleapis.com/ws/google.ai.generativelanguage.v1beta.GenerativeService.BidiGenerateContent?key=${encodeURIComponent(apiKey)}`;
+
+      let socket: WebSocket | null = null;
+      const finish = (success: boolean) => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timer);
+        if (!success && socket) {
+          try {
+            socket.onopen = null;
+            socket.onmessage = null;
+            socket.onerror = null;
+            socket.onclose = null;
+            socket.close();
+          } catch {}
+          if (this.ws === socket) {
+            this.ws = null;
+          }
+        }
+        resolve(success);
+      };
+
+      const timer = setTimeout(() => {
+        finish(false);
+      }, timeoutMs);
+
+      try {
+        socket = new WebSocket(wsUrl);
+        this.ws = socket;
+      } catch {
+        finish(false);
+        return;
+      }
+
+      socket.onopen = () => {
+        if (this.wasStoppedByUser) {
+          finish(false);
+          return;
+        }
+        const setupMsg = {
+          setup: {
+            model: `models/${modelName}`,
+            generationConfig: {
+              responseModalities: ['AUDIO'],
+              speechConfig: {
+                voiceConfig: {
+                  prebuiltVoiceConfig: {
+                    voiceName: this.options.voiceName || 'Sulafat',
+                  },
+                },
+              },
+            },
+            systemInstruction: {
+              parts: [{ text: this.options.systemInstruction || 'You are Rose, a helpful assistant.' }],
+            },
+            inputAudioTranscription: {},
+            outputAudioTranscription: {},
+          },
+        };
+        try {
+          socket?.send(JSON.stringify(setupMsg));
+        } catch {
+          finish(false);
+        }
+      };
+
+      socket.onmessage = async (event) => {
+        this.messagesReceived++;
+        try {
+          const raw = typeof event.data === 'string' ? event.data : await (event.data as Blob).text();
+          const msg = JSON.parse(raw);
+
+          if (msg.error) {
+            if (!settled) {
+              finish(false);
+              return;
+            }
+            // If error occurs after setupComplete, switch seamlessly to Path 2
+            this.switchFromLiveToFallback(apiKey);
+            return;
+          }
+
+          if (msg.setupComplete) {
+            this.isSetupComplete = true;
+            finish(true);
+            return;
+          }
+
+          if (msg.serverContent) {
+            this.handleLiveServerContent(msg.serverContent);
+          }
+        } catch {}
+      };
+
+      socket.onerror = () => {
+        if (!settled) {
+          finish(false);
+        } else {
+          this.switchFromLiveToFallback(apiKey);
+        }
+      };
+
+      socket.onclose = () => {
+        if (!settled) {
+          finish(false);
+        } else if (!this.wasStoppedByUser && !this.isFallbackMode) {
+          // Live socket dropped mid-call: seamlessly switch to Path 2 so call never breaks
+          this.switchFromLiveToFallback(apiKey);
+        }
+      };
+    });
+  }
+
+  private switchFromLiveToFallback(apiKey: string) {
+    if (this.wasStoppedByUser || this.isFallbackMode) return;
+    this.isSetupComplete = false;
+    if (this.ws) {
+      try {
+        this.ws.onopen = null;
+        this.ws.onmessage = null;
+        this.ws.onerror = null;
+        this.ws.onclose = null;
+        this.ws.close();
+      } catch {}
+      this.ws = null;
+    }
+    this.activateFallbackPath(apiKey);
+  }
+
+  private liveUserBuffer = '';
+  private liveAssistantBuffer = '';
+
+  private handleLiveServerContent(content: any) {
+    const inTrans =
+      content.inputTranscription ||
+      content.inputAudioTranscription ||
+      content.input_audio_transcription ||
+      content.userTurn?.parts?.find((p: any) => p.text);
+    if (inTrans) {
+      const textVal = typeof inTrans === 'string' ? inTrans : inTrans.text || inTrans.parts?.[0]?.text;
+      if (textVal) {
+        this.liveUserBuffer += textVal;
+        const combined = this.liveUserBuffer.trim();
+        this.lastHeardText = combined;
+        this.options.onTranscription?.('user', combined, false);
+      }
+    }
+
+    const outTrans =
+      content.outputTranscription ||
+      content.outputAudioTranscription ||
+      content.output_audio_transcription;
+    if (outTrans) {
+      const textVal = typeof outTrans === 'string' ? outTrans : outTrans.text || outTrans.parts?.[0]?.text;
+      if (textVal) {
+        this.liveAssistantBuffer += textVal;
+        this.options.onTranscription?.('assistant', this.liveAssistantBuffer.trim(), false);
+      }
+    }
+
+    if (content.modelTurn) {
+      const parts = content.modelTurn.parts || [];
+      for (const part of parts) {
+        if (part.inlineData?.data) {
+          this.updateState('speaking');
+          this.playPcmAudioChunk(part.inlineData.data);
+        }
+        if (part.text && !outTrans) {
+          this.liveAssistantBuffer += part.text;
+          this.options.onTranscription?.('assistant', this.liveAssistantBuffer.trim(), false);
+        }
+      }
+    }
+
+    if (content.interrupted) {
+      this.liveUserBuffer = '';
+      this.liveAssistantBuffer = '';
+      this.stopAllAudioPlayback();
+      this.updateState('listening');
+      this.options.onInterrupted?.();
+    }
+
+    if (content.turnComplete) {
+      this.liveUserBuffer = '';
+      this.liveAssistantBuffer = '';
+      this.scheduleReturnToListening();
+      this.options.onTurnComplete?.();
+    }
+  }
+
+  // =========================================================================
+  // PATH 2: MediaRecorder VAD + Gemini generateContent + TTS/speechSynthesis
+  // =========================================================================
+  private activateFallbackPath(apiKey: string) {
+    if (this.wasStoppedByUser || this.isFallbackMode) return;
+    this.isFallbackMode = true;
+    this.activeMode = 'fallback';
+    this.socketStatus = 'open';
+    this.updateState('listening');
+    logVoiceEvent('Fallback Voice', 'Activated Path 2 (MediaRecorder + generateContent)');
+
+    const SPEECH_START_THRESHOLD = 0.042;
+    const SPEECH_KEEP_THRESHOLD = 0.028;
+    const INTERRUPT_THRESHOLD = 0.22;
+    const SILENCE_DURATION_MS = 1000;
+    const MIN_CLIP_DURATION_MS = 600;
+    const MAX_CLIP_DURATION_MS = 20000;
+
+    if (this.vadTimer) clearInterval(this.vadTimer);
+
+    this.vadTimer = setInterval(() => {
+      if (this.wasStoppedByUser || !this.micStream) return;
+
+      const level = this.currentMicLevel;
+
+      // 1. If muted: do not record
+      if (this.isMuted) {
+        if (this.isRecordingClip && this.mediaRecorder && this.mediaRecorder.state === 'recording') {
+          this.discardClip = true;
+          try {
+            this.mediaRecorder.stop();
+          } catch {}
+          this.isRecordingClip = false;
+        }
+        return;
+      }
+
+      // 2. While Rose is speaking: pause recording so Rose doesn't hear herself,
+      //    UNLESS user speaks loudly to interrupt (barge-in)
+      if (this.currentState === 'speaking') {
+        if (level >= INTERRUPT_THRESHOLD) {
+          this.interruptFrames++;
+          if (this.interruptFrames >= 4) {
+            this.interruptFrames = 0;
+            this.interruptPlayback();
+            this.options.onInterrupted?.();
+            this.updateState('listening');
+          }
+        } else {
+          this.interruptFrames = 0;
+        }
+        return;
+      }
+
+      this.interruptFrames = 0;
+
+      // 3. Do not record while waiting for Gemini response ('thinking')
+      if (this.currentState === 'thinking' || this.isProcessingClip) {
+        return;
+      }
+
+      const now = Date.now();
+
+      // 4. Start or stop MediaRecorder based on mic level
+      if (!this.isRecordingClip) {
+        if (level >= SPEECH_START_THRESHOLD) {
+          this.startClipRecording(apiKey, MIN_CLIP_DURATION_MS);
+        }
+      } else {
+        if (level >= SPEECH_KEEP_THRESHOLD) {
+          this.lastVoiceTime = now;
+        }
+        const silenceMs = now - this.lastVoiceTime;
+        const totalMs = now - this.clipStartTime;
+        if (silenceMs >= SILENCE_DURATION_MS || totalMs >= MAX_CLIP_DURATION_MS) {
+          if (this.mediaRecorder && this.mediaRecorder.state === 'recording') {
+            try {
+              this.mediaRecorder.stop();
+            } catch {}
+          }
+          this.isRecordingClip = false;
+        }
+      }
+    }, 50);
+  }
+
+  private startClipRecording(apiKey: string, minDurationMs: number) {
+    if (!this.micStream || this.isRecordingClip || this.isProcessingClip) return;
+
+    try {
+      const mimeType = getSupportedRecorderMimeType();
+      const recorder = mimeType
+        ? new MediaRecorder(this.micStream, { mimeType })
+        : new MediaRecorder(this.micStream);
+
+      this.recordedChunks = [];
+      this.discardClip = false;
+      this.isRecordingClip = true;
+      this.clipStartTime = Date.now();
+      this.lastVoiceTime = Date.now();
+      this.mediaRecorder = recorder;
+
+      recorder.ondataavailable = (ev) => {
+        if (ev.data && ev.data.size > 0) {
+          this.recordedChunks.push(ev.data);
+        }
+      };
+
+      recorder.onstop = async () => {
+        this.isRecordingClip = false;
+        const clipDuration = Date.now() - this.clipStartTime;
+        if (
+          this.wasStoppedByUser ||
+          this.isMuted ||
+          this.discardClip ||
+          clipDuration < minDurationMs ||
+          this.recordedChunks.length === 0
+        ) {
+          this.recordedChunks = [];
+          return;
+        }
+
+        const actualMime = (recorder.mimeType || mimeType || 'audio/webm').split(';')[0].trim();
+        const blob = new Blob(this.recordedChunks, { type: actualMime });
+        this.recordedChunks = [];
+
+        if (blob.size < 800) {
+          return;
+        }
+
+        this.chunksSent++;
+        await this.processAudioClipWithGemini(apiKey, blob, actualMime);
+      };
+
+      recorder.start(100);
+    } catch (e: any) {
+      this.isRecordingClip = false;
+      logVoiceEvent('Recorder', `Failed starting MediaRecorder: ${e?.message}`, 'error');
+    }
+  }
+
+  private async processAudioClipWithGemini(apiKey: string, audioBlob: Blob, mimeType: string) {
+    if (this.wasStoppedByUser || this.isProcessingClip) return;
+    this.isProcessingClip = true;
+    this.updateState('thinking');
+
+    try {
+      if (this.flashModels.length === 0) {
+        const redetected = await discoverVoiceModelsFromListModels(apiKey);
+        this.flashModels = redetected.flashModels;
+        this.ttsModels = redetected.ttsModels;
+      }
+
+      if (this.flashModels.length === 0) {
+        throw new Error('উপযুক্ত Flash মডেল পাওয়া যায়নি');
+      }
+
+      const base64Audio = await blobToBase64(audioBlob);
+      const candidates = this.flashModels.slice(0, 3);
+      let rawResponseText = '';
+      let lastErr: any = null;
+
+      const promptInstruction =
+        'ব্যবহারকারীর কথা লিখে দাও এবং Rose হিসেবে সেই ভাষায় উত্তর দাও। শুধু JSON ফেরত দাও: {"transcript":"...","reply":"..."}';
+
+      const contents = [
+        ...this.conversationHistory.slice(-6),
+        {
+          role: 'user',
+          parts: [
+            {
+              inlineData: {
+                mimeType: mimeType || 'audio/webm',
+                data: base64Audio,
+              },
+            },
+            {
+              text: promptInstruction,
+            },
+          ],
+        },
+      ];
+
+      const body: any = {
+        contents,
+        generationConfig: {
+          temperature: 0.7,
+          maxOutputTokens: 350,
+        },
+      };
+
+      if (this.options.systemInstruction && this.options.systemInstruction.trim()) {
+        body.systemInstruction = {
+          parts: [{ text: this.options.systemInstruction.trim() }],
+        };
+      }
+
+      for (const flashModel of candidates) {
+        if (this.wasStoppedByUser) return;
+        const url = `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(flashModel)}:generateContent?key=${encodeURIComponent(apiKey)}`;
+
+        try {
+          const res = await fetch(url, {
+            method: 'POST',
+            headers: {
+              'Content-Type': 'application/json',
+              'x-goog-api-key': apiKey,
+            },
+            body: JSON.stringify(body),
+          });
+
+          const rawText = await res.text().catch(() => '');
+          let data: any = null;
+          try {
+            data = rawText ? JSON.parse(rawText) : null;
+          } catch {}
+
+          if (!res.ok) {
+            const googleMsg = data?.error?.message || rawText || `HTTP ${res.status}`;
+            const err: any = new Error(googleMsg);
+            err.status = res.status;
+            lastErr = err;
+            if (res.status === 404 || res.status === 503) {
+              continue;
+            }
+            throw err;
+          }
+
+          this.messagesReceived++;
+          rawResponseText =
+            data?.candidates?.[0]?.content?.parts
+              ?.map((p: any) => p?.text || '')
+              .join('')
+              .trim() || '';
+
+          if (rawResponseText) {
+            lastErr = null;
+            break;
+          }
+        } catch (err: any) {
+          lastErr = err;
+          if (err?.status && err.status !== 404 && err.status !== 503) {
+            break;
+          }
+        }
+      }
+
+      if (lastErr && !rawResponseText) {
+        throw lastErr;
+      }
+
+      if (!rawResponseText || this.wasStoppedByUser) {
+        if (!this.wasStoppedByUser) this.updateState('listening');
+        return;
+      }
+
+      // Parse JSON (strip ```json and ``` fences if present)
+      const stripped = rawResponseText
+        .replace(/```(?:json)?/gi, '')
+        .replace(/```/g, '')
+        .trim();
+
+      let transcript = '';
+      let reply = '';
+
+      const jsonMatch = stripped.match(/\{[\s\S]*\}/);
+      if (jsonMatch) {
+        try {
+          const parsed = JSON.parse(jsonMatch[0]);
+          transcript = String(parsed?.transcript ?? '').trim();
+          reply = String(parsed?.reply ?? '').trim();
+        } catch {
+          reply = stripped;
+        }
+      } else {
+        reply = stripped;
+      }
+
+      if (!transcript && !reply) {
+        if (!this.wasStoppedByUser) this.updateState('listening');
+        return;
+      }
+
+      if (transcript) {
+        this.lastHeardText = transcript;
+        this.conversationHistory.push({ role: 'user', parts: [{ text: transcript }] });
+        this.options.onTranscription?.('user', transcript, true);
+      }
+
+      if (reply && !this.wasStoppedByUser) {
+        this.conversationHistory.push({ role: 'model', parts: [{ text: reply }] });
+        this.options.onTranscription?.('assistant', reply, true);
+        await this.speakReply(apiKey, reply);
+      }
+
+      if (!this.wasStoppedByUser) {
+        this.options.onTurnComplete?.();
+        if (this.currentState !== 'speaking') {
+          this.updateState('listening');
+        }
+      }
+    } catch (err: any) {
+      if (!this.wasStoppedByUser) {
+        const formatted = parseAndFormatGeminiError(err?.status || 0, err?.message || 'Error');
+        this.lastError = formatted.bengali;
+        this.options.onError?.(formatted.bengali, formatted.original);
+        this.updateState('listening');
+      }
+    } finally {
+      this.isProcessingClip = false;
+    }
+  }
+
+  private async speakReply(apiKey: string, text: string): Promise<void> {
+    const cleanText = text.replace(/[*#_~`]/g, '').trim();
+    if (!cleanText || this.wasStoppedByUser) return;
+
+    this.updateState('speaking');
+
+    // 1. Try Gemini TTS model from ListModels if available
+    if (this.ttsModels.length > 0) {
+      const ttsModel = this.ttsModels[0];
+      const playedViaGeminiTts = await this.trySpeakViaGeminiTts(apiKey, ttsModel, cleanText);
+      if (playedViaGeminiTts || this.wasStoppedByUser) {
+        if (!this.wasStoppedByUser) {
+          this.updateState('listening');
+        }
+        return;
+      }
+    }
+
+    // 2. Fallback to browser speechSynthesis (same language, female voice preferred, same speed)
+    if (!this.wasStoppedByUser) {
+      await this.speakViaBrowserSpeechSynthesis(cleanText);
+      if (!this.wasStoppedByUser) {
+        this.updateState('listening');
+      }
+    }
+  }
+
+  private async trySpeakViaGeminiTts(apiKey: string, ttsModel: string, text: string): Promise<boolean> {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), 7000);
+
+    try {
+      const url = `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(ttsModel)}:generateContent?key=${encodeURIComponent(apiKey)}`;
+      const voiceName = this.options.voiceName || 'Leda';
+
+      const res = await fetch(url, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'x-goog-api-key': apiKey,
+        },
+        body: JSON.stringify({
+          contents: [{ parts: [{ text }] }],
+          generationConfig: {
+            responseModalities: ['AUDIO'],
+            speechConfig: {
+              voiceConfig: {
+                prebuiltVoiceConfig: {
+                  voiceName,
+                },
+              },
+            },
+          },
+        }),
+        signal: controller.signal,
+      });
+      clearTimeout(timer);
+
+      if (!res.ok) return false;
+      const data = await res.json().catch(() => null);
+      const part = data?.candidates?.[0]?.content?.parts?.find(
+        (p: any) => p?.inlineData?.data || p?.inline_data?.data
+      );
+      const base64Audio = part?.inlineData?.data || part?.inline_data?.data;
+      if (!base64Audio || this.wasStoppedByUser) return false;
+
+      return await this.playPcmAudioAndWait(base64Audio);
+    } catch {
+      return false;
+    } finally {
+      clearTimeout(timer);
+    }
+  }
+
+  private playPcmAudioAndWait(base64Pcm: string): Promise<boolean> {
+    return new Promise((resolve) => {
+      if (!this.audioCtx || this.wasStoppedByUser) {
+        resolve(false);
+        return;
+      }
+      if (this.audioCtx.state === 'suspended') {
+        this.audioCtx.resume().catch(() => {});
+      }
+
+      try {
+        const binaryStr = atob(base64Pcm);
+        const len = binaryStr.length;
+        const bytes = new Uint8Array(len);
+        for (let i = 0; i < len; i++) bytes[i] = binaryStr.charCodeAt(i);
+
+        const pcm16 = new Int16Array(bytes.buffer, bytes.byteOffset, Math.floor(len / 2));
+        const float32 = new Float32Array(pcm16.length);
+        for (let i = 0; i < pcm16.length; i++) float32[i] = pcm16[i] / 32768.0;
+
+        const audioBuffer = this.audioCtx.createBuffer(1, float32.length, 24000);
+        audioBuffer.copyToChannel(float32, 0);
+
+        const source = this.audioCtx.createBufferSource();
+        source.buffer = audioBuffer;
+
+        const speed = Math.min(1.35, Math.max(0.85, this.options.speechSpeed || 1.05));
+        source.playbackRate.value = speed;
+
+        const gainNode = this.audioCtx.createGain();
+        gainNode.gain.value = Math.min(1.0, Math.max(0.1, (this.options.voiceVolume ?? 100) / 100));
+
+        source.connect(gainNode);
+        if (this.outputAnalyser) {
+          gainNode.connect(this.outputAnalyser);
+        }
+        gainNode.connect(this.audioCtx.destination);
+
+        this.scheduledAudioSources.push(source);
+        source.onended = () => {
+          this.scheduledAudioSources = this.scheduledAudioSources.filter((s) => s !== source);
+          resolve(true);
+        };
+
+        source.start(0);
+      } catch {
+        resolve(false);
+      }
+    });
+  }
+
+  private speakViaBrowserSpeechSynthesis(text: string): Promise<boolean> {
+    return new Promise((resolve) => {
+      if (typeof window === 'undefined' || !('speechSynthesis' in window) || this.wasStoppedByUser) {
+        resolve(false);
+        return;
+      }
+
+      const startSpeaking = (voices: SpeechSynthesisVoice[]) => {
+        if (this.wasStoppedByUser) {
+          resolve(false);
+          return;
+        }
+
+        const targetLang = (this.options.language || 'bn-BD').toLowerCase();
+        const langPrefix = targetLang.split('-')[0];
+
+        const isFemale = (v: SpeechSynthesisVoice) => {
+          const s = `${v.name} ${v.voiceURI}`.toLowerCase();
+          return (
+            s.includes('female') ||
+            s.includes('woman') ||
+            s.includes('girl') ||
+            s.includes('samantha') ||
+            s.includes('zira') ||
+            s.includes('veena') ||
+            s.includes('sangeeta') ||
+            s.includes('lekha') ||
+            s.includes('kalpana') ||
+            s.includes('google') ||
+            s.includes('natural')
+          );
+        };
+
+        const isMale = (v: SpeechSynthesisVoice) =>
+          /\b(male|man|boy|david|mark|alex|daniel|fred|hemant|prabhat)\b/i.test(`${v.name} ${v.voiceURI}`);
+
+        const langVoices = voices.filter((v) => v.lang.toLowerCase().startsWith(langPrefix));
+        const chosenVoice =
+          langVoices.find((v) => isFemale(v) && !isMale(v)) ||
+          langVoices.find((v) => !isMale(v)) ||
+          langVoices[0] ||
+          voices.find((v) => isFemale(v) && !isMale(v)) ||
+          voices[0] ||
+          null;
+
+        const utterance = new SpeechSynthesisUtterance(text);
+        utterance.lang = chosenVoice?.lang || this.options.language || 'bn-BD';
+        if (chosenVoice) utterance.voice = chosenVoice;
+        utterance.rate = Math.min(1.35, Math.max(0.85, this.options.speechSpeed || 1.05));
+        utterance.pitch = Math.min(1.5, Math.max(0.85, this.options.speechPitch || 1.15));
+        utterance.volume = Math.min(1.0, Math.max(0.1, (this.options.voiceVolume ?? 100) / 100));
+
+        let settled = false;
+        const finish = (ok: boolean) => {
+          if (settled) return;
+          settled = true;
+          this.isBrowserTtsSpeaking = false;
+          clearTimeout(safetyTimer);
+          resolve(ok);
+        };
+
+        const safetyTimer = setTimeout(() => {
+          finish(true);
+        }, Math.max(8000, text.length * 120));
+
+        utterance.onstart = () => {
+          this.isBrowserTtsSpeaking = true;
+        };
+        utterance.onend = () => finish(true);
+        utterance.onerror = () => finish(false);
+
+        try {
+          window.speechSynthesis.cancel();
+          this.isBrowserTtsSpeaking = true;
+          window.speechSynthesis.speak(utterance);
+          window.speechSynthesis.resume();
+        } catch {
+          finish(false);
+        }
+      };
+
+      const existingVoices = window.speechSynthesis.getVoices();
+      if (existingVoices && existingVoices.length > 0) {
+        startSpeaking(existingVoices);
+      } else {
+        let handled = false;
+        const onVoices = () => {
+          if (handled) return;
+          handled = true;
+          window.speechSynthesis.removeEventListener('voiceschanged', onVoices);
+          startSpeaking(window.speechSynthesis.getVoices() || []);
+        };
+        window.speechSynthesis.addEventListener('voiceschanged', onVoices);
+        setTimeout(() => {
+          if (!handled) {
+            handled = true;
+            window.speechSynthesis.removeEventListener('voiceschanged', onVoices);
+            startSpeaking(window.speechSynthesis.getVoices() || []);
+          }
+        }, 600);
+      }
+    });
+  }
+
+  private playPcmAudioChunk(base64Pcm: string) {
     if (!this.audioCtx) return;
-    if (this.audioCtx.state === 'suspended') this.audioCtx.resume();
-    logVoiceEvent("Audio", `Received audio chunk: ${base64Pcm.length} bytes`);
+    if (this.audioCtx.state === 'suspended') this.audioCtx.resume().catch(() => {});
     try {
       const binaryStr = atob(base64Pcm);
       const len = binaryStr.length;
@@ -462,9 +1280,9 @@ export class GeminiLiveSession {
 
       const source = this.audioCtx.createBufferSource();
       source.buffer = audioBuffer;
-      
+
       const gainNode = this.audioCtx.createGain();
-      gainNode.gain.value = 1.0; 
+      gainNode.gain.value = Math.min(1.0, Math.max(0.1, (this.options.voiceVolume ?? 100) / 100));
 
       source.connect(gainNode);
       if (this.outputAnalyser) gainNode.connect(this.outputAnalyser);
@@ -474,34 +1292,60 @@ export class GeminiLiveSession {
       source.start(startTime);
       this.scheduledAudioSources.push(source);
       source.onended = () => {
-        this.scheduledAudioSources = this.scheduledAudioSources.filter(s => s !== source);
+        this.scheduledAudioSources = this.scheduledAudioSources.filter((s) => s !== source);
       };
 
       this.nextStartTime = startTime + audioBuffer.duration;
-      logVoiceEvent("Audio", "Playing audio chunk");
-    } catch (e) {
-      logVoiceEvent("Audio", `Playback error: ${e}`, "error");
-    }
+    } catch {}
   }
 
   private startVisualizer() {
-    logVoiceEvent("Visualizer", "Starting visualizer");
-    const micData = new Uint8Array(this.micAnalyser?.frequencyBinCount || 0);
-    const outData = new Uint8Array(this.outputAnalyser?.frequencyBinCount || 0);
-    
+    const micFreqData = new Uint8Array(this.micAnalyser?.frequencyBinCount || 128);
+    const micTimeData = new Float32Array(this.micAnalyser?.fftSize || 256);
+    const outFreqData = new Uint8Array(this.outputAnalyser?.frequencyBinCount || 128);
+
     const loop = () => {
-      if (this.currentState === 'off') return;
-      
-      if (this.micAnalyser) {
-        this.micAnalyser.getByteFrequencyData(micData);
-        const micVol = micData.reduce((a, b) => a + b, 0) / micData.length;
-        this.options.onMicVolume?.(micVol);
+      if (this.wasStoppedByUser || this.currentState === 'off') return;
+
+      if (this.micAnalyser && !this.isMuted) {
+        this.micAnalyser.getByteFrequencyData(micFreqData);
+        let freqSum = 0;
+        for (let i = 0; i < micFreqData.length; i++) freqSum += micFreqData[i];
+        const freqAvg = freqSum / (micFreqData.length * 255);
+
+        let rms = 0;
+        if (typeof this.micAnalyser.getFloatTimeDomainData === 'function') {
+          this.micAnalyser.getFloatTimeDomainData(micTimeData);
+          let sumSq = 0;
+          for (let i = 0; i < micTimeData.length; i++) {
+            sumSq += micTimeData[i] * micTimeData[i];
+          }
+          rms = Math.sqrt(sumSq / micTimeData.length);
+        }
+
+        const level = Math.min(1.0, Math.max(rms * 3.8, freqAvg * 2.4));
+        this.currentMicLevel = level;
+        this.options.onMicVolume?.(level * 255);
+      } else {
+        this.currentMicLevel = 0;
+        this.options.onMicVolume?.(0);
       }
 
       if (this.outputAnalyser) {
-        this.outputAnalyser.getByteFrequencyData(outData);
-        const outVol = outData.reduce((a, b) => a + b, 0) / outData.length;
-        this.options.onVolume?.(outVol);
+        this.outputAnalyser.getByteFrequencyData(outFreqData);
+        let outSum = 0;
+        for (let i = 0; i < outFreqData.length; i++) outSum += outFreqData[i];
+        let outLevel = Math.min(1.0, (outSum / (outFreqData.length * 255)) * 2.5);
+
+        // When browser speechSynthesis is speaking, WebAudio AnalyserNode cannot measure system TTS,
+        // so provide a gentle natural pulse as requested
+        if (this.isBrowserTtsSpeaking && outLevel < 0.05) {
+          const t = performance.now() * 0.01;
+          outLevel = 0.22 + 0.14 * Math.sin(t) + 0.08 * Math.cos(t * 1.7);
+        }
+
+        this.currentOutputLevel = outLevel;
+        this.options.onVolume?.(outLevel * 255);
       }
 
       requestAnimationFrame(loop);
@@ -509,16 +1353,34 @@ export class GeminiLiveSession {
     requestAnimationFrame(loop);
   }
 
+  public interruptPlayback() {
+    this.stopAllAudioPlayback();
+    this.isBrowserTtsSpeaking = false;
+    try {
+      if (typeof window !== 'undefined' && 'speechSynthesis' in window) {
+        window.speechSynthesis.cancel();
+      }
+    } catch {}
+  }
+
   private stopAllAudioPlayback() {
-    this.scheduledAudioSources.forEach(s => { try { s.stop(); } catch (e) {} });
+    this.scheduledAudioSources.forEach((s) => {
+      try {
+        s.stop();
+      } catch {}
+    });
     this.scheduledAudioSources = [];
     this.nextStartTime = 0;
   }
 
   private scheduleReturnToListening() {
     setTimeout(() => {
-      if (this.scheduledAudioSources.length === 0) this.updateState('listening');
-      else this.scheduleReturnToListening();
+      if (this.wasStoppedByUser) return;
+      if (this.scheduledAudioSources.length === 0 && !this.isBrowserTtsSpeaking) {
+        this.updateState('listening');
+      } else {
+        this.scheduleReturnToListening();
+      }
     }, 200);
   }
 
@@ -534,22 +1396,53 @@ export class GeminiLiveSession {
     this.updateState('off');
     this.socketStatus = 'closed';
     this.isSetupComplete = false;
-    this.ws?.close();
-    this.ws = null;
-    this.stopAllAudioPlayback();
+    this.isFallbackMode = false;
+
+    if (this.vadTimer) {
+      clearInterval(this.vadTimer);
+      this.vadTimer = null;
+    }
+
+    if (this.mediaRecorder && this.mediaRecorder.state !== 'inactive') {
+      this.discardClip = true;
+      try {
+        this.mediaRecorder.stop();
+      } catch {}
+    }
+    this.mediaRecorder = null;
+    this.isRecordingClip = false;
+
+    this.interruptPlayback();
+
+    if (this.ws) {
+      try {
+        this.ws.onopen = null;
+        this.ws.onmessage = null;
+        this.ws.onerror = null;
+        this.ws.onclose = null;
+        this.ws.close();
+      } catch {}
+      this.ws = null;
+    }
+
     if (this.scriptProcessor) {
-      try { this.scriptProcessor.disconnect(); } catch (e) {}
+      try {
+        this.scriptProcessor.disconnect();
+      } catch {}
       this.scriptProcessor = null;
     }
     if (this.audioWorkletNode) {
-      try { this.audioWorkletNode.disconnect(); } catch (e) {}
+      try {
+        this.audioWorkletNode.disconnect();
+      } catch {}
       this.audioWorkletNode = null;
     }
-    this.micStream?.getTracks().forEach(t => t.stop());
+
+    this.micStream?.getTracks().forEach((t) => {
+      try {
+        t.stop();
+      } catch {}
+    });
     this.micStream = null;
-    if (this.audioCtx && this.audioCtx.state !== 'closed') {
-      try { this.audioCtx.close(); } catch(e) {}
-    }
-    this.audioCtx = null;
   }
 }

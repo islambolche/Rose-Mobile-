@@ -1,7 +1,8 @@
 import React, { useState } from "react";
 import { motion } from "framer-motion";
-import { ArrowLeft, Facebook, Instagram, Youtube, Check, Loader2, ExternalLink, Cpu, PenTool, Zap, ChevronRight, RotateCw, MessageSquare } from "lucide-react";
+import { ArrowLeft, Facebook, Instagram, Youtube, Mail, Check, Loader2, ExternalLink, Cpu, PenTool, Zap, ChevronRight, RotateCw, MessageSquare } from "lucide-react";
 import { getGeminiKey } from "../lib/geminiKey";
+import { DEVELOPER_INFO } from "../lib/creator-profile";
 import {
   getChatModelOverride,
   setChatModelOverride,
@@ -13,89 +14,149 @@ import {
   getEffectiveChatEngineKey
 } from "../lib/chatEngines";
 
-const DEVELOPER_INFO = {
-  name: "MD YOUSUF KHAN",
-  title: "WEB DEVELOPER",
-  contacts: {
-    whatsapp: { label: "WhatsApp (Personal)", value: "01671060679", link: "https://wa.me/8801671060679" },
-    gmail: { label: "Gmail", value: "md.yousuf.khan060@gmail.com", link: "mailto:md.yousuf.khan060@gmail.com" }
-  },
-  social: {
-    facebook: { label: "Facebook", link: "https://www.facebook.com/share/19jLkEGsFv/" },
-    instagram: { label: "Instagram", link: "https://www.instagram.com/md_yousuf_khan02" },
-    youtube: { label: "YouTube", link: "https://www.youtube.com/@Islamicalo060" },
-    tiktok: { label: "TikTok", link: "https://www.tiktok.com/@yousufkhan060" }
-  }
-};
+const WhatsAppBarIcon = () => (
+  <svg viewBox="0 0 24 24" className="w-6 h-6 fill-current text-white">
+    <path d="M17.472 14.382c-.297-.149-1.758-.867-2.03-.967-.273-.099-.471-.148-.67.15-.197.297-.767.966-.94 1.164-.173.199-.347.223-.644.075-.297-.15-1.255-.463-2.39-1.475-.883-.788-1.48-1.761-1.653-2.059-.173-.297-.018-.458.13-.606.134-.133.298-.347.446-.52.149-.174.198-.298.298-.497.099-.198.05-.371-.025-.52-.075-.149-.669-1.612-.916-2.207-.242-.579-.487-.5-.669-.51-.173-.008-.371-.01-.57-.01-.198 0-.52.074-.792.372-.272.297-1.04 1.016-1.04 2.479 0 1.462 1.065 2.875 1.213 3.074.149.198 2.096 3.2 5.077 4.487.709.306 1.262.489 1.694.625.712.227 1.36.195 1.871.118.571-.085 1.758-.719 2.006-1.413.248-.694.248-1.289.173-1.413-.074-.124-.272-.198-.57-.347m-5.421 7.403h-.004a9.87 9.87 0 0 1-5.031-1.378l-.361-.214-3.741.982.998-3.648-.235-.374a9.86 9.86 0 0 1-1.51-5.26c.001-5.45 4.436-9.884 9.888-9.884 2.64 0 5.122 1.03 6.988 2.898a9.825 9.825 0 0 1 2.893 6.994c-.003 5.45-4.437 9.884-9.885 9.884m8.413-18.297A11.815 11.815 0 0 0 12.05 0C5.495 0 .16 5.335.157 11.892c0 2.096.547 4.142 1.588 5.945L0 24l6.335-1.662c1.72.94 3.67 1.437 5.662 1.437h.005c6.554 0 11.89-5.335 11.893-11.893a11.821 11.821 0 0 0-3.48-8.413z" />
+  </svg>
+);
 
-export const Developer = ({ setCurrentView, setToast, backView = "home" }: { setCurrentView: (v: any) => void, setToast: (t: string | any | null) => void, backView?: string }) => {
-  const [copied, setCopied] = useState<string | null>(null);
-  const copyToClipboard = (text: string) => {
-    navigator.clipboard.writeText(text);
-    setCopied(text);
-    setTimeout(() => setCopied(null), 2000);
-    setToast("Copied");
-  };
+const TikTokBarIcon = () => (
+  <svg viewBox="0 0 24 24" className="w-6 h-6 fill-current text-white">
+    <path d="M19.59 6.69a4.83 4.83 0 0 1-3.77-4.25V2h-3.45v13.67a2.89 2.89 0 0 1-5.2 1.74 2.89 2.89 0 0 1 2.31-4.64 2.93 2.93 0 0 1 .88.13V9.4a6.84 6.84 0 0 0-1-.05A6.33 6.33 0 0 0 5 20.1a6.34 6.34 0 0 0 10.86-4.43v-7a8.16 8.16 0 0 0 4.77 1.52v-3.4a4.85 4.85 0 0 1-1-.1z" />
+  </svg>
+);
+
+export const Developer = ({
+  setCurrentView,
+  backView = "home",
+}: {
+  setCurrentView: (v: any) => void;
+  setToast: (t: string | any | null) => void;
+  backView?: string;
+}) => {
+  const developerBars = [
+    {
+      id: "whatsapp",
+      name: "WhatsApp",
+      subtitle: DEVELOPER_INFO.whatsapp,
+      link: DEVELOPER_INFO.whatsappLink,
+      icon: <WhatsAppBarIcon />,
+    },
+    {
+      id: "gmail",
+      name: "Gmail",
+      subtitle: DEVELOPER_INFO.gmail,
+      link: DEVELOPER_INFO.gmailLink,
+      icon: <Mail className="w-6 h-6 text-white" />,
+    },
+    {
+      id: "facebook",
+      name: "Facebook",
+      subtitle: "Open",
+      link: DEVELOPER_INFO.facebook,
+      icon: <Facebook className="w-6 h-6 text-white" />,
+    },
+    {
+      id: "instagram",
+      name: "Instagram",
+      subtitle: "Open",
+      link: DEVELOPER_INFO.instagram,
+      icon: <Instagram className="w-6 h-6 text-white" />,
+    },
+    {
+      id: "youtube",
+      name: "YouTube",
+      subtitle: "Open",
+      link: DEVELOPER_INFO.youtube,
+      icon: <Youtube className="w-6 h-6 text-white" />,
+    },
+    {
+      id: "tiktok",
+      name: "TikTok",
+      subtitle: "Open",
+      link: DEVELOPER_INFO.tiktok,
+      icon: <TikTokBarIcon />,
+    },
+  ];
 
   return (
-    <>
-      <motion.div
-        key="developer"
-        initial={{ x: "100%" }}
-        animate={{ x: 0 }}
-        exit={{ x: "100%" }}
-        className="fixed inset-0 z-[90] bg-[#020617] flex flex-col"
-      >
-        <header className="px-6 py-4 flex items-center gap-4 shrink-0 border-b border-white/5">
-          <button onClick={() => setCurrentView(backView)} className="p-2.5 bg-white/5 rounded-full active:scale-95 transition-transform">
-            <ArrowLeft className="w-5 h-5 text-slate-300" />
-          </button>
-          <h2 className="text-xl font-black italic uppercase tracking-tighter text-white">DEVELOPER</h2>
-        </header>
+    <motion.div
+      key="developer"
+      initial={{ x: "100%" }}
+      animate={{ x: 0 }}
+      exit={{ x: "100%" }}
+      className="fixed inset-0 z-[90] h-[100dvh] bg-[#020617] flex flex-col overflow-hidden"
+    >
+      <header className="px-6 py-4 flex items-center gap-4 shrink-0 border-b border-white/5">
+        <button
+          onClick={() => setCurrentView(backView)}
+          className="p-2.5 bg-white/5 rounded-full active:scale-95 transition-transform"
+        >
+          <ArrowLeft className="w-5 h-5 text-slate-300" />
+        </button>
+        <h2 className="text-xl font-black italic uppercase tracking-tighter text-white">
+          DEVELOPER
+        </h2>
+      </header>
 
-        <div className="flex-1 overflow-y-auto px-5 py-3 space-y-4 pb-32">
-          <div className="flex flex-col items-center py-1">
-            <div className="w-20 h-20 rounded-full p-1 bg-gradient-to-br from-purple-500 to-pink-500 shadow-lg shadow-purple-900/30">
-              <div className="w-full h-full rounded-full bg-[#020617] flex items-center justify-center text-white text-2xl font-black italic">
-                MY
-              </div>
-            </div>
-            <h1 className="text-base font-black text-white italic uppercase tracking-wider mt-2.5">
-              {DEVELOPER_INFO.name}
-            </h1>
-            <span className="px-2.5 py-0.5 mt-1 text-[8.5px] font-bold text-white bg-purple-600 rounded-full uppercase tracking-wider">
-              {DEVELOPER_INFO.title}
-            </span>
-          </div>
-          
-          <div>
-            <h3 className="text-[10px] font-black text-slate-500 uppercase tracking-widest mb-2 ml-1">
-              Find Me On
-            </h3>
-            <div className="grid grid-cols-4 gap-2.5">
-              {Object.entries(DEVELOPER_INFO.social).map(([key, info]) => (
-                <a
-                  key={key}
-                  href={info.link}
-                  target="_blank"
-                  rel="noopener noreferrer"
-                  className="flex flex-col items-center gap-1.5 active:scale-95 transition-transform"
-                >
-                  <div className="w-full h-16 rounded-2xl bg-[#0F172A] border border-white/10 flex items-center justify-center shadow-lg hover:border-purple-500/30 transition-colors">
-                    {key === "facebook" && <Facebook className="w-6 h-6 text-blue-500" />}
-                    {key === "instagram" && <Instagram className="w-6 h-6 text-pink-500" />}
-                    {key === "youtube" && <Youtube className="w-6 h-6 text-red-500" />}
-                  </div>
-                  <span className="text-[9px] font-bold text-slate-400 uppercase tracking-tight">
-                    {info.label}
-                  </span>
-                </a>
-              ))}
-            </div>
-          </div>
+      <div className="flex-1 overflow-y-auto px-4 pt-4 pb-[calc(80px+env(safe-area-inset-bottom,0px)+80px)] space-y-5 no-scrollbar">
+        {/* Developer Banner Image */}
+        <div className="w-full rounded-[16px] overflow-hidden border border-purple-500/40 shadow-[0_8px_28px_rgba(168,85,247,0.35)] bg-[#020617]">
+          <img
+            src="/developer.jpg"
+            alt="MD YOUSUF KHAN"
+            className="w-full h-auto object-contain block rounded-[16px]"
+          />
         </div>
-      </motion.div>
-    </>
+
+        {/* Centered Name & Role */}
+        <div className="flex flex-col items-center text-center">
+          <h1 className="text-lg font-bold text-white tracking-wide">
+            {DEVELOPER_INFO.name}
+          </h1>
+          <p className="text-xs text-slate-400 font-medium mt-0.5">
+            {DEVELOPER_INFO.role}
+          </p>
+        </div>
+
+        {/* Vertical Settings-style Contact & Social Bars */}
+        <div className="space-y-4">
+          {developerBars.map((item) => {
+            const hasLink = Boolean(item.link && item.link.trim());
+            const isMailto = hasLink && item.link.startsWith("mailto:");
+            return (
+              <a
+                key={item.id}
+                href={hasLink ? item.link : undefined}
+                target={hasLink && !isMailto ? "_blank" : undefined}
+                rel={hasLink && !isMailto ? "noopener noreferrer" : undefined}
+                onClick={(e) => {
+                  if (!hasLink) {
+                    e.preventDefault();
+                  }
+                }}
+                className="w-full p-5 bg-[#0F172A]/80 rounded-[2.5rem] border border-purple-500/30 shadow-2xl flex items-center justify-between active:scale-[0.98] transition-all text-left"
+              >
+                <div className="flex items-center gap-4 min-w-0">
+                  <div className="w-12 h-12 rounded-full bg-purple-600 border border-purple-400/30 flex items-center justify-center text-white shrink-0 shadow-lg shadow-purple-900/40">
+                    {item.icon}
+                  </div>
+                  <div className="min-w-0">
+                    <h4 className="font-bold text-base text-white leading-tight">
+                      {item.name}
+                    </h4>
+                    <p className="text-[11px] text-slate-400 font-medium leading-tight mt-0.5 truncate">
+                      {item.subtitle}
+                    </p>
+                  </div>
+                </div>
+                <ChevronRight className="w-5 h-5 text-slate-500 shrink-0" />
+              </a>
+            );
+          })}
+        </div>
+      </div>
+    </motion.div>
   );
 };
 

@@ -82,19 +82,40 @@ export const FREE_CHAT_PROVIDERS: ChatProviderConfig[] = [
   },
 ];
 
+import { backupKeyToIndexedDB, getKeyFromIndexedDB } from './keyBackup';
+
 export const readLocalKey = (key: string): string => {
   try {
     if (typeof window !== 'undefined' && window.localStorage) {
-      return (localStorage.getItem(key) || '').trim();
+      const val = (localStorage.getItem(key) || '').trim();
+      if (val) return val;
     }
   } catch {}
+
+  // Async restore check from IndexedDB
+  getKeyFromIndexedDB(key).then((idbVal) => {
+    if (idbVal && idbVal.trim()) {
+      try {
+        if (typeof window !== 'undefined' && window.localStorage) {
+          localStorage.setItem(key, idbVal.trim());
+        }
+      } catch (e) {}
+    }
+  }).catch(() => {});
+
   return '';
 };
 
 export const writeLocalKey = (key: string, value: string) => {
   try {
+    const clean = String(value || '').trim();
     if (typeof window !== 'undefined' && window.localStorage) {
-      localStorage.setItem(key, value);
+      if (clean) {
+        localStorage.setItem(key, clean);
+      }
+    }
+    if (clean) {
+      backupKeyToIndexedDB(key, clean).catch(() => {});
     }
   } catch {}
 };
@@ -123,7 +144,7 @@ export const getProviderKey = (id: ChatEngineId): string => {
   }
   const config = FREE_CHAT_PROVIDERS.find((p) => p.id === id);
   if (!config) return '';
-  return readLocalKey(config.storageKey).trim();
+  return (readLocalKey(config.storageKey) || readLocalKey(`${id}_api_key`) || readLocalKey(`${id}_api_keys`)).trim();
 };
 
 export const getEffectiveChatEngineKey = getProviderKey;
@@ -511,7 +532,11 @@ export const callGeminiDirectChat = async (params: {
   maxTokens?: number;
 }): Promise<string> => {
   const { apiKey, model, systemPrompt, messages, maxTokens = 1024 } = params;
-  const cleanKey = apiKey.trim();
+  const cleanKey = String(apiKey || '').trim();
+  if (!cleanKey) {
+    throw new Error('Gemini key নেই। Settings → Connections-এ key দিন।');
+  }
+
   const cleanModel = model.replace(/^models\//, '').trim();
 
   const contents = messages.map((m) => ({
@@ -534,45 +559,38 @@ export const callGeminiDirectChat = async (params: {
 
   const url = `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(cleanModel)}:generateContent?key=${encodeURIComponent(cleanKey)}`;
 
-  let attempts = 0;
-  while (attempts < 2) {
-    attempts++;
+  try {
+    const res = await fetch(url, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'x-goog-api-key': cleanKey,
+      },
+      body: JSON.stringify(body),
+    });
+
+    const rawText = await res.text().catch(() => '');
+    let data: any = null;
     try {
-      const res = await fetch(url, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'x-goog-api-key': cleanKey,
-        },
-        body: JSON.stringify(body),
-      });
+      data = rawText ? JSON.parse(rawText) : null;
+    } catch {}
 
-      const data = await res.json().catch(() => null);
-
-      if (!res.ok) {
-        const rawMsg = data?.error?.message || `HTTP ${res.status}`;
-        if (res.status === 503 && attempts === 1) {
-          await new Promise((r) => setTimeout(r, 2000));
-          continue;
-        }
-
-        const err: any = new Error(`HTTP ${res.status}: ${rawMsg}`);
-        err.status = res.status;
-        err.code = data?.error?.code || res.status;
-        throw err;
-      }
-
-      const reply = data?.candidates?.[0]?.content?.parts?.map((p: any) => p?.text || '').join('').trim();
-      if (reply) return reply;
-      throw new Error('Gemini থেকে ফাঁকা উত্তর এসেছে');
-    } catch (directErr: any) {
-      if (attempts >= 2 || (directErr.status && directErr.status !== 503)) {
-        throw directErr;
-      }
+    if (!res.ok) {
+      const googleMsg = data?.error?.message || rawText || `HTTP ${res.status}`;
+      const err: any = new Error(`Gemini ${res.status}: ${googleMsg}`);
+      err.status = res.status;
+      throw err;
     }
-  }
 
-  throw new Error('Gemini request failed');
+    const reply = data?.candidates?.[0]?.content?.parts?.map((p: any) => p?.text || '').join('').trim();
+    if (reply) return reply;
+    throw new Error('Gemini থেকে ফাঁকা উত্তর এসেছে');
+  } catch (err: any) {
+    if (err.message && (err.message.startsWith('Gemini ') || err.message.includes('key নেই'))) {
+      throw err;
+    }
+    throw new Error(`নেটওয়ার্ক সমস্যা: ${err.message || err}`);
+  }
 };
 
 /**
@@ -686,6 +704,7 @@ export const callOpenAiCompatibleChat = async (params: {
   messages: Array<{ role: 'user' | 'assistant'; text: string }>;
   maxTokens?: number;
   temperature?: number;
+  providerName?: string;
   signal?: AbortSignal;
 }): Promise<string> => {
   const {
@@ -696,104 +715,96 @@ export const callOpenAiCompatibleChat = async (params: {
     messages,
     maxTokens = 400,
     temperature = 0.7,
+    providerName = 'Groq',
     signal,
   } = params;
 
-  let attempts = 0;
-  const maxAttempts = 2;
-
-  while (attempts < maxAttempts) {
-    attempts++;
-    try {
-      const formattedMessages: Array<{ role: 'system' | 'user' | 'assistant'; content: string }> = [];
-      if (systemPrompt && systemPrompt.trim()) {
-        formattedMessages.push({ role: 'system', content: systemPrompt.trim() });
-      }
-
-      for (const msg of messages) {
-        if (!msg.text || !msg.text.trim()) continue;
-        formattedMessages.push({
-          role: msg.role === 'assistant' ? 'assistant' : 'user',
-          content: msg.text.trim(),
-        });
-      }
-
-      if (formattedMessages.length === 0 || formattedMessages[formattedMessages.length - 1].role !== 'user') {
-        throw new Error('No user message provided to chat');
-      }
-
-      const cleanBase = baseURL.replace(/\/+$/, '');
-      const url = `${cleanBase}/chat/completions`;
-
-      const headers: Record<string, string> = {
-        'Content-Type': 'application/json',
-        Authorization: `Bearer ${apiKey.trim()}`,
-      };
-
-      if (baseURL.includes('openrouter.ai')) {
-        headers['HTTP-Referer'] = typeof window !== 'undefined' ? window.location.origin : 'https://aistudio.google.com';
-        headers['X-Title'] = 'Rose AI Assistant';
-      }
-
-      const body = {
-        model,
-        messages: formattedMessages,
-        max_tokens: maxTokens,
-        temperature,
-      };
-
-      const res = await fetch(url, {
-        method: 'POST',
-        headers,
-        body: JSON.stringify(body),
-        signal,
-      });
-
-      const rawText = await res.text().catch(() => '');
-      let parsed: any = null;
-      try {
-        parsed = rawText ? JSON.parse(rawText) : null;
-      } catch {}
-
-      console.log(`[ChatEngine] ${baseURL} ${model} | Status: ${res.status}`);
-      if (!res.ok) {
-        console.error(`[ChatEngine] Error Body:`, rawText.slice(0, 500));
-        const errorMsg =
-          parsed?.error?.message ||
-          parsed?.message ||
-          parsed?.detail ||
-          `HTTP ${res.status}`;
-        const err: any = new Error(errorMsg);
-        err.status = res.status;
-        throw err;
-      }
-
-      const choice = parsed?.choices?.[0];
-      let reply = choice?.message?.content;
-
-      if (Array.isArray(reply)) {
-        reply = reply.map((part: any) => part.text || part.content || '').join('');
-      }
-
-      if (typeof reply === 'string' && reply.trim()) {
-        return reply.trim();
-      }
-
-      console.warn(`[ChatEngine] Empty content in response. Attempt ${attempts}/${maxAttempts}`);
-      if (attempts === maxAttempts) {
-        throw new Error('No text reply returned by provider');
-      }
-      await new Promise((r) => setTimeout(r, 800));
-    } catch (err: any) {
-      if (err.name === 'AbortError') throw err;
-      if (err.status === 404 || err.status === 401 || err.status === 403) throw err;
-      if (attempts === maxAttempts) throw err;
-      console.error(`[ChatEngine] Attempt ${attempts} failed:`, err.message);
-      await new Promise((r) => setTimeout(r, 800));
-    }
+  const cleanKey = String(apiKey || '').trim();
+  if (!cleanKey) {
+    throw new Error(`${providerName} key নেই। Settings → Connections-এ key দিন।`);
   }
 
-  throw new Error('All attempts failed');
+  const formattedMessages: Array<{ role: 'system' | 'user' | 'assistant'; content: string }> = [];
+  if (systemPrompt && systemPrompt.trim()) {
+    formattedMessages.push({ role: 'system', content: systemPrompt.trim() });
+  }
+
+  for (const msg of messages) {
+    if (!msg.text || !msg.text.trim()) continue;
+    formattedMessages.push({
+      role: msg.role === 'assistant' ? 'assistant' : 'user',
+      content: msg.text.trim(),
+    });
+  }
+
+  if (formattedMessages.length === 0 || formattedMessages[formattedMessages.length - 1].role !== 'user') {
+    throw new Error('No user message provided to chat');
+  }
+
+  const cleanBase = baseURL.replace(/\/+$/, '');
+  const url = `${cleanBase}/chat/completions`;
+
+  const headers: Record<string, string> = {
+    'Content-Type': 'application/json',
+    Authorization: `Bearer ${cleanKey}`,
+  };
+
+  if (baseURL.includes('openrouter.ai')) {
+    headers['HTTP-Referer'] = typeof window !== 'undefined' ? window.location.origin : 'https://aistudio.google.com';
+    headers['X-Title'] = 'Rose AI Assistant';
+  }
+
+  const body = {
+    model,
+    messages: formattedMessages,
+    max_tokens: maxTokens,
+    temperature,
+  };
+
+  try {
+    const res = await fetch(url, {
+      method: 'POST',
+      headers,
+      body: JSON.stringify(body),
+      signal,
+    });
+
+    const rawText = await res.text().catch(() => '');
+    let parsed: any = null;
+    try {
+      parsed = rawText ? JSON.parse(rawText) : null;
+    } catch {}
+
+    if (!res.ok) {
+      const errorMsg =
+        parsed?.error?.message ||
+        parsed?.message ||
+        parsed?.detail ||
+        rawText ||
+        `HTTP ${res.status}`;
+      const err: any = new Error(`${providerName} ${res.status}: ${errorMsg}`);
+      err.status = res.status;
+      throw err;
+    }
+
+    const choice = parsed?.choices?.[0];
+    let reply = choice?.message?.content;
+
+    if (Array.isArray(reply)) {
+      reply = reply.map((part: any) => part.text || part.content || '').join('');
+    }
+
+    if (typeof reply === 'string' && reply.trim()) {
+      return reply.trim();
+    }
+
+    throw new Error(`${providerName} থেকে ফাঁকা উত্তর এসেছে`);
+  } catch (err: any) {
+    if (err.message && (err.message.startsWith(`${providerName} `) || err.message.includes('key নেই'))) {
+      throw err;
+    }
+    throw new Error(`নেটওয়ার্ক সমস্যা: ${err.message || err}`);
+  }
 };
 
 /**
@@ -831,25 +842,15 @@ export const verifyProviderKey = async (
       const raw = await res.text().catch(() => '');
       let errJson: any = null;
       try { errJson = JSON.parse(raw); } catch {}
-      const msg = errJson?.error?.message || errJson?.message || '';
-      const status = res.status;
+      const msg = errJson?.error?.message || errJson?.message || raw || '';
 
       if (res.ok) {
         await setProviderStatus('gemini', 'READY');
-        return { ok: true, status: 'READY' };
+        return { ok: true, status: 'READY', errorText: 'Gemini ঠিক আছে' };
       }
 
-      if (status === 400 || status === 401 || status === 403) {
-        await setProviderStatus('gemini', 'INVALID');
-        return { ok: false, status: 'INVALID', errorText: `ভুল API Key (${status}): ${msg.slice(0, 50)}` };
-      }
-      if (status === 429) {
-        await setProviderStatus('gemini', 'READY');
-        return { ok: true, status: 'READY', errorText: 'সীমা শেষ (429), পরে চেষ্টা করুন' };
-      }
-
-      const current = getProviderStatus('gemini');
-      return { ok: false, status: current, errorText: `ত্রুটি (${status}): ${msg.slice(0, 50)}` };
+      await setProviderStatus('gemini', 'INVALID');
+      return { ok: false, status: 'INVALID', errorText: `Gemini ${res.status}: ${msg}` };
     }
 
     const headers: Record<string, string> = {
@@ -871,34 +872,19 @@ export const verifyProviderKey = async (
     const raw = await res.text().catch(() => '');
     let errJson: any = null;
     try { errJson = JSON.parse(raw); } catch {}
-    const msg = errJson?.error?.message || errJson?.message || errJson?.detail || '';
-    const status = res.status;
+    const msg = errJson?.error?.message || errJson?.message || errJson?.detail || raw || '';
 
     if (res.ok) {
       await setProviderStatus(providerId, 'READY');
-      return { ok: true, status: 'READY' };
+      return { ok: true, status: 'READY', errorText: `${provider.name} ঠিক আছে` };
     }
 
-    if (status === 401 || status === 403) {
-      await setProviderStatus(providerId, 'INVALID');
-      return { ok: false, status: 'INVALID', errorText: `ভুল API Key (${status}): ${msg.slice(0, 50)}` };
-    }
-    if (status === 429) {
-      await setProviderStatus(providerId, 'READY');
-      return { ok: true, status: 'READY', errorText: 'সীমা শেষ (429), পরে চেষ্টা করুন' };
-    }
-    if (status === 404) {
-      const current = getProviderStatus(providerId);
-      return { ok: false, status: current, errorText: `যাচাইয়ের ঠিকানা ভুল (404)` };
-    }
-
-    const current = getProviderStatus(providerId);
-    return { ok: false, status: current, errorText: `ত্রুটি (${status}): ${msg.slice(0, 50)}` };
+    await setProviderStatus(providerId, 'INVALID');
+    return { ok: false, status: 'INVALID', errorText: `${provider.name} ${res.status}: ${msg}` };
   } catch (netErr: any) {
     const isAbort = netErr?.name === 'AbortError';
-    const text = isAbort ? 'সময় শেষ (Timeout)' : 'যাচাই করা যায়নি, ইন্টারনেট দেখুন';
+    const text = isAbort ? 'সময় শেষ (Timeout)' : `নেটওয়ার্ক সমস্যা: ${netErr.message || netErr}`;
     const current = getProviderStatus(providerId);
-    // Return current status (READY or NOT SET) instead of forcing INVALID on network error
     return { ok: false, status: current, errorText: text };
   } finally {
     clearTimeout(timer);
@@ -922,11 +908,18 @@ export const generateTextWithSelectedEngine = async (params: {
   const geminiKey = getProviderKey('gemini');
   const overrideModel = getChatModelOverride();
 
-  if (!groqKey && !geminiKey) {
-    throw new Error('Connections-এ key দিন');
+  if (currentEngine === 'gemini' && !geminiKey) {
+    throw new Error('Gemini key নেই। Settings → Connections-এ key দিন।');
   }
 
-  // Requirement 4: Filter history (last 10 messages, no error/failure messages)
+  if (currentEngine === 'groq' && !groqKey) {
+    throw new Error('Groq key নেই। Settings → Connections-এ key দিন।');
+  }
+
+  if (!groqKey && !geminiKey) {
+    throw new Error('Gemini key নেই। Settings → Connections-এ key দিন।');
+  }
+
   const filteredHistory = historyWithoutSystem
     .filter((m) => {
       const t = String(m.text || '').toLowerCase();
@@ -945,36 +938,26 @@ export const generateTextWithSelectedEngine = async (params: {
     filteredHistory.push({ role: 'user', text: userText });
   }
 
-  // Requirement 3 & 4: Truncate system prompt (max 3000 chars)
   let truncatedSystemPrompt = systemPrompt;
   if (truncatedSystemPrompt.length > 3000) {
     truncatedSystemPrompt = systemPrompt.slice(0, 1200) + '\n...[context trimmed]...\n' + systemPrompt.slice(-1750);
   }
 
-  let lastGroqError = '';
-  let lastGeminiError = '';
-  let groqSummary = '';
-  let geminiSummary = '';
-
-  // 1. TRY GROQ IF GROQ KEY IS AVAILABLE
-  if (groqKey) {
+  // 1. IF CURRENT ENGINE IS GROQ
+  if (currentEngine === 'groq' && groqKey) {
     let candidateGroqModels: string[] = [];
-    let discoveryInfo = '';
-    if (overrideModel && (currentEngine === 'groq' || !geminiKey)) {
+    if (overrideModel) {
       candidateGroqModels = [overrideModel];
-      discoveryInfo = 'ইউজার ওভাররাইড ব্যবহার হচ্ছে';
     } else {
       const discovery = await getDynamicGroqChatModels(groqKey);
       if (discovery.models.length > 0) {
         candidateGroqModels = discovery.models.slice(0, 3);
-        discoveryInfo = `তালিকা আনা সফল (${discovery.source === 'cache' ? 'ক্যাশ' : 'নেটওয়ার্ক'}), ${discovery.models.length}টি মডেল পাওয়া গেছে`;
-      } else {
-        lastGroqError = discovery.error || 'মডেল তালিকা পাওয়া যায়নি';
-        discoveryInfo = `তালিকা আনা ব্যর্থ: ${lastGroqError}`;
+      } else if (discovery.error) {
+        throw new Error(discovery.error.startsWith('Groq ') ? discovery.error : `Groq 400: ${discovery.error}`);
       }
     }
-    groqSummary = discoveryInfo;
 
+    let lastGroqErr = '';
     for (const modelCandidate of candidateGroqModels) {
       try {
         const reply = await callOpenAiCompatibleChat({
@@ -985,6 +968,7 @@ export const generateTextWithSelectedEngine = async (params: {
           messages: filteredHistory,
           maxTokens: Math.min(maxTokens, 1024),
           temperature: 0.7,
+          providerName: 'Groq',
         });
 
         if (reply) {
@@ -992,63 +976,31 @@ export const generateTextWithSelectedEngine = async (params: {
           return { text: reply, usedEngine: 'groq', modelUsed: modelCandidate };
         }
       } catch (err: any) {
-        const errMsg = String(err?.message || '');
-        const status = err?.status || 'Error';
-        const is404 = status === 404 || errMsg.toLowerCase().includes('not found') || errMsg.toLowerCase().includes('does not exist');
-
-        if (is404) {
-          console.warn(`[Groq] Model ${modelCandidate} not found (404), trying next candidate...`);
-          lastGroqError = `HTTP ${status}: ${errMsg} (মডেল: ${modelCandidate})`;
+        lastGroqErr = err?.message || String(err);
+        if (lastGroqErr.includes('404') || lastGroqErr.toLowerCase().includes('not found')) {
           continue;
         }
-
-        // Length error handling
-        if (status === 400 && (errMsg.toLowerCase().includes('length') || errMsg.toLowerCase().includes('reduce'))) {
-          try {
-            const retryReply = await callOpenAiCompatibleChat({
-              baseURL: 'https://api.groq.com/openai/v1',
-              apiKey: groqKey,
-              model: modelCandidate,
-              systemPrompt: truncatedSystemPrompt.slice(0, 1500),
-              messages: filteredHistory.slice(-3),
-              maxTokens: Math.min(maxTokens, 1024),
-              temperature: 0.7,
-            });
-            if (retryReply) {
-              writeLocalKey('active_model_groq', modelCandidate);
-              return { text: retryReply, usedEngine: 'groq', modelUsed: modelCandidate };
-            }
-          } catch (retryErr: any) {
-            lastGroqError = `HTTP ${retryErr.status || '400'}: ${retryErr.message} (মডেল: ${modelCandidate})`;
-            break;
-          }
-        }
-
-        lastGroqError = `HTTP ${status}: ${errMsg} (মডেল: ${modelCandidate})`;
-        break;
+        throw new Error(lastGroqErr);
       }
     }
+    if (lastGroqErr) throw new Error(lastGroqErr);
   }
 
-  // 2. FALLBACK TO GEMINI IF GROQ FAILED OR NO GROQ KEY
+  // 2. IF CURRENT ENGINE IS GEMINI (OR FALLBACK TO GEMINI)
   if (geminiKey) {
     let candidateGeminiModels: string[] = [];
-    let discoveryInfo = '';
-    if (overrideModel && (currentEngine === 'gemini' || !groqKey)) {
+    if (overrideModel) {
       candidateGeminiModels = [overrideModel];
-      discoveryInfo = 'ইউজার ওভাররাইড ব্যবহার হচ্ছে';
     } else {
       const discovery = await getDynamicGeminiChatModels(geminiKey);
       if (discovery.models.length > 0) {
         candidateGeminiModels = discovery.models.slice(0, 3);
-        discoveryInfo = `তালিকা আনা সফল (${discovery.source === 'cache' ? 'ক্যাশ' : 'নেটওয়ার্ক'}), ${discovery.models.length}টি মডেল পাওয়া গেছে`;
-      } else {
-        lastGeminiError = discovery.error || 'মডেল তালিকা পাওয়া যায়নি';
-        discoveryInfo = `তালিকা আনা ব্যর্থ: ${lastGeminiError}`;
+      } else if (discovery.error) {
+        throw new Error(discovery.error.startsWith('Gemini ') ? discovery.error : `Gemini 400: ${discovery.error}`);
       }
     }
-    geminiSummary = discoveryInfo;
 
+    let lastGeminiErr = '';
     for (const modelCandidate of candidateGeminiModels) {
       try {
         const reply = await callGeminiDirectChat({
@@ -1064,32 +1016,17 @@ export const generateTextWithSelectedEngine = async (params: {
           return { text: reply, usedEngine: 'gemini', modelUsed: modelCandidate };
         }
       } catch (err: any) {
-        const errMsg = String(err?.message || '');
-        const status = err?.status || 'Error';
-        const is404 = status === 404 || errMsg.toLowerCase().includes('not found');
-
-        if (is404) {
-          console.warn(`[Gemini] Model ${modelCandidate} not found (404), trying next candidate...`);
-          lastGeminiError = `HTTP ${status}: ${errMsg} (মডেল: ${modelCandidate})`;
+        lastGeminiErr = err?.message || String(err);
+        if (lastGeminiErr.includes('404') || lastGeminiErr.toLowerCase().includes('not found')) {
           continue;
         }
-
-        lastGeminiError = `HTTP ${status}: ${errMsg} (মডেল: ${modelCandidate})`;
-        break;
+        throw new Error(lastGeminiErr);
       }
     }
+    if (lastGeminiErr) throw new Error(lastGeminiErr);
   }
 
-  // Combine errors clearly without duplicating labels
-  if (groqKey && geminiKey) {
-    throw new Error(`Groq: ${groqSummary}. শেষ এরর: ${lastGroqError || 'ব্যর্থ'} | Gemini: ${geminiSummary}. শেষ এরর: ${lastGeminiError || 'ব্যর্থ'}`);
-  } else if (groqKey) {
-    throw new Error(`Groq: ${groqSummary}. শেষ এরর: ${lastGroqError || 'ব্যর্থ'}`);
-  } else if (geminiKey) {
-    throw new Error(`Gemini: ${geminiSummary}. শেষ এরর: ${lastGeminiError || 'ব্যর্থ'}`);
-  }
-
-  throw new Error('Connections-এ key দিন');
+  throw new Error('Gemini key নেই। Settings → Connections-এ key দিন।');
 };
 
 export const generateTextWithEngineFallback = generateTextWithSelectedEngine;

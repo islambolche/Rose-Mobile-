@@ -54,120 +54,6 @@ const TelegramLogo = () => (
   </svg>
 );
 
-export const ProfileView = ({ settings, prefs, setSettings, setPrefs, setCurrentView, setToast }: any) => {
-  const [isEditingUserName, setIsEditingUserName] = useState(false);
-  const [userNameInput, setUserNameInput] = useState('');
-
-  const handleOpenEditName = () => {
-    const currentName = settings?.ownerName || localStorage.getItem('userName') || '';
-    setUserNameInput(currentName);
-    setIsEditingUserName(true);
-  };
-
-  const handleSaveUserName = async () => {
-    const trimmed = userNameInput.trim();
-    if (!trimmed) {
-      if (setToast) setToast("অনুগ্রহ করে একটি নাম লিখুন");
-      return;
-    }
-
-    try {
-      localStorage.setItem('userName', trimmed);
-      setSettings((s: AssistantSettings) => ({ ...s, ownerName: trimmed }));
-
-      if (supabase) {
-        try {
-          const { data: { session } } = await supabase.auth.getSession();
-          if (session?.user?.id) {
-            await supabase.from('profiles').update({ full_name: trimmed, updated_at: new Date().toISOString() }).eq('id', session.user.id);
-          }
-        } catch (subErr) {
-          console.error(subErr);
-        }
-      }
-
-      if (setToast) setToast("নাম সেভ হয়েছে");
-      setIsEditingUserName(false);
-    } catch (e) {
-      console.error(e);
-      if (setToast) setToast("নাম সেভ হয়েছে");
-      setIsEditingUserName(false);
-    }
-  };
-
-  return (
-    <div className="fixed inset-0 z-[80] bg-[#020617] overflow-y-auto no-scrollbar flex flex-col">
-      <header className="sticky top-0 z-20 px-5 pt-6 pb-2 bg-[#020617] flex items-center gap-4 shrink-0">
-        <button onClick={() => setCurrentView('settings')} className="p-3 bg-purple-500/10 border border-purple-500/30 rounded-2xl flex items-center justify-center text-white active:scale-95 transition-transform">
-          <ArrowLeft className="w-5 h-5 text-white" />
-        </button>
-        <div className="flex flex-col">
-          <h2 className="text-xl font-black italic uppercase tracking-tighter text-white">MD YOUSUF KHAN</h2>
-          <p className="text-[10px] text-slate-500 font-bold uppercase tracking-widest">WEB DEVELOPER</p>
-        </div>
-      </header>
-      
-      <div className="flex flex-col items-center px-6 pt-4 pb-40">
-        <div className="w-full space-y-4">
-          <button 
-            onClick={handleOpenEditName} 
-            className="w-full p-5 bg-[#0F172A]/80 rounded-[2rem] border border-purple-500/30 shadow-2xl flex items-center justify-between active:scale-[0.98] transition-all text-left"
-          >
-            <div className="flex items-center gap-4">
-              <Pencil className="w-6 h-6 text-purple-400" />
-              <span className="text-lg font-black uppercase tracking-wider text-white">Your name</span>
-            </div>
-            <ChevronRight className="w-5 h-5 text-slate-500" />
-          </button>
-
-          <button 
-            onClick={() => setCurrentView('privacy')} 
-            className="w-full p-5 bg-[#0F172A]/80 rounded-[2rem] border border-purple-500/30 shadow-2xl flex items-center justify-between active:scale-[0.98] transition-all text-left"
-          >
-            <div className="flex items-center gap-4">
-              <Shield className="w-6 h-6 text-purple-400" />
-              <span className="text-lg font-black uppercase tracking-wider text-white">Privacy controls</span>
-            </div>
-            <ChevronRight className="w-5 h-5 text-slate-500" />
-          </button>
-        </div>
-      </div>
-
-      {isEditingUserName && (
-        <div className="fixed inset-0 z-[100] bg-black/80 backdrop-blur-sm flex items-center justify-center p-6">
-          <div className="bg-[#0F172A] border border-purple-500/40 rounded-3xl p-6 w-full max-w-sm shadow-2xl">
-            <h3 className="text-lg font-black uppercase tracking-wider text-white mb-4">Edit Your Name</h3>
-            <p className="text-xs text-slate-400 mb-3">Rose আপনাকে যে নামে ডাকবে সেটি লিখুন:</p>
-            <input 
-              type="text" 
-              value={userNameInput} 
-              onChange={(e) => setUserNameInput(e.target.value)}
-              className="w-full bg-[#1e293b] text-white p-3.5 rounded-xl mb-5 border border-purple-500/30 focus:outline-none focus:border-purple-500 font-bold"
-              placeholder="আপনার নাম লিখুন"
-              maxLength={40}
-              autoFocus
-            />
-            <div className="flex gap-3">
-              <button 
-                onClick={() => setIsEditingUserName(false)} 
-                className="flex-1 bg-slate-800 hover:bg-slate-700 text-slate-300 font-bold p-3 rounded-xl text-sm transition-all"
-              >
-                Cancel
-              </button>
-              <button 
-                onClick={handleSaveUserName} 
-                className="flex-1 bg-purple-600 hover:bg-purple-500 text-white font-black p-3 rounded-xl text-sm uppercase tracking-wider shadow-lg shadow-purple-900/40 transition-all"
-              >
-                Save
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
-    </div>
-  );
-};
-
 export const PrivacyView = ({ settings, prefs, setCurrentView, setToast }: any) => {
   // 1. Microphone State
   const [micState, setMicState] = useState<'granted' | 'denied' | 'prompt' | 'checking'>('checking');
@@ -305,13 +191,10 @@ export const PrivacyView = ({ settings, prefs, setCurrentView, setToast }: any) 
       {/* Header */}
       <header className="px-5 py-6 flex items-center justify-between shrink-0 bg-[#020617]/90 backdrop-blur-xl sticky top-0 z-20 border-b border-white/5 min-h-[76px]">
         <div className="flex items-center gap-4">
-          <button onClick={() => setCurrentView('profile')} className="p-3 bg-purple-500/10 border border-purple-500/30 rounded-2xl flex items-center justify-center text-white active:scale-95 transition-transform">
+          <button onClick={() => setCurrentView('settings')} className="p-3 bg-purple-500/10 border border-purple-500/30 rounded-2xl flex items-center justify-center text-white active:scale-95 transition-transform">
             <ArrowLeft className="w-5 h-5 text-white" />
           </button>
-          <div className="flex flex-col">
-            <h2 className="text-xl font-black italic uppercase tracking-tighter text-white">PRIVACY CONTROLS</h2>
-            <p className="text-[10px] text-slate-400 font-bold uppercase tracking-widest">গোপনীয়তা ও ডেটা সুরক্ষার তথ্য</p>
-          </div>
+          <h2 className="text-xl font-black italic uppercase tracking-tighter text-white">PRIVACY CONTROLS</h2>
         </div>
       </header>
 
