@@ -237,3 +237,76 @@
     width: clamp(360px, calc(95dvh * 0.54), 430px);
   }
 }
+
+/* Rose Alive GPU-friendly animations (transform & opacity only) */
+@keyframes roseAliveBreath {
+  0%,
+  100% {
+    transform: scale(1);
+  }
+  50% {
+    transform: scale(var(--rose-breath-scale, 1.008));
+  }
+}
+
+@keyframes roseAliveSway {
+  0%,
+  100% {
+    transform: translateY(0px) rotate(calc(var(--rose-sway-rot, 0.2deg) * -1));
+  }
+  50% {
+    transform: translateY(var(--rose-sway-y, -3px)) rotate(var(--rose-sway-rot, 0.2deg));
+  }
+}
+
+@keyframes roseAliveHairGlow {
+  0%,
+  100% {
+    opacity: 0.03;
+  }
+  50% {
+    opacity: 0.08;
+  }
+}
+
+.rose-alive-overscan {
+  transform: scale(1.02);
+  transform-origin: center center;
+  will-change: transform;
+}
+
+.rose-alive-breath {
+  animation: roseAliveBreath 5s ease-in-out infinite;
+  transform-origin: center bottom;
+  will-change: transform;
+}
+
+.rose-alive-sway {
+  animation: roseAliveSway 7s ease-in-out infinite;
+  transform-origin: center center;
+  will-change: transform;
+}
+
+.rose-alive-hair-glow {
+  animation: roseAliveHairGlow 9s ease-in-out infinite;
+  will-change: opacity;
+}
+
+.rose-alive-paused .rose-alive-breath,
+.rose-alive-paused .rose-alive-sway,
+.rose-alive-paused .rose-alive-hair-glow {
+  animation-play-state: paused !important;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .rose-alive-overscan {
+    transform: none !important;
+  }
+  .rose-alive-breath,
+  .rose-alive-sway,
+  .rose-alive-hair-glow {
+    animation: none !important;
+    transform: none !important;
+  }
+}
+

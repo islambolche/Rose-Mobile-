@@ -92,9 +92,12 @@ import {
 import { requestStoragePersistence } from "./lib/keyBackup";
 import { initializeSupabase, supabase } from "./lib/supabase";
 import { storage } from "./lib/storage";
-import rosePortraitImg from "./assets/images/rose_portrait_1793010994175.jpg";
-import realisticAssistantImg from "./assets/images/iyabd_realistic_assistant_1792805556831.jpg";
-import { ROSE_BRAND } from "./brand";
+import {
+  ROSE_BRAND,
+  DEFAULT_ROSE_ALIVE_SETTINGS,
+  RoseAliveSettings,
+  RoseAliveMovementStrength,
+} from "./brand";
 import * as Permissions from "./lib/permissions";
 import {
   getGlobalMicStream,
@@ -1088,7 +1091,8 @@ type AppView =
   | "live-model"
   | "admin_panel"
   | "developer"
-  | "onboarding";
+  | "onboarding"
+  | "rose-alive";
 
 const EmotionalCardIcon = ({ className }: { className?: string }) => (
   <div className="relative inline-flex items-center justify-center">
@@ -2956,265 +2960,74 @@ export function App() {
   const ttsFallbackSourceRef = useRef<AudioBufferSourceNode | null>(null);
   const ttsFallbackAudioRef = useRef<HTMLAudioElement | null>(null);
   const ttsOutputAnalyserRef = useRef<AnalyserNode | null>(null);
-  const mouthCanvasRef = useRef<HTMLCanvasElement | null>(null);
+  const mouthShadowRef = useRef<HTMLDivElement | null>(null);
   const smoothedMouthOpenRef = useRef<number>(0);
   const mouthWordPulseRef = useRef<number>(0);
   const lastWordBoundaryTimeRef = useRef<number>(0);
-  const longPressTimerRef = useRef<any>(null);
-  const [mouthDebugMode, setMouthDebugMode] = useState<boolean>(false);
-  const mouthDebugModeRef = useRef<boolean>(false);
+  const fallbackRandomLevelRef = useRef<number>(0.35);
+  const lastFallbackStepTimeRef = useRef<number>(0);
+  const externalRoseLevelRef = useRef<{ level: number; time: number }>({ level: 0, time: 0 });
   const speakingStateRef = useRef<"idle" | "listening" | "speaking" | "thinking">("idle");
-  useEffect(() => {
-    mouthDebugModeRef.current = mouthDebugMode;
-  }, [mouthDebugMode]);
-  const [isEyeBlinking, setIsEyeBlinking] = useState<boolean>(false);
-  const [roseFaceConfig] = useState({
-    mouthX: 46.2,
-    mouthY: 41.2,
-    mouthW: 13.2,
-    mouthH: 3.6,
-    leftEyeX: 31.8,
-    leftEyeY: 32.5,
-    leftEyeW: 13.5,
-    leftEyeH: 5.8,
-    rightEyeX: 55.2,
-    rightEyeY: 30.8,
-    rightEyeW: 13.5,
-    rightEyeH: 5.8,
+
+  const [roseAliveSettings, setRoseAliveSettings] = useState<RoseAliveSettings>(() => {
+    try {
+      const saved = localStorage.getItem("rose_alive_settings");
+      if (saved) {
+        const parsed = JSON.parse(saved);
+        return {
+          enabled: typeof parsed.enabled === "boolean" ? parsed.enabled : DEFAULT_ROSE_ALIVE_SETTINGS.enabled,
+          mouthShadow:
+            typeof parsed.mouthShadow === "boolean"
+              ? parsed.mouthShadow
+              : DEFAULT_ROSE_ALIVE_SETTINGS.mouthShadow,
+          movementStrength:
+            parsed.movementStrength === "low" ||
+            parsed.movementStrength === "medium" ||
+            parsed.movementStrength === "high"
+              ? parsed.movementStrength
+              : DEFAULT_ROSE_ALIVE_SETTINGS.movementStrength,
+        };
+      }
+    } catch (e) {}
+    return DEFAULT_ROSE_ALIVE_SETTINGS;
   });
 
-  // Blink animation temporarily disabled until image alignment is verified
+  const updateRoseAliveSettings = useCallback((patch: Partial<RoseAliveSettings>) => {
+    setRoseAliveSettings((prev) => {
+      const next = { ...prev, ...patch };
+      try {
+        localStorage.setItem("rose_alive_settings", JSON.stringify(next));
+      } catch (e) {}
+      return next;
+    });
+  }, []);
+
+  const [isDocHidden, setIsDocHidden] = useState<boolean>(() =>
+    typeof document !== "undefined" ? Boolean(document.hidden) : false
+  );
+  const [homeBgLoadError, setHomeBgLoadError] = useState<boolean>(false);
+
   useEffect(() => {
-    setIsEyeBlinking(false);
-  }, [isAssistantEnabled]);
+    if (typeof document === "undefined") return;
+    const onVisChange = () => setIsDocHidden(Boolean(document.hidden));
+    document.addEventListener("visibilitychange", onVisChange);
+    return () => document.removeEventListener("visibilitychange", onVisChange);
+  }, []);
 
-  // Real-time Lip-Sync Mouth Animation Loop (requestAnimationFrame)
   useEffect(() => {
-    let rafId: number | null = null;
-    const freqData = new Uint8Array(128);
-
-    const renderMouthFrame = (now: number) => {
-      const canvas = mouthCanvasRef.current;
-      if (canvas) {
-        const ctx = canvas.getContext("2d");
-        if (ctx) {
-          const w = canvas.width;
-          const h = canvas.height;
-          ctx.clearRect(0, 0, w, h);
-
-          const isSpeakingNow =
-            isAssistantEnabledRef.current &&
-            (isSpeakingTTSRef.current ||
-              speakingStateRef.current === "speaking");
-
-          let targetOpen = 0;
-
-          if (isSpeakingNow) {
-            // 1. Check if real audio output is playing via AudioContext AnalyserNode
-            let hasRealAudioRMS = false;
-            const analyser = ttsOutputAnalyserRef.current;
-
-            if (analyser && ttsFallbackSourceRef.current) {
-              try {
-                analyser.getByteTimeDomainData(freqData);
-                let sumSq = 0;
-                for (let i = 0; i < freqData.length; i++) {
-                  const norm = (freqData[i] - 128) / 128;
-                  sumSq += norm * norm;
-                }
-                const rms = Math.sqrt(sumSq / freqData.length);
-                if (rms > 0.005) {
-                  hasRealAudioRMS = true;
-                  targetOpen = Math.min(1, rms * 5.2);
-                }
-              } catch (e) {}
-            }
-
-            // 2. Fallback for speechSynthesis: word boundary pulses + smooth sine-wave between words
-            if (!hasRealAudioRMS) {
-              const elapsedSinceBoundary = now - lastWordBoundaryTimeRef.current;
-              if (elapsedSinceBoundary < 180) {
-                const decay = 1 - elapsedSinceBoundary / 180;
-                mouthWordPulseRef.current = Math.max(
-                  mouthWordPulseRef.current * 0.9,
-                  decay * 0.95
-                );
-              } else {
-                mouthWordPulseRef.current *= 0.88;
-              }
-
-              const sineWave =
-                0.28 +
-                0.52 *
-                  Math.abs(Math.sin(now * 0.0115)) *
-                  (0.65 + 0.35 * Math.sin(now * 0.0045));
-              targetOpen = Math.min(1, Math.max(sineWave, mouthWordPulseRef.current));
-            }
-          } else {
-            targetOpen = 0;
-            mouthWordPulseRef.current = 0;
-          }
-
-          // Lerp mouth openness so it never flickers and closes smoothly
-          smoothedMouthOpenRef.current +=
-            (targetOpen - smoothedMouthOpenRef.current) * 0.22;
-          if (smoothedMouthOpenRef.current < 0.005) {
-            smoothedMouthOpenRef.current = 0;
-          }
-
-          const openness = smoothedMouthOpenRef.current;
-
-          if (openness > 0.02) {
-            const cx = w * 0.5;
-            const cy = h * 0.46;
-            const mouthHalfW = w * (0.37 - openness * 0.03);
-            const openH = h * (0.06 + openness * 0.36);
-
-            // Soft skin patch to blend over the static closed lower lip
-            const skinGrad = ctx.createRadialGradient(
-              cx,
-              cy + openH * 0.25,
-              2,
-              cx,
-              cy + openH * 0.25,
-              mouthHalfW * 1.18
-            );
-            skinGrad.addColorStop(0, "rgba(249, 214, 203, 0.92)");
-            skinGrad.addColorStop(0.75, "rgba(249, 214, 203, 0.65)");
-            skinGrad.addColorStop(1, "rgba(249, 214, 203, 0)");
-            ctx.fillStyle = skinGrad;
-            ctx.beginPath();
-            ctx.ellipse(
-              cx,
-              cy + openH * 0.2,
-              mouthHalfW * 1.15,
-              h * 0.42,
-              0,
-              0,
-              Math.PI * 2
-            );
-            ctx.fill();
-
-            // Inner mouth cavity (clipped)
-            ctx.save();
-            ctx.beginPath();
-            ctx.moveTo(cx - mouthHalfW, cy - h * 0.04);
-            ctx.quadraticCurveTo(
-              cx,
-              cy - openH * 0.42,
-              cx + mouthHalfW,
-              cy - h * 0.04
-            );
-            ctx.quadraticCurveTo(
-              cx,
-              cy + openH * 1.15,
-              cx - mouthHalfW,
-              cy - h * 0.04
-            );
-            ctx.closePath();
-
-            const cavityGrad = ctx.createLinearGradient(
-              cx,
-              cy - openH * 0.4,
-              cx,
-              cy + openH
-            );
-            cavityGrad.addColorStop(0, "#4c0e1f");
-            cavityGrad.addColorStop(1, "#7c1934");
-            ctx.fillStyle = cavityGrad;
-            ctx.fill();
-
-            ctx.clip();
-
-            // Subtle upper teeth hint
-            if (openness > 0.2) {
-              ctx.fillStyle = "rgba(255, 248, 250, 0.88)";
-              ctx.beginPath();
-              ctx.ellipse(
-                cx,
-                cy - openH * 0.22,
-                mouthHalfW * 0.68,
-                openH * 0.26,
-                0,
-                0,
-                Math.PI * 2
-              );
-              ctx.fill();
-            }
-
-            // Soft pink tongue at bottom of cavity
-            ctx.fillStyle = "#f26d92";
-            ctx.beginPath();
-            ctx.ellipse(
-              cx,
-              cy + openH * 0.68,
-              mouthHalfW * 0.62,
-              openH * 0.48,
-              0,
-              0,
-              Math.PI * 2
-            );
-            ctx.fill();
-            ctx.restore();
-
-            // Upper lip line
-            ctx.strokeStyle = "#d95676";
-            ctx.lineWidth = Math.max(2, h * 0.065);
-            ctx.lineCap = "round";
-            ctx.beginPath();
-            ctx.moveTo(cx - mouthHalfW, cy - h * 0.04);
-            ctx.quadraticCurveTo(
-              cx,
-              cy - openH * 0.42,
-              cx + mouthHalfW,
-              cy - h * 0.04
-            );
-            ctx.stroke();
-
-            // Lower lip contour
-            ctx.strokeStyle = "#e87391";
-            ctx.lineWidth = Math.max(2.2, h * 0.075);
-            ctx.beginPath();
-            ctx.moveTo(cx - mouthHalfW * 0.92, cy - h * 0.02);
-            ctx.quadraticCurveTo(
-              cx,
-              cy + openH * 1.15,
-              cx + mouthHalfW * 0.92,
-              cy - h * 0.02
-            );
-            ctx.stroke();
-
-            // Gloss highlight on lower lip
-            if (openness > 0.12) {
-              ctx.strokeStyle = "rgba(255, 230, 238, 0.55)";
-              ctx.lineWidth = Math.max(1, h * 0.03);
-              ctx.beginPath();
-              ctx.moveTo(cx - mouthHalfW * 0.3, cy + openH * 0.52);
-              ctx.quadraticCurveTo(
-                cx,
-                cy + openH * 0.62,
-                cx + mouthHalfW * 0.3,
-                cy + openH * 0.52
-              );
-              ctx.stroke();
-            }
-          }
-
-          // Hidden debug rectangle when toggled by long press
-          if (mouthDebugModeRef.current) {
-            ctx.strokeStyle = "#ef4444";
-            ctx.lineWidth = 3;
-            ctx.strokeRect(1.5, 1.5, w - 3, h - 3);
-          }
-        }
+    if (typeof window === "undefined") return;
+    const onRoseLevel = (e: Event) => {
+      const detail = (e as CustomEvent)?.detail;
+      const lvl = typeof detail === "number" ? detail : Number(detail?.level ?? 0);
+      if (!isNaN(lvl)) {
+        externalRoseLevelRef.current = {
+          level: Math.max(0, Math.min(1, lvl)),
+          time: performance.now(),
+        };
       }
-      rafId = requestAnimationFrame(renderMouthFrame);
     };
-
-    rafId = requestAnimationFrame(renderMouthFrame);
-    return () => {
-      if (rafId !== null) cancelAnimationFrame(rafId);
-    };
+    window.addEventListener("rose:level", onRoseLevel as EventListener);
+    return () => window.removeEventListener("rose:level", onRoseLevel as EventListener);
   }, []);
 
   const topOrbWrapperRef = useRef<HTMLDivElement>(null);
@@ -3639,6 +3452,119 @@ export function App() {
   const [liveVolume, setLiveVolume] = useState(0);
   const currentAnalyserRef = useRef<AnalyserNode | null>(null);
   const outputAnalyserRef = useRef<AnalyserNode | null>(null);
+
+  useEffect(() => {
+    const isReduced =
+      Boolean(prefs.reduceMotion) ||
+      (typeof window !== "undefined" &&
+        window.matchMedia?.("(prefers-reduced-motion: reduce)")?.matches);
+    const shouldRun =
+      currentView === "home" &&
+      activeTab === "home" &&
+      !isDocHidden &&
+      roseAliveSettings.enabled &&
+      roseAliveSettings.mouthShadow &&
+      !isReduced &&
+      !homeBgLoadError;
+
+    if (!shouldRun) {
+      smoothedMouthOpenRef.current = 0;
+      if (mouthShadowRef.current) {
+        mouthShadowRef.current.style.opacity = "0";
+        mouthShadowRef.current.style.transform = "translate(-50%, -50%) scaleY(0.2)";
+      }
+      return;
+    }
+
+    let rafId: number | null = null;
+    const freqBuf = new Uint8Array(64);
+
+    const tickMouthShadow = (now: number) => {
+      const el = mouthShadowRef.current;
+      if (el) {
+        const isRoseSpeaking =
+          isSpeakingTTSRef.current ||
+          speakingStateRef.current === "speaking" ||
+          sessionStateRef.current === "SPEAKING" ||
+          sessionStateRef.current === "GREETING" ||
+          Boolean(liveSessionRef.current?.isBrowserSpeechActive?.());
+
+        let rawLevel = 0;
+
+        // 1. Check shared rose:level event if recent
+        if (now - externalRoseLevelRef.current.time < 250 && externalRoseLevelRef.current.level > 0.01) {
+          rawLevel = externalRoseLevelRef.current.level;
+        }
+
+        // 2. Read output AnalyserNode (TTS or Live voice)
+        if (rawLevel < 0.02) {
+          const analyser =
+            outputAnalyserRef.current ||
+            liveSessionRef.current?.getOutputAnalyser?.() ||
+            ttsOutputAnalyserRef.current;
+          if (analyser) {
+            try {
+              analyser.getByteFrequencyData(freqBuf);
+              let sum = 0;
+              for (let i = 0; i < freqBuf.length; i++) sum += freqBuf[i];
+              const avg = sum / (freqBuf.length * 255);
+              if (avg > 0.01) {
+                rawLevel = Math.min(1, avg * 2.8);
+              } else {
+                analyser.getByteTimeDomainData(freqBuf);
+                let sumSq = 0;
+                for (let i = 0; i < freqBuf.length; i++) {
+                  const norm = (freqBuf[i] - 128) / 128;
+                  sumSq += norm * norm;
+                }
+                const rms = Math.sqrt(sumSq / freqBuf.length);
+                if (rms > 0.008) {
+                  rawLevel = Math.min(1, rms * 4.5);
+                }
+              }
+            } catch (e) {}
+          }
+        }
+
+        // 3. Fallback when speaking without AnalyserNode (200ms random level 0.2 to 0.6)
+        if (isRoseSpeaking && rawLevel < 0.02) {
+          if (now - lastFallbackStepTimeRef.current >= 200) {
+            lastFallbackStepTimeRef.current = now;
+            fallbackRandomLevelRef.current = 0.2 + Math.random() * 0.4;
+          }
+          rawLevel = fallbackRandomLevelRef.current;
+        }
+
+        const target = isRoseSpeaking || rawLevel > 0.02 ? Math.max(0, Math.min(1, rawLevel)) : 0;
+        const lerpRate = target > smoothedMouthOpenRef.current ? 0.28 : 0.16;
+        smoothedMouthOpenRef.current += (target - smoothedMouthOpenRef.current) * lerpRate;
+        if (smoothedMouthOpenRef.current < 0.004) {
+          smoothedMouthOpenRef.current = 0;
+        }
+
+        const level = smoothedMouthOpenRef.current;
+        const scaleY = 0.2 + level * 0.8;
+        const opacity = level * 0.6;
+
+        el.style.transform = `translate(-50%, -50%) scaleY(${scaleY.toFixed(3)})`;
+        el.style.opacity = opacity.toFixed(3);
+      }
+      rafId = requestAnimationFrame(tickMouthShadow);
+    };
+
+    rafId = requestAnimationFrame(tickMouthShadow);
+    return () => {
+      if (rafId !== null) cancelAnimationFrame(rafId);
+    };
+  }, [
+    currentView,
+    activeTab,
+    isDocHidden,
+    roseAliveSettings.enabled,
+    roseAliveSettings.mouthShadow,
+    prefs.reduceMotion,
+    homeBgLoadError,
+  ]);
 
   const [chunksSent, setChunksSent] = useState(0);
   const chunksSentRef = useRef(0);
@@ -8708,100 +8634,90 @@ export function App() {
       );
     }
 
-    const orb = getOrbStyles();
+    const isHomeVisible = currentView === "home" && activeTab === "home" && !isDocHidden;
+    const isReducedMotion =
+      Boolean(prefs.reduceMotion) ||
+      (typeof window !== "undefined" &&
+        window.matchMedia?.("(prefers-reduced-motion: reduce)")?.matches);
+    const isAliveActive =
+      roseAliveSettings.enabled && !isReducedMotion && !homeBgLoadError;
 
-    const handleCharacterPointerDown = () => {
-      if (longPressTimerRef.current) clearTimeout(longPressTimerRef.current);
-      longPressTimerRef.current = setTimeout(() => {
-        setMouthDebugMode((prev) => {
-          const next = !prev;
-          setToast(next ? "Mouth debug box: ON" : "Mouth debug box: OFF");
-          return next;
-        });
-      }, 600);
-    };
-
-    const handleCharacterPointerEnd = () => {
-      if (longPressTimerRef.current) {
-        clearTimeout(longPressTimerRef.current);
-        longPressTimerRef.current = null;
-      }
-    };
+    const strengthVars =
+      roseAliveSettings.movementStrength === "low"
+        ? {
+            "--rose-breath-scale": "1.004",
+            "--rose-sway-y": "-1.5px",
+            "--rose-sway-rot": "0.1deg",
+          }
+        : roseAliveSettings.movementStrength === "high"
+        ? {
+            "--rose-breath-scale": "1.016",
+            "--rose-sway-y": "-6px",
+            "--rose-sway-rot": "0.4deg",
+          }
+        : {
+            "--rose-breath-scale": "1.008",
+            "--rose-sway-y": "-3px",
+            "--rose-sway-rot": "0.2deg",
+          };
 
     return (
       <div
-        onPointerDown={handleCharacterPointerDown}
-        onPointerUp={handleCharacterPointerEnd}
-        onPointerLeave={handleCharacterPointerEnd}
-        onPointerCancel={handleCharacterPointerEnd}
-        className="h-full w-full relative overflow-hidden flex flex-col justify-between select-none"
+        className={
+          "h-full w-full relative overflow-hidden flex flex-col justify-between select-none " +
+          (!isHomeVisible ? "rose-alive-paused" : "")
+        }
+        style={strengthVars as React.CSSProperties}
       >
-        {/* Fullscreen Background Image & Overlays (exact same size as image, transform: none) */}
+        {/* Single Home Screen Portrait with Rose Alive GPU animations */}
         <div
-          style={{ transform: "none" }}
-          className="absolute inset-0 w-full h-full z-0 pointer-events-none overflow-hidden"
+          className={
+            "absolute inset-0 w-full h-full z-0 pointer-events-none overflow-hidden " +
+            (isAliveActive ? "rose-alive-overscan" : "")
+          }
         >
-          <img
-            src={ROSE_BRAND.homeBackground}
-            alt={ROSE_BRAND.name}
-            style={{
-              width: "100%",
-              height: "100%",
-              objectFit: "cover",
-              objectPosition: "center top",
-            }}
-            className="w-full h-full object-cover object-top block pointer-events-none select-none"
-          />
+          <div className={"w-full h-full " + (isAliveActive ? "rose-alive-breath" : "")}>
+            <div className={"relative w-full h-full " + (isAliveActive ? "rose-alive-sway" : "")}>
+              <img
+                src={ROSE_BRAND.homeBackground}
+                alt={ROSE_BRAND.name}
+                onError={() => setHomeBgLoadError(true)}
+                style={{
+                  width: "100%",
+                  height: "100%",
+                  objectFit: "cover",
+                  objectPosition: "center top",
+                }}
+                className="w-full h-full object-cover object-top block pointer-events-none select-none"
+              />
 
-          {/* Left Eye Overlay (temporarily static / blink off) */}
-          <div
-            style={{
-              left: `${roseFaceConfig.leftEyeX}%`,
-              top: `${roseFaceConfig.leftEyeY}%`,
-              width: `${roseFaceConfig.leftEyeW}%`,
-              height: `${roseFaceConfig.leftEyeH}%`,
-            }}
-            className="absolute pointer-events-none overflow-hidden rounded-full"
-          >
-            <div
-              style={{
-                transform: isEyeBlinking ? "scaleY(1)" : "scaleY(0)",
-              }}
-              className="absolute inset-0 origin-top bg-gradient-to-b from-[#e8b6a8] via-[#f4cabd] to-[#f7d4c9] border-b-[3px] border-[#2b1116] rounded-full"
-            />
+              {/* Subtle purple hair-glow overlay */}
+              {isAliveActive && (
+                <div
+                  className="absolute inset-0 pointer-events-none rose-alive-hair-glow"
+                  style={{ backgroundImage: ROSE_BRAND.hairGlowGradient }}
+                />
+              )}
+
+              {/* Rose Alive Mouth Shadow (updated via DOM ref in rAF) */}
+              {isAliveActive && roseAliveSettings.mouthShadow && (
+                <div
+                  ref={mouthShadowRef}
+                  style={{
+                    left: `${ROSE_BRAND.mouthX}%`,
+                    top: `${ROSE_BRAND.mouthY}%`,
+                    width: `${ROSE_BRAND.mouthW}%`,
+                    height: `${ROSE_BRAND.mouthH}%`,
+                    backgroundColor: ROSE_BRAND.mouthShadowColor,
+                    filter: "blur(4px)",
+                    opacity: 0,
+                    transform: "translate(-50%, -50%) scaleY(0.2)",
+                  }}
+                  className="absolute rounded-full pointer-events-none will-change-[transform,opacity]"
+                />
+              )}
+            </div>
           </div>
-
-          {/* Right Eye Overlay (temporarily static / blink off) */}
-          <div
-            style={{
-              left: `${roseFaceConfig.rightEyeX}%`,
-              top: `${roseFaceConfig.rightEyeY}%`,
-              width: `${roseFaceConfig.rightEyeW}%`,
-              height: `${roseFaceConfig.rightEyeH}%`,
-            }}
-            className="absolute pointer-events-none overflow-hidden rounded-full"
-          >
-            <div
-              style={{
-                transform: isEyeBlinking ? "scaleY(1)" : "scaleY(0)",
-              }}
-              className="absolute inset-0 origin-top bg-gradient-to-b from-[#e8b6a8] via-[#f4cabd] to-[#f7d4c9] border-b-[3px] border-[#2b1116] rounded-full"
-            />
-          </div>
-
-          {/* Mouth Lip-Sync Canvas Overlay */}
-          <canvas
-            ref={mouthCanvasRef}
-            width={160}
-            height={64}
-            style={{
-              left: `${roseFaceConfig.mouthX}%`,
-              top: `${roseFaceConfig.mouthY}%`,
-              width: `${roseFaceConfig.mouthW}%`,
-              height: `${roseFaceConfig.mouthH}%`,
-            }}
-            className="absolute pointer-events-none"
-          />
         </div>
         <div className="absolute inset-0 bg-gradient-to-b from-black/15 via-black/30 to-[#020617] z-0 pointer-events-none" />
 
@@ -11358,6 +11274,171 @@ export function App() {
               />
             </button>
           </div>
+
+          {/* Card 4: ROSE ALIVE */}
+          <button
+            onClick={() => setCurrentView("rose-alive")}
+            className="w-full p-5 bg-[#0F172A]/80 rounded-[2.5rem] border border-purple-500/30 shadow-2xl flex items-center justify-between active:scale-[0.98] transition-all text-left"
+          >
+            <div className="flex items-center gap-4">
+              <div className="w-12 h-12 rounded-full bg-purple-600/10 border border-purple-500/20 flex items-center justify-center text-purple-400 shrink-0">
+                <Sparkles className="w-6 h-6" />
+              </div>
+              <div>
+                <h4 className="text-base font-black uppercase tracking-wider text-white leading-none mb-1">
+                  {ROSE_BRAND.aliveName}
+                </h4>
+                <p className="text-[11px] text-slate-400 font-bold uppercase tracking-widest">
+                  {roseAliveSettings.enabled ? "On" : "Off"}
+                </p>
+              </div>
+            </div>
+            <ChevronRight className="w-5 h-5 text-slate-500 shrink-0" />
+          </button>
+        </div>
+      </motion.div>
+    );
+  };
+
+  const renderRoseAliveSettings = () => {
+    const strengthOptions: { id: RoseAliveMovementStrength; label: string; desc: string }[] = [
+      { id: "low", label: "কম (Low)", desc: "অর্ধেক নড়াচড়া (০.৫×)" },
+      { id: "medium", label: "মাঝারি (Medium)", desc: "স্বাভাবিক নড়াচড়া (১×)" },
+      { id: "high", label: "বেশি (High)", desc: "দ্বিগুণ নড়াচড়া (২×)" },
+    ];
+
+    return (
+      <motion.div
+        key="rose-alive"
+        initial={{ x: "100%" }}
+        animate={{ x: 0 }}
+        exit={{ x: "100%" }}
+        className="fixed inset-0 z-[85] bg-[var(--bg)] text-[var(--text)] p-6 sm:p-8 overflow-y-auto no-scrollbar flex flex-col"
+      >
+        <header className="flex items-center gap-4 mb-8 shrink-0">
+          <button
+            onClick={() => setCurrentView("look")}
+            className="p-2.5 bg-purple-500/10 border border-purple-500/30 rounded-2xl flex items-center justify-center text-[var(--text)] active:scale-95 transition-transform"
+          >
+            <ArrowLeft className="w-5 h-5" />
+          </button>
+          <h2 className="text-2xl font-black italic uppercase tracking-tighter text-[var(--text)]">
+            {ROSE_BRAND.aliveName}
+          </h2>
+        </header>
+
+        <div className="w-full space-y-4 pb-36">
+          {/* (ক) Rose Alive চালু/বন্ধ */}
+          <div className="w-full p-5 bg-[#0F172A]/80 rounded-[2.5rem] border border-purple-500/30 shadow-2xl flex items-center justify-between text-left">
+            <div className="flex items-center gap-4 pr-3">
+              <div className="w-12 h-12 rounded-full bg-purple-600/10 border border-purple-500/20 flex items-center justify-center text-purple-400 shrink-0">
+                <Sparkles className="w-6 h-6" />
+              </div>
+              <div>
+                <h4 className="text-base font-black uppercase tracking-wider text-white leading-none mb-1">
+                  {ROSE_BRAND.aliveName}
+                </h4>
+                <p className="text-[11px] text-slate-400 font-bold uppercase tracking-widest">
+                  হোম স্ক্রিনের ছবিতে হালকা জীবন্ত ভাব ({roseAliveSettings.enabled ? "On" : "Off"})
+                </p>
+              </div>
+            </div>
+            <button
+              onClick={() => {
+                const next = !roseAliveSettings.enabled;
+                updateRoseAliveSettings({ enabled: next });
+                setToast(next ? `${ROSE_BRAND.aliveName}: On` : `${ROSE_BRAND.aliveName}: Off`);
+              }}
+              className={
+                "w-12 h-7 rounded-full transition-colors flex items-center px-1 shrink-0 " +
+                (roseAliveSettings.enabled ? "bg-purple-600" : "bg-slate-700")
+              }
+            >
+              <motion.div
+                animate={{ x: roseAliveSettings.enabled ? 20 : 0 }}
+                className="w-5 h-5 bg-white rounded-full shadow-lg"
+              />
+            </button>
+          </div>
+
+          {/* (খ) Mouth shadow চালু/বন্ধ */}
+          <div className="w-full p-5 bg-[#0F172A]/80 rounded-[2.5rem] border border-purple-500/30 shadow-2xl flex items-center justify-between text-left">
+            <div className="flex items-center gap-4 pr-3">
+              <div className="w-12 h-12 rounded-full bg-purple-600/10 border border-purple-500/20 flex items-center justify-center text-purple-400 shrink-0">
+                <Volume2 className="w-6 h-6" />
+              </div>
+              <div>
+                <h4 className="text-base font-black uppercase tracking-wider text-white leading-none mb-1">
+                  Mouth shadow
+                </h4>
+                <p className="text-[11px] text-slate-400 font-bold uppercase tracking-widest">
+                  কথা বলার সময় ঠোঁটের হালকা ছায়া ({roseAliveSettings.mouthShadow ? "On" : "Off"})
+                </p>
+              </div>
+            </div>
+            <button
+              onClick={() => {
+                const next = !roseAliveSettings.mouthShadow;
+                updateRoseAliveSettings({ mouthShadow: next });
+                setToast(next ? "Mouth shadow: On" : "Mouth shadow: Off");
+              }}
+              className={
+                "w-12 h-7 rounded-full transition-colors flex items-center px-1 shrink-0 " +
+                (roseAliveSettings.mouthShadow ? "bg-purple-600" : "bg-slate-700")
+              }
+            >
+              <motion.div
+                animate={{ x: roseAliveSettings.mouthShadow ? 20 : 0 }}
+                className="w-5 h-5 bg-white rounded-full shadow-lg"
+              />
+            </button>
+          </div>
+
+          {/* (গ) Movement strength: কম / মাঝারি / বেশি */}
+          <div className="w-full p-5 bg-[#0F172A]/80 rounded-[2.5rem] border border-purple-500/30 shadow-2xl space-y-4 text-left">
+            <div className="flex items-center gap-4">
+              <div className="w-12 h-12 rounded-full bg-purple-600/10 border border-purple-500/20 flex items-center justify-center text-purple-400 shrink-0">
+                <Zap className="w-6 h-6" />
+              </div>
+              <div>
+                <h4 className="text-base font-black uppercase tracking-wider text-white leading-none mb-1">
+                  Movement strength
+                </h4>
+                <p className="text-[11px] text-slate-400 font-bold uppercase tracking-widest">
+                  নিঃশ্বাস ও মাথা দোলার মাত্রা
+                </p>
+              </div>
+            </div>
+
+            <div className="grid grid-cols-3 gap-2.5 pt-1">
+              {strengthOptions.map((opt) => {
+                const isSelected = roseAliveSettings.movementStrength === opt.id;
+                return (
+                  <button
+                    key={opt.id}
+                    type="button"
+                    onClick={() => {
+                      updateRoseAliveSettings({ movementStrength: opt.id });
+                      setToast(`Movement strength: ${opt.label}`);
+                    }}
+                    className={
+                      "p-3 rounded-2xl border text-center transition-all active:scale-95 " +
+                      (isSelected
+                        ? "bg-purple-600/25 border-purple-400 text-white shadow-lg shadow-purple-950/40"
+                        : "bg-black/30 border-white/10 text-slate-400 hover:text-white")
+                    }
+                  >
+                    <span className="block text-xs font-black uppercase tracking-wider">
+                      {opt.label}
+                    </span>
+                    <span className="block text-[9px] font-semibold opacity-75 mt-1">
+                      {opt.desc}
+                    </span>
+                  </button>
+                );
+              })}
+            </div>
+          </div>
         </div>
       </motion.div>
     );
@@ -12452,6 +12533,7 @@ export function App() {
           {currentView === "voice" && <PhoneErrorBoundary>{renderVoice()}</PhoneErrorBoundary>}
           {currentView === "memory" && <PhoneErrorBoundary>{renderMemory()}</PhoneErrorBoundary>}
           {currentView === "look" && <PhoneErrorBoundary>{renderLook()}</PhoneErrorBoundary>}
+          {currentView === "rose-alive" && <PhoneErrorBoundary>{renderRoseAliveSettings()}</PhoneErrorBoundary>}
           {currentView === "phone" && <PhoneErrorBoundary>{renderPhone()}</PhoneErrorBoundary>}
           {currentView === "quick-actions" && <PhoneErrorBoundary>{renderQuickActions()}</PhoneErrorBoundary>}
           {currentView === "app-permissions" && <PhoneErrorBoundary>{renderAppPermissions()}</PhoneErrorBoundary>}
@@ -13791,15 +13873,7 @@ export function App() {
         )}
       </AnimatePresence>
 
-      {/* Global Background Layer */}
-      <div
-        className="fixed inset-0 z-0 pointer-events-none opacity-10 bg-cover bg-center"
-        style={{ backgroundImage: `url(${rosePortraitImg})` }}
-      />
-      {/* Dark overlay for readability */}
-      <div className="fixed inset-0 z-0 pointer-events-none bg-black/60" />
-
-      {/* Main Content Container with relative z-index to stay above background */}
+      {/* Main Content Container with relative z-index */}
       <div className="relative z-10">
         {/* All application views */}
       </div>
