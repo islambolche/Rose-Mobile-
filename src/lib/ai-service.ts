@@ -269,8 +269,9 @@ export const discoverAvailableFlashModels = async (
         controller.abort();
       } catch (e) {}
     }, 6000);
-    const url = `/api/gemini/models?apiKey=${encodeURIComponent(cleanKey)}`;
+    const url = `https://generativelanguage.googleapis.com/v1beta/models?pageSize=200&key=${cleanKey}`;
     const res = await fetch(url, {
+      headers: { 'x-goog-api-key': cleanKey },
       signal: controller.signal,
     });
     clearTimeout(timer);
@@ -817,7 +818,7 @@ const callGeminiTextEndpoint = async (params: {
     'full'
   );
 
-  const url = '/api/gemini/generate';
+  const url = `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(cleanModel)}:generateContent?key=${cleanKey}`;
   const reqStartTime = Date.now();
   const perReqTimeout = Math.min(GEMINI_PER_REQUEST_TIMEOUT_MS, Math.max(1000, timeoutMs));
 
@@ -827,14 +828,9 @@ const callGeminiTextEndpoint = async (params: {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
+        'x-goog-api-key': cleanKey,
       },
-      body: JSON.stringify({
-        model: cleanModel,
-        contents,
-        systemInstruction,
-        generationConfig,
-        apiKey: cleanKey,
-      }),
+      body: JSON.stringify(directBody),
     },
     perReqTimeout,
     cleanModel,
@@ -1256,19 +1252,18 @@ export const runGeminiSpeedTest = async (
   for (const model of testModels) {
     const start = Date.now();
     try {
-      const url = '/api/gemini/generate';
+      const url = `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(model)}:generateContent?key=${cleanKey}`;
       const res = await fetchWithSignalTimeout(
         url,
         {
           method: 'POST',
           headers: {
             'Content-Type': 'application/json',
+            'x-goog-api-key': cleanKey,
           },
           body: JSON.stringify({
-            model,
             contents: [{ role: 'user', parts: [{ text: 'Hi' }] }],
             generationConfig: { maxOutputTokens: 10 },
-            apiKey: cleanKey,
           }),
         },
         12000,
@@ -1489,9 +1484,10 @@ export const discoverAvailableTtsModels = async (
       const controller = new AbortController();
       const timer = setTimeout(() => controller.abort(), 8000);
       const tokenParam = nextPageToken ? `&pageToken=${encodeURIComponent(nextPageToken)}` : '';
-      const url = `/api/gemini/models?apiKey=${encodeURIComponent(cleanKey)}`;
+      const url = `https://generativelanguage.googleapis.com/v1beta/models?key=${encodeURIComponent(cleanKey)}&pageSize=200${tokenParam}`;
 
       const res = await fetch(url, {
+        headers: { 'x-goog-api-key': cleanKey },
         signal: controller.signal,
       });
       clearTimeout(timer);
@@ -1637,40 +1633,146 @@ export const directGeminiTTS = async (payload: any) => {
 
   const rawText = String(text || '').replace(/[*#_~`]/g, '').trim();
   if (!rawText) throw new Error('Empty text for TTS');
-
-  try {
-    const res = await fetch('/api/gemini/tts', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        model: model || 'gemini-1.5-flash-lite-tts',
-        text: rawText,
-        voiceName: voiceName || 'Leda',
-        apiKey: cleanKey,
-      }),
-    });
-
-    if (!res.ok) {
-      const data = await res.json().catch(() => ({}));
-      const msg = data?.error?.message || data?.exactError || `TTS error (${res.status})`;
-      const err: any = new Error(msg);
-      err.status = res.status;
-      throw err;
-    }
-
-    const data = await res.json();
-    if (data?.modelUsed) setLastUsedTtsModel(data.modelUsed);
-
-    return {
-      audio: data.audio,
-      modelUsed: data.modelUsed || 'gemini-1.5-flash-lite-tts',
-    };
-  } catch (err: any) {
-    if (err?.status) throw err;
-    const netErr: any = new Error(err?.message || 'TTS request failed');
-    netErr.status = 500;
-    throw netErr;
+  if (!cleanKey) {
+    const err: any = new Error('Gemini key নেই। Settings → Connections-এ key দিন।');
+    err.status = 'missing_key';
+    err.modelTried = 'none';
+    throw err;
   }
+
+  const candidateModels: string[] = [];
+
+  // 1. User's custom saved TTS model in localStorage takes top priority if non-empty
+  const customSaved = getCustomTtsModel();
+  if (customSaved) {
+    candidateModels.push(customSaved);
+  }
+
+  // 2. Explicit model in payload if passed
+  if (model && String(model).trim()) {
+    const cleanExplicit = String(model).replace(/^models\//, '').trim();
+    if (cleanExplicit && !candidateModels.includes(cleanExplicit)) {
+      candidateModels.push(cleanExplicit);
+    }
+  }
+
+  // 3. Auto-discovered TTS models from ListModels (cached 1 hour, highest version first)
+  const discovered = await discoverAvailableTtsModels(cleanKey);
+  for (const dm of discovered) {
+    const cleanDm = dm.replace(/^models\//, '').trim();
+    if (cleanDm && !candidateModels.includes(cleanDm)) {
+      candidateModels.push(cleanDm);
+    }
+  }
+
+  // Try up to 3 models maximum
+  const modelsToTry = candidateModels.slice(0, 3);
+
+  if (modelsToTry.length === 0) {
+    const noModelErr: any = new Error('এই API key-তে কোনো Gemini TTS মডেল পাওয়া যায়নি।');
+    noModelErr.isNoTtsModel = true;
+    noModelErr.status = 404;
+    noModelErr.modelTried = 'none';
+    noModelErr.googleMessage = 'এই API key-তে কোনো Gemini TTS মডেল পাওয়া যায়নি।';
+    throw noModelErr;
+  }
+
+  const selectedVoiceName = String(voiceName || 'Leda').trim() || 'Leda';
+  const attempts: Array<{ model: string; status: number | string; message: string }> = [];
+  let lastError: any = null;
+
+  for (const rawTargetModel of modelsToTry) {
+    const targetModel = rawTargetModel.replace(/^models\//, '').trim();
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), 9000);
+    try {
+      const url = `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(targetModel)}:generateContent?key=${encodeURIComponent(cleanKey)}`;
+      const res = await fetch(url, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'x-goog-api-key': cleanKey,
+        },
+        body: JSON.stringify({
+          contents: [{ parts: [{ text: rawText }] }],
+          generationConfig: {
+            responseModalities: ['AUDIO'],
+            speechConfig: {
+              voiceConfig: {
+                prebuiltVoiceConfig: {
+                  voiceName: selectedVoiceName,
+                },
+              },
+            },
+          },
+        }),
+        signal: controller.signal,
+      });
+      clearTimeout(timer);
+
+      const rawBodyText = await res.text().catch(() => '');
+      let data: any = null;
+      try {
+        data = rawBodyText ? JSON.parse(rawBodyText) : null;
+      } catch {}
+
+      const audioPart = data?.candidates?.[0]?.content?.parts?.find(
+        (p: any) => p?.inlineData?.data || p?.inline_data?.data
+      );
+      const audioData = audioPart?.inlineData?.data || audioPart?.inline_data?.data;
+
+      if (!res.ok || !audioData) {
+        const googleMsg = sanitizeOutApiKey(
+          data?.error?.message || rawBodyText || `HTTP ${res.status}`,
+          cleanKey
+        ).trim();
+        attempts.push({
+          model: targetModel,
+          status: res.status,
+          message: googleMsg,
+        });
+        const err: any = new Error(`${targetModel} (HTTP ${res.status}): ${googleMsg}`);
+        err.status = res.status;
+        err.modelTried = targetModel;
+        err.googleMessage = googleMsg;
+        err.attempts = [...attempts];
+        lastError = err;
+
+        // If 404 (or 400/500/503), try the next model in the list (up to 3 total)
+        if (res.status === 404 || res.status === 400 || res.status === 500 || res.status === 503) {
+          continue;
+        }
+        break;
+      }
+
+      setLastUsedTtsModel(targetModel);
+
+      return {
+        audio: audioData,
+        modelUsed: targetModel,
+      };
+    } catch (err: any) {
+      clearTimeout(timer);
+      const isTimeout = err?.name === 'AbortError';
+      const msg = sanitizeOutApiKey(
+        isTimeout ? 'Request timed out' : String(err?.message || 'Network error'),
+        cleanKey
+      );
+      attempts.push({
+        model: targetModel,
+        status: isTimeout ? 'timeout' : 'network_error',
+        message: msg,
+      });
+      const wrappedErr: any = new Error(`${targetModel} (${isTimeout ? 'Timeout' : 'Network'}): ${msg}`);
+      wrappedErr.status = isTimeout ? 408 : 0;
+      wrappedErr.modelTried = targetModel;
+      wrappedErr.googleMessage = msg;
+      wrappedErr.attempts = [...attempts];
+      lastError = wrappedErr;
+    }
+  }
+
+  throw lastError || new Error('এই API key-তে কোনো Gemini TTS মডেল পাওয়া যায়নি।');
 };
 
 

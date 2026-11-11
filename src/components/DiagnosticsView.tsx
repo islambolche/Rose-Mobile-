@@ -83,9 +83,7 @@ export const DiagnosticsView: React.FC<DiagnosticsViewProps> = ({
     try {
       // 1. Connecting
       const cleanKey = key.replace(/[\r\n\t\s"']+/g, "").trim();
-      const protocol = typeof window !== 'undefined' && window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-      const host = typeof window !== 'undefined' ? window.location.host : 'localhost:3000';
-      const wsUrl = `${protocol}//${host}/api/live?apiKey=${encodeURIComponent(cleanKey)}`;
+      const wsUrl = `wss://generativelanguage.googleapis.com/ws/google.ai.generativelanguage.v1beta.GenerativeService.BidiGenerateContent?key=${encodeURIComponent(cleanKey)}`;
       
       ws = new WebSocket(wsUrl);
 

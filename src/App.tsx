@@ -93,7 +93,6 @@ import { requestStoragePersistence } from "./lib/keyBackup";
 import { initializeSupabase, supabase } from "./lib/supabase";
 import { storage } from "./lib/storage";
 import rosePortraitImg from "./assets/images/rose_portrait_1793010994175.jpg";
-import roseHomeBg from "./assets/images/rose_home_bg.png";
 import realisticAssistantImg from "./assets/images/iyabd_realistic_assistant_1792805556831.jpg";
 import * as Permissions from "./lib/permissions";
 import {
@@ -8717,37 +8716,74 @@ export function App() {
         onPointerCancel={handleCharacterPointerEnd}
         className="h-[100dvh] w-full relative overflow-hidden flex flex-col justify-between select-none"
       >
-        {/* Fullscreen Background Image (uploaded image, opacity 1, no filters, cover, center top) */}
+        {/* Fullscreen Background Image & Overlays (exact same size as image, transform: none) */}
         <div
           style={{ transform: "none" }}
           className="absolute inset-0 w-full h-full z-0 pointer-events-none overflow-hidden"
         >
           <img
-            src={roseHomeBg}
+            src="/rose-bg.webp"
             alt="ROSE"
             style={{
               width: "100%",
               height: "100%",
               objectFit: "cover",
               objectPosition: "center top",
-              opacity: 1,
-              filter: "none",
             }}
-            className="w-full h-full object-cover object-top block pointer-events-none select-none opacity-100"
+            className="w-full h-full object-cover object-top block pointer-events-none select-none"
+          />
+
+          {/* Left Eye Overlay (temporarily static / blink off) */}
+          <div
+            style={{
+              left: `${roseFaceConfig.leftEyeX}%`,
+              top: `${roseFaceConfig.leftEyeY}%`,
+              width: `${roseFaceConfig.leftEyeW}%`,
+              height: `${roseFaceConfig.leftEyeH}%`,
+            }}
+            className="absolute pointer-events-none overflow-hidden rounded-full"
+          >
+            <div
+              style={{
+                transform: isEyeBlinking ? "scaleY(1)" : "scaleY(0)",
+              }}
+              className="absolute inset-0 origin-top bg-gradient-to-b from-[#e8b6a8] via-[#f4cabd] to-[#f7d4c9] border-b-[3px] border-[#2b1116] rounded-full"
+            />
+          </div>
+
+          {/* Right Eye Overlay (temporarily static / blink off) */}
+          <div
+            style={{
+              left: `${roseFaceConfig.rightEyeX}%`,
+              top: `${roseFaceConfig.rightEyeY}%`,
+              width: `${roseFaceConfig.rightEyeW}%`,
+              height: `${roseFaceConfig.rightEyeH}%`,
+            }}
+            className="absolute pointer-events-none overflow-hidden rounded-full"
+          >
+            <div
+              style={{
+                transform: isEyeBlinking ? "scaleY(1)" : "scaleY(0)",
+              }}
+              className="absolute inset-0 origin-top bg-gradient-to-b from-[#e8b6a8] via-[#f4cabd] to-[#f7d4c9] border-b-[3px] border-[#2b1116] rounded-full"
+            />
+          </div>
+
+          {/* Mouth Lip-Sync Canvas Overlay */}
+          <canvas
+            ref={mouthCanvasRef}
+            width={160}
+            height={64}
+            style={{
+              left: `${roseFaceConfig.mouthX}%`,
+              top: `${roseFaceConfig.mouthY}%`,
+              width: `${roseFaceConfig.mouthW}%`,
+              height: `${roseFaceConfig.mouthH}%`,
+            }}
+            className="absolute pointer-events-none"
           />
         </div>
-
-        {/* Top Gradient Overlay: rgba(0,0,0,0.25) to transparent over top 120px */}
-        <div
-          className="absolute top-0 left-0 right-0 h-[120px] pointer-events-none z-[1]"
-          style={{ background: "linear-gradient(to bottom, rgba(0,0,0,0.25), transparent)" }}
-        />
-
-        {/* Bottom Gradient Overlay: transparent to rgba(2,4,15,0.55) over bottom 260px */}
-        <div
-          className="absolute bottom-0 left-0 right-0 h-[260px] pointer-events-none z-[1]"
-          style={{ background: "linear-gradient(to bottom, transparent, rgba(2,4,15,0.55))" }}
-        />
+        <div className="absolute inset-0 bg-gradient-to-b from-black/15 via-black/30 to-[#020617] z-0 pointer-events-none" />
 
         {/* Foreground Overlay Controls (z-10) */}
         <div className="relative z-10 flex-1 flex flex-col justify-between w-full h-full pt-[env(safe-area-inset-top,12px)] pb-1">

@@ -329,7 +329,8 @@ export const getDynamicGeminiChatModels = async (
       attemptCount++;
       const controller = new AbortController();
       const timer = setTimeout(() => controller.abort(), 8000);
-      let url = `/api/gemini/models?apiKey=${encodeURIComponent(cleanKey)}`;
+      let url = `https://generativelanguage.googleapis.com/v1beta/models?key=${encodeURIComponent(cleanKey)}&pageSize=200`;
+      if (nextToken) url += `&pageToken=${encodeURIComponent(nextToken)}`;
 
       const res = await fetch(url, { signal: controller.signal });
       clearTimeout(timer);
@@ -574,39 +575,27 @@ export const callGeminiDirectChat = async (params: {
     return b;
   };
 
-  const url = '/api/gemini/generate';
+  const url = `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(cleanModel)}:generateContent?key=${encodeURIComponent(cleanKey)}`;
 
   try {
-    const bodyObj = buildChatBody(true, true);
     let res = await fetch(url, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
+        'x-goog-api-key': cleanKey,
       },
-      body: JSON.stringify({
-        model: cleanModel,
-        contents: bodyObj.contents,
-        systemInstruction: bodyObj.systemInstruction,
-        generationConfig: bodyObj.generationConfig,
-        apiKey: cleanKey,
-      }),
+      body: JSON.stringify(buildChatBody(true, true)),
     });
 
     // If model does not support thinkingBudget: 0 or thinkingConfig, retry without it
     if (res.status === 400) {
-      const fallbackObj = buildChatBody(false, false);
       res = await fetch(url, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
+          'x-goog-api-key': cleanKey,
         },
-        body: JSON.stringify({
-          model: cleanModel,
-          contents: fallbackObj.contents,
-          systemInstruction: fallbackObj.systemInstruction,
-          generationConfig: fallbackObj.generationConfig,
-          apiKey: cleanKey,
-        }),
+        body: JSON.stringify(buildChatBody(false, false)),
       });
     }
 

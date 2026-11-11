@@ -4,7 +4,6 @@ import { getGlobalMicStream, stopGlobalMicStream } from "./audio-manager";
 
 type Opts = {
   apiKey: string; model: string; voiceName: string; systemInstruction: string;
-  assistantName?: string; ownerName?: string; personality?: string; language?: string; responseStyle?: string;
   onUserText?: (t: string) => void; onRoseText?: (t: string) => void;
   onTurnComplete?: () => void;
 };
@@ -57,9 +56,7 @@ export function useRoseLive(getOpts: () => Opts) {
       const apiKey = String(o.apiKey || getGeminiKey() || "").replace(/[\r\n\t\s"']+/g, "").trim();
       const rawModel = (o.model || "gemini-1.5-flash").replace(/^models\//, "").trim();
       const fullModel = `models/${rawModel}`;
-      const protocol = typeof window !== 'undefined' && window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-      const host = typeof window !== 'undefined' ? window.location.host : 'localhost:3000';
-      const wsUrl = `${protocol}//${host}/api/live?assistantName=${encodeURIComponent(o.assistantName || 'Rose AI')}&ownerName=${encodeURIComponent(o.ownerName || 'MD YOUSUF KHAN')}&voiceName=${encodeURIComponent(o.voiceName || 'Sulafat')}&personality=${encodeURIComponent(o.personality || 'Normal')}&language=${encodeURIComponent(o.language || 'bn-BD')}&responseStyle=${encodeURIComponent(o.responseStyle || 'Balanced')}&model=${encodeURIComponent(rawModel)}&apiKey=${encodeURIComponent(apiKey || '')}`;
+      const wsUrl = `wss://generativelanguage.googleapis.com/ws/google.ai.generativelanguage.v1beta.GenerativeService.BidiGenerateContent?key=${encodeURIComponent(apiKey)}`;
 
       const ws = new WebSocket(wsUrl);
       let ready = false;
