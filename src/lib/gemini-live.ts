@@ -61,6 +61,7 @@ export interface GeminiLiveOptions {
   onTurnComplete?: () => void;
   onInterrupted?: () => void;
   onToast?: (message: string) => void;
+  onReconnectStatus?: (status: 'reconnecting' | 'connected' | 'failed', message?: string) => void;
   audioContext?: AudioContext;
   playbackAudioContext?: AudioContext;
   micStream?: MediaStream;
@@ -300,10 +301,15 @@ export class GeminiLiveSession {
   private lastTtsAttemptError: string | null = null;
   private cachedApiKey = '';
 
-  // Watchdog & Reconnect timers
+  // Watchdog & Reconnect timers / state
   private watchdogTimer: any = null;
   private reconnectTimer: any = null;
   private isReconnecting = false;
+  private resumptionHandle: string | null = null;
+  private connectedModelName: string | null = null;
+  private awaitingReplySince = 0;
+  private watchdogReconnectedForTurn = false;
+  private visualizerRunning = false;
 
   // 250ms PCM Chunk Accumulation Buffer (24000Hz * 0.25s = 6000 samples)
   private pendingPcmChunks: Float32Array[] = [];
@@ -399,11 +405,19 @@ export class GeminiLiveSession {
 
   public async start() {
     this.wasStoppedByUser = false;
+    this.isReconnecting = false;
     this.isSetupComplete = false;
     this.isFallbackMode = false;
     this.isProcessingClip = false;
     this.isRecordingClip = false;
     this.isBrowserTtsSpeaking = false;
+    this.resumptionHandle = null;
+    this.connectedModelName = null;
+    this.awaitingReplySince = 0;
+    this.watchdogReconnectedForTurn = false;
+    this.liveUserBuffer = '';
+    this.liveAssistantBuffer = '';
+    this.conversationHistory = [];
     this.updateState('connecting');
     this.socketStatus = 'connecting';
 
@@ -430,7 +444,7 @@ export class GeminiLiveSession {
       return;
     }
 
-    // Start 15-second Watchdog for PROCESSING / SPEAKING states
+    // Start Watchdog (10s no-reply after user transcription + 15s stuck PROCESSING/SPEAKING)
     this.startWatchdog();
 
     // 2. Fetch available models from Google ListModels dynamically
@@ -467,10 +481,48 @@ export class GeminiLiveSession {
     }
   }
 
+  private sanitizeLogText(text: string): string {
+    if (!text) return '';
+    let out = String(text);
+    if (this.cachedApiKey) {
+      out = out.split(this.cachedApiKey).join('[REDACTED]');
+    }
+    return out.replace(/key=[^&\s"']+/gi, 'key=[REDACTED]');
+  }
+
   private startWatchdog() {
     if (this.watchdogTimer) clearInterval(this.watchdogTimer);
     this.watchdogTimer = setInterval(() => {
       if (this.wasStoppedByUser || this.currentState === 'off') return;
+
+      // 10-second reply watchdog: if user's speech was transcribed but no model reply starts within 10s
+      if (
+        !this.isReconnecting &&
+        this.awaitingReplySince > 0 &&
+        this.currentState !== 'speaking' &&
+        this.scheduledAudioSources.length === 0 &&
+        !this.isBrowserTtsSpeaking &&
+        Date.now() - this.awaitingReplySince > 10000
+      ) {
+        this.awaitingReplySince = 0;
+        if (!this.watchdogReconnectedForTurn) {
+          this.watchdogReconnectedForTurn = true;
+          console.log(
+            '[GeminiLive] Watchdog: user speech was transcribed but no model reply started within 10s. Reconnecting once...'
+          );
+          logVoiceEvent('Watchdog', 'No model reply within 10s after user transcription, reconnecting once', 'warn');
+          void this.handleLiveDisconnectAndAutoReconnect(this.cachedApiKey, 'watchdog_no_reply_10s', 1);
+          return;
+        } else {
+          console.log(
+            '[GeminiLive] Watchdog: still no model reply 10s after watchdog reconnect. Ending call cleanly.'
+          );
+          logVoiceEvent('Watchdog', 'No reply after watchdog reconnect, ending call', 'error');
+          this.failAndEndSessionCleanly('Connection lost, tap to start again');
+          return;
+        }
+      }
+
       const isBusyState =
         this.currentState === 'thinking' ||
         this.currentState === 'speaking' ||
@@ -609,13 +661,17 @@ export class GeminiLiveSession {
 
       const sourceSampleRate = this.audioCtx.sampleRate;
 
-      this.micAnalyser = this.audioCtx.createAnalyser();
-      this.micAnalyser.fftSize = 256;
-      this.micAnalyser.smoothingTimeConstant = 0.45;
+      if (!this.micAnalyser || this.micAnalyser.context !== this.audioCtx) {
+        this.micAnalyser = this.audioCtx.createAnalyser();
+        this.micAnalyser.fftSize = 256;
+        this.micAnalyser.smoothingTimeConstant = 0.45;
+      }
 
-      this.outputAnalyser = this.playbackAudioCtx.createAnalyser();
-      this.outputAnalyser.fftSize = 256;
-      this.outputAnalyser.smoothingTimeConstant = 0.45;
+      if (!this.outputAnalyser || this.outputAnalyser.context !== this.playbackAudioCtx) {
+        this.outputAnalyser = this.playbackAudioCtx.createAnalyser();
+        this.outputAnalyser.fftSize = 256;
+        this.outputAnalyser.smoothingTimeConstant = 0.45;
+      }
 
       try {
         this.cleanDestNode = this.audioCtx.createMediaStreamDestination();
@@ -786,8 +842,18 @@ export class GeminiLiveSession {
       if (remaining <= 600) break;
 
       const perAttemptTimeout = Math.min(2800, remaining);
-      const ok = await this.trySingleLiveModel(apiKey, modelName, perAttemptTimeout);
-      if (ok) return true;
+      // Try first with sessionResumption + contextWindowCompression enabled
+      let ok = await this.trySingleLiveModel(apiKey, modelName, perAttemptTimeout, true);
+      if (!ok && !this.wasStoppedByUser && Date.now() + 800 < deadline) {
+        // Fallback retry without sessionResumption/contextWindowCompression if model or expired handle rejected it
+        this.resumptionHandle = null;
+        const retryTimeout = Math.min(2400, deadline - Date.now());
+        ok = await this.trySingleLiveModel(apiKey, modelName, retryTimeout, false);
+      }
+      if (ok) {
+        this.connectedModelName = modelName;
+        return true;
+      }
     }
 
     return false;
@@ -796,7 +862,8 @@ export class GeminiLiveSession {
   private trySingleLiveModel(
     apiKey: string,
     modelName: string,
-    timeoutMs: number
+    timeoutMs: number,
+    includeResumptionAndCompression: boolean = true
   ): Promise<boolean> {
     return new Promise((resolve) => {
       let settled = false;
@@ -840,34 +907,42 @@ export class GeminiLiveSession {
           return;
         }
         const STT_LANG_PROMPT = "ব্যবহারকারী বাংলা বা ইংরেজিতে কথা বলেন, শুধু বাংলা বা ইংরেজিতে লেখো, কোরিয়ান বা অন্য ভাষায় নয়। অস্পষ্ট হলে বাংলায় লেখো। ভয়েস কলে সর্বোচ্চ ২-৩ ছোট বাক্যে উত্তর দাও।";
-        const setupMsg = {
-          setup: {
-            model: `models/${modelName}`,
-            generationConfig: {
-              responseModalities: ['AUDIO'],
-              speechConfig: {
-                voiceConfig: {
-                  prebuiltVoiceConfig: {
-                    voiceName: this.options.voiceName || 'Sulafat',
-                  },
+        const setupPayload: any = {
+          model: `models/${modelName}`,
+          generationConfig: {
+            responseModalities: ['AUDIO'],
+            speechConfig: {
+              voiceConfig: {
+                prebuiltVoiceConfig: {
+                  voiceName: this.options.voiceName || 'Sulafat',
                 },
               },
             },
-            systemInstruction: {
-              parts: [
-                {
-                  text: `${STT_LANG_PROMPT}\n\n${ensureNoThoughtSystemInstruction(
-                    this.getEffectiveSystemInstruction()
-                  )}\n\n${getRoseTechInstruction()}${isAdmin() ? `\n\n${ADMIN_SYSTEM_INSTRUCTION_BLOCK}` : ''}`,
-                },
-              ],
-            },
-            inputAudioTranscription: {},
-            outputAudioTranscription: {},
           },
+          systemInstruction: {
+            parts: [
+              {
+                text: `${STT_LANG_PROMPT}\n\n${ensureNoThoughtSystemInstruction(
+                  this.getEffectiveSystemInstruction()
+                )}\n\n${getRoseTechInstruction()}${isAdmin() ? `\n\n${ADMIN_SYSTEM_INSTRUCTION_BLOCK}` : ''}`,
+              },
+            ],
+          },
+          inputAudioTranscription: {},
+          outputAudioTranscription: {},
         };
+
+        if (includeResumptionAndCompression) {
+          setupPayload.sessionResumption = this.resumptionHandle
+            ? { handle: this.resumptionHandle }
+            : {};
+          setupPayload.contextWindowCompression = {
+            slidingWindow: {},
+          };
+        }
+
         try {
-          socket?.send(JSON.stringify(setupMsg));
+          socket?.send(JSON.stringify({ setup: setupPayload }));
         } catch {
           finish(false);
         }
@@ -879,12 +954,45 @@ export class GeminiLiveSession {
           const raw = typeof event.data === 'string' ? event.data : await (event.data as Blob).text();
           const msg = JSON.parse(raw);
 
-          if (msg.error) {
+          // Store latest sessionResumption handle if sent by server
+          const resumptionUpdate = msg.sessionResumptionUpdate || msg.session_resumption_update;
+          if (resumptionUpdate) {
+            const newHandle =
+              resumptionUpdate.newHandle ||
+              resumptionUpdate.new_handle ||
+              resumptionUpdate.handle;
+            if (newHandle && typeof newHandle === 'string') {
+              this.resumptionHandle = newHandle;
+            }
+          }
+
+          // Handle server goAway message before session expires
+          const goAwayMsg = msg.goAway || msg.go_away;
+          if (goAwayMsg) {
+            const timeLeft = goAwayMsg.timeLeft || goAwayMsg.time_left || 'unknown';
+            console.log('[GeminiLive] Server goAway received — timeLeft:', timeLeft);
             if (!settled) {
               finish(false);
               return;
             }
-            this.handleLiveDisconnectAndAutoReconnect(apiKey);
+            if (!this.wasStoppedByUser && this.ws === socket) {
+              void this.handleLiveDisconnectAndAutoReconnect(apiKey, `goAway (timeLeft: ${timeLeft})`);
+            }
+            return;
+          }
+
+          if (msg.error) {
+            const safeErr = this.sanitizeLogText(
+              String(msg.error?.message || msg.error?.status || 'server_error')
+            );
+            console.log('[GeminiLive] Server error message — reason:', safeErr);
+            if (!settled) {
+              finish(false);
+              return;
+            }
+            if (!this.wasStoppedByUser && this.ws === socket) {
+              void this.handleLiveDisconnectAndAutoReconnect(apiKey, `error (${safeErr})`);
+            }
             return;
           }
 
@@ -901,26 +1009,38 @@ export class GeminiLiveSession {
       };
 
       socket.onerror = () => {
+        console.log('[GeminiLive] WebSocket error event');
         if (!settled) {
           finish(false);
-        } else {
-          this.handleLiveDisconnectAndAutoReconnect(apiKey);
+        } else if (!this.wasStoppedByUser && this.ws === socket) {
+          void this.handleLiveDisconnectAndAutoReconnect(apiKey, 'websocket_error');
         }
       };
 
-      socket.onclose = () => {
+      socket.onclose = (event: CloseEvent) => {
+        const safeReason = this.sanitizeLogText(String(event?.reason || 'no reason'));
+        console.log(
+          '[GeminiLive] WebSocket closed — code:',
+          event?.code ?? 'unknown',
+          'reason:',
+          safeReason
+        );
         if (!settled) {
           finish(false);
-        } else if (!this.wasStoppedByUser) {
-          this.handleLiveDisconnectAndAutoReconnect(apiKey);
+        } else if (!this.wasStoppedByUser && this.ws === socket) {
+          void this.handleLiveDisconnectAndAutoReconnect(
+            apiKey,
+            `close (code: ${event?.code ?? 'unknown'}, reason: ${safeReason})`
+          );
         }
       };
     });
   }
 
-  private handleLiveDisconnectAndAutoReconnect(apiKey: string) {
-    if (this.wasStoppedByUser) return;
+  private releaseSessionAudioAndSocketForReconnect() {
     this.isSetupComplete = false;
+    this.socketStatus = 'connecting';
+
     if (this.ws) {
       try {
         this.ws.onopen = null;
@@ -932,35 +1052,167 @@ export class GeminiLiveSession {
       this.ws = null;
     }
 
-    // Ensure Path 2 is active immediately so the user can keep speaking without interruption
-    if (!this.isFallbackMode) {
-      this.activateFallbackPath(apiKey);
-    } else {
-      this.finishSpeakingAndReturnToListening();
+    if (this.vadTimer) {
+      clearInterval(this.vadTimer);
+      this.vadTimer = null;
     }
 
-    // Auto-reconnect after 2 seconds without ending the call
-    if (this.reconnectTimer) clearTimeout(this.reconnectTimer);
-    this.reconnectTimer = setTimeout(async () => {
-      if (this.wasStoppedByUser || this.isReconnecting || this.liveModels.length === 0) return;
-      if (this.currentState === 'speaking' || this.isProcessingClip || this.isRecordingClip) return;
-      this.isReconnecting = true;
+    if (this.mediaRecorder && this.mediaRecorder.state !== 'inactive') {
+      this.discardClip = true;
       try {
-        const reconnected = await this.tryConnectLiveModels(apiKey, this.liveModels.slice(0, 2), 5000);
+        this.mediaRecorder.stop();
+      } catch {}
+    }
+    this.mediaRecorder = null;
+    this.isRecordingClip = false;
+    this.isProcessingClip = false;
+
+    this.interruptPlayback();
+
+    if (this.micSourceNode) {
+      try {
+        this.micSourceNode.disconnect();
+      } catch {}
+      this.micSourceNode = null;
+    }
+
+    if (this.rnnoiseNode) {
+      try {
+        this.rnnoiseNode.disconnect();
+      } catch {}
+      this.rnnoiseNode = null;
+    }
+
+    if (this.scriptProcessor) {
+      try {
+        this.scriptProcessor.disconnect();
+      } catch {}
+      this.scriptProcessor = null;
+    }
+
+    if (this.audioWorkletNode) {
+      try {
+        this.audioWorkletNode.disconnect();
+      } catch {}
+      this.audioWorkletNode = null;
+    }
+
+    if (this.cleanDestNode) {
+      try {
+        this.cleanDestNode.disconnect();
+      } catch {}
+      this.cleanDestNode = null;
+    }
+
+    pauseGlobalMicForSpeech([this.micStream, this.options.micStream]);
+    this.micStream = null;
+    this.options.micStream = undefined;
+    this.denoisedStream = null;
+    this.options.onMicLive?.(false);
+  }
+
+  private failAndEndSessionCleanly(message: string) {
+    this.stop();
+    this.lastError = message;
+    this.options.onReconnectStatus?.('failed', message);
+    this.options.onError?.(message);
+    this.options.onClose?.({ reason: message });
+  }
+
+  private async handleLiveDisconnectAndAutoReconnect(
+    apiKey: string,
+    reason: string = 'disconnect',
+    maxAttempts: number = 3
+  ): Promise<void> {
+    if (this.wasStoppedByUser || this.isReconnecting) return;
+    this.isReconnecting = true;
+
+    const cleanKey = (apiKey || this.cachedApiKey || getGeminiKey() || '')
+      .replace(/[\r\n\t\s"']+/g, '')
+      .trim();
+
+    // Release old WebSocket and old mic/audio nodes cleanly first
+    this.releaseSessionAudioAndSocketForReconnect();
+
+    // Notify call banner UI to show "Reconnecting…"
+    this.options.onReconnectStatus?.('reconnecting', 'Reconnecting…');
+
+    const delays = [500, 1000, 2000];
+
+    try {
+      for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+        if (this.wasStoppedByUser) return;
+        const delayMs = delays[Math.min(attempt - 1, delays.length - 1)];
+        console.log(
+          `[GeminiLive] Reconnect attempt ${attempt}/${maxAttempts} in ${delayMs}ms (reason: ${this.sanitizeLogText(reason)}, resumptionHandle: ${
+            this.resumptionHandle ? 'present' : 'none'
+          })`
+        );
+
+        await new Promise<void>((resolve) => {
+          if (this.reconnectTimer) clearTimeout(this.reconnectTimer);
+          this.reconnectTimer = setTimeout(() => {
+            this.reconnectTimer = null;
+            resolve();
+          }, delayMs);
+        });
+
+        if (this.wasStoppedByUser) return;
+
+        // Re-initialize fresh mic stream and audio nodes
+        const audioReady = await this.initAudioAndAnalyzers();
+        if (!audioReady || this.wasStoppedByUser) {
+          this.releaseSessionAudioAndSocketForReconnect();
+          continue;
+        }
+
+        if (this.liveModels.length === 0 && cleanKey) {
+          try {
+            const discovered = await discoverVoiceModelsFromListModels(cleanKey);
+            this.liveModels = discovered.liveModels;
+            this.flashModels = discovered.flashModels;
+            this.ttsModels = discovered.ttsModels;
+          } catch {}
+        }
+
+        const orderedCandidates = this.connectedModelName
+          ? [
+              this.connectedModelName,
+              ...this.liveModels.filter((m) => m !== this.connectedModelName),
+            ]
+          : this.liveModels.slice(0, 3);
+
+        let reconnected = false;
+        if (orderedCandidates.length > 0 && !getMicListeningSettings().streetMode) {
+          reconnected = await this.tryConnectLiveModels(cleanKey, orderedCandidates, 5500);
+        }
+
         if (reconnected && !this.wasStoppedByUser) {
+          console.log(`[GeminiLive] Reconnect attempt ${attempt}/${maxAttempts} succeeded`);
           this.isFallbackMode = false;
           this.activeMode = 'live';
           this.socketStatus = 'open';
-          if (this.vadTimer) {
-            clearInterval(this.vadTimer);
-            this.vadTimer = null;
-          }
-          await this.finishSpeakingAndReturnToListening();
+          this.awaitingReplySince = 0;
+          this.isReconnecting = false;
+          this.options.onReconnectStatus?.('connected');
+          await this.finishSpeakingAndReturnToListening(0);
+          return;
         }
-      } catch {} finally {
-        this.isReconnecting = false;
+
+        // Release nodes from failed attempt before next attempt
+        this.releaseSessionAudioAndSocketForReconnect();
       }
-    }, 2000);
+
+      if (!this.wasStoppedByUser) {
+        console.log(
+          `[GeminiLive] All ${maxAttempts} reconnect attempts failed. Ending call cleanly.`
+        );
+        this.isReconnecting = false;
+        this.failAndEndSessionCleanly('Connection lost, tap to start again');
+      }
+    } finally {
+      this.isReconnecting = false;
+    }
   }
 
   private liveUserBuffer = '';
@@ -986,6 +1238,9 @@ export class GeminiLiveSession {
           );
           if (this.liveStreetAllowed) {
             this.lastHeardText = combined;
+            if (this.currentState !== 'speaking') {
+              this.awaitingReplySince = Date.now();
+            }
             this.options.onTranscription?.('user', combined, false);
           }
         }
@@ -997,6 +1252,8 @@ export class GeminiLiveSession {
       content.outputAudioTranscription ||
       content.output_audio_transcription;
     if (outTrans) {
+      this.awaitingReplySince = 0;
+      this.watchdogReconnectedForTurn = false;
       if (this.liveUserBuffer.trim()) {
         const finalUser = this.liveUserBuffer.trim();
         this.liveUserBuffer = '';
@@ -1024,6 +1281,8 @@ export class GeminiLiveSession {
     }
 
     if (content.modelTurn) {
+      this.awaitingReplySince = 0;
+      this.watchdogReconnectedForTurn = false;
       if (this.liveUserBuffer.trim()) {
         const finalUser = this.liveUserBuffer.trim();
         this.liveUserBuffer = '';
@@ -1066,6 +1325,7 @@ export class GeminiLiveSession {
     }
 
     if (content.interrupted) {
+      this.awaitingReplySince = 0;
       this.liveUserBuffer = '';
       this.liveAssistantBuffer = '';
       this.liveStreetAllowed = true;
@@ -1076,6 +1336,8 @@ export class GeminiLiveSession {
     }
 
     if (content.turnComplete) {
+      this.awaitingReplySince = 0;
+      this.watchdogReconnectedForTurn = false;
       if (this.liveUserBuffer.trim()) {
         const finalUser = this.liveUserBuffer.trim();
         this.liveUserBuffer = '';
@@ -2244,12 +2506,17 @@ export class GeminiLiveSession {
   }
 
   private startVisualizer() {
+    if (this.visualizerRunning) return;
+    this.visualizerRunning = true;
     const micFreqData = new Uint8Array(this.micAnalyser?.frequencyBinCount || 128);
     const micTimeData = new Float32Array(this.micAnalyser?.fftSize || 256);
     const outFreqData = new Uint8Array(this.outputAnalyser?.frequencyBinCount || 128);
 
     const loop = () => {
-      if (this.wasStoppedByUser || this.currentState === 'off') return;
+      if (this.wasStoppedByUser || this.currentState === 'off') {
+        this.visualizerRunning = false;
+        return;
+      }
 
       if (this.micAnalyser && !this.isMuted && this.currentState !== 'speaking') {
         this.micAnalyser.getByteFrequencyData(micFreqData);
@@ -2346,12 +2613,21 @@ export class GeminiLiveSession {
 
   public stop() {
     this.wasStoppedByUser = true;
+    this.isReconnecting = false;
+    this.visualizerRunning = false;
     this.updateState('off');
     this.socketStatus = 'closed';
     this.isSetupComplete = false;
     this.isFallbackMode = false;
     this.isProcessingClip = false;
     this.isRecordingClip = false;
+    this.resumptionHandle = null;
+    this.connectedModelName = null;
+    this.awaitingReplySince = 0;
+    this.watchdogReconnectedForTurn = false;
+    this.liveUserBuffer = '';
+    this.liveAssistantBuffer = '';
+    this.conversationHistory = [];
 
     if (this.watchdogTimer) {
       clearInterval(this.watchdogTimer);
@@ -2403,6 +2679,13 @@ export class GeminiLiveSession {
       this.rnnoiseNode = null;
     }
 
+    if (this.cleanDestNode) {
+      try {
+        this.cleanDestNode.disconnect();
+      } catch {}
+      this.cleanDestNode = null;
+    }
+
     this.sileroVad.stop();
 
     if (this.scriptProcessor) {
@@ -2418,7 +2701,10 @@ export class GeminiLiveSession {
       this.audioWorkletNode = null;
     }
 
-    pauseGlobalMicForSpeech([this.micStream]);
+    pauseGlobalMicForSpeech([this.micStream, this.options.micStream]);
     this.micStream = null;
+    this.options.micStream = undefined;
+    this.denoisedStream = null;
+    this.options.onMicLive?.(false);
   }
 }

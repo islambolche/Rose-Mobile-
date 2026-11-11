@@ -3705,6 +3705,7 @@ export function App() {
   const [isCallMinimized, setIsCallMinimized] = useState(false);
   const [isMuted, setIsMuted] = useState(false);
   const isMutedRef = useRef(false);
+  const [liveReconnectStatus, setLiveReconnectStatus] = useState<string | null>(null);
 
   useEffect(() => {
     if (!isCallScreenOpen) return;
@@ -6560,6 +6561,7 @@ export function App() {
     isSessionActiveRef.current = false;
     recognitionRunningRef.current = false;
     setInterimSpeechText("");
+    setLiveReconnectStatus(null);
 
     clearBrowserCheckTimers();
     stopRecorderVadLoop(true);
@@ -7867,6 +7869,7 @@ export function App() {
     isMutedRef.current = false;
     setLiveErrorMsg(null);
     setLiveBottomError(null);
+    setLiveReconnectStatus(null);
     // Requirement 4.6: Warm up TTS & API connections on call start
     if (geminiKey) {
       try {
@@ -8086,6 +8089,36 @@ export function App() {
         setDiagLastError(msg);
         triggerLiveBottomError(msg);
       },
+      onReconnectStatus: (status, message) => {
+        if (status === 'reconnecting') {
+          setLiveReconnectStatus(message || "Reconnecting…");
+        } else if (status === 'connected') {
+          setLiveReconnectStatus(null);
+          const micAn = session.getMicAnalyser();
+          const outAn = session.getOutputAnalyser();
+          if (micAn) {
+            analyserRef.current = micAn;
+            currentAnalyserRef.current = micAn;
+          }
+          if (outAn) {
+            outputAnalyserRef.current = outAn;
+          }
+        } else if (status === 'failed') {
+          const lostMsg = message || "Connection lost, tap to start again";
+          setLiveReconnectStatus(null);
+          callStartTimeRef.current = null;
+          setIsCallScreenOpen(false);
+          isCallScreenOpenRef.current = false;
+          setIsCallMinimized(false);
+          setIsMuted(false);
+          isMutedRef.current = false;
+          setVoiceModeEnabled(false);
+          stopListening();
+          setLiveErrorMsg(lostMsg);
+          triggerLiveBottomError(lostMsg);
+          setToast(lostMsg);
+        }
+      },
       onClose: () => {
         liveSessionRef.current = null;
       }
@@ -8109,7 +8142,7 @@ export function App() {
       }
       checkCount++;
     }, 80);
-  }, [transitionToState, ensureAudioContext, updateLiveCaption, triggerLiveBottomError]);
+  }, [transitionToState, ensureAudioContext, updateLiveCaption, triggerLiveBottomError, stopListening]);
 
   const endLiveCall = useCallback(() => {
     if (chatHistory.length > 0) {
@@ -8127,6 +8160,7 @@ export function App() {
     }
 
     callStartTimeRef.current = null;
+    setLiveReconnectStatus(null);
     setIsCallScreenOpen(false);
     isCallScreenOpenRef.current = false;
     setIsCallMinimized(false);
@@ -8144,19 +8178,21 @@ export function App() {
       return;
     }
 
-    if (isCallScreenOpen && !isCallMinimized) {
-      setIsCallMinimized(true);
-      return;
-    }
-
-    if (isCallMinimized) {
-      setIsCallMinimized(false);
-      setIsCallScreenOpen(true);
-      isCallScreenOpenRef.current = true;
+    if (
+      isCallScreenOpen ||
+      isCallScreenOpenRef.current ||
+      isAssistantEnabledRef.current ||
+      liveSessionRef.current !== null ||
+      sessionStateRef.current !== "IDLE"
+    ) {
+      endLiveCall();
       return;
     }
 
     callStartTimeRef.current = Date.now();
+    setLiveErrorMsg(null);
+    setLiveBottomError(null);
+    setLiveReconnectStatus(null);
     setIsCallScreenOpen(true);
     isCallScreenOpenRef.current = true;
     setIsCallMinimized(false);
@@ -8164,7 +8200,7 @@ export function App() {
     
     // START LIVE SESSION
     startLiveCall();
-  }, [isCallScreenOpen, isCallMinimized, settings.masterAccess, startLiveCall, ensureAudioContext]);
+  }, [isCallScreenOpen, settings.masterAccess, startLiveCall, endLiveCall, ensureAudioContext]);
 
   const toggleListeningSwitch = useCallback(() => {
     handleVoiceToggle();
@@ -8945,7 +8981,14 @@ export function App() {
             {/* Reserved empty space (~90px) for voice dots animation; error banner preserved */}
             <div className="w-full h-[90px] min-h-[90px] flex flex-col items-center justify-center gap-1 mb-[20px] shrink-0 mt-auto pointer-events-none">
               {liveErrorMsg && (
-                <span className="text-[10px] font-semibold text-rose-300 bg-rose-950/85 border border-rose-500/40 rounded-lg px-2.5 py-1 animate-pulse max-w-[320px] break-words text-center shadow-lg pointer-events-auto">
+                <span
+                  onClick={() => {
+                    if (liveErrorMsg.includes("Connection lost")) {
+                      toggleListeningSwitch();
+                    }
+                  }}
+                  className="text-[10px] font-semibold text-rose-300 bg-rose-950/85 border border-rose-500/40 rounded-lg px-2.5 py-1 animate-pulse max-w-[320px] break-words text-center shadow-lg pointer-events-auto cursor-pointer"
+                >
                   {liveErrorMsg}
                 </span>
               )}
@@ -13952,9 +13995,13 @@ export function App() {
                 />
               </div>
 
-              {/* Clean Status Text ("শুনছি", "ভাবছি", "বলছি") or temporary real error */}
+              {/* Clean Status Text ("শুনছি", "ভাবছি", "বলছি") or temporary real error / Reconnecting */}
               <div className="min-h-[26px] mb-4 flex items-center justify-center px-3 text-center">
-                {liveBottomError ? (
+                {liveReconnectStatus ? (
+                  <span className="text-xs font-semibold text-amber-300 animate-pulse tracking-wide">
+                    {liveReconnectStatus}
+                  </span>
+                ) : liveBottomError ? (
                   <span className="text-xs font-medium text-rose-300/95 tracking-tight">
                     {liveBottomError}
                   </span>
@@ -14036,8 +14083,12 @@ export function App() {
             <div className="flex items-center gap-3">
               <div className="w-3 h-3 rounded-full bg-teal-400 animate-ping shrink-0" />
               <div>
-                <p className="text-xs font-black text-white italic">Rose 🌹 Live Call Active</p>
-                <p className="text-[9px] text-teal-300 font-bold uppercase tracking-wider">Tap to return to call screen</p>
+                <p className="text-xs font-black text-white italic">
+                  {liveReconnectStatus ? `Rose 🌹 ${liveReconnectStatus}` : "Rose 🌹 Live Call Active"}
+                </p>
+                <p className="text-[9px] text-teal-300 font-bold uppercase tracking-wider">
+                  {liveReconnectStatus || "Tap to return to call screen"}
+                </p>
               </div>
             </div>
             <button
