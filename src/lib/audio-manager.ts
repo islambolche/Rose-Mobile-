@@ -63,6 +63,13 @@ export async function getGlobalMicStream(
   try {
     await stopGlobalMicStream();
 
+    if (typeof navigator === 'undefined' || !navigator.mediaDevices || typeof navigator.mediaDevices.getUserMedia !== 'function') {
+      onErrorToast?.("মাইক পাওয়া যায়নি");
+      const notFoundErr = new Error("মাইক পাওয়া যায়নি");
+      notFoundErr.name = "NotFoundError";
+      throw notFoundErr;
+    }
+
     const { cleanVoice } = getMicListeningSettings();
     const audioConstraints: MediaTrackConstraints = {
       ...(typeof options?.audio === 'object' ? options.audio : {}),
@@ -81,6 +88,7 @@ export async function getGlobalMicStream(
     return stream;
   } catch (err: any) {
     const errName = String(err?.name || "");
+    const errMsg = String(err?.message || "");
 
     if (errName === "NotReadableError" && retryCount < 3) {
       console.warn(`[AudioManager] NotReadableError, retrying ${retryCount + 1}/3...`);
@@ -91,6 +99,12 @@ export async function getGlobalMicStream(
 
     if (errName === "NotReadableError") {
       onErrorToast?.("মাইক অন্য app ব্যবহার করছে, সেটা বন্ধ করে আবার চেষ্টা করুন");
+    } else if (
+      errName === "NotFoundError" ||
+      errName === "DevicesNotFoundError" ||
+      /device not found|requested device not found/i.test(errMsg)
+    ) {
+      onErrorToast?.("মাইক পাওয়া যায়নি");
     }
 
     throw err;

@@ -85,7 +85,7 @@ export const Developer = ({
       initial={{ x: "100%" }}
       animate={{ x: 0 }}
       exit={{ x: "100%" }}
-      className="fixed inset-0 z-[90] h-[100dvh] bg-[#020617] flex flex-col overflow-hidden"
+      className="fixed inset-0 z-[90] h-full bg-[#020617] flex flex-col overflow-hidden"
     >
       <header className="px-6 py-4 flex items-center gap-4 shrink-0 border-b border-white/5">
         <button
@@ -101,7 +101,7 @@ export const Developer = ({
 
       <div className="flex-1 overflow-y-auto pb-[calc(80px+env(safe-area-inset-bottom,0px)+80px)] no-scrollbar bg-[#020617]">
         {/* Edge-to-Edge Developer Image blended into page background */}
-        <div className="relative w-screen left-1/2 -translate-x-1/2 bg-[#020617] overflow-hidden">
+        <div className="relative w-full bg-[#020617] overflow-hidden">
           <img
             src="/developer.jpg"
             alt="MD YOUSUF KHAN"

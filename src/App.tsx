@@ -94,6 +94,7 @@ import { initializeSupabase, supabase } from "./lib/supabase";
 import { storage } from "./lib/storage";
 import rosePortraitImg from "./assets/images/rose_portrait_1793010994175.jpg";
 import realisticAssistantImg from "./assets/images/iyabd_realistic_assistant_1792805556831.jpg";
+import { ROSE_BRAND } from "./brand";
 import * as Permissions from "./lib/permissions";
 import {
   getGlobalMicStream,
@@ -6580,7 +6581,7 @@ export function App() {
         recognition: hasSpeechRec ? "supported" : "unsupported",
         mode: "recorder",
       });
-      const unsupMsg = "মাইক অসমর্থিত: এই ব্রাউজারে getUserMedia সাপোর্ট নেই";
+      const unsupMsg = "মাইক পাওয়া যায়নি";
       setLiveErrorMsg(unsupMsg);
       setToast(unsupMsg);
       pushSharedMessageRef.current({
@@ -6625,6 +6626,11 @@ export function App() {
           errName === "SecurityError" ||
           /permission|denied|not allowed/i.test(errMsg);
 
+        const isNotFound =
+          errName === "NotFoundError" ||
+          errName === "DevicesNotFoundError" ||
+          /device not found|requested device not found/i.test(errMsg);
+
         if (isDenied) {
           micNotAllowedRef.current = true;
           setVoiceDiag({
@@ -6645,6 +6651,15 @@ export function App() {
           setStatus("idle");
           setSpeakingState("idle");
           transitionToState("IDLE");
+        } else if (isNotFound) {
+          const notFoundMsg = "মাইক পাওয়া যায়নি";
+          setLiveErrorMsg(notFoundMsg);
+          setToast(notFoundMsg);
+          isAssistantEnabledRef.current = false;
+          setIsAssistantEnabled(false);
+          setStatus("idle");
+          setSpeakingState("idle");
+          transitionToState("IDLE");
         } else {
           // If it's NotReadableError, getGlobalMicStream already retried and toasted.
           // For other errors, we show the message but KEEP the assistant enabled if possible to allow retry
@@ -6652,13 +6667,6 @@ export function App() {
             "মাইক ত্রুটি: " + (errName ? `${errName} (${errMsg})` : errMsg || "Microphone error");
           setLiveErrorMsg(exactErr);
           setToast(exactErr);
-          
-          // Only disable if it's clearly fatal and not worth retrying
-          if (errName === "NotFoundError" || errName === "DevicesNotFoundError") {
-             isAssistantEnabledRef.current = false;
-             setIsAssistantEnabled(false);
-             transitionToState("IDLE");
-          }
         }
         return;
       }
@@ -7789,6 +7797,12 @@ export function App() {
 
     // Requirement 2a & 3: getUserMedia call & error handling
     let micStream: MediaStream | null = null;
+    if (typeof navigator === "undefined" || !navigator.mediaDevices || typeof navigator.mediaDevices.getUserMedia !== "function") {
+      setDiagGetUserMediaStatus("error unsupported");
+      triggerLiveBottomError("মাইক পাওয়া যায়নি");
+      setToast("মাইক পাওয়া যায়নি");
+      return;
+    }
     try {
       micStream = await navigator.mediaDevices.getUserMedia({
         audio: {
@@ -7800,12 +7814,18 @@ export function App() {
       setDiagGetUserMediaStatus("ok");
     } catch (err: any) {
       console.error("getUserMedia error:", err);
-      const isDenied = err?.name === 'NotAllowedError' || err?.name === 'PermissionDeniedError' || String(err?.message || '').toLowerCase().includes('denied');
-      const errText = isDenied
+      const errName = String(err?.name || "");
+      const errMsg = String(err?.message || err || "");
+      const isDenied = errName === 'NotAllowedError' || errName === 'PermissionDeniedError' || errMsg.toLowerCase().includes('denied');
+      const isNotFound = errName === 'NotFoundError' || errName === 'DevicesNotFoundError' || /device not found|requested device not found/i.test(errMsg);
+      const errText = isNotFound
+        ? "মাইক পাওয়া যায়নি"
+        : isDenied
         ? "মাইক্রোফোনের অনুমতি নেই। Chrome এর তালা আইকনে চেপে Microphone Allow করুন।"
-        : `getUserMedia error: ${err?.message || err}`;
-      setDiagGetUserMediaStatus(`error ${err?.message || 'denied'}`);
+        : `getUserMedia error: ${errMsg}`;
+      setDiagGetUserMediaStatus(`error ${errMsg || 'denied'}`);
       triggerLiveBottomError(errText);
+      setToast(errText);
       return;
     }
 
@@ -8714,7 +8734,7 @@ export function App() {
         onPointerUp={handleCharacterPointerEnd}
         onPointerLeave={handleCharacterPointerEnd}
         onPointerCancel={handleCharacterPointerEnd}
-        className="h-[100dvh] w-full relative overflow-hidden flex flex-col justify-between select-none"
+        className="h-full w-full relative overflow-hidden flex flex-col justify-between select-none"
       >
         {/* Fullscreen Background Image & Overlays (exact same size as image, transform: none) */}
         <div
@@ -8722,8 +8742,8 @@ export function App() {
           className="absolute inset-0 w-full h-full z-0 pointer-events-none overflow-hidden"
         >
           <img
-            src="/rose-bg.webp"
-            alt="ROSE"
+            src={ROSE_BRAND.homeBackground}
+            alt={ROSE_BRAND.name}
             style={{
               width: "100%",
               height: "100%",
@@ -9471,16 +9491,29 @@ export function App() {
     const hasInterim = interimSpeechText.trim().length > 0;
     return (
       <div className="relative flex-1 min-h-0 flex flex-col overflow-hidden w-full bg-[#020617]">
-        {/* Layer 0: Fixed background image with dark overlay */}
+        {/* Layer 0: Fixed two-layer chat background with dark purple-black overlay */}
         <div className="absolute inset-0 z-0 pointer-events-none select-none overflow-hidden">
           <img
-            src={rosePortraitImg}
-            alt="Rose"
-            className="w-full h-full object-cover object-center"
+            src={ROSE_BRAND.chatBackground}
+            alt={ROSE_BRAND.name}
+            className="absolute inset-0 w-full h-full object-cover object-top"
+            style={{ opacity: 0.06 }}
+          />
+          <img
+            src={ROSE_BRAND.chatBackground}
+            alt={ROSE_BRAND.name}
+            className="absolute inset-0 w-full h-full object-cover object-top"
+            style={{
+              opacity: 0.22,
+              WebkitMaskImage:
+                "radial-gradient(ellipse 45% 28% at 50% 28%, black 0%, black 40%, transparent 100%)",
+              maskImage:
+                "radial-gradient(ellipse 45% 28% at 50% 28%, black 0%, black 40%, transparent 100%)",
+            }}
           />
           <div
             className="absolute inset-0"
-            style={{ backgroundColor: "rgba(3,6,20,0.88)" }}
+            style={{ backgroundColor: "rgba(10, 6, 24, 0.35)" }}
           />
         </div>
 
@@ -9593,8 +9626,8 @@ export function App() {
                         <div className="w-10 h-10 rounded-full bg-[#0F172A] border border-purple-500/30 flex items-center justify-center shrink-0 shadow-[0_0_10px_rgba(168,85,247,0.25)] mb-1 relative">
                           {!roseAvatarError ? (
                             <img
-                              src="/rose-avatar.jpg"
-                              alt="Rose"
+                              src={ROSE_BRAND.avatar}
+                              alt={ROSE_BRAND.name}
                               onError={() => setRoseAvatarError(true)}
                               className="w-full h-full rounded-full object-cover object-[50%_25%]"
                             />
@@ -9688,8 +9721,8 @@ export function App() {
                     <div className="w-10 h-10 rounded-full bg-[#0F172A] border border-purple-500/30 flex items-center justify-center shrink-0 shadow-[0_0_10px_rgba(168,85,247,0.25)]">
                       {!roseAvatarError ? (
                         <img
-                          src="/rose-avatar.jpg"
-                          alt="Rose"
+                          src={ROSE_BRAND.avatar}
+                          alt={ROSE_BRAND.name}
                           onError={() => setRoseAvatarError(true)}
                           className="w-full h-full rounded-full object-cover object-[50%_25%]"
                         />
@@ -9710,18 +9743,20 @@ export function App() {
 
         {/* Layer 2: Text Input Footer */}
         <div className="relative z-[2] px-3 pt-2 pb-2 border-t border-white/5 bg-[#0F172A]/90 backdrop-blur-md shrink-0 flex items-center gap-2">
-          <input
-            type="text"
+          <textarea
+            rows={1}
             value={inputText}
             onChange={(e) => setInputText(e.target.value)}
             onKeyDown={(e) => {
-              if (e.key === "Enter" && !e.shiftKey && inputText.trim()) {
+              if (e.key === "Enter" && !e.shiftKey) {
                 e.preventDefault();
-                sendTypedMessageToRose(inputText);
+                if (inputText.trim()) {
+                  sendTypedMessageToRose(inputText);
+                }
               }
             }}
-            placeholder={"Message " + (settings.assistantName || "Rose") + "..."}
-            className="flex-1 bg-black/40 border border-white/10 rounded-2xl px-4 py-2.5 text-xs text-white placeholder:text-slate-500 outline-none focus:ring-1 focus:ring-purple-500"
+            placeholder={"Message " + (settings.assistantName || ROSE_BRAND.name) + "..."}
+            className="flex-1 bg-black/40 border border-white/10 rounded-2xl px-4 py-2.5 text-xs text-white placeholder:text-slate-500 outline-none focus:ring-1 focus:ring-purple-500 resize-none max-h-24 overflow-y-auto leading-normal"
           />
           <button
             onClick={() => {
@@ -10656,6 +10691,16 @@ export function App() {
                     setMicTestResult(null);
                     setMicTestVolume(0);
                     
+                    if (!navigator.mediaDevices || typeof navigator.mediaDevices.getUserMedia !== "function") {
+                      setMicTestActive(false);
+                      setMicTestResult({
+                        maxVol: 0,
+                        sampleRate: 0,
+                        trackState: "error",
+                        message: "মাইক পাওয়া যায়নি",
+                      });
+                      return;
+                    }
                     const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
                     const track = stream.getAudioTracks()[0];
                     const audioCtx = new (window.AudioContext || (window as any).webkitAudioContext)();
@@ -10702,12 +10747,14 @@ export function App() {
                     
                     check();
                   } catch (e: any) {
+                    const errName = String(e?.name || "");
+                    const isNotFound = errName === "NotFoundError" || errName === "DevicesNotFoundError";
                     setMicTestActive(false);
                     setMicTestResult({
                       maxVol: 0,
                       sampleRate: 0,
                       trackState: 'error',
-                      message: "মাইক অনুমতি নেই"
+                      message: isNotFound ? "মাইক পাওয়া যায়নি" : "মাইক অনুমতি নেই"
                     });
                   }
                 }}
@@ -12309,8 +12356,28 @@ export function App() {
 
   return (
     <div
-      className={'fixed inset-0 bg-[var(--bg)] text-[var(--text)] font-sans flex flex-col overflow-hidden transition-all duration-500 ' + (!settings.masterAccess ? "grayscale contrast-75" : "")}
+      className="rose-desktop-stage"
+      style={
+        {
+          "--brand-accent": ROSE_BRAND.accent,
+          "--brand-grad-start": ROSE_BRAND.outerGradientStart,
+          "--brand-grad-mid": ROSE_BRAND.outerGradientMid,
+          "--brand-grad-end": ROSE_BRAND.outerGradientEnd,
+          "--brand-scrollbar-thumb": ROSE_BRAND.scrollbarThumb,
+          "--brand-scrollbar-track": ROSE_BRAND.scrollbarTrack,
+        } as React.CSSProperties
+      }
     >
+      <div className="rose-desktop-backdrop" aria-hidden="true">
+        <img
+          src={ROSE_BRAND.homeBackground}
+          alt={ROSE_BRAND.name}
+          className="rose-desktop-backdrop-img"
+        />
+      </div>
+      <div
+        className={'rose-mobile-frame bg-[var(--bg)] text-[var(--text)] font-sans flex flex-col overflow-hidden transition-all duration-500 ' + (!settings.masterAccess ? "grayscale contrast-75" : "")}
+      >
       {/* Floating Action Confirmation Card for Phone Actions (Call / SMS / WhatsApp) */}
       {pendingActionConfirmation && (
         <div className="fixed top-14 left-4 right-4 z-[99] max-w-sm mx-auto p-4 bg-[#0F172A]/95 border border-purple-500/40 rounded-2xl shadow-2xl backdrop-blur-xl animate-in fade-in slide-in-from-top-4 duration-200">
@@ -13735,6 +13802,7 @@ export function App() {
       {/* Main Content Container with relative z-index to stay above background */}
       <div className="relative z-10">
         {/* All application views */}
+      </div>
       </div>
     </div>
   );

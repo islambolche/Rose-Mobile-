@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { ArrowLeft, Send, Mic } from 'lucide-react';
 import { Message } from '../types';
-import rosePortraitImg from '../assets/images/rose_portrait_1793010994175.jpg';
+import { ROSE_BRAND } from '../brand';
 
 export const ChatView = ({ 
     chatHistory, 
@@ -41,16 +41,29 @@ export const ChatView = ({
 
     return (
         <div className="fixed inset-0 z-[90] bg-[#020617] flex flex-col overflow-hidden">
-            {/* Layer 0: Fixed background image with dark overlay */}
+            {/* Layer 0: Fixed two-layer chat background with dark purple-black overlay */}
             <div className="absolute inset-0 z-0 pointer-events-none select-none overflow-hidden">
                 <img
-                    src={rosePortraitImg}
-                    alt="Rose"
-                    className="w-full h-full object-cover object-center"
+                    src={ROSE_BRAND.chatBackground}
+                    alt={ROSE_BRAND.name}
+                    className="absolute inset-0 w-full h-full object-cover object-top"
+                    style={{ opacity: 0.06 }}
+                />
+                <img
+                    src={ROSE_BRAND.chatBackground}
+                    alt={ROSE_BRAND.name}
+                    className="absolute inset-0 w-full h-full object-cover object-top"
+                    style={{
+                        opacity: 0.22,
+                        WebkitMaskImage:
+                            "radial-gradient(ellipse 45% 28% at 50% 28%, black 0%, black 40%, transparent 100%)",
+                        maskImage:
+                            "radial-gradient(ellipse 45% 28% at 50% 28%, black 0%, black 40%, transparent 100%)",
+                    }}
                 />
                 <div
                     className="absolute inset-0"
-                    style={{ backgroundColor: "rgba(3,6,20,0.88)" }}
+                    style={{ backgroundColor: "rgba(10, 6, 24, 0.35)" }}
                 />
             </div>
 
@@ -111,8 +124,8 @@ export const ChatView = ({
                                     <div className="w-10 h-10 rounded-full bg-[#0F172A] border border-purple-500/30 flex items-center justify-center shrink-0 shadow-[0_0_10px_rgba(168,85,247,0.25)] mb-1 relative">
                                         {!roseAvatarError ? (
                                             <img
-                                                src="/rose-avatar.jpg"
-                                                alt="Rose"
+                                                src={ROSE_BRAND.avatar}
+                                                alt={ROSE_BRAND.name}
                                                 onError={() => setRoseAvatarError(true)}
                                                 className="w-full h-full rounded-full object-cover object-[50%_25%]"
                                             />
@@ -154,8 +167,8 @@ export const ChatView = ({
                             <div className="w-10 h-10 rounded-full bg-[#0F172A] border border-purple-500/30 flex items-center justify-center shrink-0 shadow-[0_0_10px_rgba(168,85,247,0.25)]">
                                 {!roseAvatarError ? (
                                     <img
-                                        src="/rose-avatar.jpg"
-                                        alt="Rose"
+                                        src={ROSE_BRAND.avatar}
+                                        alt={ROSE_BRAND.name}
                                         onError={() => setRoseAvatarError(true)}
                                         className="w-full h-full rounded-full object-cover object-[50%_25%]"
                                     />
@@ -173,18 +186,21 @@ export const ChatView = ({
 
             {/* Layer 2: Input Bar */}
             <div className="relative z-[2] px-3 pt-2 pb-2 border-t border-white/5 bg-[#0F172A]/90 backdrop-blur-md shrink-0 flex items-center gap-2">
-                <input
-                    type="text"
+                <textarea
+                    rows={1}
                     value={inputText}
                     onChange={(e) => setInputText(e.target.value)}
                     onKeyDown={(e) => {
-                        if (e.key === "Enter" && inputText.trim()) {
-                            processCommand(inputText.trim());
-                            setInputText("");
+                        if (e.key === "Enter" && !e.shiftKey) {
+                            e.preventDefault();
+                            if (inputText.trim()) {
+                                processCommand(inputText.trim());
+                                setInputText("");
+                            }
                         }
                     }}
-                    placeholder={`Message ${settings.assistantName || "Rose"}...`}
-                    className="flex-1 bg-black/40 border border-white/10 rounded-2xl px-4 py-2.5 text-xs text-white placeholder:text-slate-500 outline-none focus:ring-1 focus:ring-purple-500"
+                    placeholder={`Message ${settings.assistantName || ROSE_BRAND.name}...`}
+                    className="flex-1 bg-black/40 border border-white/10 rounded-2xl px-4 py-2.5 text-xs text-white placeholder:text-slate-500 outline-none focus:ring-1 focus:ring-purple-500 resize-none max-h-24 overflow-y-auto leading-normal"
                 />
                 <button
                     onClick={() => {
