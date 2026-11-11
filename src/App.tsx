@@ -2986,6 +2986,26 @@ export function App() {
             parsed.movementStrength === "high"
               ? parsed.movementStrength
               : DEFAULT_ROSE_ALIVE_SETTINGS.movementStrength,
+          mouthX:
+            typeof parsed.mouthX === "number" && !isNaN(parsed.mouthX)
+              ? parsed.mouthX
+              : ROSE_BRAND.mouthX,
+          mouthY:
+            typeof parsed.mouthY === "number" && !isNaN(parsed.mouthY)
+              ? parsed.mouthY
+              : ROSE_BRAND.mouthY,
+          mouthW:
+            typeof parsed.mouthW === "number" && !isNaN(parsed.mouthW)
+              ? parsed.mouthW
+              : ROSE_BRAND.mouthW,
+          mouthH:
+            typeof parsed.mouthH === "number" && !isNaN(parsed.mouthH)
+              ? parsed.mouthH
+              : ROSE_BRAND.mouthH,
+          showMouthGuide:
+            typeof parsed.showMouthGuide === "boolean"
+              ? parsed.showMouthGuide
+              : DEFAULT_ROSE_ALIVE_SETTINGS.showMouthGuide,
         };
       }
     } catch (e) {}
@@ -3535,19 +3555,19 @@ export function App() {
           rawLevel = fallbackRandomLevelRef.current;
         }
 
-        const target = isRoseSpeaking || rawLevel > 0.02 ? Math.max(0, Math.min(1, rawLevel)) : 0;
-        const lerpRate = target > smoothedMouthOpenRef.current ? 0.28 : 0.16;
+        const target = isRoseSpeaking ? Math.max(0, Math.min(1, rawLevel)) : 0;
+        const lerpRate = target > smoothedMouthOpenRef.current ? 0.28 : 0.2;
         smoothedMouthOpenRef.current += (target - smoothedMouthOpenRef.current) * lerpRate;
-        if (smoothedMouthOpenRef.current < 0.004) {
+        if (!isRoseSpeaking && smoothedMouthOpenRef.current < 0.01) {
           smoothedMouthOpenRef.current = 0;
         }
 
         const level = smoothedMouthOpenRef.current;
         const scaleY = 0.2 + level * 0.8;
-        const opacity = level * 0.6;
+        const opacity = level <= 0.005 ? 0 : Math.min(0.45, level * 0.45);
 
         el.style.transform = `translate(-50%, -50%) scaleY(${scaleY.toFixed(3)})`;
-        el.style.opacity = opacity.toFixed(3);
+        el.style.opacity = opacity === 0 ? "0" : opacity.toFixed(3);
       }
       rafId = requestAnimationFrame(tickMouthShadow);
     };
@@ -8640,7 +8660,10 @@ export function App() {
       (typeof window !== "undefined" &&
         window.matchMedia?.("(prefers-reduced-motion: reduce)")?.matches);
     const isAliveActive =
-      roseAliveSettings.enabled && !isReducedMotion && !homeBgLoadError;
+      roseAliveSettings.enabled &&
+      !isReducedMotion &&
+      !homeBgLoadError &&
+      !roseAliveSettings.showMouthGuide;
 
     const strengthVars =
       roseAliveSettings.movementStrength === "low"
@@ -8665,7 +8688,7 @@ export function App() {
       <div
         className={
           "h-full w-full relative overflow-hidden flex flex-col justify-between select-none " +
-          (!isHomeVisible ? "rose-alive-paused" : "")
+          (!isHomeVisible || roseAliveSettings.showMouthGuide ? "rose-alive-paused" : "")
         }
         style={strengthVars as React.CSSProperties}
       >
@@ -8699,21 +8722,39 @@ export function App() {
                 />
               )}
 
-              {/* Rose Alive Mouth Shadow (updated via DOM ref in rAF) */}
+              {/* Rose Alive Mouth Shadow (same container & transform as img, updated via DOM ref in rAF) */}
               {isAliveActive && roseAliveSettings.mouthShadow && (
                 <div
                   ref={mouthShadowRef}
                   style={{
-                    left: `${ROSE_BRAND.mouthX}%`,
-                    top: `${ROSE_BRAND.mouthY}%`,
-                    width: `${ROSE_BRAND.mouthW}%`,
-                    height: `${ROSE_BRAND.mouthH}%`,
+                    position: "absolute",
+                    left: `${roseAliveSettings.mouthX}%`,
+                    top: `${roseAliveSettings.mouthY}%`,
+                    width: `${roseAliveSettings.mouthW}%`,
+                    height: `${roseAliveSettings.mouthH}%`,
                     backgroundColor: ROSE_BRAND.mouthShadowColor,
-                    filter: "blur(4px)",
+                    filter: "blur(2px)",
                     opacity: 0,
                     transform: "translate(-50%, -50%) scaleY(0.2)",
                   }}
                   className="absolute rounded-full pointer-events-none will-change-[transform,opacity]"
+                />
+              )}
+
+              {/* Static Green Guide Box when "Show guide" is enabled */}
+              {roseAliveSettings.showMouthGuide && (
+                <div
+                  style={{
+                    position: "absolute",
+                    left: `${roseAliveSettings.mouthX}%`,
+                    top: `${roseAliveSettings.mouthY}%`,
+                    width: `${roseAliveSettings.mouthW}%`,
+                    height: `${roseAliveSettings.mouthH}%`,
+                    transform: "translate(-50%, -50%)",
+                    border: `2px solid ${ROSE_BRAND.mouthGuideBorder}`,
+                    backgroundColor: ROSE_BRAND.mouthGuideBg,
+                  }}
+                  className="pointer-events-none rounded-sm z-20"
                 />
               )}
             </div>
@@ -11437,6 +11478,175 @@ export function App() {
                   </button>
                 );
               })}
+            </div>
+          </div>
+
+          {/* (ঘ) Mouth position বিভাগ (৪টি স্লাইডার, Show guide সুইচ, ও Reset বাটন) */}
+          <div className="w-full p-5 bg-[#0F172A]/80 rounded-[2.5rem] border border-purple-500/30 shadow-2xl space-y-4 text-left">
+            <div className="flex items-center justify-between gap-3">
+              <div className="flex items-center gap-3.5">
+                <div className="w-12 h-12 rounded-full bg-purple-600/10 border border-purple-500/20 flex items-center justify-center text-purple-400 shrink-0">
+                  <Smile className="w-6 h-6" />
+                </div>
+                <div>
+                  <h4 className="text-base font-black uppercase tracking-wider text-white leading-none mb-1">
+                    Mouth position
+                  </h4>
+                  <p className="text-[11px] text-slate-400 font-bold uppercase tracking-widest">
+                    ঠোঁটের ছায়ার অবস্থান ও মাপ
+                  </p>
+                </div>
+              </div>
+              <button
+                type="button"
+                onClick={() => {
+                  updateRoseAliveSettings({
+                    mouthX: ROSE_BRAND.mouthX,
+                    mouthY: ROSE_BRAND.mouthY,
+                    mouthW: ROSE_BRAND.mouthW,
+                    mouthH: ROSE_BRAND.mouthH,
+                  });
+                  setToast("Mouth position reset");
+                }}
+                className="px-3 py-1.5 rounded-xl bg-purple-500/15 hover:bg-purple-500/25 border border-purple-500/30 text-purple-300 text-[10px] font-black uppercase tracking-wider active:scale-95 transition-all shrink-0 flex items-center gap-1"
+              >
+                <RotateCcw className="w-3 h-3" />
+                Reset
+              </button>
+            </div>
+
+            {/* Show guide switch */}
+            <div className="flex items-center justify-between p-3.5 rounded-2xl bg-black/30 border border-white/5">
+              <div>
+                <span className="block text-xs font-black uppercase tracking-wider text-white">
+                  Show guide
+                </span>
+                <span className="block text-[10px] text-slate-400 font-semibold mt-0.5">
+                  ঠোঁটের জায়গায় সবুজ বক্স দেখাবে (অ্যানিমেশন ছাড়া)
+                </span>
+              </div>
+              <button
+                type="button"
+                onClick={() => {
+                  const next = !roseAliveSettings.showMouthGuide;
+                  updateRoseAliveSettings({ showMouthGuide: next });
+                  setToast(next ? "Show guide: On" : "Show guide: Off");
+                }}
+                className={
+                  "w-12 h-7 rounded-full transition-colors flex items-center px-1 shrink-0 " +
+                  (roseAliveSettings.showMouthGuide ? "bg-emerald-600" : "bg-slate-700")
+                }
+              >
+                <motion.div
+                  animate={{ x: roseAliveSettings.showMouthGuide ? 20 : 0 }}
+                  className="w-5 h-5 bg-white rounded-full shadow-lg"
+                />
+              </button>
+            </div>
+
+            {/* Live Guide Preview Box (matches Home screen aspect ratio & object-cover object-top) */}
+            {roseAliveSettings.showMouthGuide && (
+              <div className="relative w-44 aspect-[9/16] mx-auto rounded-2xl overflow-hidden border border-purple-500/30 bg-black/50 shadow-lg select-none">
+                <img
+                  src={ROSE_BRAND.homeBackground}
+                  alt={ROSE_BRAND.name}
+                  style={{
+                    width: "100%",
+                    height: "100%",
+                    objectFit: "cover",
+                    objectPosition: "center top",
+                  }}
+                  className="w-full h-full object-cover object-top block pointer-events-none"
+                />
+                <div
+                  style={{
+                    position: "absolute",
+                    left: `${roseAliveSettings.mouthX}%`,
+                    top: `${roseAliveSettings.mouthY}%`,
+                    width: `${roseAliveSettings.mouthW}%`,
+                    height: `${roseAliveSettings.mouthH}%`,
+                    transform: "translate(-50%, -50%)",
+                    border: `2px solid ${ROSE_BRAND.mouthGuideBorder}`,
+                    backgroundColor: ROSE_BRAND.mouthGuideBg,
+                  }}
+                  className="pointer-events-none rounded-sm"
+                />
+              </div>
+            )}
+
+            {/* 4 Sliders: Left/Right, Up/Down, Width, Height */}
+            <div className="space-y-3 pt-1">
+              <div className="space-y-1">
+                <div className="flex items-center justify-between text-[11px] font-bold">
+                  <span className="text-slate-300 uppercase tracking-wider">Left / Right</span>
+                  <span className="text-purple-300 font-mono">{roseAliveSettings.mouthX}%</span>
+                </div>
+                <input
+                  type="range"
+                  min={30}
+                  max={70}
+                  step={0.5}
+                  value={roseAliveSettings.mouthX}
+                  onChange={(e) =>
+                    updateRoseAliveSettings({ mouthX: parseFloat(e.target.value) })
+                  }
+                  className="w-full accent-purple-500 cursor-pointer"
+                />
+              </div>
+
+              <div className="space-y-1">
+                <div className="flex items-center justify-between text-[11px] font-bold">
+                  <span className="text-slate-300 uppercase tracking-wider">Up / Down</span>
+                  <span className="text-purple-300 font-mono">{roseAliveSettings.mouthY}%</span>
+                </div>
+                <input
+                  type="range"
+                  min={20}
+                  max={70}
+                  step={0.5}
+                  value={roseAliveSettings.mouthY}
+                  onChange={(e) =>
+                    updateRoseAliveSettings({ mouthY: parseFloat(e.target.value) })
+                  }
+                  className="w-full accent-purple-500 cursor-pointer"
+                />
+              </div>
+
+              <div className="space-y-1">
+                <div className="flex items-center justify-between text-[11px] font-bold">
+                  <span className="text-slate-300 uppercase tracking-wider">Width</span>
+                  <span className="text-purple-300 font-mono">{roseAliveSettings.mouthW}%</span>
+                </div>
+                <input
+                  type="range"
+                  min={2}
+                  max={25}
+                  step={0.5}
+                  value={roseAliveSettings.mouthW}
+                  onChange={(e) =>
+                    updateRoseAliveSettings({ mouthW: parseFloat(e.target.value) })
+                  }
+                  className="w-full accent-purple-500 cursor-pointer"
+                />
+              </div>
+
+              <div className="space-y-1">
+                <div className="flex items-center justify-between text-[11px] font-bold">
+                  <span className="text-slate-300 uppercase tracking-wider">Height</span>
+                  <span className="text-purple-300 font-mono">{roseAliveSettings.mouthH}%</span>
+                </div>
+                <input
+                  type="range"
+                  min={0.5}
+                  max={10}
+                  step={0.1}
+                  value={roseAliveSettings.mouthH}
+                  onChange={(e) =>
+                    updateRoseAliveSettings({ mouthH: parseFloat(e.target.value) })
+                  }
+                  className="w-full accent-purple-500 cursor-pointer"
+                />
+              </div>
             </div>
           </div>
         </div>
