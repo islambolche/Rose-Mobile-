@@ -314,7 +314,7 @@ import {
 
 export function buildAssistantSystemInstruction(s: UnifiedSettings): string {
   const lines: string[] = [];
-  const adminMode = isAdmin(s.userName);
+  const adminMode = isAdmin();
   const effectiveName = adminMode ? ADMIN_DISPLAY_NAME : (s.userName || 'YOUSUF');
 
   // 1. Identity & Naming

@@ -177,7 +177,7 @@ export const ChatView = ({
                                 )}
                             </div>
                             <div className="bg-[#0F172A]/85 backdrop-blur-md border border-purple-500/25 text-purple-300 rounded-2xl rounded-tl-sm px-4 py-2.5 text-xs font-semibold italic animate-pulse shadow-lg">
-                                Rose is thinking... ({thinkingSeconds}s)
+                                Rose is thinking...
                             </div>
                         </div>
                     </div>

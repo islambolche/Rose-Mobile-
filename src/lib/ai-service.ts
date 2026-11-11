@@ -1264,11 +1264,187 @@ export const directGeminiGenerate = async (payload: any) => {
   throw finalErr;
 };
 
-// Non-streaming fallback for any legacy callers of directGeminiStream
+// Stream Gemini replies via SSE (:streamGenerateContent?alt=sse) and fall back to directGeminiGenerate if needed
 export const directGeminiStream = async (
   payload: any,
   onTextChunk?: (deltaText: string) => void
 ) => {
+  const { contents, systemInstruction, generationConfig, apiKey, model } = payload || {};
+
+  const cleanKey = String(apiKey || getGeminiKey() || '')
+    .replace(/[\r\n\t\s"']+/g, '')
+    .trim();
+
+  if (cleanKey) {
+    const normalizedContents = Array.isArray(contents) ? contents : [];
+    const hasRichParts = normalizedContents.some(
+      (c: any) =>
+        Array.isArray(c?.parts) &&
+        c.parts.some(
+          (p: any) => p?.inlineData || p?.inline_data || p?.functionCall || p?.functionResponse
+        )
+    );
+    const preparedContents = hasRichParts
+      ? normalizedContents
+      : prepareHistory(normalizedContents);
+    const orderedModels = buildOrderedModelList(model);
+    const primaryModel = String(orderedModels[0] || '').replace(/^models\//, '').trim();
+
+    if (primaryModel) {
+      const reqStartTime = Date.now();
+      const startMinimal = isMinimalBodyStoredForModel(primaryModel);
+      const streamUrl = `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(primaryModel)}:streamGenerateContent?alt=sse&key=${cleanKey}`;
+
+      let accumulatedRawText = '';
+      let emittedAnyChunk = false;
+      const functionCallParts: any[] = [];
+
+      try {
+        const directBody = buildBodyForRequest(
+          preparedContents,
+          systemInstruction,
+          generationConfig,
+          startMinimal,
+          'full'
+        );
+
+        let res = await fetchWithSignalTimeout(
+          streamUrl,
+          {
+            method: 'POST',
+            headers: {
+              'Content-Type': 'application/json',
+              'x-goog-api-key': cleanKey,
+            },
+            body: JSON.stringify(directBody),
+          },
+          GEMINI_PER_REQUEST_TIMEOUT_MS,
+          primaryModel,
+          reqStartTime,
+          cleanKey
+        );
+
+        if (res.status === 400) {
+          const fallbackBody = buildBodyForRequest(
+            preparedContents,
+            systemInstruction,
+            generationConfig,
+            startMinimal,
+            'none'
+          );
+          const remainingMs = Math.max(2000, GEMINI_PER_REQUEST_TIMEOUT_MS - (Date.now() - reqStartTime));
+          res = await fetchWithSignalTimeout(
+            streamUrl,
+            {
+              method: 'POST',
+              headers: {
+                'Content-Type': 'application/json',
+                'x-goog-api-key': cleanKey,
+              },
+              body: JSON.stringify(fallbackBody),
+            },
+            remainingMs,
+            primaryModel,
+            reqStartTime,
+            cleanKey
+          );
+        }
+
+        if (res.ok && res.body && typeof res.body.getReader === 'function') {
+          const reader = res.body.getReader();
+          const decoder = new TextDecoder('utf-8');
+          let lineBuffer = '';
+
+          const processSseLine = (line: string) => {
+            const trimmed = line.trim();
+            if (!trimmed.startsWith('data:')) return;
+            const jsonStr = trimmed.slice(5).trim();
+            if (!jsonStr || jsonStr === '[DONE]') return;
+            try {
+              const parsed = JSON.parse(jsonStr);
+              const parts = parsed?.candidates?.[0]?.content?.parts || [];
+              for (const part of parts) {
+                if (!part || part.thought === true) continue;
+                if (part.functionCall) {
+                  functionCallParts.push(part);
+                }
+                if (typeof part.text === 'string' && part.text.length > 0) {
+                  accumulatedRawText += part.text;
+                  emittedAnyChunk = true;
+                  if (typeof onTextChunk === 'function') {
+                    onTextChunk(part.text);
+                  }
+                }
+              }
+            } catch {}
+          };
+
+          while (true) {
+            const { value, done } = await reader.read();
+            if (done) break;
+            lineBuffer += decoder.decode(value, { stream: true });
+            const lines = lineBuffer.split(/\r?\n/);
+            lineBuffer = lines.pop() || '';
+            for (const line of lines) {
+              processSseLine(line);
+            }
+          }
+          lineBuffer += decoder.decode();
+          if (lineBuffer.trim()) {
+            for (const line of lineBuffer.split(/\r?\n/)) {
+              processSseLine(line);
+            }
+          }
+
+          const finalCleaned = cleanAssistantReplyText(accumulatedRawText);
+          if (finalCleaned || functionCallParts.length > 0) {
+            const elapsedMs = Date.now() - reqStartTime;
+            saveWorkingTextModel(primaryModel, elapsedMs);
+            const resultParts: any[] = [];
+            if (finalCleaned) {
+              resultParts.push({ text: finalCleaned });
+            }
+            for (const fc of functionCallParts) {
+              resultParts.push(fc);
+            }
+            return {
+              candidates: [
+                {
+                  content: {
+                    role: 'model',
+                    parts: resultParts,
+                  },
+                },
+              ],
+              text: finalCleaned,
+              modelUsed: primaryModel,
+              elapsedMs,
+              elapsedSeconds: (elapsedMs / 1000).toFixed(1),
+            };
+          }
+        }
+      } catch (streamErr) {
+        if (emittedAnyChunk && accumulatedRawText.trim()) {
+          const partialCleaned = cleanAssistantReplyText(accumulatedRawText);
+          if (partialCleaned) {
+            return {
+              candidates: [
+                {
+                  content: {
+                    role: 'model',
+                    parts: [{ text: partialCleaned }],
+                  },
+                },
+              ],
+              text: partialCleaned,
+              modelUsed: primaryModel,
+            };
+          }
+        }
+      }
+    }
+  }
+
   const res = await directGeminiGenerate(payload);
   const fullText =
     res?.text ||

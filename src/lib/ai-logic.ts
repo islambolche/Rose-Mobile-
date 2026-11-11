@@ -44,7 +44,7 @@ import {
 } from './admin';
 
 export const getSystemInstruction = (settings: any, prefs: any) => {
-  const adminMode = isAdmin(settings?.ownerName);
+  const adminMode = isAdmin();
   const resolvedOwnerName = adminMode
     ? ADMIN_DISPLAY_NAME
     : settings?.ownerName || DEVELOPER_INFO.name;

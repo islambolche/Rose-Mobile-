@@ -386,11 +386,13 @@ export class GeminiLiveSession {
   }
 
   private getEffectiveSystemInstruction(): string {
+    const adminMode = isAdmin();
+    if (adminMode) {
+      this.options.ownerName = ADMIN_DISPLAY_NAME;
+    }
     const base = this.options.systemInstruction || 'You are Rose, a helpful assistant.';
-    if (isAdmin()) {
-      if (!base.includes(ADMIN_SYSTEM_INSTRUCTION_BLOCK)) {
-        return `${base}\n\n${ADMIN_SYSTEM_INSTRUCTION_BLOCK}`;
-      }
+    if (adminMode && !base.includes(ADMIN_SYSTEM_INSTRUCTION_BLOCK)) {
+      return `${base}\n\n${ADMIN_SYSTEM_INSTRUCTION_BLOCK}`;
     }
     return base;
   }
@@ -856,7 +858,7 @@ export class GeminiLiveSession {
                 {
                   text: `${STT_LANG_PROMPT}\n\n${ensureNoThoughtSystemInstruction(
                     this.getEffectiveSystemInstruction()
-                  )}\n\n${getRoseTechInstruction()}`,
+                  )}\n\n${getRoseTechInstruction()}${isAdmin() ? `\n\n${ADMIN_SYSTEM_INSTRUCTION_BLOCK}` : ''}`,
                 },
               ],
             },
@@ -1358,7 +1360,7 @@ export class GeminiLiveSession {
         },
       ];
 
-      const sysInstructionText = `${ensureNoThoughtSystemInstruction(this.getEffectiveSystemInstruction())}\nভয়েস কলে সর্বোচ্চ ২-৩ ছোট বাক্যে উত্তর দাও।\n${getRoseTechInstruction()}`;
+      const sysInstructionText = `${ensureNoThoughtSystemInstruction(this.getEffectiveSystemInstruction())}\nভয়েস কলে সর্বোচ্চ ২-৩ ছোট বাক্যে উত্তর দাও।\n${getRoseTechInstruction()}${isAdmin() ? `\n\n${ADMIN_SYSTEM_INSTRUCTION_BLOCK}` : ''}`;
 
       const buildClipBody = (withThinkingConfig: boolean) => {
         const genCfg: any = {
@@ -1383,12 +1385,97 @@ export class GeminiLiveSession {
         return b;
       };
 
+      const voiceNameForTts = this.options.voiceName || 'Leda';
+      const prestartedTtsMap = new Map<string, Promise<any>>();
+      let emittedUserTranscript = '';
+      let transcriptValidated: boolean | null = null;
+      let streamedReplyBuffer = '';
+      let enqueuedSentencesLen = 0;
+
+      const tryProcessStreamingJson = (accRaw: string) => {
+        const strippedAcc = accRaw
+          .replace(/```(?:json)?/gi, '')
+          .replace(/```/g, '')
+          .trim();
+
+        if (!emittedUserTranscript && transcriptValidated === null) {
+          const transMatch = strippedAcc.match(/"transcript"\s*:\s*"((?:[^"\\]|\\.)*)"/);
+          if (transMatch) {
+            let parsedTrans = transMatch[1];
+            try {
+              parsedTrans = JSON.parse(`"${transMatch[1]}"`);
+            } catch {}
+            parsedTrans = String(parsedTrans || '').trim();
+            if (
+              isValidVoiceTranscript(parsedTrans, clipDurationSec) &&
+              passesStreetModeFilter(parsedTrans, this.options.assistantName, usedPushToTalk)
+            ) {
+              transcriptValidated = true;
+              emittedUserTranscript = parsedTrans;
+              this.lastHeardText = parsedTrans;
+              this.options.onTranscription?.('user', parsedTrans, true);
+            } else {
+              transcriptValidated = false;
+            }
+          }
+        }
+
+        if (transcriptValidated === false) return;
+
+        const replyMatch = strippedAcc.match(/"reply"\s*:\s*"((?:[^"\\]|\\.)*)/);
+        if (replyMatch && replyMatch[1]) {
+          let rawPartialReply = replyMatch[1];
+          if (rawPartialReply.endsWith('\\')) {
+            rawPartialReply = rawPartialReply.slice(0, -1);
+          }
+          let unescapedReply = rawPartialReply;
+          try {
+            unescapedReply = JSON.parse(`"${rawPartialReply}"`);
+          } catch {
+            unescapedReply = rawPartialReply
+              .replace(/\\n/g, '\n')
+              .replace(/\\"/g, '"')
+              .replace(/\\\\/g, '\\');
+          }
+          const cleanedPartial = cleanAssistantReplyText(unescapedReply, this.options.language)
+            .replace(/[*#_~`]/g, '')
+            .trim();
+          if (cleanedPartial && cleanedPartial !== streamedReplyBuffer) {
+            streamedReplyBuffer = cleanedPartial;
+            if (transcriptValidated === true) {
+              this.options.onTranscription?.('assistant', cleanedPartial, false);
+              const parts = cleanedPartial.split(/(?<=[।.?!])\s+/);
+              if (parts.length > 1) {
+                for (let i = 0; i < parts.length - 1; i++) {
+                  const s = parts[i].trim();
+                  if (s && !prestartedTtsMap.has(s)) {
+                    if (enqueuedSentencesLen === 0) {
+                      this.pauseMicDuringSpeech();
+                    }
+                    enqueuedSentencesLen++;
+                    prestartedTtsMap.set(
+                      s,
+                      directGeminiTTS({
+                        text: s,
+                        voiceName: voiceNameForTts,
+                        apiKey,
+                      }).catch((e) => ({ error: e }))
+                    );
+                  }
+                }
+              }
+            }
+          }
+        }
+      };
+
       for (const flashModel of candidates) {
         if (this.wasStoppedByUser) return;
-        const url = `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(flashModel)}:generateContent?key=${encodeURIComponent(apiKey)}`;
+        const streamUrl = `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(flashModel)}:streamGenerateContent?alt=sse&key=${encodeURIComponent(apiKey)}`;
+        const fallbackUrl = `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(flashModel)}:generateContent?key=${encodeURIComponent(apiKey)}`;
 
         try {
-          let res = await fetch(url, {
+          let res = await fetch(streamUrl, {
             method: 'POST',
             headers: {
               'Content-Type': 'application/json',
@@ -1398,7 +1485,7 @@ export class GeminiLiveSession {
           });
 
           if (res.status === 400 && !this.wasStoppedByUser) {
-            res = await fetch(url, {
+            res = await fetch(streamUrl, {
               method: 'POST',
               headers: {
                 'Content-Type': 'application/json',
@@ -1408,30 +1495,97 @@ export class GeminiLiveSession {
             });
           }
 
-          const rawText = await res.text().catch(() => '');
-          let data: any = null;
-          try {
-            data = rawText ? JSON.parse(rawText) : null;
-          } catch {}
+          if (res.ok && res.body && typeof res.body.getReader === 'function') {
+            const reader = res.body.getReader();
+            const decoder = new TextDecoder('utf-8');
+            let lineBuf = '';
+            let accStreamText = '';
 
-          if (!res.ok) {
-            const googleMsg = data?.error?.message || rawText || `HTTP ${res.status}`;
-            const err: any = new Error(googleMsg);
-            err.status = res.status;
-            lastErr = err;
-            if (res.status === 404 || res.status === 503) {
-              continue;
+            const handleSseLine = (line: string) => {
+              const trimmed = line.trim();
+              if (!trimmed.startsWith('data:')) return;
+              const jsonStr = trimmed.slice(5).trim();
+              if (!jsonStr || jsonStr === '[DONE]') return;
+              try {
+                const parsed = JSON.parse(jsonStr);
+                const rawParts = parsed?.candidates?.[0]?.content?.parts || [];
+                const chunkText = extractNonThoughtTextFromParts(rawParts, this.options.language);
+                if (chunkText) {
+                  accStreamText += chunkText;
+                  tryProcessStreamingJson(accStreamText);
+                }
+              } catch {}
+            };
+
+            while (true) {
+              if (this.wasStoppedByUser || transcriptValidated === false) {
+                try {
+                  await reader.cancel();
+                } catch {}
+                break;
+              }
+              const { value, done } = await reader.read();
+              if (done) break;
+              lineBuf += decoder.decode(value, { stream: true });
+              const lines = lineBuf.split(/\r?\n/);
+              lineBuf = lines.pop() || '';
+              for (const line of lines) {
+                handleSseLine(line);
+              }
             }
-            throw err;
+            lineBuf += decoder.decode();
+            if (lineBuf.trim()) {
+              for (const line of lineBuf.split(/\r?\n/)) {
+                handleSseLine(line);
+              }
+            }
+
+            if (transcriptValidated === false) {
+              return;
+            }
+
+            if (accStreamText.trim()) {
+              this.messagesReceived++;
+              rawResponseText = accStreamText;
+              lastErr = null;
+              break;
+            }
           }
 
-          this.messagesReceived++;
-          const rawParts = data?.candidates?.[0]?.content?.parts || [];
-          rawResponseText = extractNonThoughtTextFromParts(rawParts, this.options.language);
+          if (!rawResponseText && !this.wasStoppedByUser) {
+            const genRes = await fetch(fallbackUrl, {
+              method: 'POST',
+              headers: {
+                'Content-Type': 'application/json',
+                'x-goog-api-key': apiKey,
+              },
+              body: JSON.stringify(buildClipBody(false)),
+            });
+            const rawText = await genRes.text().catch(() => '');
+            let data: any = null;
+            try {
+              data = rawText ? JSON.parse(rawText) : null;
+            } catch {}
 
-          if (rawResponseText) {
-            lastErr = null;
-            break;
+            if (!genRes.ok) {
+              const googleMsg = data?.error?.message || rawText || `HTTP ${genRes.status}`;
+              const err: any = new Error(googleMsg);
+              err.status = genRes.status;
+              lastErr = err;
+              if (genRes.status === 404 || genRes.status === 503) {
+                continue;
+              }
+              throw err;
+            }
+
+            this.messagesReceived++;
+            const rawParts = data?.candidates?.[0]?.content?.parts || [];
+            rawResponseText = extractNonThoughtTextFromParts(rawParts, this.options.language);
+
+            if (rawResponseText) {
+              lastErr = null;
+              break;
+            }
           }
         } catch (err: any) {
           lastErr = err;
@@ -1488,13 +1642,15 @@ export class GeminiLiveSession {
       if (transcript) {
         this.lastHeardText = transcript;
         this.conversationHistory.push({ role: 'user', parts: [{ text: transcript }] });
-        this.options.onTranscription?.('user', transcript, true);
+        if (!emittedUserTranscript) {
+          this.options.onTranscription?.('user', transcript, true);
+        }
       }
 
       if (reply && !this.wasStoppedByUser) {
         this.conversationHistory.push({ role: 'model', parts: [{ text: reply }] });
         this.options.onTranscription?.('assistant', reply, true);
-        await this.speakReply(apiKey, reply);
+        await this.speakReply(apiKey, reply, prestartedTtsMap);
       }
 
       if (!this.wasStoppedByUser) {
@@ -1648,7 +1804,11 @@ export class GeminiLiveSession {
     }
   }
 
-  private async speakReply(apiKey: string, text: string): Promise<void> {
+  private async speakReply(
+    apiKey: string,
+    text: string,
+    prestartedTtsMap?: Map<string, Promise<any>>
+  ): Promise<void> {
     const filteredText = cleanAssistantReplyText(text, this.options.language);
     const cleanText = filteredText.replace(/[*#_~`]/g, '').trim();
     if (!cleanText || this.wasStoppedByUser) return;
@@ -1665,35 +1825,60 @@ export class GeminiLiveSession {
     this.updateState('speaking');
     this.lastTtsAttemptError = null;
 
+    const rawSentences = cleanText
+      .split(/(?<=[।.?!])\s+/)
+      .map((s) => s.trim())
+      .filter(Boolean);
+    const sentences = rawSentences.length > 0 ? rawSentences : [cleanText];
+    const voiceName = this.options.voiceName || 'Leda';
+
+    // Immediately fire/queue TTS requests for all sentences in parallel (reusing any prestarted sentence promises)
+    const sentencePromises = sentences.map((sentence) => {
+      const existing = prestartedTtsMap?.get(sentence);
+      if (existing) return existing;
+      return directGeminiTTS({
+        text: sentence,
+        voiceName,
+        apiKey,
+      }).catch((err) => ({ error: err }));
+    });
+
     try {
-      // 1. Unified Gemini TTS path (uses custom model if saved, or 1-hour cached ListModels up to 3 models)
-      try {
-        const voiceName = this.options.voiceName || 'Leda';
-        const ttsData = await directGeminiTTS({
-          text: cleanText,
-          voiceName,
-          apiKey,
-        });
+      let failedFromIndex = -1;
+
+      for (let i = 0; i < sentences.length; i++) {
         if (this.wasStoppedByUser) return;
+        const ttsData = await sentencePromises[i];
+        if (this.wasStoppedByUser) return;
+
         if (ttsData?.audio) {
           await this.ensureMicReleasedAndWait300ms();
           if (this.wasStoppedByUser) return;
           const played = await this.playPcmAudioAndWait(ttsData.audio);
-          if (played || this.wasStoppedByUser) {
-            return;
+          if (this.wasStoppedByUser) return;
+          if (!played) {
+            this.lastTtsAttemptError = 'অডিও চালু হয়নি';
+            failedFromIndex = i;
+            break;
           }
-          this.lastTtsAttemptError = 'অডিও চালু হয়নি';
+        } else {
+          this.lastTtsAttemptError = String(ttsData?.error?.message || 'TTS ব্যর্থ');
+          failedFromIndex = i;
+          break;
         }
-      } catch (err: any) {
-        this.lastTtsAttemptError = String(err?.message || 'TTS ব্যর্থ');
       }
 
-      // 2. Fallback to browser speechSynthesis (stop Web Audio first so both never play together)
+      if (failedFromIndex === -1 || this.wasStoppedByUser) {
+        return;
+      }
+
+      // Fallback to browser speechSynthesis for any remaining sentences
       if (!this.wasStoppedByUser) {
+        const remainingText = sentences.slice(failedFromIndex).join(' ').trim();
         this.stopAllAudioPlayback();
         await this.ensureMicReleasedAndWait300ms();
         if (this.wasStoppedByUser) return;
-        const browserOk = await this.speakViaBrowserSpeechSynthesis(cleanText);
+        const browserOk = await this.speakViaBrowserSpeechSynthesis(remainingText || cleanText);
         if (!browserOk && !this.wasStoppedByUser) {
           const errMsg = this.lastTtsAttemptError || 'অডিও চালু হয়নি';
           this.options.onToast?.(errMsg);
