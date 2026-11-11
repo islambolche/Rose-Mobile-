@@ -1,5 +1,11 @@
 import { prepareHistory, extractLastUserText } from './ai-utils';
 import { getGeminiKey } from './geminiKey';
+import {
+  isAdmin,
+  ADMIN_PREFERRED_VOICES,
+  formatAdminTtsPrompt,
+  applyAdminSystemInstructionOverride,
+} from './admin';
 
 const TEXT_MODELS: string[] = [];
 export { TEXT_MODELS };
@@ -455,11 +461,11 @@ export const NO_THOUGHT_INSTRUCTION =
 
 export const ensureNoThoughtSystemInstruction = (sysText?: string): string => {
   const base = String(sysText || '').trim();
-  if (!base) return NO_THOUGHT_INSTRUCTION;
+  if (!base) return applyAdminSystemInstructionOverride(NO_THOUGHT_INSTRUCTION);
   if (base.includes('নিজের ভাবনা, পরিকল্পনা বা কী করবে তা লিখবে না')) {
-    return base;
+    return applyAdminSystemInstructionOverride(base);
   }
-  return `${base}\n\n${NO_THOUGHT_INSTRUCTION}`;
+  return applyAdminSystemInstructionOverride(`${base}\n\n${NO_THOUGHT_INSTRUCTION}`);
 };
 
 const ENGLISH_THOUGHT_PATTERNS =
@@ -741,7 +747,8 @@ const buildBodyForRequest = (
   systemInstruction?: any,
   generationConfig?: any,
   isMinimal = false,
-  thinkingMode: 'full' | 'no_budget' | 'none' = 'full'
+  thinkingMode: 'full' | 'no_budget' | 'none' = 'full',
+  tools?: any[]
 ) => {
   const rawSysText =
     typeof systemInstruction === 'string'
@@ -790,6 +797,9 @@ const buildBodyForRequest = (
           parts: [{ text: sysText.trim() }],
         };
       }
+      if (tools && Array.isArray(tools) && tools.length > 0) {
+        body.tools = tools;
+      }
       return body;
     }
 
@@ -804,6 +814,9 @@ const buildBodyForRequest = (
       body.systemInstruction = {
         parts: [{ text: sysText.trim() }],
       };
+    }
+    if (tools && Array.isArray(tools) && tools.length > 0) {
+      body.tools = tools;
     }
     return body;
   }
@@ -826,6 +839,10 @@ const buildBodyForRequest = (
     };
   }
 
+  if (tools && Array.isArray(tools) && tools.length > 0) {
+    body.tools = tools;
+  }
+
   return body;
 };
 
@@ -837,6 +854,7 @@ const callGeminiTextEndpoint = async (params: {
   apiKey?: string;
   timeoutMs?: number;
   signal?: AbortSignal;
+  tools?: any[];
 }) => {
   const {
     model,
@@ -846,6 +864,7 @@ const callGeminiTextEndpoint = async (params: {
     apiKey,
     timeoutMs = GEMINI_PER_REQUEST_TIMEOUT_MS,
     signal,
+    tools,
   } = params;
 
   const cleanKey = String(apiKey || getGeminiKey() || '')
@@ -871,7 +890,8 @@ const callGeminiTextEndpoint = async (params: {
     systemInstruction,
     generationConfig,
     startMinimal,
-    'full'
+    'full',
+    tools
   );
 
   const url = `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(cleanModel)}:generateContent?key=${cleanKey}`;
@@ -902,7 +922,8 @@ const callGeminiTextEndpoint = async (params: {
       systemInstruction,
       generationConfig,
       startMinimal,
-      'none'
+      'none',
+      tools
     );
     const remainingMs = Math.max(2000, perReqTimeout - (Date.now() - reqStartTime));
     const retryRes = await fetchWithSignalTimeout(
@@ -929,7 +950,8 @@ const callGeminiTextEndpoint = async (params: {
         systemInstruction,
         generationConfig,
         true,
-        'none'
+        'none',
+        tools
       );
       const remMs2 = Math.max(2000, perReqTimeout - (Date.now() - reqStartTime));
       const retryRes2 = await fetchWithSignalTimeout(
@@ -1031,7 +1053,7 @@ const callGeminiTextEndpoint = async (params: {
 };
 
 export const directGeminiGenerate = async (payload: any) => {
-  const { contents, systemInstruction, generationConfig, apiKey, model } = payload || {};
+  const { contents, systemInstruction, generationConfig, apiKey, model, tools } = payload || {};
 
   const cleanKey = String(apiKey || getGeminiKey() || '')
     .replace(/[\r\n\t\s"']+/g, '')
@@ -1100,6 +1122,7 @@ export const directGeminiGenerate = async (payload: any) => {
         apiKey: cleanKey,
         timeoutMs: remainingMs,
         signal: parentSignal,
+        tools,
       });
       saveWorkingTextModel(candidateModel, result.elapsedMs);
       return result;
@@ -1269,7 +1292,7 @@ export const directGeminiStream = async (
   payload: any,
   onTextChunk?: (deltaText: string) => void
 ) => {
-  const { contents, systemInstruction, generationConfig, apiKey, model } = payload || {};
+  const { contents, systemInstruction, generationConfig, apiKey, model, tools } = payload || {};
 
   const cleanKey = String(apiKey || getGeminiKey() || '')
     .replace(/[\r\n\t\s"']+/g, '')
@@ -1305,7 +1328,8 @@ export const directGeminiStream = async (
           systemInstruction,
           generationConfig,
           startMinimal,
-          'full'
+          'full',
+          tools
         );
 
         let res = await fetchWithSignalTimeout(
@@ -1330,7 +1354,8 @@ export const directGeminiStream = async (
             systemInstruction,
             generationConfig,
             startMinimal,
-            'none'
+            'none',
+            tools
           );
           const remainingMs = Math.max(2000, GEMINI_PER_REQUEST_TIMEOUT_MS - (Date.now() - reqStartTime));
           res = await fetchWithSignalTimeout(
@@ -1865,6 +1890,7 @@ export const directGeminiTTS = async (payload: any) => {
 
   const rawText = String(text || '').replace(/[*#_~`]/g, '').trim();
   if (!rawText) throw new Error('Empty text for TTS');
+  const ttsPromptText = formatAdminTtsPrompt(rawText);
   if (!cleanKey) {
     const err: any = new Error('Gemini key নেই। Settings → Connections-এ key দিন।');
     err.status = 'missing_key';
@@ -1909,98 +1935,114 @@ export const directGeminiTTS = async (payload: any) => {
     throw noModelErr;
   }
 
+  const adminActive = isAdmin();
   const selectedVoiceName = String(voiceName || 'Leda').trim() || 'Leda';
+  const voicesToTry: string[] = adminActive
+    ? [...ADMIN_PREFERRED_VOICES]
+    : [selectedVoiceName];
   const attempts: Array<{ model: string; status: number | string; message: string }> = [];
   let lastError: any = null;
 
   for (const rawTargetModel of modelsToTry) {
     const targetModel = rawTargetModel.replace(/^models\//, '').trim();
-    const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), 9000);
-    try {
-      const url = `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(targetModel)}:generateContent?key=${encodeURIComponent(cleanKey)}`;
-      const res = await fetch(url, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'x-goog-api-key': cleanKey,
-        },
-        body: JSON.stringify({
-          contents: [{ parts: [{ text: rawText }] }],
-          generationConfig: {
-            responseModalities: ['AUDIO'],
-            speechConfig: {
-              voiceConfig: {
-                prebuiltVoiceConfig: {
-                  voiceName: selectedVoiceName,
+    for (let vIdx = 0; vIdx < voicesToTry.length; vIdx++) {
+      const candidateVoice = voicesToTry[vIdx];
+      const controller = new AbortController();
+      const timer = setTimeout(() => controller.abort(), 9000);
+      try {
+        const url = `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(targetModel)}:generateContent?key=${encodeURIComponent(cleanKey)}`;
+        const res = await fetch(url, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'x-goog-api-key': cleanKey,
+          },
+          body: JSON.stringify({
+            contents: [{ parts: [{ text: ttsPromptText }] }],
+            generationConfig: {
+              responseModalities: ['AUDIO'],
+              speechConfig: {
+                voiceConfig: {
+                  prebuiltVoiceConfig: {
+                    voiceName: candidateVoice,
+                  },
                 },
               },
             },
-          },
-        }),
-        signal: controller.signal,
-      });
-      clearTimeout(timer);
+          }),
+          signal: controller.signal,
+        });
+        clearTimeout(timer);
 
-      const rawBodyText = await res.text().catch(() => '');
-      let data: any = null;
-      try {
-        data = rawBodyText ? JSON.parse(rawBodyText) : null;
-      } catch {}
+        const rawBodyText = await res.text().catch(() => '');
+        let data: any = null;
+        try {
+          data = rawBodyText ? JSON.parse(rawBodyText) : null;
+        } catch {}
 
-      const audioPart = data?.candidates?.[0]?.content?.parts?.find(
-        (p: any) => p?.inlineData?.data || p?.inline_data?.data
-      );
-      const audioData = audioPart?.inlineData?.data || audioPart?.inline_data?.data;
+        const audioPart = data?.candidates?.[0]?.content?.parts?.find(
+          (p: any) => p?.inlineData?.data || p?.inline_data?.data
+        );
+        const audioData = audioPart?.inlineData?.data || audioPart?.inline_data?.data;
 
-      if (!res.ok || !audioData) {
-        const googleMsg = sanitizeOutApiKey(
-          data?.error?.message || rawBodyText || `HTTP ${res.status}`,
+        if (!res.ok || !audioData) {
+          const googleMsg = sanitizeOutApiKey(
+            data?.error?.message || rawBodyText || `HTTP ${res.status}`,
+            cleanKey
+          ).trim();
+          attempts.push({
+            model: targetModel,
+            status: res.status,
+            message: googleMsg,
+          });
+          const err: any = new Error(`${targetModel} (HTTP ${res.status}): ${googleMsg}`);
+          err.status = res.status;
+          err.modelTried = targetModel;
+          err.googleMessage = googleMsg;
+          err.attempts = [...attempts];
+          lastError = err;
+
+          // If admin mode and voice might be rejected (400), try next voice in ADMIN_PREFERRED_VOICES
+          if (adminActive && res.status === 400 && vIdx + 1 < voicesToTry.length) {
+            continue;
+          }
+          break;
+        }
+
+        setLastUsedTtsModel(targetModel);
+        if (adminActive) {
+          console.log('[ADMIN TTS] Used:', {
+            model: targetModel,
+            voice: candidateVoice,
+            affectiveDialog: false,
+          });
+        }
+
+        return {
+          audio: audioData,
+          modelUsed: targetModel,
+          voiceUsed: candidateVoice,
+        };
+      } catch (err: any) {
+        clearTimeout(timer);
+        const isTimeout = err?.name === 'AbortError';
+        const msg = sanitizeOutApiKey(
+          isTimeout ? 'Request timed out' : String(err?.message || 'Network error'),
           cleanKey
-        ).trim();
+        );
         attempts.push({
           model: targetModel,
-          status: res.status,
-          message: googleMsg,
+          status: isTimeout ? 'timeout' : 'network_error',
+          message: msg,
         });
-        const err: any = new Error(`${targetModel} (HTTP ${res.status}): ${googleMsg}`);
-        err.status = res.status;
-        err.modelTried = targetModel;
-        err.googleMessage = googleMsg;
-        err.attempts = [...attempts];
-        lastError = err;
-
-        // If 404 (or 400/500/503), try the next model in the list (up to 3 total)
-        if (res.status === 404 || res.status === 400 || res.status === 500 || res.status === 503) {
-          continue;
-        }
+        const wrappedErr: any = new Error(`${targetModel} (${isTimeout ? 'Timeout' : 'Network'}): ${msg}`);
+        wrappedErr.status = isTimeout ? 408 : 0;
+        wrappedErr.modelTried = targetModel;
+        wrappedErr.googleMessage = msg;
+        wrappedErr.attempts = [...attempts];
+        lastError = wrappedErr;
         break;
       }
-
-      setLastUsedTtsModel(targetModel);
-
-      return {
-        audio: audioData,
-        modelUsed: targetModel,
-      };
-    } catch (err: any) {
-      clearTimeout(timer);
-      const isTimeout = err?.name === 'AbortError';
-      const msg = sanitizeOutApiKey(
-        isTimeout ? 'Request timed out' : String(err?.message || 'Network error'),
-        cleanKey
-      );
-      attempts.push({
-        model: targetModel,
-        status: isTimeout ? 'timeout' : 'network_error',
-        message: msg,
-      });
-      const wrappedErr: any = new Error(`${targetModel} (${isTimeout ? 'Timeout' : 'Network'}): ${msg}`);
-      wrappedErr.status = isTimeout ? 408 : 0;
-      wrappedErr.modelTried = targetModel;
-      wrappedErr.googleMessage = msg;
-      wrappedErr.attempts = [...attempts];
-      lastError = wrappedErr;
     }
   }
 

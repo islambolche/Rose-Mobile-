@@ -81,5 +81,6 @@ export interface UserPreferences {
   accentColor?: string;
   animations?: boolean;
   showVoiceDebug?: boolean;
+  viewMode?: 'auto' | 'mobile' | 'pc';
   [key: string]: any;
 }

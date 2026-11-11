@@ -4,6 +4,8 @@ export const ROSE_BRAND = {
   avatar: "/rose-avatar.jpg",
   chatBackground: "/rose-chat-bg.jpg",
   homeBackground: "/rose-bg.webp",
+  officeBackground: "/rose-office.jpg",
+  fullBodyAvatar: "/rose-full-body.jpg",
   accent: "#8B5CF6",
   themeColor: "#1E1035",
   outerGradientStart: "#090418",

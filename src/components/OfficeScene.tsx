@@ -192,10 +192,20 @@ export const OfficeScene = ({
         </div>
       </header>
 
+      {/* Ambient Office Scene Backdrop */}
+      <div className="absolute inset-0 pointer-events-none overflow-hidden z-0" aria-hidden="true">
+        <img
+          src="/rose-office.jpg"
+          alt="Rose AI Office"
+          className="w-full h-full object-cover object-center opacity-45"
+        />
+        <div className="absolute inset-0 bg-gradient-to-t from-[#020617] via-[#020617]/60 to-[#020617]/40" />
+      </div>
+
       {/* Rose Character Scene */}
-      <div className="flex-1 relative bg-[#020617] flex items-center justify-center p-4">
+      <div className="flex-1 relative z-10 flex items-center justify-center p-4">
         <div className="relative w-full max-w-sm" onClick={() => { /* tap to talk */ }}>
-            <img src="/src/assets/images/rose_portrait_1793010994175.jpg" alt="Rose AI Assistant" className="w-full rounded-2xl shadow-2xl" />
+            <img src="/src/assets/images/rose_portrait_1793010994175.jpg" alt="Rose AI Assistant" className="w-full rounded-2xl shadow-2xl border border-purple-500/30" />
             
             {isMicOn && isPulsing && (
                 <>

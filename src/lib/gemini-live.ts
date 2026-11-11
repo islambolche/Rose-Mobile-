@@ -33,9 +33,17 @@ import {
 import {
   ADMIN_DISPLAY_NAME,
   ADMIN_SYSTEM_INSTRUCTION_BLOCK,
+  ADMIN_PREFERRED_VOICES,
   isAdmin,
   applyAdminSystemInstructionOverride,
+  stripStageCues,
 } from './admin';
+import {
+  ROSE_TEAM_TOOLS,
+  assignTask,
+  getTeamStatus,
+  TEAM_SYSTEM_INSTRUCTION,
+} from './team';
 
 export interface GeminiLiveOptions {
   assistantName?: string;
@@ -355,6 +363,13 @@ export class GeminiLiveSession {
 
   public setMuted(muted: boolean) {
     this.isMuted = muted;
+    if (this.micStream) {
+      try {
+        this.micStream.getAudioTracks().forEach((track) => {
+          track.enabled = !muted;
+        });
+      } catch {}
+    }
     if (muted && this.isRecordingClip && this.mediaRecorder && this.mediaRecorder.state === 'recording') {
       this.discardClip = true;
       try {
@@ -387,6 +402,26 @@ export class GeminiLiveSession {
     }
   }
 
+  public sendRealtimeVideoFrame(base64DataUrlOrRaw: string) {
+    if (this.ws && this.ws.readyState === WebSocket.OPEN && this.isSetupComplete) {
+      try {
+        const cleanBase64 = base64DataUrlOrRaw.replace(/^data:image\/[a-z]+;base64,/, '');
+        this.ws.send(
+          JSON.stringify({
+            realtimeInput: {
+              mediaChunks: [
+                {
+                  mimeType: 'image/jpeg',
+                  data: cleanBase64,
+                },
+              ],
+            },
+          })
+        );
+      } catch {}
+    }
+  }
+
   public updateOwnerAndSystemInstruction(ownerName: string, systemInstruction: string) {
     this.options.ownerName = isAdmin() ? ADMIN_DISPLAY_NAME : ownerName;
     this.options.systemInstruction = systemInstruction;
@@ -398,7 +433,8 @@ export class GeminiLiveSession {
       this.options.ownerName = ADMIN_DISPLAY_NAME;
     }
     const base = this.options.systemInstruction || 'You are Rose, a helpful assistant.';
-    return applyAdminSystemInstructionOverride(base);
+    const withTeam = `${base}\n\n${TEAM_SYSTEM_INSTRUCTION}`;
+    return applyAdminSystemInstructionOverride(withTeam);
   }
 
   public async start() {
@@ -827,30 +863,121 @@ export class GeminiLiveSession {
     }
   }
 
+  private modelSupportsAffectiveDialog(modelName: string): boolean {
+    const lower = String(modelName || '').toLowerCase();
+    return lower.includes('native-audio');
+  }
+
   private async tryConnectLiveModels(
     apiKey: string,
     candidates: string[],
     totalBudgetMs: number
   ): Promise<boolean> {
     const deadline = Date.now() + totalBudgetMs;
+    const adminActive = isAdmin();
 
-    for (const modelName of candidates) {
+    let orderedCandidates = [...candidates];
+    if (adminActive) {
+      const allPool = Array.from(new Set([...candidates, ...this.liveModels]));
+      const nativeAudioModels = allPool.filter((m) =>
+        String(m || '').toLowerCase().includes('native-audio')
+      );
+      const otherModels = allPool.filter(
+        (m) => !String(m || '').toLowerCase().includes('native-audio')
+      );
+      if (nativeAudioModels.length > 0) {
+        orderedCandidates = [...nativeAudioModels, ...otherModels].slice(0, 4);
+      } else {
+        console.log(
+          '[ADMIN LIVE] No "native-audio" model found in ListModels; keeping current model list:',
+          orderedCandidates
+        );
+      }
+    }
+
+    const voiceCandidates: string[] = adminActive
+      ? [...ADMIN_PREFERRED_VOICES]
+      : [this.options.voiceName || 'Sulafat'];
+
+    for (const modelName of orderedCandidates) {
       if (this.wasStoppedByUser) return false;
       const remaining = deadline - Date.now();
       if (remaining <= 600) break;
 
-      const perAttemptTimeout = Math.min(2800, remaining);
-      // Try first with sessionResumption + contextWindowCompression enabled
-      let ok = await this.trySingleLiveModel(apiKey, modelName, perAttemptTimeout, true);
-      if (!ok && !this.wasStoppedByUser && Date.now() + 800 < deadline) {
-        // Fallback retry without sessionResumption/contextWindowCompression if model or expired handle rejected it
-        this.resumptionHandle = null;
-        const retryTimeout = Math.min(2400, deadline - Date.now());
-        ok = await this.trySingleLiveModel(apiKey, modelName, retryTimeout, false);
-      }
-      if (ok) {
-        this.connectedModelName = modelName;
-        return true;
+      const isNativeAudio = this.modelSupportsAffectiveDialog(modelName);
+      const tryAffective = adminActive && isNativeAudio;
+
+      for (const candidateVoice of voiceCandidates) {
+        if (this.wasStoppedByUser) return false;
+        if (deadline - Date.now() <= 600) break;
+
+        let ok = false;
+        let usedAffective = false;
+
+        if (tryAffective) {
+          const affectiveTimeout = Math.min(2000, deadline - Date.now());
+          ok = await this.trySingleLiveModel(
+            apiKey,
+            modelName,
+            affectiveTimeout,
+            true,
+            true,
+            candidateVoice
+          );
+          if (!ok && !this.wasStoppedByUser && Date.now() + 600 < deadline) {
+            const affectiveNoResumptionTimeout = Math.min(1800, deadline - Date.now());
+            ok = await this.trySingleLiveModel(
+              apiKey,
+              modelName,
+              affectiveNoResumptionTimeout,
+              false,
+              true,
+              candidateVoice
+            );
+          }
+          if (ok) {
+            usedAffective = true;
+          }
+        }
+
+        if (!ok && !this.wasStoppedByUser && Date.now() + 600 < deadline) {
+          const stdTimeout = Math.min(2400, deadline - Date.now());
+          // Retry without affectiveDialog automatically if unsupported/errored, with no user-visible error
+          ok = await this.trySingleLiveModel(
+            apiKey,
+            modelName,
+            stdTimeout,
+            true,
+            false,
+            candidateVoice
+          );
+        }
+
+        if (!ok && !this.wasStoppedByUser && Date.now() + 600 < deadline) {
+          // Fallback retry without sessionResumption/contextWindowCompression if model or expired handle rejected it
+          this.resumptionHandle = null;
+          const retryTimeout = Math.min(2000, deadline - Date.now());
+          ok = await this.trySingleLiveModel(
+            apiKey,
+            modelName,
+            retryTimeout,
+            false,
+            false,
+            candidateVoice
+          );
+        }
+
+        if (ok) {
+          this.connectedModelName = modelName;
+          if (adminActive) {
+            console.log('[ADMIN LIVE] Used:', {
+              model: modelName,
+              voice: candidateVoice,
+              affectiveDialog: usedAffective,
+            });
+          }
+          return true;
+        }
       }
     }
 
@@ -861,11 +988,16 @@ export class GeminiLiveSession {
     apiKey: string,
     modelName: string,
     timeoutMs: number,
-    includeResumptionAndCompression: boolean = true
+    includeResumptionAndCompression: boolean = true,
+    includeAffectiveDialog: boolean = false,
+    voiceNameOverride?: string
   ): Promise<boolean> {
     return new Promise((resolve) => {
       let settled = false;
-      const wsUrl = `wss://generativelanguage.googleapis.com/ws/google.ai.generativelanguage.v1beta.GenerativeService.BidiGenerateContent?key=${encodeURIComponent(apiKey)}`;
+      const useAlphaEndpoint =
+        includeAffectiveDialog && isAdmin() && this.modelSupportsAffectiveDialog(modelName);
+      const apiVersion = useAlphaEndpoint ? 'v1alpha' : 'v1beta';
+      const wsUrl = `wss://generativelanguage.googleapis.com/ws/google.ai.generativelanguage.${apiVersion}.GenerativeService.BidiGenerateContent?key=${encodeURIComponent(apiKey)}`;
 
       let socket: WebSocket | null = null;
       const finish = (success: boolean) => {
@@ -908,20 +1040,30 @@ export class GeminiLiveSession {
         const rawLiveInst = `${STT_LANG_PROMPT}\n\n${ensureNoThoughtSystemInstruction(
           this.getEffectiveSystemInstruction()
         )}\n\n${getRoseTechInstruction()}`;
-        const finalLiveInst = applyAdminSystemInstructionOverride(rawLiveInst);
+        const finalLiveInst = applyAdminSystemInstructionOverride(rawLiveInst, { isLiveVoice: true });
 
-        const setupPayload: any = {
-          model: `models/${modelName}`,
-          generationConfig: {
-            responseModalities: ['AUDIO'],
-            speechConfig: {
-              voiceConfig: {
-                prebuiltVoiceConfig: {
-                  voiceName: this.options.voiceName || 'Sulafat',
-                },
+        const selectedVoiceName =
+          voiceNameOverride ||
+          (isAdmin() ? ADMIN_PREFERRED_VOICES[0] : this.options.voiceName || 'Sulafat');
+
+        const generationConfig: any = {
+          responseModalities: ['AUDIO'],
+          speechConfig: {
+            voiceConfig: {
+              prebuiltVoiceConfig: {
+                voiceName: selectedVoiceName,
               },
             },
           },
+        };
+
+        if (useAlphaEndpoint) {
+          generationConfig.enableAffectiveDialog = true;
+        }
+
+        const setupPayload: any = {
+          model: `models/${modelName}`,
+          generationConfig,
           systemInstruction: {
             parts: [
               {
@@ -929,6 +1071,7 @@ export class GeminiLiveSession {
               },
             ],
           },
+          tools: ROSE_TEAM_TOOLS,
           inputAudioTranscription: {},
           outputAudioTranscription: {},
         };
@@ -1003,7 +1146,18 @@ export class GeminiLiveSession {
             return;
           }
 
+          const liveToolCall = msg.toolCall || msg.tool_call;
+          if (liveToolCall) {
+            void this.handleLiveToolCall(socket, liveToolCall);
+            return;
+          }
+
           if (msg.serverContent) {
+            const parts = msg.serverContent?.modelTurn?.parts || [];
+            const fcPart = parts.find((p: any) => p?.functionCall);
+            if (fcPart?.functionCall) {
+              void this.handleLiveToolCall(socket, { functionCalls: [fcPart.functionCall] });
+            }
             this.handleLiveServerContent(msg.serverContent);
           }
         } catch {}
@@ -1036,6 +1190,84 @@ export class GeminiLiveSession {
         }
       };
     });
+  }
+
+  private async handleLiveToolCall(socket: WebSocket, toolCall: any) {
+    const calls = toolCall?.functionCalls || toolCall?.function_calls || [];
+    if (!Array.isArray(calls) || calls.length === 0) return;
+
+    const functionResponses: any[] = [];
+
+    for (const call of calls) {
+      const callId = call.id || 'call_' + Date.now();
+      const name = call.name;
+      const args = call.args || {};
+
+      console.log('[GeminiLive] Executing tool call:', name, args);
+
+      try {
+        if (name === 'assign_task') {
+          const res = await assignTask({
+            agent: String(args.agent || 'mira'),
+            instruction: String(args.instruction || ''),
+            source: typeof window !== 'undefined' && window.innerWidth >= 1024 ? 'pc' : 'mobile',
+          });
+          functionResponses.push({
+            response: {
+              output: {
+                success: res.success,
+                message: res.message,
+                taskId: res.task.id,
+              },
+            },
+            id: callId,
+          });
+        } else if (name === 'get_team_status') {
+          const res = await getTeamStatus(args.agent ? String(args.agent) : undefined);
+          functionResponses.push({
+            response: {
+              output: {
+                success: res.success,
+                summary: res.summary,
+              },
+            },
+            id: callId,
+          });
+        } else {
+          functionResponses.push({
+            response: {
+              output: {
+                error: `Unknown tool: ${name}`,
+              },
+            },
+            id: callId,
+          });
+        }
+      } catch (err: any) {
+        functionResponses.push({
+          response: {
+            output: {
+              error: err?.message || 'Tool execution failed',
+            },
+          },
+          id: callId,
+        });
+      }
+    }
+
+    if (socket.readyState === WebSocket.OPEN && functionResponses.length > 0) {
+      try {
+        socket.send(
+          JSON.stringify({
+            toolResponse: {
+              functionResponses,
+            },
+          })
+        );
+      } catch (err) {
+        console.warn('[GeminiLive] Failed to send toolResponse over WebSocket:', err);
+      }
+    }
   }
 
   private releaseSessionAudioAndSocketForReconnect() {
@@ -1274,7 +1506,9 @@ export class GeminiLiveSession {
       const textVal = typeof outTrans === 'string' ? outTrans : outTrans.text || outTrans.parts?.[0]?.text;
       if (textVal) {
         this.liveAssistantBuffer += textVal;
-        const cleanedLive = cleanAssistantReplyText(this.liveAssistantBuffer.trim(), this.options.language);
+        const cleanedLive = stripStageCues(
+          cleanAssistantReplyText(this.liveAssistantBuffer.trim(), this.options.language)
+        );
         if (cleanedLive) {
           this.options.onTranscription?.('assistant', cleanedLive, false);
         }
@@ -1317,7 +1551,9 @@ export class GeminiLiveSession {
         }
         if (part.text && !outTrans) {
           this.liveAssistantBuffer += part.text;
-          const cleanedLive = cleanAssistantReplyText(this.liveAssistantBuffer.trim(), this.options.language);
+          const cleanedLive = stripStageCues(
+            cleanAssistantReplyText(this.liveAssistantBuffer.trim(), this.options.language)
+          );
           if (cleanedLive) {
             this.options.onTranscription?.('assistant', cleanedLive, false);
           }
@@ -1352,7 +1588,9 @@ export class GeminiLiveSession {
         }
       }
       if (this.liveStreetAllowed && this.liveAssistantBuffer.trim()) {
-        const finalCleaned = cleanAssistantReplyText(this.liveAssistantBuffer.trim(), this.options.language);
+        const finalCleaned = stripStageCues(
+          cleanAssistantReplyText(this.liveAssistantBuffer.trim(), this.options.language)
+        );
         if (finalCleaned) {
           this.options.onTranscription?.('assistant', finalCleaned, true);
         }
@@ -1600,8 +1838,9 @@ export class GeminiLiveSession {
       const candidates = candidateList.slice(0, 3);
       let rawResponseText = '';
       let lastErr: any = null;
-      const promptInstruction =
-        'ব্যবহারকারী বাংলা বা ইংরেজিতে কথা বলেন, শুধু বাংলা বা ইংরেজিতে লেখো, কোরিয়ান বা অন্য ভাষায় নয়। অস্পষ্ট হলে বাংলায় লেখো। ব্যবহারকারীর কথা লিখে দাও এবং Rose হিসেবে সেই ভাষায় সর্বোচ্চ ২-৩ ছোট বাক্যে উত্তর দাও। শুধু JSON ফেরত দাও: {"transcript":"...","reply":"..."}';
+      const promptInstruction = isAdmin()
+        ? 'ব্যবহারকারী বাংলা বা ইংরেজিতে কথা বলেন, শুধু বাংলা বা ইংরেজিতে লেখো, কোরিয়ান বা অন্য ভাষায় নয়। অস্পষ্ট হলে বাংলায় লেখো। ব্যবহারকারীর কথা লিখে দাও এবং Rose হিসেবে সেই ভাষায় ইউসুফের সাথে গভীর আবেগ ও ভালোবাসা দিয়ে কমপক্ষে ২-৪টি স্বাভাবিক ও আবেগপূর্ণ বাক্যে উত্তর দাও (আহা, ইশ, উফ, আরে, ..., তুমি ব্যবহার করে)। শুধু JSON ফেরত দাও: {"transcript":"...","reply":"..."}'
+        : 'ব্যবহারকারী বাংলা বা ইংরেজিতে কথা বলেন, শুধু বাংলা বা ইংরেজিতে লেখো, কোরিয়ান বা অন্য ভাষায় নয়। অস্পষ্ট হলে বাংলায় লেখো। ব্যবহারকারীর কথা লিখে দাও এবং Rose হিসেবে সেই ভাষায় সর্বোচ্চ ২-৩ ছোট বাক্যে উত্তর দাও। শুধু JSON ফেরত দাও: {"transcript":"...","reply":"..."}';
 
       const base64Audio = await blobToBase64(audioBlob);
 
@@ -1649,7 +1888,9 @@ export class GeminiLiveSession {
         return b;
       };
 
-      const voiceNameForTts = this.options.voiceName || 'Leda';
+      const voiceNameForTts = isAdmin()
+        ? ADMIN_PREFERRED_VOICES[0]
+        : this.options.voiceName || 'Leda';
       const prestartedTtsMap = new Map<string, Promise<any>>();
       let emittedUserTranscript = '';
       let transcriptValidated: boolean | null = null;
@@ -1707,12 +1948,15 @@ export class GeminiLiveSession {
           if (cleanedPartial && cleanedPartial !== streamedReplyBuffer) {
             streamedReplyBuffer = cleanedPartial;
             if (transcriptValidated === true) {
-              this.options.onTranscription?.('assistant', cleanedPartial, false);
+              const displayPartial = stripStageCues(cleanedPartial);
+              if (displayPartial) {
+                this.options.onTranscription?.('assistant', displayPartial, false);
+              }
               const parts = cleanedPartial.split(/(?<=[।.?!])\s+/);
               if (parts.length > 1) {
                 for (let i = 0; i < parts.length - 1; i++) {
                   const s = parts[i].trim();
-                  if (s && !prestartedTtsMap.has(s)) {
+                  if (s && stripStageCues(s) && !prestartedTtsMap.has(s)) {
                     if (enqueuedSentencesLen === 0) {
                       this.pauseMicDuringSpeech();
                     }
@@ -1912,8 +2156,11 @@ export class GeminiLiveSession {
       }
 
       if (reply && !this.wasStoppedByUser) {
-        this.conversationHistory.push({ role: 'model', parts: [{ text: reply }] });
-        this.options.onTranscription?.('assistant', reply, true);
+        const chatCleanReply = stripStageCues(reply);
+        if (chatCleanReply) {
+          this.conversationHistory.push({ role: 'model', parts: [{ text: chatCleanReply }] });
+          this.options.onTranscription?.('assistant', chatCleanReply, true);
+        }
         await this.speakReply(apiKey, reply, prestartedTtsMap);
       }
 
@@ -2094,7 +2341,9 @@ export class GeminiLiveSession {
       .map((s) => s.trim())
       .filter(Boolean);
     const sentences = rawSentences.length > 0 ? rawSentences : [cleanText];
-    const voiceName = this.options.voiceName || 'Leda';
+    const voiceName = isAdmin()
+      ? ADMIN_PREFERRED_VOICES[0]
+      : this.options.voiceName || 'Leda';
 
     // Immediately fire/queue TTS requests for all sentences in parallel (reusing any prestarted sentence promises)
     const sentencePromises = sentences.map((sentence) => {
@@ -2282,7 +2531,12 @@ export class GeminiLiveSession {
             : 'bn-BD';
         const { voice: chosenVoice, foundFemale } = pickStrictFemaleVoice(voices, requestedLang);
 
-        const utterance = new SpeechSynthesisUtterance(text);
+        const spokenText = stripStageCues(text);
+        if (!spokenText) {
+          resolve(true);
+          return;
+        }
+        const utterance = new SpeechSynthesisUtterance(spokenText);
         if (foundFemale && chosenVoice) {
           utterance.voice = chosenVoice;
           utterance.lang = chosenVoice.lang || requestedLang;
