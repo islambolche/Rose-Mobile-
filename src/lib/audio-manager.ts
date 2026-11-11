@@ -1,3 +1,5 @@
+import { getMicListeningSettings } from './cleanVoiceAndVad';
+
 let globalStream: MediaStream | null = null;
 let isInitializing = false;
 
@@ -61,11 +63,14 @@ export async function getGlobalMicStream(
   try {
     await stopGlobalMicStream();
 
+    const { cleanVoice } = getMicListeningSettings();
     const audioConstraints: MediaTrackConstraints = {
       ...(typeof options?.audio === 'object' ? options.audio : {}),
-      echoCancellation: false,
-      noiseSuppression: false,
+      echoCancellation: true,
+      noiseSuppression: cleanVoice,
       autoGainControl: false,
+      sampleRate: { ideal: 48000 },
+      channelCount: { ideal: 1 },
     };
 
     const stream = await navigator.mediaDevices.getUserMedia({

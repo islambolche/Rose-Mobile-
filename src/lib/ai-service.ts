@@ -309,7 +309,7 @@ export const discoverAvailableFlashModels = async (
 
 export const isValidVoiceTranscript = (text?: string, durationSec?: number): boolean => {
   if (!text) return false;
-  if (typeof durationSec === 'number' && durationSec < 1.0) {
+  if (typeof durationSec === 'number' && durationSec < 0.4) {
     return false;
   }
   const clean = String(text).trim();

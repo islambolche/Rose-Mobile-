@@ -12,6 +12,18 @@ import {
   discoverLightestFlashModel,
 } from './ai-service';
 import { pauseGlobalMicForSpeech, resumeGlobalMicAfterSpeech, getGlobalMicStream } from './audio-manager';
+import {
+  getMicListeningSettings,
+  getSensitivityThresholds,
+  preloadAudioEnhancementsInBackground,
+  loadRnnoiseWasmBinary,
+  SileroVadEngine,
+  passesStreetModeFilter,
+  isPushToTalkCurrentlyActive,
+  consumePushToTalkTurnFlag,
+  resetPushToTalkTurnFlag,
+  getRoseTechInstruction,
+} from './cleanVoiceAndVad';
 
 export interface GeminiLiveOptions {
   assistantName?: string;
@@ -256,10 +268,16 @@ export class GeminiLiveSession {
   private playbackAudioCtx: AudioContext | null = null;
   private micStream: MediaStream | null = null;
   private micSourceNode: MediaStreamAudioSourceNode | null = null;
+  private rnnoiseNode: AudioWorkletNode | null = null;
+  private cleanDestNode: MediaStreamAudioDestinationNode | null = null;
+  private denoisedStream: MediaStream | null = null;
   private audioWorkletNode: AudioWorkletNode | null = null;
   private scriptProcessor: ScriptProcessorNode | null = null;
   private micAnalyser: AnalyserNode | null = null;
   private outputAnalyser: AnalyserNode | null = null;
+  private sileroVad = new SileroVadEngine();
+  private clipUsedPushToTalk = false;
+  private lastLiveVadVoiceAt = 0;
   private nextStartTime = 0;
   private scheduledAudioSources: AudioBufferSourceNode[] = [];
   private currentState: 'connecting' | 'listening' | 'thinking' | 'speaking' | 'off' = 'off';
@@ -371,6 +389,13 @@ export class GeminiLiveSession {
       return;
     }
 
+    // Background preload of RNNoise WASM and Silero VAD (non-blocking so call starts immediately)
+    preloadAudioEnhancementsInBackground();
+    const micSettings = getMicListeningSettings();
+    if (micSettings.smartListen) {
+      void this.sileroVad.initInBackground();
+    }
+
     // 1. Initialize Single AudioContext, Microphone & AnalyserNode immediately
     const audioReady = await this.initAudioAndAnalyzers();
     if (!audioReady || this.wasStoppedByUser) {
@@ -397,8 +422,8 @@ export class GeminiLiveSession {
 
     if (this.wasStoppedByUser) return;
 
-    // 3. Try Path 1 (Live WebSocket): up to 3 bidiGenerateContent models, max 8 seconds total.
-    if (this.liveModels.length > 0) {
+    // 3. Try Path 1 (Live WebSocket) unless Street Mode is enabled (Street Mode requires transcript wake-word verification before speaking)
+    if (this.liveModels.length > 0 && !getMicListeningSettings().streetMode) {
       const connectedLive = await this.tryConnectLiveModels(apiKey, this.liveModels.slice(0, 3), 8000);
       if (connectedLive && !this.wasStoppedByUser) {
         this.activeMode = 'live';
@@ -448,20 +473,49 @@ export class GeminiLiveSession {
       }
       const source = this.audioCtx.createMediaStreamSource(stream);
       this.micSourceNode = source;
-      source.connect(this.micAnalyser);
-      if (this.audioWorkletNode) {
-        source.connect(this.audioWorkletNode);
-      } else if (this.scriptProcessor) {
-        source.connect(this.scriptProcessor);
+
+      const { cleanVoice } = getMicListeningSettings();
+      if (this.rnnoiseNode) {
+        try {
+          this.rnnoiseNode.port.postMessage({ type: 'set-enabled', enabled: cleanVoice });
+          this.rnnoiseNode.disconnect();
+        } catch {}
+        source.connect(this.rnnoiseNode);
+        this.rnnoiseNode.connect(this.micAnalyser);
+        if (this.cleanDestNode) {
+          this.rnnoiseNode.connect(this.cleanDestNode);
+        }
+        if (this.audioWorkletNode) {
+          this.rnnoiseNode.connect(this.audioWorkletNode);
+        } else if (this.scriptProcessor) {
+          this.rnnoiseNode.connect(this.scriptProcessor);
+        }
+        this.denoisedStream =
+          cleanVoice && this.cleanDestNode && this.cleanDestNode.stream.getAudioTracks().length > 0
+            ? this.cleanDestNode.stream
+            : stream;
+      } else {
+        source.connect(this.micAnalyser);
+        if (this.cleanDestNode) {
+          source.connect(this.cleanDestNode);
+        }
+        if (this.audioWorkletNode) {
+          source.connect(this.audioWorkletNode);
+        } else if (this.scriptProcessor) {
+          source.connect(this.scriptProcessor);
+        }
+        this.denoisedStream = stream;
       }
       this.options.onMicLive?.(true);
     } catch (e) {
       console.warn('[GeminiLiveSession] attachMicStreamToAudioGraph error:', e);
+      this.denoisedStream = stream;
     }
   }
 
   private async initAudioAndAnalyzers(): Promise<boolean> {
     try {
+      const { cleanVoice } = getMicListeningSettings();
       const hasLiveOptionStream =
         this.options.micStream &&
         this.options.micStream.active &&
@@ -472,9 +526,11 @@ export class GeminiLiveSession {
       } else {
         this.micStream = await getGlobalMicStream({
           audio: {
-            echoCancellation: false,
-            noiseSuppression: false,
+            echoCancellation: true,
+            noiseSuppression: cleanVoice,
             autoGainControl: false,
+            sampleRate: { ideal: 48000 },
+            channelCount: { ideal: 1 },
           },
         });
       }
@@ -488,7 +544,7 @@ export class GeminiLiveSession {
       const sharedCtx =
         this.options.audioContext ||
         this.options.playbackAudioContext ||
-        new (window.AudioContext || (window as any).webkitAudioContext)();
+        new (window.AudioContext || (window as any).webkitAudioContext)({ sampleRate: 48000 });
 
       this.audioCtx = sharedCtx;
       this.playbackAudioCtx = sharedCtx;
@@ -518,18 +574,84 @@ export class GeminiLiveSession {
       this.outputAnalyser.fftSize = 256;
       this.outputAnalyser.smoothingTimeConstant = 0.45;
 
-      // Attach PCM capture for Path 1 Live WebSocket (only sends if ws is open & setupComplete)
+      try {
+        this.cleanDestNode = this.audioCtx.createMediaStreamDestination();
+      } catch (e) {
+        console.warn('[Rose Clean Voice] createMediaStreamDestination failed:', e);
+        this.cleanDestNode = null;
+      }
+
+      // Setup Rose Clean Voice RNNoise AudioWorklet (48kHz, 480-sample frames) with safe fallback
+      if (this.audioCtx.audioWorklet && typeof AudioWorkletNode === 'function') {
+        try {
+          await this.audioCtx.audioWorklet.addModule('/rnnoise-worklet.js');
+          this.rnnoiseNode = new AudioWorkletNode(this.audioCtx, 'rnnoise-worklet-processor', {
+            processorOptions: {
+              enabled: cleanVoice,
+            },
+          });
+          this.rnnoiseNode.port.onmessage = (ev) => {
+            if (ev.data?.type === 'wasm-error') {
+              console.warn('[Rose Clean Voice] RNNoise worklet WASM fallback:', ev.data.error);
+            }
+          };
+          // Load local /rnnoise.wasm in background so call start is never delayed
+          loadRnnoiseWasmBinary()
+            .then((wasmBuf) => {
+              if (wasmBuf && this.rnnoiseNode && !this.wasStoppedByUser) {
+                try {
+                  this.rnnoiseNode.port.postMessage({
+                    type: 'init-wasm',
+                    wasmBinary: wasmBuf.slice(0),
+                  });
+                } catch {}
+              }
+            })
+            .catch(() => {});
+        } catch (rnErr) {
+          console.warn('[Rose Clean Voice] AudioWorklet load failed, using browser mic filter:', rnErr);
+          this.rnnoiseNode = null;
+        }
+      }
+
+      // Attach PCM capture for Path 1 Live WebSocket AND feed Silero VAD for Path 1 & Path 2
       const processPcmBuffer = (float32Samples: Float32Array) => {
+        if (this.wasStoppedByUser || this.isMuted || this.currentState === 'speaking') {
+          return;
+        }
+
+        const micCfg = getMicListeningSettings();
+        if (micCfg.smartListen && this.currentState === 'listening') {
+          if (!this.sileroVad.isAvailable()) {
+            void this.sileroVad.initInBackground();
+          } else {
+            void this.sileroVad.feedAudioSamples(float32Samples, sourceSampleRate);
+          }
+        }
+
         if (
           !this.ws ||
           this.ws.readyState !== WebSocket.OPEN ||
-          this.isMuted ||
           !this.isSetupComplete ||
-          this.isFallbackMode ||
-          this.currentState === 'speaking'
+          this.isFallbackMode
         ) {
           return;
         }
+
+        // If Smart Listen (Silero VAD) is active in Path 1, gate non-speech noise (traffic/wind/horn)
+        if (micCfg.smartListen && this.sileroVad.isAvailable() && !isPushToTalkCurrentlyActive()) {
+          const thresholds = getSensitivityThresholds(micCfg.micSensitivity);
+          const prob = this.sileroVad.getLastSpeechProbability();
+          const now = Date.now();
+          if (prob >= thresholds.vadNegative) {
+            this.lastLiveVadVoiceAt = now;
+          }
+          // Only stream audio when Silero detects speech or within 650ms hangover after speech
+          if (prob < thresholds.vadPositive && now - this.lastLiveVadVoiceAt > 650) {
+            return;
+          }
+        }
+
         const pcm16 = downsampleToPCM16(float32Samples, sourceSampleRate, 16000);
         if (pcm16.length === 0) return;
 
@@ -693,7 +815,7 @@ export class GeminiLiveSession {
                 {
                   text: `${STT_LANG_PROMPT}\n\n${ensureNoThoughtSystemInstruction(
                     this.options.systemInstruction || 'You are Rose, a helpful assistant.'
-                  )}`,
+                  )}\n\n${getRoseTechInstruction()}`,
                 },
               ],
             },
@@ -800,6 +922,7 @@ export class GeminiLiveSession {
 
   private liveUserBuffer = '';
   private liveAssistantBuffer = '';
+  private liveStreetAllowed = true;
 
   private handleLiveServerContent(content: any) {
     const inTrans =
@@ -813,8 +936,15 @@ export class GeminiLiveSession {
         this.liveUserBuffer += textVal;
         const combined = this.liveUserBuffer.trim();
         if (isValidVoiceTranscript(combined)) {
-          this.lastHeardText = combined;
-          this.options.onTranscription?.('user', combined, false);
+          this.liveStreetAllowed = passesStreetModeFilter(
+            combined,
+            this.options.assistantName,
+            isPushToTalkCurrentlyActive()
+          );
+          if (this.liveStreetAllowed) {
+            this.lastHeardText = combined;
+            this.options.onTranscription?.('user', combined, false);
+          }
         }
       }
     }
@@ -827,9 +957,18 @@ export class GeminiLiveSession {
       if (this.liveUserBuffer.trim()) {
         const finalUser = this.liveUserBuffer.trim();
         this.liveUserBuffer = '';
-        if (isValidVoiceTranscript(finalUser)) {
+        this.liveStreetAllowed = passesStreetModeFilter(
+          finalUser,
+          this.options.assistantName,
+          consumePushToTalkTurnFlag()
+        );
+        if (this.liveStreetAllowed && isValidVoiceTranscript(finalUser)) {
           this.options.onTranscription?.('user', finalUser, true);
         }
+      }
+      if (!this.liveStreetAllowed) {
+        this.stopAllAudioPlayback();
+        return;
       }
       const textVal = typeof outTrans === 'string' ? outTrans : outTrans.text || outTrans.parts?.[0]?.text;
       if (textVal) {
@@ -845,9 +984,18 @@ export class GeminiLiveSession {
       if (this.liveUserBuffer.trim()) {
         const finalUser = this.liveUserBuffer.trim();
         this.liveUserBuffer = '';
-        if (isValidVoiceTranscript(finalUser)) {
+        this.liveStreetAllowed = passesStreetModeFilter(
+          finalUser,
+          this.options.assistantName,
+          consumePushToTalkTurnFlag()
+        );
+        if (this.liveStreetAllowed && isValidVoiceTranscript(finalUser)) {
           this.options.onTranscription?.('user', finalUser, true);
         }
+      }
+      if (!this.liveStreetAllowed) {
+        this.stopAllAudioPlayback();
+        return;
       }
       const parts = content.modelTurn.parts || [];
       for (const part of parts) {
@@ -874,6 +1022,7 @@ export class GeminiLiveSession {
     if (content.interrupted) {
       this.liveUserBuffer = '';
       this.liveAssistantBuffer = '';
+      this.liveStreetAllowed = true;
       this.liveTurnCompleted = true;
       this.stopAllAudioPlayback();
       this.finishSpeakingAndReturnToListening();
@@ -884,11 +1033,16 @@ export class GeminiLiveSession {
       if (this.liveUserBuffer.trim()) {
         const finalUser = this.liveUserBuffer.trim();
         this.liveUserBuffer = '';
-        if (isValidVoiceTranscript(finalUser)) {
+        this.liveStreetAllowed = passesStreetModeFilter(
+          finalUser,
+          this.options.assistantName,
+          consumePushToTalkTurnFlag()
+        );
+        if (this.liveStreetAllowed && isValidVoiceTranscript(finalUser)) {
           this.options.onTranscription?.('user', finalUser, true);
         }
       }
-      if (this.liveAssistantBuffer.trim()) {
+      if (this.liveStreetAllowed && this.liveAssistantBuffer.trim()) {
         const finalCleaned = cleanAssistantReplyText(this.liveAssistantBuffer.trim(), this.options.language);
         if (finalCleaned) {
           this.options.onTranscription?.('assistant', finalCleaned, true);
@@ -896,6 +1050,7 @@ export class GeminiLiveSession {
       }
       this.liveUserBuffer = '';
       this.liveAssistantBuffer = '';
+      this.liveStreetAllowed = true;
       this.liveTurnCompleted = true;
       this.flushPendingPcmChunks(true);
       this.scheduleReturnToListening();
@@ -912,14 +1067,12 @@ export class GeminiLiveSession {
     this.activeMode = 'fallback';
     this.socketStatus = 'open';
     this.finishSpeakingAndReturnToListening();
-    logVoiceEvent('Fallback Voice', 'Activated Path 2 (MediaRecorder + generateContent)');
+    logVoiceEvent('Fallback Voice', 'Activated Path 2 (MediaRecorder + generateContent + Rose Smart Listen)');
 
-    const SPEECH_START_THRESHOLD = 0.042;
-    const SPEECH_KEEP_THRESHOLD = 0.028;
     const INTERRUPT_THRESHOLD = 0.22;
-    const SILENCE_DURATION_MS = 600;
-    const MIN_CLIP_DURATION_MS = 600;
-    const MAX_CLIP_DURATION_MS = 20000;
+    const SILENCE_DURATION_MS = 650; // 0.65 সেকেন্ড চুপ থাকলে কথা শেষ ধরবে
+    const MIN_CLIP_DURATION_MS = 400; // কমপক্ষে 0.4 সেকেন্ড কথা না হলে পাঠাবে না
+    const MAX_CLIP_DURATION_MS = 15000; // সর্বোচ্চ 15 সেকেন্ডের ক্লিপ
 
     if (this.vadTimer) clearInterval(this.vadTimer);
 
@@ -947,6 +1100,9 @@ export class GeminiLiveSession {
       if (!this.micStream) return;
 
       const level = this.currentMicLevel;
+      const mlSettings = getMicListeningSettings();
+      const thresholds = getSensitivityThresholds(mlSettings.micSensitivity);
+      const pttActive = isPushToTalkCurrentlyActive();
 
       // 1. If muted: do not record
       if (this.isMuted) {
@@ -962,9 +1118,9 @@ export class GeminiLiveSession {
 
       // 2. While Rose is speaking: mic is stopped, but if level triggers interrupt
       if (this.currentState === 'speaking') {
-        if (level >= INTERRUPT_THRESHOLD) {
+        if (level >= INTERRUPT_THRESHOLD || pttActive) {
           this.interruptFrames++;
-          if (this.interruptFrames >= 4) {
+          if (this.interruptFrames >= 4 || pttActive) {
             this.interruptFrames = 0;
             this.interruptPlayback();
             this.options.onInterrupted?.();
@@ -984,19 +1140,35 @@ export class GeminiLiveSession {
       }
 
       const now = Date.now();
+      const useSilero = mlSettings.smartListen && this.sileroVad.isAvailable();
+      const vadProb = useSilero ? this.sileroVad.getProbability() : 0;
 
-      // 4. Start or stop MediaRecorder based on mic level
+      // 4. Start or stop MediaRecorder based on Rose Smart Listen (Silero VAD) or safe volume fallback
       if (!this.isRecordingClip) {
-        if (level >= SPEECH_START_THRESHOLD) {
+        const speechDetected = pttActive
+          ? true
+          : useSilero
+          ? vadProb >= thresholds.vadPositive && level >= thresholds.volKeep * 0.65
+          : level >= thresholds.volStart;
+
+        if (speechDetected) {
           this.startClipRecording(apiKey, MIN_CLIP_DURATION_MS);
         }
       } else {
-        if (level >= SPEECH_KEEP_THRESHOLD) {
+        if (pttActive) {
+          this.clipUsedPushToTalk = true;
+          this.lastVoiceTime = now;
+        } else if (useSilero) {
+          if (vadProb >= thresholds.vadNegative) {
+            this.lastVoiceTime = now;
+          }
+        } else if (level >= thresholds.volKeep) {
           this.lastVoiceTime = now;
         }
+
         const silenceMs = now - this.lastVoiceTime;
         const totalMs = now - this.clipStartTime;
-        if (silenceMs >= SILENCE_DURATION_MS || totalMs >= MAX_CLIP_DURATION_MS) {
+        if ((!pttActive && silenceMs >= SILENCE_DURATION_MS) || totalMs >= MAX_CLIP_DURATION_MS) {
           if (this.mediaRecorder && this.mediaRecorder.state === 'recording') {
             try {
               this.mediaRecorder.stop();
@@ -1020,16 +1192,32 @@ export class GeminiLiveSession {
     }
 
     try {
+      const mlSettings = getMicListeningSettings();
+      const canUseDenoised =
+        mlSettings.cleanVoice &&
+        this.denoisedStream &&
+        this.denoisedStream.getAudioTracks().some((t) => t.readyState === 'live');
+      const targetStream = canUseDenoised && this.denoisedStream ? this.denoisedStream : this.micStream;
+
       const mimeType = getSupportedRecorderMimeType();
-      const recorder = mimeType
-        ? new MediaRecorder(this.micStream, { mimeType })
-        : new MediaRecorder(this.micStream);
+      let recorder: MediaRecorder;
+      try {
+        recorder = mimeType
+          ? new MediaRecorder(targetStream, { mimeType })
+          : new MediaRecorder(targetStream);
+      } catch {
+        recorder = mimeType
+          ? new MediaRecorder(this.micStream, { mimeType })
+          : new MediaRecorder(this.micStream);
+      }
 
       this.recordedChunks = [];
       this.discardClip = false;
       this.isRecordingClip = true;
       this.clipStartTime = Date.now();
       this.lastVoiceTime = Date.now();
+      this.clipUsedPushToTalk = isPushToTalkCurrentlyActive();
+      resetPushToTalkTurnFlag();
       this.mediaRecorder = recorder;
 
       recorder.ondataavailable = (ev) => {
@@ -1041,6 +1229,7 @@ export class GeminiLiveSession {
       recorder.onstop = async () => {
         this.isRecordingClip = false;
         const clipDuration = Date.now() - this.clipStartTime;
+        const usedPtt = this.clipUsedPushToTalk || consumePushToTalkTurnFlag();
         if (
           this.wasStoppedByUser ||
           this.isMuted ||
@@ -1059,7 +1248,7 @@ export class GeminiLiveSession {
         const blob = new Blob(this.recordedChunks, { type: actualMime });
         this.recordedChunks = [];
 
-        if (blob.size < 800) {
+        if (blob.size < 600) {
           if (!this.wasStoppedByUser && this.currentState !== 'speaking' && !this.isProcessingClip) {
             this.updateState('listening');
           }
@@ -1067,7 +1256,7 @@ export class GeminiLiveSession {
         }
 
         this.chunksSent++;
-        await this.processAudioClipWithGemini(apiKey, blob, actualMime);
+        await this.processAudioClipWithGemini(apiKey, blob, actualMime, usedPtt);
       };
 
       recorder.start(100);
@@ -1079,7 +1268,12 @@ export class GeminiLiveSession {
   }
 
   // State Machine: LISTENING -> PROCESSING ('thinking') -> SPEAKING ('speaking') -> LISTENING ('listening')
-  private async processAudioClipWithGemini(apiKey: string, audioBlob: Blob, mimeType: string) {
+  private async processAudioClipWithGemini(
+    apiKey: string,
+    audioBlob: Blob,
+    mimeType: string,
+    usedPushToTalk = false
+  ) {
     if (this.wasStoppedByUser || this.isProcessingClip) return;
     this.isProcessingClip = true;
     this.updateState('thinking');
@@ -1120,7 +1314,7 @@ export class GeminiLiveSession {
         },
       ];
 
-      const sysInstructionText = `${ensureNoThoughtSystemInstruction(this.options.systemInstruction)}\nভয়েস কলে সর্বোচ্চ ২-৩ ছোট বাক্যে উত্তর দাও।`;
+      const sysInstructionText = `${ensureNoThoughtSystemInstruction(this.options.systemInstruction)}\nভয়েস কলে সর্বোচ্চ ২-৩ ছোট বাক্যে উত্তর দাও।\n${getRoseTechInstruction()}`;
 
       const buildClipBody = (withThinkingConfig: boolean) => {
         const genCfg: any = {
@@ -1235,9 +1429,15 @@ export class GeminiLiveSession {
 
       reply = cleanAssistantReplyText(reply, this.options.language);
 
-      // Validate transcript: discard foreign scripts (Korean/Turkish/etc), noise, duration < 1s
+      // Validate transcript: discard foreign scripts (Korean/Turkish/etc), noise, duration < 0.4s
       if (!isValidVoiceTranscript(transcript, clipDurationSec)) {
         logVoiceEvent('STT Validation', `Discarded invalid/noise/foreign transcript: "${transcript}"`, 'warn');
+        return;
+      }
+
+      // Street Mode check: only respond if user said "রোজ"/"Rose" or held push-to-talk
+      if (!passesStreetModeFilter(transcript, this.options.assistantName, usedPushToTalk)) {
+        logVoiceEvent('Street Mode', `Ignored speech without wake word in Street Mode: "${transcript}"`, 'info');
         return;
       }
 
@@ -1285,6 +1485,12 @@ export class GeminiLiveSession {
         } catch {}
         this.micSourceNode = null;
       }
+      if (this.rnnoiseNode) {
+        try {
+          this.rnnoiseNode.disconnect();
+        } catch {}
+        this.rnnoiseNode = null;
+      }
       pauseGlobalMicForSpeech([this.micStream]);
       this.micStream = null;
     } catch {}
@@ -1303,8 +1509,13 @@ export class GeminiLiveSession {
           this.micStream.active &&
           this.micStream.getAudioTracks().some((t) => t.readyState === 'live');
         if (!hasLiveTrack) {
+          const mlSettings = getMicListeningSettings();
           this.micStream = await getGlobalMicStream({
-            audio: { echoCancellation: false, noiseSuppression: false, autoGainControl: false },
+            audio: {
+              echoCancellation: true,
+              noiseSuppression: mlSettings.cleanVoice,
+              autoGainControl: false,
+            },
           });
           if (!this.wasStoppedByUser && this.micStream) {
             this.attachMicStreamToAudioGraph(this.micStream);
@@ -1843,6 +2054,15 @@ export class GeminiLiveSession {
       } catch {}
       this.micSourceNode = null;
     }
+
+    if (this.rnnoiseNode) {
+      try {
+        this.rnnoiseNode.disconnect();
+      } catch {}
+      this.rnnoiseNode = null;
+    }
+
+    this.sileroVad.stop();
 
     if (this.scriptProcessor) {
       try {

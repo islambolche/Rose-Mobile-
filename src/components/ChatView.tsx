@@ -18,6 +18,7 @@ export const ChatView = ({
 }) => {
     const [inputText, setInputText] = useState("");
     const [thinkingSeconds, setThinkingSeconds] = useState(0);
+    const [roseAvatarError, setRoseAvatarError] = useState(false);
     const scrollRef = useRef<HTMLDivElement>(null);
 
     useEffect(() => {
@@ -107,10 +108,19 @@ export const ChatView = ({
                         <div key={m.id || idx} className={`flex flex-col w-full ${isUser ? "items-end" : "items-start"}`}>
                             <div className={`flex items-end gap-2 w-full ${isUser ? "justify-end" : "justify-start"}`}>
                                 {!isUser && (
-                                    <div className="w-7 h-7 rounded-full bg-[#0F172A] border border-purple-500/30 flex items-center justify-center shrink-0 shadow-md mb-1 relative">
-                                        <span className="text-xs">🌹</span>
+                                    <div className="w-10 h-10 rounded-full bg-[#0F172A] border border-purple-500/30 flex items-center justify-center shrink-0 shadow-[0_0_10px_rgba(168,85,247,0.25)] mb-1 relative">
+                                        {!roseAvatarError ? (
+                                            <img
+                                                src="/rose-avatar.jpg"
+                                                alt="Rose"
+                                                onError={() => setRoseAvatarError(true)}
+                                                className="w-full h-full rounded-full object-cover object-[50%_25%]"
+                                            />
+                                        ) : (
+                                            <span className="text-xs">🌹</span>
+                                        )}
                                         {isVoice && (
-                                            <div className="absolute -top-1 -right-1 bg-purple-600 rounded-full p-0.5 border border-[#0F172A]">
+                                            <div className="absolute -top-1 -right-1 z-10 bg-purple-600 rounded-full p-0.5 border border-[#0F172A]">
                                                 <Mic className="w-2 h-2 text-white" />
                                             </div>
                                         )}
@@ -141,8 +151,17 @@ export const ChatView = ({
                 {isThinking && (
                     <div className="flex flex-col w-full items-start">
                         <div className="flex items-center gap-2">
-                            <div className="w-7 h-7 rounded-full bg-[#0F172A] border border-purple-500/30 flex items-center justify-center shrink-0 shadow-md">
-                                <span className="text-xs">🌹</span>
+                            <div className="w-10 h-10 rounded-full bg-[#0F172A] border border-purple-500/30 flex items-center justify-center shrink-0 shadow-[0_0_10px_rgba(168,85,247,0.25)]">
+                                {!roseAvatarError ? (
+                                    <img
+                                        src="/rose-avatar.jpg"
+                                        alt="Rose"
+                                        onError={() => setRoseAvatarError(true)}
+                                        className="w-full h-full rounded-full object-cover object-[50%_25%]"
+                                    />
+                                ) : (
+                                    <span className="text-xs">🌹</span>
+                                )}
                             </div>
                             <div className="bg-[#0F172A]/85 backdrop-blur-md border border-purple-500/25 text-purple-300 rounded-2xl rounded-tl-sm px-4 py-2.5 text-xs font-semibold italic animate-pulse shadow-lg">
                                 Rose is thinking... ({thinkingSeconds}s)
