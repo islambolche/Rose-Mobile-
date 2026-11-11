@@ -41,6 +41,7 @@ import {
   ADMIN_DISPLAY_NAME,
   ADMIN_SYSTEM_INSTRUCTION_BLOCK,
   isAdmin,
+  applyAdminSystemInstructionOverride,
 } from './admin';
 
 export const getSystemInstruction = (settings: any, prefs: any) => {
@@ -48,9 +49,8 @@ export const getSystemInstruction = (settings: any, prefs: any) => {
   const resolvedOwnerName = adminMode
     ? ADMIN_DISPLAY_NAME
     : settings?.ownerName || DEVELOPER_INFO.name;
-  const adminExtra = adminMode ? `\n${ADMIN_SYSTEM_INSTRUCTION_BLOCK}\n` : '';
 
-  return `Answer immediately. Keep every reply to 1 or 2 short sentences. Do not think out loud, do not add an intro, do not repeat the question. Give more detail only if the user asks.
+  const rawInstruction = `Answer immediately. Keep every reply to 1 or 2 short sentences. Do not think out loud, do not add an intro, do not repeat the question. Give more detail only if the user asks.
 
 You are ${settings.assistantName || 'Rose'}, a warm, friendly young woman talking with the user. Speak exactly like a real person: natural rhythm, short sentences, soft pauses. Match the user's mood. Never use bullet points, lists, headings, or markdown. Always reply in the same language and dialect the user speaks. If the user speaks Bengali, answer in natural, everyday spoken Bengali, the way a friend talks, not formal or bookish.
 
@@ -66,6 +66,7 @@ IDENTITY & RULES:
 - Addressing the user: use "${resolvedOwnerName}".
 - KEEP REPLIES SHORT AND CONVERSATIONAL (1 to 3 sentences max for spoken voice).
 
-${getDeveloperFactsInstruction()}${adminExtra}
-`;
+${getDeveloperFactsInstruction()}`;
+
+  return applyAdminSystemInstructionOverride(rawInstruction);
 };

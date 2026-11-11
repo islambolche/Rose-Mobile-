@@ -310,6 +310,7 @@ import {
   ADMIN_DISPLAY_NAME,
   ADMIN_SYSTEM_INSTRUCTION_BLOCK,
   isAdmin,
+  applyAdminSystemInstructionOverride,
 } from "../lib/admin";
 
 export function buildAssistantSystemInstruction(s: UnifiedSettings): string {
@@ -342,10 +343,6 @@ export function buildAssistantSystemInstruction(s: UnifiedSettings): string {
     lines.push(`Speak in English.`);
   }
 
-  if (adminMode) {
-    lines.push(ADMIN_SYSTEM_INSTRUCTION_BLOCK);
-  }
-
   // 4. Response Style
   if (s.replyLength === "Concise" || s.replyLength === "Short replies") {
     lines.push(`১-২ বাক্য।`);
@@ -360,6 +357,6 @@ export function buildAssistantSystemInstruction(s: UnifiedSettings): string {
   
   lines.push(`You are a woman. Speak and write in feminine form. Your voice is sweet, soft and friendly.`);
 
-  return lines.join(" ");
+  return applyAdminSystemInstructionOverride(lines.join(" "));
 }
 

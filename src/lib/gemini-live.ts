@@ -34,6 +34,7 @@ import {
   ADMIN_DISPLAY_NAME,
   ADMIN_SYSTEM_INSTRUCTION_BLOCK,
   isAdmin,
+  applyAdminSystemInstructionOverride,
 } from './admin';
 
 export interface GeminiLiveOptions {
@@ -397,10 +398,7 @@ export class GeminiLiveSession {
       this.options.ownerName = ADMIN_DISPLAY_NAME;
     }
     const base = this.options.systemInstruction || 'You are Rose, a helpful assistant.';
-    if (adminMode && !base.includes(ADMIN_SYSTEM_INSTRUCTION_BLOCK)) {
-      return `${base}\n\n${ADMIN_SYSTEM_INSTRUCTION_BLOCK}`;
-    }
-    return base;
+    return applyAdminSystemInstructionOverride(base);
   }
 
   public async start() {
@@ -907,6 +905,11 @@ export class GeminiLiveSession {
           return;
         }
         const STT_LANG_PROMPT = "ব্যবহারকারী বাংলা বা ইংরেজিতে কথা বলেন, শুধু বাংলা বা ইংরেজিতে লেখো, কোরিয়ান বা অন্য ভাষায় নয়। অস্পষ্ট হলে বাংলায় লেখো। ভয়েস কলে সর্বোচ্চ ২-৩ ছোট বাক্যে উত্তর দাও।";
+        const rawLiveInst = `${STT_LANG_PROMPT}\n\n${ensureNoThoughtSystemInstruction(
+          this.getEffectiveSystemInstruction()
+        )}\n\n${getRoseTechInstruction()}`;
+        const finalLiveInst = applyAdminSystemInstructionOverride(rawLiveInst);
+
         const setupPayload: any = {
           model: `models/${modelName}`,
           generationConfig: {
@@ -922,9 +925,7 @@ export class GeminiLiveSession {
           systemInstruction: {
             parts: [
               {
-                text: `${STT_LANG_PROMPT}\n\n${ensureNoThoughtSystemInstruction(
-                  this.getEffectiveSystemInstruction()
-                )}\n\n${getRoseTechInstruction()}${isAdmin() ? `\n\n${ADMIN_SYSTEM_INSTRUCTION_BLOCK}` : ''}`,
+                text: finalLiveInst,
               },
             ],
           },
@@ -1622,7 +1623,8 @@ export class GeminiLiveSession {
         },
       ];
 
-      const sysInstructionText = `${ensureNoThoughtSystemInstruction(this.getEffectiveSystemInstruction())}\nভয়েস কলে সর্বোচ্চ ২-৩ ছোট বাক্যে উত্তর দাও।\n${getRoseTechInstruction()}${isAdmin() ? `\n\n${ADMIN_SYSTEM_INSTRUCTION_BLOCK}` : ''}`;
+      const rawSysInstructionText = `${ensureNoThoughtSystemInstruction(this.getEffectiveSystemInstruction())}\nভয়েস কলে সর্বোচ্চ ২-৩ ছোট বাক্যে উত্তর দাও।\n${getRoseTechInstruction()}`;
+      const sysInstructionText = applyAdminSystemInstructionOverride(rawSysInstructionText);
 
       const buildClipBody = (withThinkingConfig: boolean) => {
         const genCfg: any = {
