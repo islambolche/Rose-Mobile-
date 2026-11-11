@@ -3,6 +3,14 @@ import { getMicListeningSettings } from './cleanVoiceAndVad';
 let globalStream: MediaStream | null = null;
 let isInitializing = false;
 
+export function setBrowserAudioSessionType(type: 'playback' | 'play-and-record') {
+  try {
+    if (typeof navigator !== 'undefined' && (navigator as any).audioSession) {
+      (navigator as any).audioSession.type = type;
+    }
+  } catch {}
+}
+
 export async function stopGlobalMicStream() {
   if (globalStream) {
     globalStream.getTracks().forEach((track) => {
@@ -15,6 +23,7 @@ export async function stopGlobalMicStream() {
 }
 
 export function pauseGlobalMicForSpeech(extraStreams?: Array<MediaStream | null | undefined>) {
+  setBrowserAudioSessionType('playback');
   try {
     if (globalStream) {
       globalStream.getTracks().forEach((track) => {
@@ -38,7 +47,7 @@ export function pauseGlobalMicForSpeech(extraStreams?: Array<MediaStream | null 
 }
 
 export function resumeGlobalMicAfterSpeech(extraStreams?: Array<MediaStream | null | undefined>) {
-  // Mic re-acquisition will be requested when speech finishes
+  setBrowserAudioSessionType('play-and-record');
 }
 
 export async function getGlobalMicStream(
@@ -50,6 +59,8 @@ export async function getGlobalMicStream(
     await new Promise((r) => setTimeout(r, 400));
     return getGlobalMicStream(options, retryCount, onErrorToast);
   }
+
+  setBrowserAudioSessionType('play-and-record');
 
   if (globalStream && globalStream.active) {
     const liveTracks = globalStream.getAudioTracks().filter(t => t.readyState === 'live');
@@ -73,7 +84,7 @@ export async function getGlobalMicStream(
     const { cleanVoice } = getMicListeningSettings();
     const audioConstraints: MediaTrackConstraints = {
       ...(typeof options?.audio === 'object' ? options.audio : {}),
-      echoCancellation: true,
+      echoCancellation: false,
       noiseSuppression: cleanVoice,
       autoGainControl: false,
       sampleRate: { ideal: 48000 },

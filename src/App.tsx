@@ -104,6 +104,7 @@ import {
   stopGlobalMicStream,
   pauseGlobalMicForSpeech,
   resumeGlobalMicAfterSpeech,
+  setBrowserAudioSessionType,
 } from "./lib/audio-manager";
 import {
   directGeminiGenerate,
@@ -123,6 +124,7 @@ import {
   extractNonThoughtTextFromParts,
   volumeSliderToGain,
   connectBoostedOutputChain,
+  resetOutputGainForReply,
 } from "./lib/ai-service";
 import {
   generateTextWithSelectedEngine,
@@ -4812,6 +4814,9 @@ export function App() {
     }
   }, []);
 
+  const recorderMicSourceRef = useRef<MediaStreamAudioSourceNode | null>(null);
+  const lastMicReleaseTimeRef = useRef<number>(0);
+
   const stopActiveMediaRecorder = useCallback((discard: boolean = true) => {
     recorderDiscardRef.current = discard;
     if (mediaRecorderRef.current) {
@@ -4826,6 +4831,38 @@ export function App() {
       recorderChunksRef.current = [];
     }
   }, []);
+
+  const releaseMicCompletelyForSpeech = useCallback(() => {
+    const hadActiveMic = Boolean(
+      activeStreamRef.current ||
+        micStreamRef.current ||
+        recorderMicSourceRef.current ||
+        (mediaRecorderRef.current && mediaRecorderRef.current.state !== "inactive")
+    );
+    setBrowserAudioSessionType("playback");
+    stopActiveMediaRecorder(true);
+    if (recorderMicSourceRef.current) {
+      try {
+        recorderMicSourceRef.current.disconnect();
+      } catch (e) {}
+      recorderMicSourceRef.current = null;
+    }
+    currentAnalyserRef.current = null;
+    pauseGlobalMicForSpeech([activeStreamRef.current, micStreamRef.current]);
+    activeStreamRef.current = null;
+    micStreamRef.current = null;
+    setMicStream(null);
+    if (
+      inputAudioCtxRef.current &&
+      inputAudioCtxRef.current !== outputAudioCtxRef.current &&
+      inputAudioCtxRef.current.state === "running"
+    ) {
+      inputAudioCtxRef.current.suspend().catch(() => {});
+    }
+    if (hadActiveMic || lastMicReleaseTimeRef.current === 0) {
+      lastMicReleaseTimeRef.current = Date.now();
+    }
+  }, [stopActiveMediaRecorder]);
 
   const stopRecorderVadLoop = useCallback((discardRecording: boolean = true) => {
     if (recorderVadIntervalRef.current) {
@@ -5277,25 +5314,35 @@ export function App() {
   }, [getOrCreateRecognitionSingleton, transitionToState, clearBrowserCheckTimers, switchToRecorderMode]);
 
   const resumeRecognitionAfterSpeech = useCallback(() => {
-    isBusyRef.current = false;
-    isSpeakingTTSRef.current = false;
-    isProcessingGeminiRef.current = false;
-    currentUtteranceRef.current = null;
-    setStatus("idle");
-    setSpeakingState("idle");
-    transitionToState("IDLE");
-    resumeGlobalMicAfterSpeech([activeStreamRef.current, micStreamRef.current]);
-    if (inputAudioCtxRef.current && inputAudioCtxRef.current !== outputAudioCtxRef.current && inputAudioCtxRef.current.state === "suspended") {
-      inputAudioCtxRef.current.resume().catch(() => {});
-    }
-
-    if (isAssistantEnabledRef.current && !micNotAllowedRef.current && !liveSessionRef.current) {
-      if (voiceModeRef.current === "recorder" || browserFallbackForcedRef.current) {
-        startRecorderModeListeningRef.current();
-      } else {
-        startSingletonRecognitionSafely();
+    const tokenAtEnd = speechTokenRef.current;
+    // Wait 200ms after the last audio's onended before re-acquiring the mic
+    setTimeout(() => {
+      if (speechTokenRef.current !== tokenAtEnd) return;
+      isBusyRef.current = false;
+      isSpeakingTTSRef.current = false;
+      isProcessingGeminiRef.current = false;
+      currentUtteranceRef.current = null;
+      setStatus("idle");
+      setSpeakingState("idle");
+      transitionToState("IDLE");
+      setBrowserAudioSessionType("play-and-record");
+      resumeGlobalMicAfterSpeech([activeStreamRef.current, micStreamRef.current]);
+      if (
+        inputAudioCtxRef.current &&
+        inputAudioCtxRef.current !== outputAudioCtxRef.current &&
+        inputAudioCtxRef.current.state === "suspended"
+      ) {
+        inputAudioCtxRef.current.resume().catch(() => {});
       }
-    }
+
+      if (isAssistantEnabledRef.current && !micNotAllowedRef.current && !liveSessionRef.current) {
+        if (voiceModeRef.current === "recorder" || browserFallbackForcedRef.current) {
+          startRecorderModeListeningRef.current();
+        } else {
+          startSingletonRecognitionSafely();
+        }
+      }
+    }, 200);
   }, [transitionToState, startSingletonRecognitionSafely]);
 
   const [activeVoiceEngine, setActiveVoiceEngine] = useState<string>("Voice: Phone TTS");
@@ -5414,16 +5461,13 @@ export function App() {
       setActiveVoiceEngine(`Voice: Gemini TTS (${voiceLabel})`);
       transitionToState("SPEAKING");
 
-      // Pause mic stream during speech so mobile OS keeps audio on loud Media volume instead of Call volume
-      stopActiveMediaRecorder(true);
-      pauseGlobalMicForSpeech([activeStreamRef.current, micStreamRef.current]);
-      if (
-        inputAudioCtxRef.current &&
-        inputAudioCtxRef.current !== outputAudioCtxRef.current &&
-        inputAudioCtxRef.current.state === "running"
-      ) {
-        inputAudioCtxRef.current.suspend().catch(() => {});
+      // Completely release mic stream and wait 300ms before playing output audio
+      releaseMicCompletelyForSpeech();
+      const elapsedSinceMicRelease = Date.now() - lastMicReleaseTimeRef.current;
+      if (elapsedSinceMicRelease < 300) {
+        await new Promise((r) => setTimeout(r, 300 - elapsedSinceMicRelease));
       }
+      if (speechTokenRef.current !== token) return false;
 
       // Stop any active HTMLAudioElement or browser speechSynthesis so two audio engines never play together
       allActiveAudioElementsRef.current.forEach((el) => {
@@ -5439,14 +5483,19 @@ export function App() {
         } catch {}
       }
 
-      // Primary path: play 24kHz PCM directly through tap-unlocked outputAudioCtxRef
+      // Primary path: play 24kHz PCM directly through persistent outputAudioCtxRef
       try {
         const AudioCtx = window.AudioContext || (window as any).webkitAudioContext;
         if (AudioCtx) {
-          if (!outputAudioCtxRef.current || outputAudioCtxRef.current.state === "closed") {
-            outputAudioCtxRef.current = new AudioCtx();
+          if (
+            !outputAudioCtxRef.current ||
+            outputAudioCtxRef.current.state === "closed" ||
+            outputAudioCtxRef.current === inputAudioCtxRef.current
+          ) {
+            outputAudioCtxRef.current = new AudioCtx({ sampleRate: 24000, latencyHint: "interactive" });
           }
           const ctx = outputAudioCtxRef.current;
+          setBrowserAudioSessionType("playback");
           if (ctx.state !== "running") {
             await ctx.resume().catch(() => {});
           }
@@ -5479,6 +5528,8 @@ export function App() {
               outputAnalyserRef.current = analyser;
             }
 
+            const targetGain = volumeSliderToGain(vol);
+            resetOutputGainForReply(ctx, vol, outputAnalyserRef.current);
             const { gainNode } = connectBoostedOutputChain(
               ctx,
               source,
@@ -5486,12 +5537,13 @@ export function App() {
               outputAnalyserRef.current
             );
             gainNodeRef.current = gainNode;
+            gainNode.gain.cancelScheduledValues(ctx.currentTime);
+            gainNode.gain.setValueAtTime(targetGain, ctx.currentTime);
 
             const startTime = Math.max(ctx.currentTime + 0.03, nextStartTimeRef.current || 0);
             const duration = audioBuffer.duration / clampedRate;
             nextStartTimeRef.current = startTime + duration;
 
-            const targetGain = volumeSliderToGain(vol);
             const fadeTime = Math.min(0.005, duration * 0.25);
             gainNode.gain.setValueAtTime(0, startTime);
             gainNode.gain.linearRampToValueAtTime(targetGain, startTime + fadeTime);
@@ -5507,6 +5559,13 @@ export function App() {
                 if (settled) return;
                 settled = true;
                 if (pulseTimer) clearInterval(pulseTimer);
+                try {
+                  source.disconnect();
+                } catch {}
+                try {
+                  gainNode.gain.cancelScheduledValues(ctx.currentTime);
+                  gainNode.gain.setValueAtTime(targetGain, ctx.currentTime);
+                } catch {}
                 allActiveAudioNodesRef.current.delete(source);
                 resolve(ok);
               };
@@ -5672,8 +5731,12 @@ export function App() {
       isBusyRef.current = true;
       isSpeakingTTSRef.current = true;
       transitionToState("SPEAKING");
-      stopActiveMediaRecorder(true);
-      pauseGlobalMicForSpeech([activeStreamRef.current, micStreamRef.current]);
+      releaseMicCompletelyForSpeech();
+      const elapsedSinceMicRelease = Date.now() - lastMicReleaseTimeRef.current;
+      if (elapsedSinceMicRelease < 300) {
+        await new Promise((r) => setTimeout(r, 300 - elapsedSinceMicRelease));
+      }
+      if (speechTokenRef.current !== token) return false;
 
       return await new Promise<boolean>((resolve) => {
         if (speechTokenRef.current !== token) {
@@ -5814,8 +5877,7 @@ export function App() {
         } catch (e) {}
         recognitionRunningRef.current = false;
       }
-      stopActiveMediaRecorder(true);
-      pauseGlobalMicForSpeech([activeStreamRef.current, micStreamRef.current]);
+      releaseMicCompletelyForSpeech();
       transitionToState("SPEAKING");
 
       const ttsStartMs = Date.now();
@@ -6636,12 +6698,19 @@ export function App() {
         await inCtx.resume().catch(() => {});
       }
       if (!currentAnalyserRef.current && stream) {
+        if (recorderMicSourceRef.current) {
+          try {
+            recorderMicSourceRef.current.disconnect();
+          } catch (e) {}
+        }
         const source = inCtx.createMediaStreamSource(stream);
+        recorderMicSourceRef.current = source;
         const analyser = inCtx.createAnalyser();
         analyser.fftSize = 512;
         source.connect(analyser);
         currentAnalyserRef.current = analyser;
       }
+      lastMicReleaseTimeRef.current = 0;
     } catch (e) {
       console.warn("[RecorderMode] Failed setting up AnalyserNode:", e);
     }
@@ -7731,9 +7800,20 @@ export function App() {
       } catch (e) {}
     }
 
-    // Requirement 2a: Create AudioContext and call await ctx.resume()
+    // Requirement 2a: Create separate persistent input and output AudioContexts and call await ctx.resume()
     ensureAudioContext();
-    const currentCtx = inputAudioCtxRef.current || outputAudioCtxRef.current;
+    const AudioCtx = window.AudioContext || (window as any).webkitAudioContext;
+    if (!inputAudioCtxRef.current || inputAudioCtxRef.current.state === "closed") {
+      inputAudioCtxRef.current = new AudioCtx({ sampleRate: 48000, latencyHint: "interactive" });
+    }
+    if (
+      !outputAudioCtxRef.current ||
+      outputAudioCtxRef.current.state === "closed" ||
+      outputAudioCtxRef.current === inputAudioCtxRef.current
+    ) {
+      outputAudioCtxRef.current = new AudioCtx({ sampleRate: 24000, latencyHint: "interactive" });
+    }
+    const currentCtx = inputAudioCtxRef.current;
     if (currentCtx && currentCtx.state !== 'running') {
       try { await currentCtx.resume(); } catch(e) {}
     }
@@ -7750,10 +7830,11 @@ export function App() {
       return;
     }
     try {
-      micStream = await navigator.mediaDevices.getUserMedia({
+      setBrowserAudioSessionType("play-and-record");
+      micStream = await getGlobalMicStream({
         audio: {
           echoCancellation: false,
-          noiseSuppression: false,
+          noiseSuppression: true,
           autoGainControl: false,
         }
       });
@@ -7798,7 +7879,7 @@ export function App() {
       customPersonalityText: prefsRef.current.customPersonalityText,
       systemInstruction: buildSystemInstruction(settingsRef.current, prefsRef.current, true),
       audioContext: currentCtx as AudioContext,
-      playbackAudioContext: (outputAudioCtxRef.current || currentCtx) as AudioContext,
+      playbackAudioContext: outputAudioCtxRef.current as AudioContext,
       onToast: (msg) => setToast(msg),
       micStream: micStream,
       onStateChange: (state) => {

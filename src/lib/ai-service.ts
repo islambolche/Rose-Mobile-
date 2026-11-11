@@ -646,8 +646,83 @@ export const volumeSliderToGain = (volumePercent?: number): number => {
   return 1.4 + ((clamped - 80) / 20) * 0.4; // 1.4 at 80%, 1.8 at 100%
 };
 
+interface PersistentOutputChain {
+  gainNode: GainNode;
+  compressor: DynamicsCompressorNode;
+  connectedAnalyser: AnalyserNode | null;
+}
+
+const persistentOutputChains = new WeakMap<AudioContext, PersistentOutputChain>();
+
+export const getOrCreateBoostedOutputChain = (
+  ctx: AudioContext,
+  volumePercent?: number,
+  analyser?: AnalyserNode | null
+): { gainNode: GainNode; compressor: DynamicsCompressorNode } => {
+  let chain = persistentOutputChains.get(ctx);
+  const validAnalyser = analyser && analyser.context === ctx ? analyser : null;
+
+  if (!chain) {
+    const gainNode = ctx.createGain();
+    const targetGain = volumeSliderToGain(volumePercent);
+    gainNode.gain.setValueAtTime(targetGain, ctx.currentTime);
+
+    const compressor = ctx.createDynamicsCompressor();
+    compressor.threshold.setValueAtTime(-12, ctx.currentTime);
+    compressor.knee.setValueAtTime(6, ctx.currentTime);
+    compressor.ratio.setValueAtTime(12, ctx.currentTime);
+    compressor.attack.setValueAtTime(0.003, ctx.currentTime);
+    compressor.release.setValueAtTime(0.1, ctx.currentTime);
+
+    gainNode.connect(compressor);
+    if (validAnalyser) {
+      compressor.connect(validAnalyser);
+      validAnalyser.connect(ctx.destination);
+    } else {
+      compressor.connect(ctx.destination);
+    }
+
+    chain = {
+      gainNode,
+      compressor,
+      connectedAnalyser: validAnalyser,
+    };
+    persistentOutputChains.set(ctx, chain);
+  } else if (chain.connectedAnalyser !== validAnalyser) {
+    try {
+      chain.compressor.disconnect();
+    } catch {}
+    if (chain.connectedAnalyser) {
+      try {
+        chain.connectedAnalyser.disconnect();
+      } catch {}
+    }
+    if (validAnalyser) {
+      chain.compressor.connect(validAnalyser);
+      validAnalyser.connect(ctx.destination);
+    } else {
+      chain.compressor.connect(ctx.destination);
+    }
+    chain.connectedAnalyser = validAnalyser;
+  }
+
+  return { gainNode: chain.gainNode, compressor: chain.compressor };
+};
+
+export const resetOutputGainForReply = (
+  ctx: AudioContext,
+  volumePercent?: number,
+  analyser?: AnalyserNode | null
+): { gainNode: GainNode; compressor: DynamicsCompressorNode; targetGain: number } => {
+  const { gainNode, compressor } = getOrCreateBoostedOutputChain(ctx, volumePercent, analyser);
+  const targetGain = volumeSliderToGain(volumePercent);
+  gainNode.gain.cancelScheduledValues(ctx.currentTime);
+  gainNode.gain.setValueAtTime(targetGain, ctx.currentTime);
+  return { gainNode, compressor, targetGain };
+};
+
 /**
- * Connects an AudioNode (source) through the clean, non-clipping limiter chain:
+ * Connects an AudioNode (source) through the persistent, non-clipping limiter chain:
  * source -> GainNode (default 1.4, max 1.8) -> DynamicsCompressorNode (threshold -12, knee 6, ratio 12, attack 0.003, release 0.1) -> (AnalyserNode) -> destination
  */
 export const connectBoostedOutputChain = (
@@ -656,27 +731,8 @@ export const connectBoostedOutputChain = (
   volumePercent?: number,
   analyser?: AnalyserNode | null
 ): { gainNode: GainNode; compressor: DynamicsCompressorNode } => {
-  const gainNode = ctx.createGain();
-  const gainVal = volumeSliderToGain(volumePercent);
-  gainNode.gain.setValueAtTime(gainVal, ctx.currentTime);
-
-  const compressor = ctx.createDynamicsCompressor();
-  compressor.threshold.setValueAtTime(-12, ctx.currentTime);
-  compressor.knee.setValueAtTime(6, ctx.currentTime);
-  compressor.ratio.setValueAtTime(12, ctx.currentTime);
-  compressor.attack.setValueAtTime(0.003, ctx.currentTime);
-  compressor.release.setValueAtTime(0.1, ctx.currentTime);
-
+  const { gainNode, compressor } = getOrCreateBoostedOutputChain(ctx, volumePercent, analyser);
   source.connect(gainNode);
-  gainNode.connect(compressor);
-
-  if (analyser && analyser.context === ctx) {
-    compressor.connect(analyser);
-    analyser.connect(ctx.destination);
-  } else {
-    compressor.connect(ctx.destination);
-  }
-
   return { gainNode, compressor };
 };
 
