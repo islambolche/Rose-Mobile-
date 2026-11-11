@@ -98,6 +98,12 @@ import {
   RoseAliveSettings,
   RoseAliveMovementStrength,
 } from "./brand";
+import {
+  ADMIN_DISPLAY_NAME,
+  ADMIN_SYSTEM_INSTRUCTION_BLOCK,
+  isAdmin,
+  getEffectiveUserName,
+} from "./lib/admin";
 import * as Permissions from "./lib/permissions";
 import {
   getGlobalMicStream,
@@ -953,7 +959,10 @@ const buildSystemInstruction = (
   forVoice: boolean = false,
 ): string => {
   const assistantName = currentSettings.assistantName || "Rose AI";
-  const ownerName = currentSettings.ownerName || OWNER_NAME;
+  const adminActive = isAdmin(currentSettings.ownerName);
+  const ownerName = adminActive
+    ? ADMIN_DISPLAY_NAME
+    : getEffectiveUserName(currentSettings.ownerName, OWNER_NAME);
   const { label, prompt } = getActivePersonalityDetails(currentSettings, currentPrefs);
   const { level: affectionLevel, instruction: affectionInstruction } = getActiveAffectionDetails(currentSettings);
   const personalityId = currentSettings.personality || label;
@@ -1002,6 +1011,8 @@ const buildSystemInstruction = (
     ? `ব্যবহারকারীর নাম: ${ownerName}। তাকে এই নামেই ডাকবে। The user's name is ${ownerName}. Address the user by this name naturally in text and live voice calls.`
     : `You don't know the user's name yet. If asked, politely ask them to tell you.`;
 
+  const adminInstructionBlock = adminActive ? `\n\n${ADMIN_SYSTEM_INSTRUCTION_BLOCK}` : "";
+
   return `Your name is ${assistantName}. Always introduce yourself with this name. Reply in the language the user speaks, Bangla by default. Always answer the user's actual question. Never reply with only your name.
 
 ${userNameInstruction}
@@ -1022,7 +1033,7 @@ ${personalityRuleBlock}
 
 ${APP_NAVIGATION_KNOWLEDGE}
 
-${getDeveloperFactsInstruction()}`;
+${getDeveloperFactsInstruction()}${adminInstructionBlock}`;
 };
 
 const LIVE_MODELS = ["Auto (recommended)"];
@@ -7870,7 +7881,9 @@ export function App() {
     const session = new GeminiLiveSession({
       apiKey: geminiKey,
       assistantName: settingsRef.current.assistantName,
-      ownerName: settingsRef.current.ownerName,
+      ownerName: isAdmin(settingsRef.current.ownerName)
+        ? ADMIN_DISPLAY_NAME
+        : getEffectiveUserName(settingsRef.current.ownerName, OWNER_NAME),
       voiceName: resolvedVoice,
       language: prefsRef.current.language,
       speechSpeed: resolvedSpeed,
@@ -13491,16 +13504,25 @@ export function App() {
                     <input
                       type="text"
                       value={tempUserName}
-                      maxLength={30}
+                      maxLength={80}
                       onChange={(e) => setTempUserName(e.target.value)}
                       className="w-full bg-black/40 border border-white/10 rounded-2xl p-4 text-sm font-bold text-white outline-none focus:ring-2 focus:ring-purple-500/50"
                       placeholder="Enter your name"
                     />
                     <button
                       onClick={() => {
-                        const val = tempUserName.trim().substring(0, 30);
+                        const val = tempUserName.trim().substring(0, 80);
                         localStorage.setItem("userName", val);
+                        const nextSettings = { ...settingsRef.current, ownerName: val };
+                        settingsRef.current = nextSettings;
                         setSettings((s) => ({ ...s, ownerName: val }));
+                        isAdmin(val);
+                        if (liveSessionRef.current) {
+                          liveSessionRef.current.updateOwnerAndSystemInstruction(
+                            isAdmin(val) ? ADMIN_DISPLAY_NAME : getEffectiveUserName(val, OWNER_NAME),
+                            buildSystemInstruction(nextSettings, prefsRef.current, true)
+                          );
+                        }
                         setToast("Saved");
                         setCurrentView("voice");
                         if (isListening) {

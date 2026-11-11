@@ -30,6 +30,11 @@ import {
   resetPushToTalkTurnFlag,
   getRoseTechInstruction,
 } from './cleanVoiceAndVad';
+import {
+  ADMIN_DISPLAY_NAME,
+  ADMIN_SYSTEM_INSTRUCTION_BLOCK,
+  isAdmin,
+} from './admin';
 
 export interface GeminiLiveOptions {
   assistantName?: string;
@@ -373,6 +378,21 @@ export class GeminiLiveSession {
         this.ws.send(JSON.stringify({ realtimeInput: { text } }));
       } catch {}
     }
+  }
+
+  public updateOwnerAndSystemInstruction(ownerName: string, systemInstruction: string) {
+    this.options.ownerName = isAdmin() ? ADMIN_DISPLAY_NAME : ownerName;
+    this.options.systemInstruction = systemInstruction;
+  }
+
+  private getEffectiveSystemInstruction(): string {
+    const base = this.options.systemInstruction || 'You are Rose, a helpful assistant.';
+    if (isAdmin()) {
+      if (!base.includes(ADMIN_SYSTEM_INSTRUCTION_BLOCK)) {
+        return `${base}\n\n${ADMIN_SYSTEM_INSTRUCTION_BLOCK}`;
+      }
+    }
+    return base;
   }
 
   public async start() {
@@ -835,7 +855,7 @@ export class GeminiLiveSession {
               parts: [
                 {
                   text: `${STT_LANG_PROMPT}\n\n${ensureNoThoughtSystemInstruction(
-                    this.options.systemInstruction || 'You are Rose, a helpful assistant.'
+                    this.getEffectiveSystemInstruction()
                   )}\n\n${getRoseTechInstruction()}`,
                 },
               ],
@@ -1338,7 +1358,7 @@ export class GeminiLiveSession {
         },
       ];
 
-      const sysInstructionText = `${ensureNoThoughtSystemInstruction(this.options.systemInstruction)}\nভয়েস কলে সর্বোচ্চ ২-৩ ছোট বাক্যে উত্তর দাও।\n${getRoseTechInstruction()}`;
+      const sysInstructionText = `${ensureNoThoughtSystemInstruction(this.getEffectiveSystemInstruction())}\nভয়েস কলে সর্বোচ্চ ২-৩ ছোট বাক্যে উত্তর দাও।\n${getRoseTechInstruction()}`;
 
       const buildClipBody = (withThinkingConfig: boolean) => {
         const genCfg: any = {

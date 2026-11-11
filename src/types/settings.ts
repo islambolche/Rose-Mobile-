@@ -306,11 +306,19 @@ export const DEVELOPER_INFO = {
   about: "এমডি ইউসুফ খান একজন দক্ষ ওয়েব ডেভেলপার যিনি রোজ এআই অ্যাসিস্ট্যান্ট তৈরি করেছেন।"
 };
 
+import {
+  ADMIN_DISPLAY_NAME,
+  ADMIN_SYSTEM_INSTRUCTION_BLOCK,
+  isAdmin,
+} from "../lib/admin";
+
 export function buildAssistantSystemInstruction(s: UnifiedSettings): string {
   const lines: string[] = [];
+  const adminMode = isAdmin(s.userName);
+  const effectiveName = adminMode ? ADMIN_DISPLAY_NAME : (s.userName || 'YOUSUF');
 
   // 1. Identity & Naming
-  lines.push(`তোমার নাম ${s.assistantName || 'Rose'}। ইউজারের নাম ${s.userName || 'YOUSUF'}।`);
+  lines.push(`তোমার নাম ${s.assistantName || 'Rose'}। ইউজারের নাম ${effectiveName}।`);
 
   // 2. Personality Specifics
   const personalityMap: Record<string, string> = {
@@ -332,6 +340,10 @@ export function buildAssistantSystemInstruction(s: UnifiedSettings): string {
     lines.push(`শুধু বাংলাদেশি বাংলায় কথা বলবে, ইংরেজিতে নয়।`);
   } else {
     lines.push(`Speak in English.`);
+  }
+
+  if (adminMode) {
+    lines.push(ADMIN_SYSTEM_INSTRUCTION_BLOCK);
   }
 
   // 4. Response Style
