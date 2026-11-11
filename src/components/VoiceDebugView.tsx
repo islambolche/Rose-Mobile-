@@ -155,7 +155,7 @@ export const VoiceDebugView: React.FC<VoiceDebugViewProps> = ({ settings, onBack
       const answerRes = await generateVoiceAnswer({
         // generateVoiceAnswer internally now uses prepareHistory + mapRole + logs
         contents: [{ role: "user", parts: [{ text: "Hello Rose, give me a 1 sentence friendly response." }] }],
-        systemInstruction: "You are IYABD, personal assistant created by MD Yousuf Khan. Answer in 1 short sentence.",
+        systemInstruction: "You are ROSE, personal assistant created by MD Yousuf Khan. Answer in 1 short sentence.",
         apiKey,
         groqKey: settings.groqApiKeys || localStorage.getItem("groq_api_keys") || "",
         audioBlob: recordedBlob,

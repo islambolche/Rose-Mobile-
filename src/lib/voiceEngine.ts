@@ -12,6 +12,7 @@ import {
   TEXT_MODELS,
   discoverAvailableFlashModels,
   discoverAvailableTtsModels,
+  directGeminiTTS,
 } from "./ai-service";
 
 export const ANSWER_MODELS_PRIORITY = TEXT_MODELS;
@@ -216,17 +217,7 @@ export async function generateVoiceAnswer(payload: {
     triedModels.add(modelCandidate);
     const answerStartTime = Date.now();
     const cleanModel = modelCandidate.replace(/^models\//, "").trim();
-    const url = `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(cleanModel)}:generateContent?key=${encodeURIComponent(userKey)}`;
-
-    const body: any = {
-      contents: history,
-      generationConfig: {
-        maxOutputTokens: 150,
-      },
-    };
-    if (strictSystemInstruction.trim()) {
-      body.systemInstruction = { parts: [{ text: strictSystemInstruction.trim() }] };
-    }
+    const url = "/api/gemini/generate";
 
     const res = await fetchWithTimeoutAndRetry(
       url,
@@ -234,9 +225,14 @@ export async function generateVoiceAnswer(payload: {
         method: "POST",
         headers: { 
           "Content-Type": "application/json",
-          "x-goog-api-key": userKey,
         },
-        body: JSON.stringify(body),
+        body: JSON.stringify({
+          model: cleanModel,
+          contents: history,
+          systemInstruction: strictSystemInstruction.trim() || undefined,
+          generationConfig: { maxOutputTokens: 150 },
+          apiKey: userKey,
+        }),
       },
       7000
     );
@@ -359,89 +355,22 @@ export async function generateVoiceTTS(payload: {
 
   const tryTtsModel = async (ttsModelCandidate: string): Promise<TTSResult | null> => {
     triedTts.add(ttsModelCandidate);
-    const cleanModel = ttsModelCandidate.replace(/^models\//, "").trim();
-    const url = `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(cleanModel)}:generateContent?key=${encodeURIComponent(userKey)}`;
-
-    const res = await fetchWithTimeoutAndRetry(
-      url,
-      {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          "x-goog-api-key": userKey,
-        },
-        body: JSON.stringify({
-          contents: [{ parts: [{ text: String(text || "").trim() }] }],
-          generationConfig: {
-            responseModalities: ["AUDIO"],
-            speechConfig: {
-              voiceConfig: {
-                prebuiltVoiceConfig: {
-                  voiceName: voiceName || "Puck",
-                },
-              },
-            },
-          },
-        }),
-      },
-      10000
-    );
-
-    const rawText = await res.text().catch(() => "");
-    let data: any = null;
     try {
-      data = rawText ? JSON.parse(rawText) : null;
-    } catch {
-      return null;
-    }
-
-    if (!res.ok) {
-      const errMsg = data?.error?.message || `HTTP ${res.status}`;
-      if (
-        res.status === 429 ||
-        errMsg.toLowerCase().includes("quota") ||
-        errMsg.toLowerCase().includes("limit") ||
-        errMsg.toLowerCase().includes("resource_exhausted")
-      ) {
-        logVoiceEvent(
-          "TTS Step",
-          `TTS candidate ${cleanModel} quota exhausted (429). Marking as exhausted...`,
-          "warn"
-        );
-        markModelExhausted(cleanModel);
+      const res = await directGeminiTTS({
+        text: String(text || "").trim(),
+        voiceName: voiceName || "Sulafat",
+        apiKey: userKey,
+        model: ttsModelCandidate,
+      });
+      if (res?.audio) {
+        return {
+          audioBase64: res.audio,
+          modelUsed: res.modelUsed || ttsModelCandidate,
+          useBrowserSynth: false,
+          ttsMs: Date.now() - ttsStartTime,
+        };
       }
-      return null;
-    }
-
-    const ttsMs = Date.now() - ttsStartTime;
-    const rawAudio = data?.audio || data?.candidates?.[0]?.content?.parts?.find((p: any) => p.inlineData)?.inlineData?.data;
-
-    if (rawAudio) {
-      let processedB64 = rawAudio;
-      try {
-        const binary = atob(rawAudio);
-        if (binary.length > 44 && binary.slice(0, 4) === "RIFF") {
-          const bytes = new Uint8Array(binary.length - 44);
-          for (let i = 44; i < binary.length; i++) bytes[i - 44] = binary.charCodeAt(i);
-          let binaryString = "";
-          for (let i = 0; i < bytes.length; i++) binaryString += String.fromCharCode(bytes[i]);
-          processedB64 = btoa(binaryString);
-        }
-      } catch (e) {}
-
-      incrementTTSCalls();
-      activeCachedTTSModel = cleanModel;
-      localStorage.setItem("cached_tts_model", cleanModel);
-
-      await saveCachedAudio(formattedText, voiceName, processedB64);
-      logVoiceEvent("TTS Active", `Generated TTS in ${ttsMs}ms using ${cleanModel}`, "success");
-      return {
-        audioBase64: processedB64,
-        modelUsed: cleanModel,
-        useBrowserSynth: false,
-        ttsMs,
-      };
-    }
+    } catch (e) {}
     return null;
   };
 

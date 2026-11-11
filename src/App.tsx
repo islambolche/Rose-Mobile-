@@ -159,6 +159,19 @@ const INITIAL_PERMISSIONS: AppPermission[] = [
   { id: "email", name: "Email", enabled: true, icon: "Mail" },
 ];
 
+try {
+  const savedTheme = localStorage.getItem("app_theme") || localStorage.getItem("iyabd_theme") || "dark";
+  const resolvedTheme =
+    savedTheme === "system"
+      ? (typeof window !== "undefined" && window.matchMedia && window.matchMedia("(prefers-color-scheme: dark)").matches
+        ? "dark"
+        : "light")
+      : savedTheme;
+  if (typeof document !== "undefined" && document.documentElement) {
+    document.documentElement.dataset.theme = resolvedTheme;
+  }
+} catch (e) {}
+
 const DEFAULT_SETTINGS: AssistantSettings = {
   assistantName: "Rose AI",
   ownerName: OWNER_NAME,
@@ -997,6 +1010,7 @@ CORE IDENTITY & MANDATES:
 - SILENT MODE RULE (CRITICAL): ব্যবহারকারী তোমার নাম ধরে চুপ থাকতে বললে (যেমন "Rose/রোজ চুপ করো", "Rose কথা বলো না", "Rose stop talking") তুমি সংক্ষেপে "ঠিক আছে" বলে নীরব হয়ে থাকবে এবং নাম ধরে না ডাকা পর্যন্ত কোনো উত্তর দিয়ো না। আবার নাম ধরে ডাকলে (যেমন "Rose", "Rose শোনো", "রোজ কথা বলো") সাথে সাথে স্বাভাবিকভাবে সাড়া দেওয়া শুরু করবে।
 - PHONE CONTROL: You can open apps, find contacts, call, and prepare messages on the user's phone using your tools. Always confirm before calling or messaging. Do it right away for opening apps. Keep spoken replies short.
 - DIRECT REPLY ONLY (CRITICAL): নিজের ভাবনা, পরিকল্পনা বা কী করবে তা লিখবে না। শুধু সরাসরি উত্তর দাও, ব্যবহারকারীর ভাষায়। Never output internal thoughts, headings like **Crafting a Response**, or English meta-commentary.
+- APP THEMES: App themes: Dark, Light, AMOLED Black (pure black, saves battery on OLED screens) and System (follows the phone). The user changes it in Settings, Look and Feel, Theme. You may answer questions about app themes, but you must not change settings unless asked.
 
 ${personalityRuleBlock}
 
@@ -1056,6 +1070,7 @@ type AppView =
   | "personality"
   | "affection"
   | "tts-model"
+  | "mic-listening"
   | "voice-list"
   | "language-list"
   | "response-style-list"
@@ -1207,6 +1222,9 @@ interface VoiceCheckViewProps {
   setVoiceConnOk: (val: boolean) => void;
   micStatus: "ok" | "blocked";
   setMicStatus: (val: "ok" | "blocked") => void;
+  voiceSettingsTestResult?: string | null;
+  isTestingVoiceSettings?: boolean;
+  handleVoiceSettingsTestButton?: () => void;
 }
 
 const VoiceCheckView = ({
@@ -1226,6 +1244,9 @@ const VoiceCheckView = ({
   setVoiceConnOk,
   micStatus,
   setMicStatus,
+  voiceSettingsTestResult,
+  isTestingVoiceSettings,
+  handleVoiceSettingsTestButton,
 }: VoiceCheckViewProps) => {
   // 1. Diagnostics Status States
   const [netStatus, setNetStatus] = useState<"checking" | "ok" | "error">("checking");
@@ -1284,9 +1305,8 @@ const VoiceCheckView = ({
       const controller = new AbortController();
       const timeoutId = setTimeout(() => controller.abort(), 4000);
       const res = await fetch(
-        `https://generativelanguage.googleapis.com/v1beta/models?pageSize=200&key=${encodeURIComponent(rawKey)}`,
+        `/api/gemini/models?apiKey=${encodeURIComponent(rawKey)}`,
         {
-          headers: { "x-goog-api-key": rawKey },
           signal: controller.signal
         }
       );
@@ -1667,6 +1687,48 @@ const VoiceCheckView = ({
         </header>
 
         <div className="space-y-4 pb-32 flex-1">
+          {/* TEST VOICE BUTTON AT TOP OF VOICE CHECK */}
+          <div className="w-full p-5 bg-[#0F172A]/80 rounded-[2.5rem] border border-purple-500/30 shadow-2xl flex items-center justify-between text-left">
+            <div className="flex items-center gap-4 min-w-0 pr-2">
+              <div className="w-12 h-12 rounded-full bg-purple-600/10 border border-purple-500/20 flex items-center justify-center text-purple-400 shrink-0">
+                <Volume2 className="w-6 h-6" />
+              </div>
+              <div className="min-w-0">
+                <h4 className="text-base font-black uppercase tracking-wider text-white leading-none mb-1">
+                  Test voice
+                </h4>
+                <p className="text-[11px] text-slate-400 font-bold tracking-wide truncate">
+                  {voiceSettingsTestResult
+                    ? `কণ্ঠ: ${voiceSettingsTestResult}`
+                    : 'চাপলে "হ্যালো, আমি রোজ" বলে শোনাবে'}
+                </p>
+              </div>
+            </div>
+            <button
+              type="button"
+              disabled={isTestingVoiceSettings}
+              onClick={() => handleVoiceSettingsTestButton?.()}
+              className={
+                "px-4 py-2.5 rounded-2xl text-xs font-black uppercase tracking-wider transition-all shrink-0 flex items-center gap-1.5 " +
+                (isTestingVoiceSettings
+                  ? "bg-slate-700 text-slate-300"
+                  : "bg-purple-600 hover:bg-purple-500 text-white shadow-lg active:scale-95")
+              }
+            >
+              {isTestingVoiceSettings ? (
+                <>
+                  <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                  <span>বলছে...</span>
+                </>
+              ) : (
+                <>
+                  <Play className="w-3.5 h-3.5 fill-current" />
+                  <span>Test voice</span>
+                </>
+              )}
+            </button>
+          </div>
+
           {/* 4 Status Cards */}
           <div className="space-y-3">
             {/* 1. Internet */}
@@ -2578,6 +2640,82 @@ export function App() {
     } catch (e) {}
     return { ...DEFAULT_PREFS, voiceName: "Kore", voiceVolume: 80 };
   });
+
+  const [appTheme, setAppTheme] = useState<string>(() => {
+    try {
+      const saved = localStorage.getItem("app_theme") || localStorage.getItem("iyabd_theme");
+      if (saved && ["dark", "light", "amoled", "system"].includes(saved)) {
+        return saved;
+      }
+    } catch (e) {}
+    return "dark";
+  });
+
+  const syncThemeToDatabase = async (themeToSync: string) => {
+    try {
+      await storage.set("app_theme", themeToSync);
+      if (supabase) {
+        const { data } = await supabase.auth.getUser();
+        const uid = data?.user?.id;
+        if (uid) {
+          await supabase
+            .from("user_settings")
+            .upsert(
+              {
+                user_id: uid,
+                app_theme: themeToSync,
+                updated_at: new Date().toISOString(),
+              },
+              { onConflict: "user_id" }
+            );
+        }
+      }
+    } catch (e) {}
+  };
+
+  const handleThemeChange = (newTheme: string) => {
+    setAppTheme(newTheme);
+    setPrefs((p) => {
+      const updated = { ...p, theme: newTheme as any };
+      try {
+        localStorage.setItem("iyabd_prefs", JSON.stringify(updated));
+      } catch (e) {}
+      return updated;
+    });
+    try {
+      localStorage.setItem("app_theme", newTheme);
+      localStorage.setItem("iyabd_theme", newTheme);
+    } catch (e) {}
+    const resolved =
+      newTheme === "system"
+        ? (window.matchMedia && window.matchMedia("(prefers-color-scheme: dark)").matches
+          ? "dark"
+          : "light")
+        : newTheme;
+    document.documentElement.dataset.theme = resolved;
+    syncThemeToDatabase(newTheme);
+    setToast("Saved");
+  };
+
+  useEffect(() => {
+    const applyTheme = (t: string) => {
+      const resolved =
+        t === "system"
+          ? (window.matchMedia && window.matchMedia("(prefers-color-scheme: dark)").matches
+            ? "dark"
+            : "light")
+          : t;
+      document.documentElement.dataset.theme = resolved;
+    };
+    applyTheme(appTheme);
+
+    if (appTheme === "system") {
+      const mq = window.matchMedia("(prefers-color-scheme: dark)");
+      const listener = () => applyTheme("system");
+      mq.addEventListener?.("change", listener);
+      return () => mq.removeEventListener?.("change", listener);
+    }
+  }, [appTheme]);
 
   const [onlyFemaleVoices, setOnlyFemaleVoices] = useState<boolean>(() => {
     try {
@@ -4317,19 +4455,16 @@ export function App() {
 
           if (type === "gemini") {
             const discoveredModels = await discoverAvailableFlashModels(cleanKey);
-            const m = getSavedWorkingTextModel() || TEXT_MODELS[0] || discoveredModels[0] || "";
+            const m = getSavedWorkingTextModel() || TEXT_MODELS[0] || discoveredModels[0] || "gemini-1.5-flash";
             const cleanM = m.replace(/^models\//, "").trim();
-            url = cleanM
-              ? `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(cleanM)}:generateContent?key=${encodeURIComponent(cleanKey)}`
-              : `https://generativelanguage.googleapis.com/v1beta/models?key=${encodeURIComponent(cleanKey)}&pageSize=10`;
-            method = cleanM ? "POST" : "GET";
-            headers["x-goog-api-key"] = cleanKey;
-            body = cleanM
-              ? JSON.stringify({
-                  contents: [{ role: "user", parts: [{ text: "hi" }] }],
-                  generationConfig: { maxOutputTokens: 2 },
-                })
-              : null;
+            url = '/api/gemini/generate';
+            method = "POST";
+            body = JSON.stringify({
+              model: cleanM,
+              contents: [{ role: "user", parts: [{ text: "hi" }] }],
+              generationConfig: { maxOutputTokens: 2 },
+              apiKey: cleanKey,
+            });
           } else if (type === "groq") {
             url = `https://api.groq.com/openai/v1/models`;
             headers["Authorization"] = `Bearer ${cleanKey}`;
@@ -7634,7 +7769,7 @@ export function App() {
     // Requirement 4.6: Warm up TTS & API connections on call start
     if (geminiKey) {
       try {
-        fetch(`https://generativelanguage.googleapis.com/v1beta/models?pageSize=1&key=${encodeURIComponent(geminiKey)}`, { mode: 'no-cors' }).catch(() => {});
+        fetch(`/api/gemini/models?apiKey=${encodeURIComponent(geminiKey)}`).catch(() => {});
       } catch (e) {}
     }
 
@@ -8583,15 +8718,17 @@ export function App() {
           className="absolute inset-0 w-full h-full z-0 pointer-events-none overflow-hidden"
         >
           <img
-            src="/rose-bg.webp"
+            src={rosePortraitImg}
             alt="ROSE"
             style={{
               width: "100%",
               height: "100%",
               objectFit: "cover",
               objectPosition: "center top",
+              opacity: 1,
+              filter: "none",
             }}
-            className="w-full h-full object-cover object-top block pointer-events-none select-none"
+            className="w-full h-full object-cover object-top block pointer-events-none select-none opacity-100"
           />
 
           {/* Left Eye Overlay (temporarily static / blink off) */}
@@ -8644,7 +8781,18 @@ export function App() {
             className="absolute pointer-events-none"
           />
         </div>
-        <div className="absolute inset-0 bg-gradient-to-b from-black/15 via-black/30 to-[#020617] z-0 pointer-events-none" />
+
+        {/* Light Top Readability Gradient (120px) */}
+        <div
+          className="absolute top-0 left-0 right-0 h-[120px] pointer-events-none z-0"
+          style={{ background: "linear-gradient(to bottom, rgba(0,0,0,0.25), transparent)" }}
+        />
+
+        {/* Light Bottom Readability Gradient (260px) */}
+        <div
+          className="absolute bottom-0 left-0 right-0 h-[260px] pointer-events-none z-0"
+          style={{ background: "linear-gradient(to bottom, transparent, rgba(2,4,15,0.55))" }}
+        />
 
         {/* Foreground Overlay Controls (z-10) */}
         <div className="relative z-10 flex-1 flex flex-col justify-between w-full h-full pt-[env(safe-area-inset-top,12px)] pb-1">
@@ -10377,7 +10525,7 @@ export function App() {
             <ChevronRight className="w-5 h-5 text-slate-500 shrink-0" />
           </button>
 
-          {/* Voice Tuning Button Card */}
+          {/* 8. VOICE TUNING */}
           <button
             onClick={() => {
               setTempSpeed(clampSpeechSpeed(prefs.speechSpeed));
@@ -10404,49 +10552,7 @@ export function App() {
             <ChevronRight className="w-5 h-5 text-slate-500 shrink-0" />
           </button>
 
-          {/* TEST VOICE BUTTON IN VOICE SETTINGS */}
-          <div className="w-full p-5 bg-[#0F172A]/80 rounded-[2.5rem] border border-purple-500/30 shadow-2xl flex items-center justify-between text-left">
-            <div className="flex items-center gap-4 min-w-0 pr-2">
-              <div className="w-12 h-12 rounded-full bg-purple-600/10 border border-purple-500/20 flex items-center justify-center text-purple-400 shrink-0">
-                <Volume2 className="w-6 h-6" />
-              </div>
-              <div className="min-w-0">
-                <h4 className="text-base font-black uppercase tracking-wider text-white leading-none mb-1">
-                  Test voice
-                </h4>
-                <p className="text-[11px] text-slate-400 font-bold tracking-wide truncate">
-                  {voiceSettingsTestResult
-                    ? `কণ্ঠ: ${voiceSettingsTestResult}`
-                    : 'চাপলে "হ্যালো, আমি রোজ" বলে শোনাবে'}
-                </p>
-              </div>
-            </div>
-            <button
-              type="button"
-              disabled={isTestingVoiceSettings}
-              onClick={() => handleVoiceSettingsTestButton()}
-              className={
-                "px-4 py-2.5 rounded-2xl text-xs font-black uppercase tracking-wider transition-all shrink-0 flex items-center gap-1.5 " +
-                (isTestingVoiceSettings
-                  ? "bg-slate-700 text-slate-300"
-                  : "bg-purple-600 hover:bg-purple-500 text-white shadow-lg active:scale-95")
-              }
-            >
-              {isTestingVoiceSettings ? (
-                <>
-                  <Loader2 className="w-3.5 h-3.5 animate-spin" />
-                  <span>বলছে...</span>
-                </>
-              ) : (
-                <>
-                  <Play className="w-3.5 h-3.5 fill-current" />
-                  <span>Test voice</span>
-                </>
-              )}
-            </button>
-          </div>
-
-          {/* VOICE CHECK */}
+          {/* 9. VOICE CHECK */}
           <button
             onClick={() => setCurrentView("voice-debug")}
             className="w-full p-5 bg-[#0F172A]/80 rounded-[2.5rem] border border-purple-500/30 shadow-2xl flex items-center justify-between active:scale-[0.98] transition-all text-left"
@@ -10467,37 +10573,56 @@ export function App() {
             <ChevronRight className="w-5 h-5 text-slate-500 shrink-0" />
           </button>
 
-          {/* 13. Listen on open Card */}
-          <div className="w-full p-5 bg-[#0F172A]/80 rounded-[2.5rem] border border-purple-500/30 shadow-2xl flex items-center justify-between text-left">
+          {/* 10. MIC & LISTENING */}
+          <button
+            onClick={() => setCurrentView("mic-listening")}
+            className="w-full p-5 bg-[#0F172A]/80 rounded-[2.5rem] border border-purple-500/30 shadow-2xl flex items-center justify-between active:scale-[0.98] transition-all text-left"
+          >
             <div className="flex items-center gap-4">
               <div className="w-12 h-12 rounded-full bg-purple-600/10 border border-purple-500/20 flex items-center justify-center text-purple-400 shrink-0">
-                <User className="w-6 h-6" />
+                <Mic className="w-6 h-6" />
               </div>
               <div>
                 <h4 className="text-base font-black uppercase tracking-wider text-white leading-none mb-1">
-                  Listen when app opens
+                  MIC & LISTENING
                 </h4>
-                <p className="text-[10px] text-slate-400 font-bold uppercase tracking-widest">
-                  Starts listening as soon as you open IYABD
+                <p className="text-[11px] text-slate-400 font-bold uppercase tracking-widest">
+                  MIC TEST · LISTENING
                 </p>
               </div>
             </div>
-            <button
-              onClick={() => {
-                const newVal = !prefs.listenOnOpen;
-                setPrefs((p) => ({ ...p, listenOnOpen: newVal }));
-                setToast("Saved");
-              }}
-              className={'w-14 h-8 rounded-full transition-colors flex items-center px-1 shrink-0 ' + (prefs.listenOnOpen ? "bg-purple-600" : "bg-slate-700")}
-            >
-              <motion.div
-                animate={{ x: prefs.listenOnOpen ? 24 : 0 }}
-                className="w-6 h-6 bg-white rounded-full shadow-lg"
-              />
-            </button>
-          </div>
+            <ChevronRight className="w-5 h-5 text-slate-500 shrink-0" />
+          </button>
 
-          {/* MIC TEST CARD */}
+        </div>
+      </div>
+    </motion.div>
+  );
+
+  const renderMicListening = () => (
+    <motion.div
+      key="mic-listening"
+      initial={{ x: "100%" }}
+      animate={{ x: 0 }}
+      exit={{ x: "100%" }}
+      className="fixed inset-0 z-[90] bg-[#020617] overflow-y-auto no-scrollbar flex flex-col"
+    >
+      <div className="px-5 py-6 flex flex-col min-h-full">
+        <header className="flex items-center gap-4 mb-7 shrink-0">
+          <button
+            onClick={() => setCurrentView("voice")}
+            className="p-2.5 bg-white/5 rounded-xl active:scale-95 transition-transform border border-white/5 text-slate-300 hover:text-white"
+            aria-label="Back to Voice & Language"
+          >
+            <ArrowLeft className="w-5 h-5" />
+          </button>
+          <h2 className="text-2xl font-black text-white italic tracking-tighter uppercase leading-tight">
+            MIC & LISTENING
+          </h2>
+        </header>
+
+        <div className="space-y-4 pb-36 flex-1">
+          {/* a. MIC TEST CARD */}
           <div className="w-full p-5 bg-[#0F172A]/80 rounded-[2.5rem] border border-purple-500/30 shadow-2xl space-y-4">
             <div className="flex items-center justify-between">
               <div className="flex items-center gap-4">
@@ -10509,7 +10634,7 @@ export function App() {
                     Mic Test
                   </h4>
                   <p className="text-[10px] text-slate-400 font-bold uppercase tracking-widest">
-                    Check if your microphone is working
+                    CHECK IF YOUR MICROPHONE IS WORKING
                   </p>
                 </div>
               </div>
@@ -10556,7 +10681,7 @@ export function App() {
                       if (currentVol > maxVol) maxVol = currentVol;
                       setMicTestVolume(currentVol);
                       
-                      if (viewRef.current === 'voice') {
+                      if (viewRef.current === 'mic-listening' || viewRef.current === 'voice') {
                          requestAnimationFrame(check);
                       } else {
                          stream.getTracks().forEach(t => t.stop());
@@ -10611,7 +10736,37 @@ export function App() {
             )}
           </div>
 
-          {/* 14. Always listening Card */}
+          {/* b. LISTEN WHEN APP OPENS */}
+          <div className="w-full p-5 bg-[#0F172A]/80 rounded-[2.5rem] border border-purple-500/30 shadow-2xl flex items-center justify-between text-left">
+            <div className="flex items-center gap-4">
+              <div className="w-12 h-12 rounded-full bg-purple-600/10 border border-purple-500/20 flex items-center justify-center text-purple-400 shrink-0">
+                <User className="w-6 h-6" />
+              </div>
+              <div>
+                <h4 className="text-base font-black uppercase tracking-wider text-white leading-none mb-1">
+                  Listen when app opens
+                </h4>
+                <p className="text-[10px] text-slate-400 font-bold uppercase tracking-widest">
+                  STARTS LISTENING AS SOON AS YOU OPEN ROSE
+                </p>
+              </div>
+            </div>
+            <button
+              onClick={() => {
+                const newVal = !prefs.listenOnOpen;
+                setPrefs((p) => ({ ...p, listenOnOpen: newVal }));
+                setToast("Saved");
+              }}
+              className={'w-14 h-8 rounded-full transition-colors flex items-center px-1 shrink-0 ' + (prefs.listenOnOpen ? "bg-purple-600" : "bg-slate-700")}
+            >
+              <motion.div
+                animate={{ x: prefs.listenOnOpen ? 24 : 0 }}
+                className="w-6 h-6 bg-white rounded-full shadow-lg"
+              />
+            </button>
+          </div>
+
+          {/* c. ALWAYS LISTENING */}
           <div className="w-full p-5 bg-[#0F172A]/80 rounded-[2.5rem] border border-purple-500/30 shadow-2xl flex items-center justify-between text-left">
             <div className="flex items-center gap-4">
               <div className="w-12 h-12 rounded-full bg-purple-600/10 border border-purple-500/20 flex items-center justify-center text-purple-400 shrink-0">
@@ -10636,7 +10791,6 @@ export function App() {
               />
             </button>
           </div>
-
         </div>
       </div>
     </motion.div>
@@ -11044,13 +11198,13 @@ export function App() {
 
   const renderLook = () => {
     const themeLabelMap: Record<string, string> = {
-      dark: "Dark",
-      light: "Light",
-      amoled: "AMOLED Black",
-      system: "System",
+      dark: "DARK",
+      light: "LIGHT",
+      amoled: "AMOLED BLACK",
+      system: "SYSTEM",
     };
 
-    const currentThemeLabel = themeLabelMap[prefs.theme] || "Dark";
+    const currentThemeLabel = themeLabelMap[appTheme || prefs.theme] || "DARK";
     const currentOrbObj = ORB_STYLES.find((s) => s.id === prefs.orbTheme);
     const currentOrbLabel = currentOrbObj ? currentOrbObj.name : "Classic";
     const isReduceMotion = prefs.reduceMotion ?? false;
@@ -11061,34 +11215,34 @@ export function App() {
         initial={{ x: "100%" }}
         animate={{ x: 0 }}
         exit={{ x: "100%" }}
-        className="fixed inset-0 z-[80] bg-[#020617] p-6 sm:p-8 overflow-y-auto no-scrollbar flex flex-col"
+        className="fixed inset-0 z-[80] bg-[var(--bg)] text-[var(--text)] p-6 sm:p-8 overflow-y-auto no-scrollbar flex flex-col"
       >
         <header className="flex items-center gap-4 mb-8 shrink-0">
           <button
             onClick={() => setCurrentView("settings")}
-            className="p-2.5 bg-purple-500/10 border border-purple-500/30 rounded-2xl flex items-center justify-center text-white active:scale-95 transition-transform"
+            className="p-2.5 bg-purple-500/10 border border-purple-500/30 rounded-2xl flex items-center justify-center text-[var(--text)] active:scale-95 transition-transform"
           >
             <ArrowLeft className="w-5 h-5" />
           </button>
-          <h2 className="text-2xl font-black italic uppercase tracking-tighter text-white">Look & feel</h2>
+          <h2 className="text-2xl font-black italic uppercase tracking-tighter text-[var(--text)]">Look & feel</h2>
         </header>
 
         <div className="w-full space-y-4 pb-36">
           {/* Card 1: Theme */}
           <button
             onClick={() => setCurrentView("theme-list")}
-            className="w-full p-5 bg-[#0F172A]/80 rounded-[2.5rem] border border-purple-500/30 shadow-2xl flex items-center justify-between active:scale-[0.98] transition-all text-left"
+            className="w-full p-5 bg-[var(--card)] rounded-[2.5rem] border border-[var(--border)] shadow-2xl flex items-center justify-between active:scale-[0.98] transition-all text-left"
           >
             <div className="flex items-center gap-4">
               <div className="w-12 h-12 rounded-full bg-purple-600/10 border border-purple-500/20 flex items-center justify-center text-purple-400 shrink-0">
                 <Palette className="w-6 h-6" />
               </div>
               <div>
-                <h4 className="text-base font-black uppercase tracking-wider text-white leading-none mb-1">Theme</h4>
-                <p className="text-[11px] text-slate-400 font-bold uppercase tracking-widest">{currentThemeLabel}</p>
+                <h4 className="text-base font-black uppercase tracking-wider text-[var(--text)] leading-none mb-1">Theme</h4>
+                <p className="text-[11px] text-[var(--text-muted)] font-bold uppercase tracking-widest">{currentThemeLabel}</p>
               </div>
             </div>
-            <ChevronRight className="w-5 h-5 text-slate-500 shrink-0" />
+            <ChevronRight className="w-5 h-5 text-[var(--text-muted)] shrink-0" />
           </button>
 
           {/* Card 2: Orb style */}
@@ -12137,12 +12291,15 @@ export function App() {
       setVoiceConnOk={setVoiceConnOk}
       micStatus={micStatus}
       setMicStatus={setMicStatus}
+      voiceSettingsTestResult={voiceSettingsTestResult}
+      isTestingVoiceSettings={isTestingVoiceSettings}
+      handleVoiceSettingsTestButton={handleVoiceSettingsTestButton}
     />
   );
 
   return (
     <div
-      className={'fixed inset-0 bg-[#020617] text-white font-sans flex flex-col overflow-hidden transition-all duration-500 ' + (!settings.masterAccess ? "grayscale contrast-75" : "")}
+      className={'fixed inset-0 bg-[var(--bg)] text-[var(--text)] font-sans flex flex-col overflow-hidden transition-all duration-500 ' + (!settings.masterAccess ? "grayscale contrast-75" : "")}
     >
       {/* Floating Action Confirmation Card for Phone Actions (Call / SMS / WhatsApp) */}
       {pendingActionConfirmation && (
@@ -12225,6 +12382,7 @@ export function App() {
           {currentView === "personality" && <PhoneErrorBoundary>{renderPersonality()}</PhoneErrorBoundary>}
           {currentView === "affection" && <PhoneErrorBoundary>{renderAffection()}</PhoneErrorBoundary>}
           {currentView === "tts-model" && <PhoneErrorBoundary>{renderTtsModelSection()}</PhoneErrorBoundary>}
+          {currentView === "mic-listening" && <PhoneErrorBoundary>{renderMicListening()}</PhoneErrorBoundary>}
           {currentView === "write" && <PhoneErrorBoundary>{renderWrite()}</PhoneErrorBoundary>}
           {currentView === "developer" && <PhoneErrorBoundary><><Developer setCurrentView={setCurrentView} setToast={setToast} backView={developerFrom} /></></PhoneErrorBoundary>}
           {currentView === "onboarding" && (
@@ -12244,16 +12402,16 @@ export function App() {
               initial={{ x: "100%" }}
               animate={{ x: 0 }}
               exit={{ x: "100%" }}
-              className="fixed inset-0 z-[90] bg-[#020617] flex flex-col"
+              className="fixed inset-0 z-[90] bg-[var(--bg)] text-[var(--text)] flex flex-col"
             >
               <header className="px-6 py-8 flex items-center gap-4 shrink-0">
                 <button
                   onClick={() => setCurrentView("look")}
-                  className="p-2.5 bg-purple-500/10 border border-purple-500/30 rounded-2xl flex items-center justify-center text-white active:scale-95 transition-transform"
+                  className="p-2.5 bg-purple-500/10 border border-purple-500/30 rounded-2xl flex items-center justify-center text-[var(--text)] active:scale-95 transition-transform"
                 >
                   <ArrowLeft className="w-5 h-5" />
                 </button>
-                <h2 className="text-2xl font-black italic uppercase tracking-tighter text-white">Theme</h2>
+                <h2 className="text-2xl font-black italic uppercase tracking-tighter text-[var(--text)]">Theme</h2>
               </header>
               <div className="flex-1 overflow-y-auto no-scrollbar px-6 pb-32 space-y-3">
                 {[
@@ -12278,27 +12436,25 @@ export function App() {
                     desc: "Matches device display preference",
                   },
                 ].map((t) => {
-                  const isSel = prefs.theme === t.id;
+                  const isSel = (appTheme || prefs.theme) === t.id;
                   return (
                     <button
                       key={t.id}
-                      onClick={() => {
-                        setPrefs((p) => {
-                          const updated = { ...p, theme: t.id as any };
-                          localStorage.setItem("iyabd_prefs", JSON.stringify(updated));
-                          return updated;
-                        });
-                        setToast("Saved");
-                      }}
-                      className={'w-full p-5 rounded-[2rem] border transition-all flex items-center justify-between text-left ' + (isSel ? "bg-purple-600/10 border-purple-500 shadow-lg" : "bg-[#0F172A]/40 border-white/5")}
+                      onClick={() => handleThemeChange(t.id)}
+                      className={
+                        "w-full p-5 rounded-[2rem] border transition-all flex items-center justify-between text-left " +
+                        (isSel
+                          ? "bg-purple-600/15 border-purple-500 ring-1 ring-purple-400/50 shadow-lg shadow-purple-900/30"
+                          : "bg-[var(--card)] border-[var(--border)] shadow-md")
+                      }
                     >
                       <div>
-                        <span className="text-sm font-black uppercase tracking-wider text-white block mb-1">
+                        <span className="text-sm font-black uppercase tracking-wider text-[var(--text)] block mb-1">
                           {t.label}
                         </span>
-                        <p className="text-[10px] text-slate-400 font-bold uppercase tracking-tight">{t.desc}</p>
+                        <p className="text-[10px] text-[var(--text-muted)] font-bold uppercase tracking-tight">{t.desc}</p>
                       </div>
-                      {isSel && <Check className="w-5 h-5 text-purple-500 shrink-0" />}
+                      {isSel && <Check className="w-5 h-5 text-purple-500 shrink-0 stroke-[3]" />}
                     </button>
                   );
                 })}
@@ -13360,7 +13516,7 @@ export function App() {
 
       {/* Bottom Navigation - Always Visible */}
       {true && (
-        <nav className="h-20 bg-[#020617]/95 backdrop-blur-3xl border-t border-white/5 px-8 flex items-center justify-between z-[100] shrink-0">
+        <nav className="h-20 bg-[var(--card)] backdrop-blur-3xl border-t border-[var(--border)] px-8 flex items-center justify-between z-[100] shrink-0 text-[var(--text)]">
           <button
             onClick={() => {
               if (isCallScreenOpen) setIsCallMinimized(true);
@@ -13535,7 +13691,7 @@ export function App() {
               exit={{ x: "-100%" }}
               className="fixed inset-y-0 left-0 w-[80%] max-w-xs z-[110] bg-[#020617] border-r border-white/5 p-10 flex flex-col"
             >
-              <h2 className="text-3xl font-black italic text-indigo-500 mb-12 uppercase tracking-tighter">IYABD</h2>
+              <h2 className="text-3xl font-black italic text-indigo-500 mb-12 uppercase tracking-tighter">ROSE</h2>
               <nav className="flex-1 space-y-8">
                 {["DASHBOARD", "CHAT HISTORY", "GALLERY", "WRITING BOX"].map((item) => (
                   <button
@@ -13551,7 +13707,7 @@ export function App() {
                 <br />
                 Made in Bangladesh 🇧🇩
                 <br />
-                IYABD Assistant {APP_VERSION}
+                ROSE Assistant {APP_VERSION}
               </p>
             </motion.div>
           </>

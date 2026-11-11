@@ -81,6 +81,37 @@
 
 
 @layer base {
+  :root,
+  [data-theme="dark"] {
+    --bg: #0b1226;
+    --card: #141c38;
+    --border: #34306b;
+    --text: #ffffff;
+    --muted: #a3a8c9;
+  }
+
+  [data-theme="light"] {
+    --bg: #f4f5fb;
+    --card: #ffffff;
+    --border: #d9d6ee;
+    --text: #14142b;
+    --muted: #5b5b78;
+  }
+
+  [data-theme="amoled"] {
+    --bg: #000000;
+    --card: #000000;
+    --border: #2a1f5c;
+    --text: #ffffff;
+    --muted: #9a9bb5;
+  }
+
+  body {
+    background-color: var(--bg);
+    color: var(--text);
+    transition: background-color 0.2s ease, color 0.2s ease;
+  }
+
   ::selection { background: rgba(139,92,246,0.5); color: #fff; }
   input:-webkit-autofill,
   input:-webkit-autofill:hover,

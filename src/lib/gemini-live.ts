@@ -119,14 +119,13 @@ interface DiscoveredVoiceModels {
 }
 
 async function discoverVoiceModelsFromListModels(apiKey: string): Promise<DiscoveredVoiceModels> {
-  const url = `https://generativelanguage.googleapis.com/v1beta/models?key=${encodeURIComponent(apiKey)}&pageSize=200`;
+  const url = `/api/gemini/models?apiKey=${encodeURIComponent(apiKey)}`;
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), 7000);
 
   try {
     const res = await fetch(url, {
       method: 'GET',
-      headers: { 'x-goog-api-key': apiKey },
       signal: controller.signal,
     });
     clearTimeout(timer);
@@ -635,7 +634,9 @@ export class GeminiLiveSession {
   ): Promise<boolean> {
     return new Promise((resolve) => {
       let settled = false;
-      const wsUrl = `wss://generativelanguage.googleapis.com/ws/google.ai.generativelanguage.v1beta.GenerativeService.BidiGenerateContent?key=${encodeURIComponent(apiKey)}`;
+      const protocol = typeof window !== 'undefined' && window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+      const host = typeof window !== 'undefined' ? window.location.host : 'localhost:3000';
+      const wsUrl = `${protocol}//${host}/api/live?assistantName=${encodeURIComponent(this.options.assistantName || 'Rose AI')}&ownerName=${encodeURIComponent(this.options.ownerName || 'MD YOUSUF KHAN')}&voiceName=${encodeURIComponent(this.options.voiceName || 'Sulafat')}&personality=${encodeURIComponent(this.options.personality || 'Normal')}&language=${encodeURIComponent(this.options.language || 'bn-BD')}&responseStyle=${encodeURIComponent(this.options.responseStyle || 'Balanced')}&model=${encodeURIComponent(modelName)}&apiKey=${encodeURIComponent(apiKey || '')}`;
 
       let socket: WebSocket | null = null;
       const finish = (success: boolean) => {
@@ -1147,26 +1148,38 @@ export class GeminiLiveSession {
 
       for (const flashModel of candidates) {
         if (this.wasStoppedByUser) return;
-        const url = `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(flashModel)}:generateContent?key=${encodeURIComponent(apiKey)}`;
+        const url = '/api/gemini/generate';
 
         try {
+          const bodyPayload = buildClipBody(true);
           let res = await fetch(url, {
             method: 'POST',
             headers: {
               'Content-Type': 'application/json',
-              'x-goog-api-key': apiKey,
             },
-            body: JSON.stringify(buildClipBody(true)),
+            body: JSON.stringify({
+              model: flashModel,
+              contents: bodyPayload.contents,
+              systemInstruction: bodyPayload.systemInstruction,
+              generationConfig: bodyPayload.generationConfig,
+              apiKey: apiKey,
+            }),
           });
 
           if (res.status === 400 && !this.wasStoppedByUser) {
+            const fallbackPayload = buildClipBody(false);
             res = await fetch(url, {
               method: 'POST',
               headers: {
                 'Content-Type': 'application/json',
-                'x-goog-api-key': apiKey,
               },
-              body: JSON.stringify(buildClipBody(false)),
+              body: JSON.stringify({
+                model: flashModel,
+                contents: fallbackPayload.contents,
+                systemInstruction: fallbackPayload.systemInstruction,
+                generationConfig: fallbackPayload.generationConfig,
+                apiKey: apiKey,
+              }),
             });
           }
 
