@@ -430,9 +430,65 @@ export async function openNumber(n: number): Promise<{ ok: boolean; page?: strin
   return { ok, page: targetId };
 }
 
+type NavListener = (pageId: string) => void;
+
+class NavStore {
+  private stack: string[] = ['home'];
+  private listeners: Set<NavListener> = new Set();
+
+  push(pageId: string) {
+    this.stack.push(pageId);
+    this.notify(pageId);
+    if (typeof window !== 'undefined') {
+      const win = window as any;
+      if (win.setCurrentView) {
+        win.setCurrentView(pageId);
+      } else if (win.openSettingsPage) {
+        win.openSettingsPage(pageId);
+      }
+    }
+  }
+
+  pop() {
+    if (this.stack.length > 1) {
+      this.stack.pop();
+      const prev = this.stack[this.stack.length - 1];
+      this.notify(prev);
+      if (typeof window !== 'undefined') {
+        const win = window as any;
+        if (win.setCurrentView) {
+          win.setCurrentView(prev);
+        }
+      }
+      return prev;
+    }
+    return 'home';
+  }
+
+  subscribe(listener: NavListener) {
+    this.listeners.add(listener);
+    return () => {
+      this.listeners.delete(listener);
+    };
+  }
+
+  private notify(pageId: string) {
+    for (const fn of this.listeners) {
+      try { fn(pageId); } catch (e) { console.error(e); }
+    }
+  }
+
+  get current() {
+    return this.stack[this.stack.length - 1] || 'home';
+  }
+}
+
+export const navStore = new NavStore();
+
 if (typeof window !== 'undefined') {
   (window as any).openPage = openPage;
   (window as any).goBack = goBack;
   (window as any).openNumber = openNumber;
   (window as any).currentPage = currentPage;
+  (window as any).navStore = navStore;
 }

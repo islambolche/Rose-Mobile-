@@ -8,6 +8,7 @@ import {
 } from 'lucide-react';
 import { AssistantSettings, UserPreferences } from '../types';
 import { supabase } from '../lib/supabase';
+import { navStore } from '../lib/nav';
 
 // ADMIN_EMAIL constant removed in favor of DB roles
 
@@ -389,14 +390,8 @@ export const PrivacyView = ({ settings, prefs, setCurrentView, setToast }: any) 
               </div>
             </div>
             <button 
-              onClick={() => {
-                try {
-                  window.history.pushState({}, '', '/privacy');
-                  window.dispatchEvent(new PopStateEvent('popstate'));
-                } catch {
-                  window.location.href = '/privacy';
-                }
-              }}
+              data-nav-id="privacy_policy_btn"
+              onClick={() => navStore.push("privacy_policy")}
               className="px-3.5 py-1.5 bg-purple-600 hover:bg-purple-500 text-white rounded-xl text-xs font-black uppercase tracking-wider shadow-md active:scale-95 transition-transform"
             >
               দেখুন

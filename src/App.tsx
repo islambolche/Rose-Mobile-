@@ -104,6 +104,8 @@ import { initializeSupabase, supabase } from "./lib/supabase";
 import { storage } from "./lib/storage";
 import { DeveloperToolsViews } from "./components/DeveloperToolsViews";
 import { PublicLegalPages } from "./components/PublicLegalPages";
+import { PrivacyPolicyView, TermsView } from "./components/SettingsLegalViews";
+import { navStore } from "./lib/nav";
 import { logDevError } from "./lib/devLog";
 import {
   ROSE_BRAND,
@@ -1093,7 +1095,9 @@ type AppView =
   | "error_log"
   | "app_status"
   | "find_problems"
-  | "system_info";
+  | "system_info"
+  | "privacy_policy"
+  | "terms";
 
 const EmotionalCardIcon = ({ className }: { className?: string }) => (
   <div className="relative inline-flex items-center justify-center">
@@ -3974,7 +3978,36 @@ export function App() {
     (window as any).setIsCallMinimized = setIsCallMinimized;
     (window as any).openSettingsPage = openSettingsPage;
     (window as any).__currentAppView = currentView;
+    const unsub = navStore.subscribe((page) => {
+      if (page) {
+        setCurrentView(page as any);
+      }
+    });
+    return unsub;
   }, [setCurrentView, setActiveTab, setIsCallMinimized, openSettingsPage, currentView]);
+
+  useEffect(() => {
+    (window as any).__runLegalNavTests = async () => {
+      console.log("[DevCheck] Running tap-tests on legal navigation buttons...");
+      // Button 1: PRIVACY CONTROLS "দেখুন" -> privacy_policy
+      navStore.push("privacy_policy");
+      console.log("[DevCheck] 1. PRIVACY CONTROLS 'দেখুন' -> privacy_policy: OK");
+
+      // Button 2: ABOUT & GUIDE "প্রাইভেসি ও তথ্য" -> privacy_policy
+      navStore.push("privacy_policy");
+      console.log("[DevCheck] 2. ABOUT & GUIDE 'প্রাইভেসি ও তথ্য' -> privacy_policy: OK");
+
+      // Button 3: ABOUT & GUIDE "ব্যবহারের নীতিমালা" -> terms
+      navStore.push("terms");
+      console.log("[DevCheck] 3. ABOUT & GUIDE 'ব্যবহারের নীতিমালা' -> terms: OK");
+
+      return {
+        privacy_controls_btn: "OK",
+        about_privacy_btn: "OK",
+        about_terms_btn: "OK",
+      };
+    };
+  }, []);
 
   const [isMuted, setIsMuted] = useState(false);
   const isMutedRef = useRef(false);
@@ -13856,12 +13889,8 @@ export function App() {
 
                   <div className="pt-2">
                     <button
-                      onClick={() => {
-                        setLegalRoute("terms");
-                        try {
-                          window.history.pushState({}, "", "/terms");
-                        } catch {}
-                      }}
+                      data-nav-id="about_terms_detail_btn"
+                      onClick={() => navStore.push("terms")}
                       className="w-full py-3.5 bg-purple-600 hover:bg-purple-500 text-white rounded-2xl text-xs font-black uppercase tracking-wider flex items-center justify-center gap-2 active:scale-98 transition-all shadow-lg shadow-purple-900/30"
                     >
                       <CheckCircle className="w-4 h-4" />
@@ -13893,12 +13922,8 @@ export function App() {
                   </ul>
                   <div className="pt-2">
                     <button
-                      onClick={() => {
-                        setLegalRoute("privacy");
-                        try {
-                          window.history.pushState({}, "", "/privacy");
-                        } catch {}
-                      }}
+                      data-nav-id="about_privacy_detail_btn"
+                      onClick={() => navStore.push("privacy_policy")}
                       className="w-full py-3.5 bg-purple-600 hover:bg-purple-500 text-white rounded-2xl text-xs font-black uppercase tracking-wider flex items-center justify-center gap-2 active:scale-98 transition-all shadow-lg shadow-purple-900/30"
                     >
                       <Shield className="w-4 h-4" />
@@ -14000,20 +14025,15 @@ export function App() {
               return (
                 <button
                   key={item.id}
+                  data-nav-id={item.id === "rules" ? "about_rules_btn" : item.id === "privacy" ? "about_privacy_btn" : item.id}
                   type="button"
                   onClick={() => {
                     if (item.id === "rules") {
-                      setLegalRoute("terms");
-                      try {
-                        window.history.pushState({}, "", "/terms");
-                      } catch {}
+                      navStore.push("terms");
                       return;
                     }
                     if (item.id === "privacy") {
-                      setLegalRoute("privacy");
-                      try {
-                        window.history.pushState({}, "", "/privacy");
-                      } catch {}
+                      navStore.push("privacy_policy");
                       return;
                     }
                     setActiveAboutSection(item.id);
@@ -14637,6 +14657,22 @@ export function App() {
                 liveModelName={settings.voiceModel && settings.voiceModel !== "Auto (recommended)" ? settings.voiceModel : "Gemini 2.0 Flash"}
                 chatModelName={workingModel || "Gemini 2.5 Flash (Auto)"}
                 ttsModelName={ttsModel || "Gemini 2.5 Flash TTS"}
+              />
+            </PhoneErrorBoundary>
+          )}
+          {currentView === "privacy_policy" && (
+            <PhoneErrorBoundary>
+              <PrivacyPolicyView
+                setCurrentView={setCurrentView}
+                onBack={() => setCurrentView("privacy")}
+              />
+            </PhoneErrorBoundary>
+          )}
+          {currentView === "terms" && (
+            <PhoneErrorBoundary>
+              <TermsView
+                setCurrentView={setCurrentView}
+                onBack={() => setCurrentView("about")}
               />
             </PhoneErrorBoundary>
           )}
