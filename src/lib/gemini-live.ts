@@ -78,6 +78,7 @@ export interface GeminiLiveOptions {
   onMicLive?: (isLive: boolean) => void;
   onError?: (friendlyMessage: string, rawError?: any) => void;
   onClose?: (event?: any) => void;
+  onEndCall?: () => void;
   onTurnComplete?: () => void;
   onInterrupted?: () => void;
   onToast?: (message: string) => void;
@@ -595,9 +596,24 @@ export class GeminiLiveSession {
   }
 
   private phoneToolHandledForTurn = false;
+  private pendingEndCallAfterSpeech = false;
+  private endCallReceivedAudioAfterTool = false;
+  private endCallFallbackTimer: any = null;
+
+  private triggerEndCallCleanup() {
+    if (!this.pendingEndCallAfterSpeech) return;
+    this.pendingEndCallAfterSpeech = false;
+    this.endCallReceivedAudioAfterTool = false;
+    if (this.endCallFallbackTimer) {
+      clearTimeout(this.endCallFallbackTimer);
+      this.endCallFallbackTimer = null;
+    }
+    this.stop();
+    this.options.onEndCall?.();
+  }
 
   public wasPhoneToolHandledInTurn(): boolean {
-    return this.phoneToolHandledForTurn;
+    return this.phoneToolHandledForTurn || this.pendingEndCallAfterSpeech;
   }
 
   public didAssistantReplyInTurn(): boolean {
@@ -635,6 +651,12 @@ export class GeminiLiveSession {
     this.liveUserBuffer = '';
     this.liveAssistantBuffer = '';
     this.phoneToolHandledForTurn = false;
+    this.pendingEndCallAfterSpeech = false;
+    this.endCallReceivedAudioAfterTool = false;
+    if (this.endCallFallbackTimer) {
+      clearTimeout(this.endCallFallbackTimer);
+      this.endCallFallbackTimer = null;
+    }
     this.conversationHistory = [];
     try {
       if (typeof window !== 'undefined' && window.localStorage) {
@@ -1733,6 +1755,36 @@ export class GeminiLiveSession {
             },
             id: callId,
           });
+        } else if (name === 'end_call') {
+          this.phoneToolHandledForTurn = true;
+          this.pendingEndCallAfterSpeech = true;
+          this.endCallReceivedAudioAfterTool = false;
+          this.liveTurnCompleted = false;
+          if (this.endCallFallbackTimer) {
+            clearTimeout(this.endCallFallbackTimer);
+          }
+          this.endCallFallbackTimer = setTimeout(() => {
+            if (
+              this.pendingEndCallAfterSpeech &&
+              !this.wasStoppedByUser &&
+              this.scheduledAudioSources.length === 0 &&
+              this.pendingPcmSamplesCount === 0 &&
+              !this.isBrowserTtsSpeaking
+            ) {
+              this.triggerEndCallCleanup();
+            }
+          }, 5500);
+          functionResponses.push({
+            id: callId,
+            name: 'end_call',
+            response: {
+              output: {
+                ok: true,
+                message: 'ঠিক আছে, রাখছি।',
+                instruction: 'Say one short goodbye in Bengali (e.g. "ঠিক আছে, রাখছি।") and nothing else.',
+              },
+            },
+          });
         } else {
           functionResponses.push({
             response: {
@@ -2013,6 +2065,9 @@ export class GeminiLiveSession {
           if (this.scheduledAudioSources.length === 0 && this.pendingPcmSamplesCount === 0) {
             this.needsGainResetForTurn = true;
           }
+          if (this.pendingEndCallAfterSpeech) {
+            this.endCallReceivedAudioAfterTool = true;
+          }
           voiceDebugStore.recordFirstRoseAudio();
           this.liveTurnCompleted = false;
           this.pauseMicDuringSpeech();
@@ -2061,6 +2116,7 @@ export class GeminiLiveSession {
           this.options.onTranscription?.('assistant', finalCleaned, true);
         }
       }
+      const hadAssistantTextInTurn = Boolean(this.liveAssistantBuffer.trim());
       this.liveUserBuffer = '';
       this.liveAssistantBuffer = '';
       this.phoneToolHandledForTurn = false;
@@ -2068,6 +2124,25 @@ export class GeminiLiveSession {
       this.liveTurnCompleted = true;
       voiceDebugStore.finishTurn();
       this.flushPendingPcmChunks(true);
+      if (
+        this.pendingEndCallAfterSpeech &&
+        !this.endCallReceivedAudioAfterTool &&
+        this.scheduledAudioSources.length === 0 &&
+        this.pendingPcmSamplesCount === 0
+      ) {
+        const goodbyeText = 'ঠিক আছে, রাখছি।';
+        if (!hadAssistantTextInTurn) {
+          this.options.onTranscription?.('assistant', goodbyeText, true);
+        }
+        this.options.onTurnComplete?.();
+        void (async () => {
+          try {
+            await this.speakReply(this.cachedApiKey, goodbyeText);
+          } catch {}
+          this.triggerEndCallCleanup();
+        })();
+        return;
+      }
       this.scheduleReturnToListening();
       this.options.onTurnComplete?.();
     }
@@ -2652,10 +2727,20 @@ export class GeminiLiveSession {
         if (!emittedUserTranscript) {
           this.options.onTranscription?.('user', transcript, true);
         }
-        const phoneMatch = await routePhoneActionFromText(transcript);
-        if (phoneMatch.matched && phoneMatch.reply) {
-          reply = phoneMatch.reply;
+        const isEndCallVoiceCmd =
+          /^(?:হ্যালো\s+|হাই\s+|এই\s+|শোনো\s+)?(?:রোজ\s+|rose\s+)?(?:এখন\s+|প্লিজ\s+|একটু\s+)?(?:ফোন\s*কাটো|ফোনটা\s*কাটো|কল\s*কাটো|কলটা\s*কাটো|কলটা\s*কেটে\s*দাও|ফোনটা\s*কেটে\s*দাও|কল\s*বন্ধ\s*করো|ফোন\s*বন্ধ\s*করো|রাখো|ফোন\s*রাখো|রাখছি|bye|goodbye|end\s*call|hang\s*up|stop\s*call)\s*[।.?!]*$/i.test(
+            transcript.trim()
+          );
+        if (isEndCallVoiceCmd) {
+          reply = 'ঠিক আছে, রাখছি।';
+          this.pendingEndCallAfterSpeech = true;
           prestartedTtsMap.clear();
+        } else {
+          const phoneMatch = await routePhoneActionFromText(transcript);
+          if (phoneMatch.matched && phoneMatch.reply) {
+            reply = phoneMatch.reply;
+            prestartedTtsMap.clear();
+          }
         }
       }
 
@@ -2666,6 +2751,11 @@ export class GeminiLiveSession {
           this.options.onTranscription?.('assistant', chatCleanReply, true);
         }
         await this.speakReply(apiKey, reply, prestartedTtsMap);
+        if (this.pendingEndCallAfterSpeech && !this.wasStoppedByUser) {
+          this.options.onTurnComplete?.();
+          this.triggerEndCallCleanup();
+          return;
+        }
       }
 
       if (!this.wasStoppedByUser) {
@@ -3267,7 +3357,13 @@ export class GeminiLiveSession {
           this.liveTurnCompleted &&
           !this.wasStoppedByUser
         ) {
-          void this.finishSpeakingAndReturnToListening(200);
+          if (this.pendingEndCallAfterSpeech) {
+            setTimeout(() => {
+              this.triggerEndCallCleanup();
+            }, 150);
+          } else {
+            void this.finishSpeakingAndReturnToListening(200);
+          }
         }
       };
 
@@ -3366,7 +3462,11 @@ export class GeminiLiveSession {
         this.pendingPcmSamplesCount === 0 &&
         !this.isBrowserTtsSpeaking
       ) {
-        this.finishSpeakingAndReturnToListening();
+        if (this.pendingEndCallAfterSpeech) {
+          this.triggerEndCallCleanup();
+        } else {
+          this.finishSpeakingAndReturnToListening();
+        }
       } else {
         this.scheduleReturnToListening();
       }
@@ -3398,6 +3498,12 @@ export class GeminiLiveSession {
     this.watchdogReconnectedForTurn = false;
     this.liveUserBuffer = '';
     this.liveAssistantBuffer = '';
+    this.pendingEndCallAfterSpeech = false;
+    this.endCallReceivedAudioAfterTool = false;
+    if (this.endCallFallbackTimer) {
+      clearTimeout(this.endCallFallbackTimer);
+      this.endCallFallbackTimer = null;
+    }
     this.conversationHistory = [];
 
     if (this.watchdogTimer) {

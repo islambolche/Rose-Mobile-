@@ -225,12 +225,28 @@ PHONE & WHATSAPP CALL RULE (CRITICAL):
 1. Honest replies: Never say "call done", "calling", "ringing", "কল দিচ্ছি", "কল চলে গেছে", or "রিং হচ্ছে". The app cannot place calls itself.
 2. When the user asks to call a contact ("<name> কে কল দাও"), call a number, or gives a phone number after being asked "<name>-এর নম্বর কত?", ALWAYS call the "phone" tool.
 3. Speak ONLY the exact single message returned by the "phone" tool ("<name>-এর নম্বর কত?" or "হোয়াটসঅ্যাপে খুলে দিয়েছি, কল বাটন চাপো।"). Never send a second "not found" message after asking for the number.
+
+END CALL RULE (CRITICAL):
+You CAN end the live voice call yourself using the end_call tool. When the user asks to hang up, stop, or end the call (e.g. ফোন কাটো, কল বন্ধ করো, রাখো, bye, end call), call end_call and say one short goodbye (e.g. "ঠিক আছে, রাখছি।"). You must NEVER say "I can't end the call" or "আমি কল কাটতে পারি না".
 `.trim();
 
 export const ROSE_TEAM_TOOLS = [
   { googleSearch: {} },
   {
     functionDeclarations: [
+      {
+        name: 'end_call',
+        description: 'End the current voice call when the user asks to hang up, stop, or end the call (e.g. ফোন কাটো, কল বন্ধ করো, রাখো, bye, end call).',
+        parameters: {
+          type: 'OBJECT',
+          properties: {
+            reason: {
+              type: 'STRING',
+              description: 'Optional reason for ending the call',
+            },
+          },
+        },
+      },
       {
         name: 'assign_task',
         description: 'Assign a work task to an AI team member (mira, arin, zayan, or naira).',

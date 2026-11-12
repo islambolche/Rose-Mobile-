@@ -8698,6 +8698,8 @@ export function App() {
     await speakSentenceViaGeminiTTS(text, key);
   };
 
+  const endLiveCallRef = useRef<() => void>(() => {});
+
   const startLiveCall = useCallback(async () => {
     if (!settingsRef.current.masterAccess) return;
 
@@ -9050,6 +9052,9 @@ export function App() {
       },
       onClose: () => {
         liveSessionRef.current = null;
+      },
+      onEndCall: () => {
+        endLiveCallRef.current();
       }
     });
 
@@ -9100,6 +9105,8 @@ export function App() {
     stopListening();
     setToast("Live call ended");
   }, [stopListening, chatHistory, stopCamera]);
+
+  endLiveCallRef.current = endLiveCall;
 
   const handleVoiceToggle = useCallback(() => {
     ensureAudioContext();
