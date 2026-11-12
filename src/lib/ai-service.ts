@@ -6,6 +6,7 @@ import {
   formatAdminTtsPrompt,
   applyAdminSystemInstructionOverride,
 } from './admin';
+import { logDevError } from './devLog';
 
 const TEXT_MODELS: string[] = [];
 export { TEXT_MODELS };
@@ -1300,6 +1301,15 @@ export const directGeminiGenerate = async (payload: any) => {
         const shortReason = errMsg.length > 60 ? errMsg.slice(0, 60) + '...' : errMsg;
         err.googleMessage = `${err.googleMessage || 'Request failed'}\nReason: ${shortReason}`;
       }
+      try {
+        logDevError({
+          area: 'chat',
+          message: err?.message || 'Gemini generate failed',
+          status: typeof err?.status === 'number' ? err.status : undefined,
+          model: err?.modelName || model,
+          details: err?.googleMessage || err?.stack,
+        });
+      } catch (e) {}
       throw err;
     }
   }
@@ -2081,6 +2091,16 @@ export const directGeminiTTS = async (payload: any) => {
       }
     }
   }
+
+  try {
+    logDevError({
+      area: 'tts',
+      message: lastError?.message || 'Gemini TTS failed',
+      status: typeof lastError?.status === 'number' ? lastError.status : undefined,
+      model: lastError?.modelTried,
+      details: lastError?.googleMessage,
+    });
+  } catch (e) {}
 
   throw lastError || new Error('এই API key-তে কোনো Gemini TTS মডেল পাওয়া যায়নি।');
 };

@@ -8,6 +8,7 @@ import {
 } from './team';
 import { officeEvents } from '../components/pc/office/officeEngine';
 import { isAdmin } from './admin';
+import { openPage } from './nav';
 
 export interface RouteTaskResult {
   matched: boolean;
@@ -131,6 +132,27 @@ export async function routeUserMessageForTeamTask(
     return {
       matched: true,
       roseReply: reply,
+    };
+  }
+
+  // Developer Tools voice/typed commands (Admin only)
+  const isDevLogCmd = /(ডেভেলপার\s*লগ|error\s*log|এরর\s*লগ)/i.test(rawText);
+  const isFindProblemsCmd = /(সমস্যা\s*(খুঁজো|খুজো|খোঁজো|খোজো|বের\s*করো|দেখো)|find\s*problems)/i.test(rawText);
+  if (isDevLogCmd || isFindProblemsCmd) {
+    if (!isAdmin()) {
+      return {
+        matched: true,
+        roseReply: 'এই ফিচার শুধু অ্যাডমিনের জন্য।',
+      };
+    }
+    const targetId = isDevLogCmd ? 'error_log' : 'find_problems';
+    if (typeof window !== 'undefined') {
+      openPage(targetId).catch(() => {});
+    }
+    return {
+      matched: true,
+      type: 'navigation',
+      roseReply: isDevLogCmd ? 'ডেভেলপার লগ দেখাচ্ছি।' : 'সমস্যা খোঁজার পেজ খুলছি।',
     };
   }
 

@@ -389,7 +389,14 @@ export const PrivacyView = ({ settings, prefs, setCurrentView, setToast }: any) 
               </div>
             </div>
             <button 
-              onClick={() => setShowPolicyModal(true)}
+              onClick={() => {
+                try {
+                  window.history.pushState({}, '', '/privacy');
+                  window.dispatchEvent(new PopStateEvent('popstate'));
+                } catch {
+                  window.location.href = '/privacy';
+                }
+              }}
               className="px-3.5 py-1.5 bg-purple-600 hover:bg-purple-500 text-white rounded-xl text-xs font-black uppercase tracking-wider shadow-md active:scale-95 transition-transform"
             >
               দেখুন

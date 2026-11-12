@@ -19,6 +19,11 @@ export const PAGES: PageDef[] = [
   { id: 'phone_control', parent: 'settings' },
   { id: 'pc_setup', parent: 'settings' },
   { id: 'privacy_controls', parent: 'settings' },
+  { id: 'developer_tools', parent: 'settings' },
+  { id: 'error_log', parent: 'developer_tools' },
+  { id: 'app_status', parent: 'developer_tools' },
+  { id: 'find_problems', parent: 'developer_tools' },
+  { id: 'system_info', parent: 'developer_tools' },
 
   { id: 'about_app', parent: 'about_guide' },
   { id: 'developer', parent: 'about_guide' },
@@ -27,6 +32,8 @@ export const PAGES: PageDef[] = [
   { id: 'how_to_use', parent: 'about_guide' },
   { id: 'guidelines', parent: 'about_guide' },
   { id: 'privacy', parent: 'about_guide' },
+  { id: 'terms', parent: null },
+  { id: 'privacy_policy', parent: null },
   { id: 'troubleshooting', parent: 'about_guide' },
   { id: 'help_support', parent: 'about_guide' },
 
@@ -96,6 +103,11 @@ const PAGE_TO_NAV_ID: Record<string, string> = {
   phone_control: 'phone_control',
   pc_setup: 'pc_setup',
   privacy_controls: 'privacy',
+  developer_tools: 'developer_tools',
+  error_log: 'error_log',
+  app_status: 'app_status',
+  find_problems: 'find_problems',
+  system_info: 'system_info',
 
   about_app: 'about_app',
   developer: 'developer',
@@ -104,6 +116,8 @@ const PAGE_TO_NAV_ID: Record<string, string> = {
   how_to_use: 'how_to_use',
   guidelines: 'guidelines',
   privacy: 'privacy',
+  terms: 'terms',
+  privacy_policy: 'privacy_policy',
   troubleshooting: 'troubleshooting',
   help_support: 'help_support',
 

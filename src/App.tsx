@@ -102,6 +102,9 @@ import {
 import { requestStoragePersistence } from "./lib/keyBackup";
 import { initializeSupabase, supabase } from "./lib/supabase";
 import { storage } from "./lib/storage";
+import { DeveloperToolsViews } from "./components/DeveloperToolsViews";
+import { PublicLegalPages } from "./components/PublicLegalPages";
+import { logDevError } from "./lib/devLog";
 import {
   ROSE_BRAND,
   DEFAULT_ROSE_ALIVE_SETTINGS,
@@ -1085,7 +1088,12 @@ type AppView =
   | "onboarding"
   | "rose-alive"
   | "pc-setup"
-  | "view-mode-list";
+  | "view-mode-list"
+  | "developer_tools"
+  | "error_log"
+  | "app_status"
+  | "find_problems"
+  | "system_info";
 
 const EmotionalCardIcon = ({ className }: { className?: string }) => (
   <div className="relative inline-flex items-center justify-center">
@@ -2559,7 +2567,26 @@ const Onboarding = ({ onComplete }: { onComplete: () => void }) => {
   );
 };
 
+const getInitialLegalRoute = (): "privacy" | "terms" | null => {
+  if (typeof window === "undefined") return null;
+  const path = (window.location.pathname || "").toLowerCase().replace(/\/+$/, "");
+  const hash = (window.location.hash || "").toLowerCase();
+  if (path === "/privacy" || hash === "#/privacy" || hash === "#privacy") return "privacy";
+  if (path === "/terms" || hash === "#/terms" || hash === "#terms") return "terms";
+  return null;
+};
+
 export function App() {
+  const [legalRoute, setLegalRoute] = useState<"privacy" | "terms" | null>(getInitialLegalRoute);
+
+  useEffect(() => {
+    const handlePopState = () => {
+      setLegalRoute(getInitialLegalRoute());
+    };
+    window.addEventListener("popstate", handlePopState);
+    return () => window.removeEventListener("popstate", handlePopState);
+  }, []);
+
   const [voiceConnOk, setVoiceConnOk] = useState<boolean>(true);
   const [micStatus, setMicStatus] = useState<"ok" | "blocked">("ok");
 
@@ -2584,7 +2611,13 @@ export function App() {
         'response-style-list', 'voice-list', 'voice-model-list', 
         'voice-tuning', 'voice-debug', 'mic-listening'
       ];
-      if (nestedVoiceBars.includes(id)) {
+      const nestedDevBars = ['error_log', 'app_status', 'find_problems', 'system_info'];
+      if (nestedDevBars.includes(id)) {
+        setCurrentView("developer_tools");
+        setTimeout(() => {
+          setCurrentView(id as any);
+        }, 50);
+      } else if (nestedVoiceBars.includes(id)) {
         setCurrentView("voice");
         setTimeout(() => {
           setCurrentView(id as any);
@@ -11057,6 +11090,30 @@ export function App() {
                 </div>
                 <ChevronRight className="w-4 h-4 text-slate-500 group-hover:translate-x-0.5 transition-transform" />
               </button>
+
+              {/* 10 DEVELOPER TOOLS (after PRIVACY CONTROLS, visible ONLY when isAdmin() is true) */}
+              {isAdmin() && (
+                <button
+                  data-nav-id="developer_tools"
+                  onClick={() => setCurrentView("developer_tools")}
+                  className="w-full flex items-center justify-between p-4.5 border-t border-white/5 active:bg-white/5 active:scale-[0.99] transition-all text-left group"
+                >
+                  <div className="flex items-center gap-3.5">
+                    <div className="w-10 h-10 bg-indigo-600 rounded-2xl flex items-center justify-center text-white shrink-0 shadow-lg shadow-indigo-900/30">
+                      <Code className="w-5 h-5" />
+                    </div>
+                    <div>
+                      <h4 className="text-[13px] font-black uppercase tracking-wider text-white leading-tight">
+                        10 DEVELOPER TOOLS
+                      </h4>
+                      <p className="text-[11px] text-slate-400 font-medium leading-tight mt-0.5">
+                        এরর লগ, অ্যাপ স্ট্যাটাস, সমস্যা ও সিস্টেম
+                      </p>
+                    </div>
+                  </div>
+                  <ChevronRight className="w-4 h-4 text-slate-500 group-hover:translate-x-0.5 transition-transform" />
+                </button>
+              )}
             </div>
           </section>
 
@@ -13796,6 +13853,21 @@ export function App() {
                       <li>অ্যাপের সিকিউরিটি, ডাটাবেস বা AI সিস্টেমের অপব্যবহার বা হ্যাকিংয়ের চেষ্টা করা যাবে না। নীতিমালা লঙ্ঘন করলে অ্যাকাউন্ট স্থগিত বা বাতিল হতে পারে।</li>
                     </ul>
                   </div>
+
+                  <div className="pt-2">
+                    <button
+                      onClick={() => {
+                        setLegalRoute("terms");
+                        try {
+                          window.history.pushState({}, "", "/terms");
+                        } catch {}
+                      }}
+                      className="w-full py-3.5 bg-purple-600 hover:bg-purple-500 text-white rounded-2xl text-xs font-black uppercase tracking-wider flex items-center justify-center gap-2 active:scale-98 transition-all shadow-lg shadow-purple-900/30"
+                    >
+                      <CheckCircle className="w-4 h-4" />
+                      সম্পূর্ণ ব্যবহারের নীতিমালা (/terms) দেখুন
+                    </button>
+                  </div>
                 </>
               )}
 
@@ -13819,6 +13891,20 @@ export function App() {
                       <strong className="text-white">তথ্য মুছে ফেলার উপায়:</strong> আপনি যেকোনো সময় <strong className="text-white">Settings → Chats & Memory</strong> থেকে সব চ্যাট ও মেমোরি মুছে ফেলতে পারেন। এছাড়া <strong className="text-white">Settings → MD YOUSUF KHAN (Profile) → Privacy controls</strong> পেজ থেকে চ্যাট হিস্ট্রি কিংবা আপনার সম্পূর্ণ অ্যাকাউন্ট ও সকল ডাটা স্থায়ীভাবে মুছে (Delete) ফেলতে পারবেন।
                     </li>
                   </ul>
+                  <div className="pt-2">
+                    <button
+                      onClick={() => {
+                        setLegalRoute("privacy");
+                        try {
+                          window.history.pushState({}, "", "/privacy");
+                        } catch {}
+                      }}
+                      className="w-full py-3.5 bg-purple-600 hover:bg-purple-500 text-white rounded-2xl text-xs font-black uppercase tracking-wider flex items-center justify-center gap-2 active:scale-98 transition-all shadow-lg shadow-purple-900/30"
+                    >
+                      <Shield className="w-4 h-4" />
+                      সম্পূর্ণ প্রাইভেসি পলিসি (/privacy) দেখুন
+                    </button>
+                  </div>
                 </div>
               )}
 
@@ -13915,7 +14001,23 @@ export function App() {
                 <button
                   key={item.id}
                   type="button"
-                  onClick={() => setActiveAboutSection(item.id)}
+                  onClick={() => {
+                    if (item.id === "rules") {
+                      setLegalRoute("terms");
+                      try {
+                        window.history.pushState({}, "", "/terms");
+                      } catch {}
+                      return;
+                    }
+                    if (item.id === "privacy") {
+                      setLegalRoute("privacy");
+                      try {
+                        window.history.pushState({}, "", "/privacy");
+                      } catch {}
+                      return;
+                    }
+                    setActiveAboutSection(item.id);
+                  }}
                   className="w-full p-5 bg-[#0F172A]/80 rounded-[2.5rem] border border-purple-500/30 shadow-2xl flex items-center justify-between active:scale-[0.98] transition-all text-left"
                 >
                   <div className="flex items-center gap-4">
@@ -14520,6 +14622,24 @@ export function App() {
           {currentView === "mic-listening" && <PhoneErrorBoundary>{renderMicListening()}</PhoneErrorBoundary>}
           {currentView === "write" && <PhoneErrorBoundary>{renderWrite()}</PhoneErrorBoundary>}
           {currentView === "developer" && <PhoneErrorBoundary><><Developer setCurrentView={setCurrentView} setToast={setToast} backView={developerFrom} /></></PhoneErrorBoundary>}
+          {(currentView === "developer_tools" ||
+            currentView === "error_log" ||
+            currentView === "app_status" ||
+            currentView === "find_problems" ||
+            currentView === "system_info") && (
+            <PhoneErrorBoundary>
+              <DeveloperToolsViews
+                currentView={currentView}
+                setCurrentView={setCurrentView}
+                setToast={setToast}
+                apiKeys={apiKeys}
+                settings={settings}
+                liveModelName={settings.voiceModel && settings.voiceModel !== "Auto (recommended)" ? settings.voiceModel : "Gemini 2.0 Flash"}
+                chatModelName={workingModel || "Gemini 2.5 Flash (Auto)"}
+                ttsModelName={ttsModel || "Gemini 2.5 Flash TTS"}
+              />
+            </PhoneErrorBoundary>
+          )}
           {currentView === "onboarding" && (
             <Onboarding
               onComplete={() => {
@@ -15837,6 +15957,20 @@ export function App() {
       />
     </>
   );
+
+  if (legalRoute) {
+    return (
+      <PublicLegalPages
+        initialPage={legalRoute}
+        onBackToApp={() => {
+          setLegalRoute(null);
+          try {
+            window.history.pushState({}, "", "/");
+          } catch {}
+        }}
+      />
+    );
+  }
 
   if (isPcLayoutActive) {
     return (

@@ -18,6 +18,7 @@ import {
   getGlobalMicStream,
   setBrowserAudioSessionType,
 } from './audio-manager';
+import { logDevError } from './devLog';
 import { NoiseGateEngine } from './noiseGate';
 import {
   getMicListeningSettings,
@@ -1631,6 +1632,13 @@ export class GeminiLiveSession {
   private failAndEndSessionCleanly(message: string) {
     this.stop();
     this.lastError = message;
+    try {
+      logDevError({
+        area: 'live',
+        message: message || 'Live session ended with failure',
+        model: this.connectedModelName || undefined,
+      });
+    } catch (e) {}
     this.options.onReconnectStatus?.('failed', message);
     this.options.onError?.(message);
     this.options.onClose?.({ reason: message });
