@@ -108,6 +108,8 @@ import { PrivacyPolicyView, TermsView } from "./components/SettingsLegalViews";
 import { navStore } from "./lib/nav";
 import { logDevError } from "./lib/devLog";
 import { openExternal } from "./lib/openExternal";
+import { isAndroidApp, voiceDebugStore } from "./lib/voiceDebugStore";
+import { MicVoiceDebugPanel } from "./components/MicVoiceDebugPanel";
 import {
   ROSE_BRAND,
   DEFAULT_ROSE_ALIVE_SETTINGS,
@@ -1098,7 +1100,8 @@ type AppView =
   | "find_problems"
   | "system_info"
   | "privacy_policy"
-  | "terms";
+  | "terms"
+  | "voice_debug";
 
 const EmotionalCardIcon = ({ className }: { className?: string }) => (
   <div className="relative inline-flex items-center justify-center">
@@ -7892,8 +7895,43 @@ export function App() {
     // we only care if it's already true when other things change
   ]);
 
-  function pcmArrayToBase64(pcmData: Int16Array): string {
-    const bytes = new Uint8Array(pcmData.buffer, pcmData.byteOffset, pcmData.byteLength);
+  function resampleFloat32ToPCM16LEBase64(
+    inputData: Float32Array,
+    sourceRate: number,
+    targetRate: number = 16000
+  ): string {
+    const actualSourceRate = sourceRate > 0 ? sourceRate : 48000;
+    let outLen = inputData.length;
+    let buffer: ArrayBuffer;
+    if (actualSourceRate === targetRate) {
+      buffer = new ArrayBuffer(outLen * 2);
+      const view = new DataView(buffer);
+      for (let i = 0; i < outLen; i++) {
+        const s = Math.max(-1, Math.min(1, inputData[i]));
+        const int16 = s < 0 ? Math.round(s * 0x8000) : Math.round(s * 0x7fff);
+        view.setInt16(i * 2, int16, true); // little-endian
+      }
+    } else {
+      const ratio = actualSourceRate / targetRate;
+      outLen = Math.max(1, Math.round(inputData.length / ratio));
+      buffer = new ArrayBuffer(outLen * 2);
+      const view = new DataView(buffer);
+      for (let i = 0; i < outLen; i++) {
+        const start = Math.floor(i * ratio);
+        const end = Math.min(inputData.length, Math.ceil((i + 1) * ratio));
+        let sum = 0;
+        let count = 0;
+        for (let j = start; j < end; j++) {
+          sum += inputData[j];
+          count++;
+        }
+        const avg = count > 0 ? sum / count : (inputData[Math.min(start, inputData.length - 1)] || 0);
+        const s = Math.max(-1, Math.min(1, avg));
+        const int16 = s < 0 ? Math.round(s * 0x8000) : Math.round(s * 0x7fff);
+        view.setInt16(i * 2, int16, true); // little-endian
+      }
+    }
+    const bytes = new Uint8Array(buffer);
     let binary = "";
     for (let i = 0; i < bytes.byteLength; i++) {
       binary += String.fromCharCode(bytes[i]);
@@ -7910,6 +7948,9 @@ export function App() {
       await inCtx.resume().catch(() => {});
     }
 
+    const realSampleRate = inCtx.sampleRate;
+    console.log("[AudioPipeline] Real AudioContext sampleRate:", realSampleRate);
+
     const source = inCtx.createMediaStreamSource(stream);
     const analyser = inCtx.createAnalyser();
     analyser.fftSize = 256;
@@ -7919,29 +7960,67 @@ export function App() {
     chunksSentRef.current = 0;
     setChunksSent(0);
 
+    // Target ~40ms chunk (never > 100ms)
+    const targetChunkSamples = Math.max(
+      256,
+      Math.min(Math.round(realSampleRate * 0.1), Math.round(realSampleRate * 0.04))
+    );
+    const chunkMs = Math.round((targetChunkSamples / realSampleRate) * 1000);
+
+    const sendFloatChunk = (floatChunk: Float32Array) => {
+      let sumSq = 0;
+      for (let i = 0; i < floatChunk.length; i++) {
+        sumSq += floatChunk[i] * floatChunk[i];
+      }
+      const rms = floatChunk.length > 0 ? Math.sqrt(sumSq / floatChunk.length) : 0;
+
+      if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
+        const base64 = resampleFloat32ToPCM16LEBase64(floatChunk, realSampleRate, 16000);
+        if (base64) {
+          wsRef.current.send(
+            JSON.stringify({
+              audio: base64,
+              realtime_input: {
+                media_chunks: [{ mime_type: "audio/pcm;rate=16000", data: base64 }],
+              },
+            })
+          );
+          chunksSentRef.current += 1;
+          setChunksSent(chunksSentRef.current);
+          voiceDebugStore.recordChunkSent(rms, chunkMs);
+        }
+      } else {
+        voiceDebugStore.recordMicLevel(rms);
+      }
+    };
+
     let workletSuccess = false;
 
-    // Try loading public audio-processor.js or inline worklet
-    try {
+    if (inCtx.audioWorklet && typeof AudioWorkletNode === "function") {
       try {
-        await inCtx.audioWorklet.addModule('/audio-processor.js');
-      } catch (e1) {
         const workletCode = `
-          class PCMWorkletProcessor extends AudioWorkletProcessor {
+          class PCM40msWorkletProcessor extends AudioWorkletProcessor {
             constructor() {
               super();
-              this.buffer = new Int16Array(320);
+              const sr = typeof sampleRate === "number" && sampleRate > 0 ? sampleRate : ${realSampleRate};
+              this.targetSamples = Math.max(256, Math.min(Math.round(sr * 0.1), Math.round(sr * 0.04)));
+              this.buffer = new Float32Array(this.targetSamples);
               this.offset = 0;
             }
             process(inputs) {
               const input = inputs[0];
-              if (input && input[0]) {
+              if (input && input[0] && input[0].length > 0) {
                 const channel = input[0];
-                for (let i = 0; i < channel.length; i++) {
-                  let s = Math.max(-1, Math.min(1, channel[i]));
-                  this.buffer[this.offset++] = s < 0 ? s * 0x8000 : s * 0x7FFF;
-                  if (this.offset >= this.buffer.length) {
-                    this.port.postMessage(this.buffer.slice(0));
+                let i = 0;
+                while (i < channel.length) {
+                  const rem = this.targetSamples - this.offset;
+                  const copyCount = Math.min(rem, channel.length - i);
+                  this.buffer.set(channel.subarray(i, i + copyCount), this.offset);
+                  this.offset += copyCount;
+                  i += copyCount;
+                  if (this.offset >= this.targetSamples) {
+                    const out = new Float32Array(this.buffer);
+                    this.port.postMessage(out, [out.buffer]);
                     this.offset = 0;
                   }
                 }
@@ -7949,79 +8028,55 @@ export function App() {
               return true;
             }
           }
-          registerProcessor("pcm-worklet-processor", PCMWorkletProcessor);
+          registerProcessor("pcm-40ms-worklet-processor", PCM40msWorkletProcessor);
         `;
         const blob = new Blob([workletCode], { type: "application/javascript" });
         const url = URL.createObjectURL(blob);
         await inCtx.audioWorklet.addModule(url);
-      }
+        URL.revokeObjectURL(url);
 
-      const processorName = inCtx.audioWorklet ? "pcm-worklet-processor" : "audio-processor";
-      const workletNode = new AudioWorkletNode(inCtx, processorName);
-      source.connect(workletNode);
-      workletNode.port.onmessage = (e) => {
-        if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
-          const raw = e.data;
-          let base64 = "";
-          if (raw instanceof Int16Array) {
-            base64 = pcmArrayToBase64(raw);
-          } else if (raw instanceof Float32Array) {
-            const pcm16 = new Int16Array(raw.length);
-            for (let i = 0; i < raw.length; i++) {
-              const s = Math.max(-1, Math.min(1, raw[i]));
-              pcm16[i] = s < 0 ? s * 0x8000 : s * 0x7FFF;
-            }
-            base64 = pcmArrayToBase64(pcm16);
+        const workletNode = new AudioWorkletNode(inCtx, "pcm-40ms-worklet-processor");
+        source.connect(workletNode);
+        workletNode.port.onmessage = (e) => {
+          if (e.data instanceof Float32Array) {
+            sendFloatChunk(e.data);
           }
-          if (base64) {
-            wsRef.current.send(
-              JSON.stringify({
-                audio: base64,
-                realtime_input: {
-                  media_chunks: [{ mime_type: "audio/pcm;rate=16000", data: base64 }],
-                },
-              })
-            );
-            chunksSentRef.current += 1;
-            setChunksSent(chunksSentRef.current);
-          }
-        }
-      };
-      workletNodeRef.current = workletNode;
-      workletSuccess = true;
-      console.log("[AudioPipeline] AudioWorklet connected successfully");
-    } catch (e) {
-      console.warn("[AudioPipeline] AudioWorklet failed, using ScriptProcessorNode fallback:", e);
+        };
+        workletNodeRef.current = workletNode;
+        workletSuccess = true;
+        voiceDebugStore.recordAudioContextInit(realSampleRate, "Worklet", chunkMs);
+        console.log("[AudioPipeline] AudioWorklet connected successfully");
+      } catch (e) {
+        console.warn("[AudioPipeline] AudioWorklet failed, using ScriptProcessorNode(1024) fallback:", e);
+      }
     }
 
     if (!workletSuccess) {
       try {
-        const scriptNode = inCtx.createScriptProcessor(2048, 1, 1);
+        const scriptNode = inCtx.createScriptProcessor(1024, 1, 1);
+        let spBuf = new Float32Array(targetChunkSamples);
+        let spOff = 0;
         scriptNode.onaudioprocess = (e) => {
-          if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
-            const inputData = e.inputBuffer.getChannelData(0);
-            const pcm16 = new Int16Array(inputData.length);
-            for (let i = 0; i < inputData.length; i++) {
-              const s = Math.max(-1, Math.min(1, inputData[i]));
-              pcm16[i] = s < 0 ? s * 0x8000 : s * 0x7FFF;
+          const inputData = e.inputBuffer.getChannelData(0);
+          let i = 0;
+          while (i < inputData.length) {
+            const rem = targetChunkSamples - spOff;
+            const copyCount = Math.min(rem, inputData.length - i);
+            spBuf.set(inputData.subarray(i, i + copyCount), spOff);
+            spOff += copyCount;
+            i += copyCount;
+            if (spOff >= targetChunkSamples) {
+              sendFloatChunk(spBuf);
+              spBuf = new Float32Array(targetChunkSamples);
+              spOff = 0;
             }
-            const base64 = pcmArrayToBase64(pcm16);
-            wsRef.current.send(
-              JSON.stringify({
-                audio: base64,
-                realtime_input: {
-                  media_chunks: [{ mime_type: "audio/pcm;rate=16000", data: base64 }],
-                },
-              })
-            );
-            chunksSentRef.current += 1;
-            setChunksSent(chunksSentRef.current);
           }
         };
         source.connect(scriptNode);
         scriptNode.connect(inCtx.destination);
         processorRef.current = scriptNode;
-        console.log("[AudioPipeline] ScriptProcessorNode fallback connected successfully");
+        voiceDebugStore.recordAudioContextInit(realSampleRate, "ScriptProcessor", chunkMs);
+        console.log("[AudioPipeline] ScriptProcessorNode(1024) fallback connected successfully");
       } catch (scriptErr) {
         console.error("[AudioPipeline] Failed connecting ScriptProcessorNode fallback:", scriptErr);
       }
@@ -8605,12 +8660,19 @@ export function App() {
     }
     try {
       setBrowserAudioSessionType("play-and-record");
+      const isApp = isAndroidApp();
       micStream = await getGlobalMicStream({
-        audio: {
-          echoCancellation: false,
-          noiseSuppression: true,
-          autoGainControl: false,
-        }
+        audio: isApp
+          ? {
+              autoGainControl: true,
+              noiseSuppression: true,
+              echoCancellation: true,
+            }
+          : {
+              echoCancellation: false,
+              noiseSuppression: true,
+              autoGainControl: false,
+            },
       });
       setDiagGetUserMediaStatus("ok");
     } catch (err: any) {
@@ -8691,9 +8753,13 @@ export function App() {
             : rawClean;
         if (!cleanText) return;
         
-        // If Rose starts speaking, clear any user "শুনছি..." placeholder that never got real text
+        // If Rose starts speaking, clear any user "শুনছি..." / "শুনছি…" placeholder that never got real text
         if (speaker === 'rose') {
-          setChatHistory((prev) => prev.filter((m) => !(m.id === 'live-stream-user' && m.text === 'শুনছি...')));
+          setChatHistory((prev) =>
+            prev.filter(
+              (m) => !(m.id === 'live-stream-user' && (m.text === 'শুনছি...' || m.text === 'শুনছি…'))
+            )
+          );
         }
 
         updateLiveCaption(speaker, cleanText);
@@ -8705,12 +8771,15 @@ export function App() {
 
         if (isFinal) {
           setChatHistory((prev) => {
-            const last = prev[prev.length - 1];
+            const cleanedPrev = prev.filter(
+              (m) => !(m.id === streamId && (m.text === "শুনছি..." || m.text === "শুনছি…"))
+            );
+            const last = cleanedPrev[cleanedPrev.length - 1];
             const finalId = `msg-${Date.now()}-${Math.random().toString(36).substring(2, 7)}`;
             let next: Message[];
             if (last && last.id === streamId) {
               next = [
-                ...prev.slice(0, -1),
+                ...cleanedPrev.slice(0, -1),
                 {
                   ...last,
                   id: finalId,
@@ -8726,10 +8795,10 @@ export function App() {
               last.role === speaker &&
               (last.text || last.content || "").trim() === cleanText
             ) {
-              return prev;
+              return cleanedPrev;
             } else {
               next = [
-                ...prev,
+                ...cleanedPrev,
                 {
                   id: finalId,
                   role: speaker,
@@ -8750,18 +8819,19 @@ export function App() {
           });
         } else {
           setChatHistory((prev) => {
-            const last = prev[prev.length - 1];
+            const existingIdx = prev.findIndex((m) => m.id === streamId);
             let next: Message[];
-            if (last && last.id === streamId) {
-              next = [
-                ...prev.slice(0, -1),
-                {
-                  ...last,
-                  text: cleanText,
-                  content: cleanText,
-                  replyMode: "voice",
-                },
-              ];
+            if (existingIdx !== -1) {
+              next = prev.map((m, idx) =>
+                idx === existingIdx
+                  ? {
+                      ...m,
+                      text: cleanText,
+                      content: cleanText,
+                      replyMode: "voice",
+                    }
+                  : m
+              );
             } else {
               next = [
                 ...prev,
@@ -12089,6 +12159,29 @@ export function App() {
               />
             </button>
           </div>
+
+          {/* d. VOICE DEBUG */}
+          <button
+            type="button"
+            data-nav-id="voice_debug"
+            onClick={() => setCurrentView("voice_debug")}
+            className="w-full p-5 bg-[#0F172A]/80 rounded-[2.5rem] border border-purple-500/30 shadow-2xl flex items-center justify-between active:scale-[0.98] transition-all text-left"
+          >
+            <div className="flex items-center gap-4">
+              <div className="w-12 h-12 rounded-full bg-purple-600/10 border border-purple-500/20 flex items-center justify-center text-purple-400 shrink-0">
+                <Activity className="w-6 h-6" />
+              </div>
+              <div>
+                <h4 className="text-base font-black uppercase tracking-wider text-white leading-none mb-1">
+                  VOICE DEBUG
+                </h4>
+                <p className="text-[10px] text-slate-400 font-bold uppercase tracking-widest">
+                  LIVE CAPTURE · LATENCY · LAST 5 TURNS
+                </p>
+              </div>
+            </div>
+            <ChevronRight className="w-5 h-5 text-slate-500 shrink-0" />
+          </button>
         </div>
       </div>
     </motion.div>
@@ -14639,6 +14732,14 @@ export function App() {
           {currentView === "affection" && <PhoneErrorBoundary>{renderAffection()}</PhoneErrorBoundary>}
           {currentView === "tts-model" && <PhoneErrorBoundary>{renderTtsModelSection()}</PhoneErrorBoundary>}
           {currentView === "mic-listening" && <PhoneErrorBoundary>{renderMicListening()}</PhoneErrorBoundary>}
+          {currentView === "voice_debug" && (
+            <PhoneErrorBoundary>
+              <MicVoiceDebugPanel
+                onBack={() => setCurrentView("mic-listening")}
+                setToast={setToast}
+              />
+            </PhoneErrorBoundary>
+          )}
           {currentView === "write" && <PhoneErrorBoundary>{renderWrite()}</PhoneErrorBoundary>}
           {currentView === "developer" && <PhoneErrorBoundary><><Developer setCurrentView={setCurrentView} setToast={setToast} backView={developerFrom} /></></PhoneErrorBoundary>}
           {(currentView === "developer_tools" ||

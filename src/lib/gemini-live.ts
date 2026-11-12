@@ -48,6 +48,7 @@ import {
   TEAM_SYSTEM_INSTRUCTION,
 } from './team';
 import { openPage, goBack, openNumber, currentPage } from './nav';
+import { isAndroidApp, voiceDebugStore } from './voiceDebugStore';
 
 export interface GeminiLiveOptions {
   assistantName?: string;
@@ -114,32 +115,37 @@ function downsampleToPCM16(
   inputData: Float32Array,
   sourceRate: number,
   targetRate: number = 16000
-): Int16Array {
-  if (sourceRate === targetRate) {
-    const pcm16 = new Int16Array(inputData.length);
+): Uint8Array {
+  const actualSourceRate = sourceRate > 0 ? sourceRate : 48000;
+  if (actualSourceRate === targetRate) {
+    const buffer = new ArrayBuffer(inputData.length * 2);
+    const view = new DataView(buffer);
     for (let i = 0; i < inputData.length; i++) {
       const s = Math.max(-1, Math.min(1, inputData[i]));
-      pcm16[i] = s < 0 ? s * 0x8000 : s * 0x7FFF;
+      const int16 = s < 0 ? Math.round(s * 0x8000) : Math.round(s * 0x7FFF);
+      view.setInt16(i * 2, int16, true); // little-endian
     }
-    return pcm16;
+    return new Uint8Array(buffer);
   }
-  const ratio = sourceRate / targetRate;
-  const newLength = Math.floor(inputData.length / ratio);
-  const result = new Int16Array(newLength);
+  const ratio = actualSourceRate / targetRate;
+  const newLength = Math.max(1, Math.round(inputData.length / ratio));
+  const buffer = new ArrayBuffer(newLength * 2);
+  const view = new DataView(buffer);
   for (let i = 0; i < newLength; i++) {
     const start = Math.floor(i * ratio);
-    const end = Math.floor((i + 1) * ratio);
+    const end = Math.min(inputData.length, Math.ceil((i + 1) * ratio));
     let sum = 0;
     let count = 0;
-    for (let j = start; j < end && j < inputData.length; j++) {
+    for (let j = start; j < end; j++) {
       sum += inputData[j];
       count++;
     }
-    const avg = count > 0 ? sum / count : (inputData[start] || 0);
+    const avg = count > 0 ? sum / count : (inputData[Math.min(start, inputData.length - 1)] || 0);
     const s = Math.max(-1, Math.min(1, avg));
-    result[i] = s < 0 ? s * 0x8000 : s * 0x7FFF;
+    const int16 = s < 0 ? Math.round(s * 0x8000) : Math.round(s * 0x7FFF);
+    view.setInt16(i * 2, int16, true); // little-endian
   }
-  return result;
+  return new Uint8Array(buffer);
 }
 
 function parseVersionScore(modelName: string): number {
@@ -792,17 +798,25 @@ export class GeminiLiveSession {
         this.options.micStream.active &&
         this.options.micStream.getAudioTracks().some((t) => t.readyState === 'live');
 
+      const isApp = isAndroidApp();
       if (hasLiveOptionStream && this.options.micStream) {
         this.micStream = this.options.micStream;
       } else {
         this.micStream = await getGlobalMicStream({
-          audio: {
-            echoCancellation: false,
-            noiseSuppression: cleanVoice,
-            autoGainControl: false,
-            sampleRate: { ideal: 48000 },
-            channelCount: { ideal: 1 },
-          },
+          audio: isApp
+            ? {
+                autoGainControl: true,
+                noiseSuppression: true,
+                echoCancellation: true,
+                channelCount: { ideal: 1 },
+              }
+            : {
+                echoCancellation: false,
+                noiseSuppression: cleanVoice,
+                autoGainControl: false,
+                sampleRate: { ideal: 48000 },
+                channelCount: { ideal: 1 },
+              },
         });
       }
 
@@ -847,6 +861,7 @@ export class GeminiLiveSession {
       } catch {}
 
       const sourceSampleRate = this.audioCtx.sampleRate;
+      console.log(`[GeminiLive] AudioContext real sampleRate: ${sourceSampleRate} Hz (platform=${isApp ? 'App' : 'Chrome'})`);
 
       if (!this.micAnalyser || this.micAnalyser.context !== this.audioCtx) {
         this.micAnalyser = this.audioCtx.createAnalyser();
@@ -900,17 +915,34 @@ export class GeminiLiveSession {
         }
       }
 
-      // Attach PCM capture for Path 1 Live WebSocket AND feed Silero VAD for Path 1 & Path 2
-      const processPcmBuffer = (float32Samples: Float32Array) => {
+      // Target ~40 ms chunk size (never > 100 ms)
+      const targetChunkSamples = Math.max(
+        256,
+        Math.min(Math.round(sourceSampleRate * 0.1), Math.round(sourceSampleRate * 0.04))
+      );
+      const actualChunkMs = Math.round((targetChunkSamples / sourceSampleRate) * 1000);
+
+      // Attach continuous ~40ms PCM16 capture for Live WebSocket AND feed Silero VAD for Path 2 fallback
+      const sendPcm40msChunk = (float32Samples: Float32Array) => {
         if (this.wasStoppedByUser || this.isMuted || this.currentState === 'speaking') {
           return;
         }
 
-        const micCfg = getMicListeningSettings();
-        // Apply Noise Gate filtering to mic audio
-        this.noiseGateEngine.processFrame(float32Samples, micCfg.noiseGate, micCfg.noiseGateSensitivity);
+        // Compute RMS level for live debug meter & speech end timestamp tracking
+        let sumSq = 0;
+        for (let i = 0; i < float32Samples.length; i++) {
+          const v = float32Samples[i];
+          sumSq += v * v;
+        }
+        const rms = float32Samples.length > 0 ? Math.sqrt(sumSq / float32Samples.length) : 0;
 
-        if (micCfg.smartListen && this.currentState === 'listening') {
+        const micCfg = getMicListeningSettings();
+        // Apply Noise Gate filtering if user explicitly enabled it
+        if (micCfg.noiseGate) {
+          this.noiseGateEngine.processFrame(float32Samples, micCfg.noiseGate, micCfg.noiseGateSensitivity);
+        }
+
+        if (this.isFallbackMode && micCfg.smartListen && this.currentState === 'listening') {
           if (!this.sileroVad.isAvailable()) {
             void this.sileroVad.initInBackground();
           } else {
@@ -924,38 +956,21 @@ export class GeminiLiveSession {
           !this.isSetupComplete ||
           this.isFallbackMode
         ) {
+          voiceDebugStore.recordMicLevel(rms);
           return;
         }
 
-        // If Smart Listen (Silero VAD) is active in Path 1, gate non-speech noise (traffic/wind/horn)
-        if (micCfg.smartListen && this.sileroVad.isAvailable() && !isPushToTalkCurrentlyActive()) {
-          const thresholds = getSensitivityThresholds(micCfg.micSensitivity);
-          const prob = this.sileroVad.getLastSpeechProbability();
-          const now = Date.now();
-          if (prob >= thresholds.vadNegative) {
-            this.lastLiveVadVoiceAt = now;
-            if (!this.userStartedSpeakingEmitted && !this.liveUserBuffer.trim()) {
-              this.userStartedSpeakingEmitted = true;
-              this.options.onTranscription?.('user', 'শুনছি...', false);
-            }
-          }
-          // Only stream audio when Silero detects speech or within 650ms hangover after speech
-          if (prob < thresholds.vadPositive && now - this.lastLiveVadVoiceAt > 650) {
-            return;
-          }
-        }
+        const pcm16Bytes = downsampleToPCM16(float32Samples, sourceSampleRate, 16000);
+        if (pcm16Bytes.byteLength === 0) return;
 
-        const pcm16 = downsampleToPCM16(float32Samples, sourceSampleRate, 16000);
-        if (pcm16.length === 0) return;
-
-        const u8 = new Uint8Array(pcm16.buffer, pcm16.byteOffset, pcm16.byteLength);
         let binary = '';
-        for (let i = 0; i < u8.byteLength; i++) {
-          binary += String.fromCharCode(u8[i]);
+        for (let i = 0; i < pcm16Bytes.byteLength; i++) {
+          binary += String.fromCharCode(pcm16Bytes[i]);
         }
         const base64 = btoa(binary);
 
         try {
+          const chunkMs = Math.round((float32Samples.length / sourceSampleRate) * 1000);
           this.ws.send(
             JSON.stringify({
               realtimeInput: {
@@ -964,47 +979,92 @@ export class GeminiLiveSession {
             })
           );
           this.chunksSent++;
-        } catch {}
+          voiceDebugStore.recordChunkSent(rms, chunkMs);
+        } catch (sendErr: any) {
+          voiceDebugStore.recordError(sendErr?.message || String(sendErr));
+        }
       };
 
       let workletActive = false;
-      try {
-        const processorCode = `
-          class AudioProcessor extends AudioWorkletProcessor {
-            process(inputs) {
-              const input = inputs[0];
-              if (input && input.length > 0 && input[0].length > 0) {
-                this.port.postMessage(input[0]);
+      if (this.audioCtx.audioWorklet && typeof AudioWorkletNode === 'function') {
+        try {
+          const processorCode = `
+            class RoseLiveCaptureProcessor extends AudioWorkletProcessor {
+              constructor() {
+                super();
+                const sr = typeof sampleRate === 'number' && sampleRate > 0 ? sampleRate : ${sourceSampleRate};
+                this.targetSamples = Math.max(256, Math.min(Math.round(sr * 0.1), Math.round(sr * 0.04)));
+                this._buf = new Float32Array(this.targetSamples);
+                this._offset = 0;
               }
-              return true;
+              process(inputs) {
+                const input = inputs[0];
+                if (input && input.length > 0 && input[0] && input[0].length > 0) {
+                  const ch = input[0];
+                  let i = 0;
+                  while (i < ch.length) {
+                    const rem = this.targetSamples - this._offset;
+                    const copyCount = Math.min(rem, ch.length - i);
+                    this._buf.set(ch.subarray(i, i + copyCount), this._offset);
+                    this._offset += copyCount;
+                    i += copyCount;
+                    if (this._offset >= this.targetSamples) {
+                      const chunk = new Float32Array(this._buf);
+                      this.port.postMessage(chunk, [chunk.buffer]);
+                      this._offset = 0;
+                    }
+                  }
+                }
+                return true;
+              }
             }
-          }
-          registerProcessor('audio-processor', AudioProcessor);
-        `;
-        const blob = new Blob([processorCode], { type: 'application/javascript' });
-        const url = URL.createObjectURL(blob);
-        await this.audioCtx.audioWorklet.addModule(url);
-        URL.revokeObjectURL(url);
+            registerProcessor('rose-live-capture-processor', RoseLiveCaptureProcessor);
+          `;
+          const blob = new Blob([processorCode], { type: 'application/javascript' });
+          const url = URL.createObjectURL(blob);
+          await this.audioCtx.audioWorklet.addModule(url);
+          URL.revokeObjectURL(url);
 
-        this.audioWorkletNode = new AudioWorkletNode(this.audioCtx, 'audio-processor');
-        this.audioWorkletNode.port.onmessage = (e) => {
-          if (e.data && e.data instanceof Float32Array) {
-            processPcmBuffer(e.data);
-          }
-        };
-        workletActive = true;
-      } catch {}
+          this.audioWorkletNode = new AudioWorkletNode(this.audioCtx, 'rose-live-capture-processor');
+          this.audioWorkletNode.port.onmessage = (e) => {
+            if (e.data && e.data instanceof Float32Array) {
+              sendPcm40msChunk(e.data);
+            }
+          };
+          workletActive = true;
+          voiceDebugStore.recordAudioContextInit(sourceSampleRate, 'Worklet', actualChunkMs);
+        } catch (workletErr) {
+          console.warn('[GeminiLive] AudioWorklet setup failed, falling back to ScriptProcessor(1024):', workletErr);
+          workletActive = false;
+        }
+      }
 
       if (!workletActive) {
-        this.scriptProcessor = this.audioCtx.createScriptProcessor(4096, 1, 1);
+        // Fallback to ScriptProcessor 1024 only if AudioWorklet is missing, batching ~40ms (never > 100ms)
+        this.scriptProcessor = this.audioCtx.createScriptProcessor(1024, 1, 1);
+        let spBuffer = new Float32Array(targetChunkSamples);
+        let spOffset = 0;
         this.scriptProcessor.onaudioprocess = (e) => {
           const input = e.inputBuffer.getChannelData(0);
-          processPcmBuffer(input);
+          let i = 0;
+          while (i < input.length) {
+            const rem = targetChunkSamples - spOffset;
+            const copyCount = Math.min(rem, input.length - i);
+            spBuffer.set(input.subarray(i, i + copyCount), spOffset);
+            spOffset += copyCount;
+            i += copyCount;
+            if (spOffset >= targetChunkSamples) {
+              sendPcm40msChunk(spBuffer);
+              spBuffer = new Float32Array(targetChunkSamples);
+              spOffset = 0;
+            }
+          }
         };
         const silentGain = this.audioCtx.createGain();
         silentGain.gain.value = 0;
         this.scriptProcessor.connect(silentGain);
         silentGain.connect(this.audioCtx.destination);
+        voiceDebugStore.recordAudioContextInit(sourceSampleRate, 'ScriptProcessor', actualChunkMs);
       }
 
       this.attachMicStreamToAudioGraph(this.micStream);
@@ -1024,6 +1084,7 @@ export class GeminiLiveSession {
         String(e?.message || '').toLowerCase().includes('denied');
       const msg = isDenied ? 'মাইক অনুমতি নেই' : `মাইক ত্রুটি: ${e?.message || e}`;
       this.lastError = msg;
+      voiceDebugStore.recordError(msg);
       this.options.onError?.(msg);
       this.updateState('off');
       return false;
@@ -1751,23 +1812,28 @@ export class GeminiLiveSession {
       content.input_audio_transcription ||
       content.userTurn?.parts?.find((p: any) => p.text);
     if (inTrans) {
-      const textVal = typeof inTrans === 'string' ? inTrans : inTrans.text || inTrans.parts?.[0]?.text;
-      if (textVal && isValidVoiceTranscript(textVal)) {
-        this.liveUserBuffer += textVal;
-        const combined = this.liveUserBuffer.trim();
-        if (isValidVoiceTranscript(combined)) {
-          this.liveStreetAllowed = passesStreetModeFilter(
-            combined,
-            this.options.assistantName,
-            isPushToTalkCurrentlyActive()
-          );
-          if (this.liveStreetAllowed) {
-            this.lastHeardText = combined;
-            if (this.currentState !== 'speaking') {
-              this.awaitingReplySince = Date.now();
+      const rawText = typeof inTrans === 'string' ? inTrans : inTrans.text || inTrans.parts?.[0]?.text;
+      if (typeof rawText === 'string' && rawText.length > 0) {
+        // Strip only noise markers like <noise>, [noise], etc., and emit immediately without debounce or min-length gating
+        const cleanedChunk = rawText.replace(/<[^>]*>|\[[^\]]*\]/g, '');
+        if (cleanedChunk.length > 0) {
+          this.liveUserBuffer += cleanedChunk;
+          const combined = this.liveUserBuffer.trim();
+          if (combined.length > 0) {
+            this.liveStreetAllowed = passesStreetModeFilter(
+              combined,
+              this.options.assistantName,
+              isPushToTalkCurrentlyActive()
+            );
+            if (this.liveStreetAllowed) {
+              this.lastHeardText = combined;
+              if (this.currentState !== 'speaking') {
+                this.awaitingReplySince = Date.now();
+              }
+              voiceDebugStore.recordFirstTranscript(combined);
+              // Immediate emission the moment each chunk arrives (no waiting, no debounce)
+              this.options.onTranscription?.('user', combined, false);
             }
-            // Continuous update for user transcription
-            this.options.onTranscription?.('user', combined, false);
           }
         }
       }
@@ -1788,7 +1854,8 @@ export class GeminiLiveSession {
           this.options.assistantName,
           consumePushToTalkTurnFlag()
         );
-        if (this.liveStreetAllowed && isValidVoiceTranscript(finalUser)) {
+        if (this.liveStreetAllowed) {
+          voiceDebugStore.recordFirstTranscript(finalUser);
           this.options.onTranscription?.('user', finalUser, true);
         }
       }
@@ -1823,7 +1890,8 @@ export class GeminiLiveSession {
           this.options.assistantName,
           consumePushToTalkTurnFlag()
         );
-        if (this.liveStreetAllowed && isValidVoiceTranscript(finalUser)) {
+        if (this.liveStreetAllowed) {
+          voiceDebugStore.recordFirstTranscript(finalUser);
           this.options.onTranscription?.('user', finalUser, true);
         }
       }
@@ -1840,6 +1908,7 @@ export class GeminiLiveSession {
           if (this.scheduledAudioSources.length === 0 && this.pendingPcmSamplesCount === 0) {
             this.needsGainResetForTurn = true;
           }
+          voiceDebugStore.recordFirstRoseAudio();
           this.liveTurnCompleted = false;
           this.pauseMicDuringSpeech();
           this.updateState('speaking');
@@ -1874,6 +1943,7 @@ export class GeminiLiveSession {
       this.liveAssistantBuffer = '';
       this.liveStreetAllowed = true;
       this.liveTurnCompleted = true;
+      voiceDebugStore.finishTurn();
       this.stopAllAudioPlayback();
       this.finishSpeakingAndReturnToListening();
       this.options.onInterrupted?.();
@@ -1890,7 +1960,8 @@ export class GeminiLiveSession {
           this.options.assistantName,
           consumePushToTalkTurnFlag()
         );
-        if (this.liveStreetAllowed && isValidVoiceTranscript(finalUser)) {
+        if (this.liveStreetAllowed) {
+          voiceDebugStore.recordFirstTranscript(finalUser);
           this.options.onTranscription?.('user', finalUser, true);
         }
       } else if (this.userStartedSpeakingEmitted) {
@@ -1909,6 +1980,7 @@ export class GeminiLiveSession {
       this.liveAssistantBuffer = '';
       this.liveStreetAllowed = true;
       this.liveTurnCompleted = true;
+      voiceDebugStore.finishTurn();
       this.flushPendingPcmChunks(true);
       this.scheduleReturnToListening();
       this.options.onTurnComplete?.();
@@ -2076,11 +2148,6 @@ export class GeminiLiveSession {
       this.clipUsedPushToTalk = isPushToTalkCurrentlyActive();
       resetPushToTalkTurnFlag();
 
-      if (!this.userStartedSpeakingEmitted && !this.liveUserBuffer.trim()) {
-        this.userStartedSpeakingEmitted = true;
-        this.options.onTranscription?.('user', 'শুনছি...', false);
-      }
-
       this.mediaRecorder = recorder;
 
       recorder.ondataavailable = (ev) => {
@@ -2234,6 +2301,7 @@ export class GeminiLiveSession {
               transcriptValidated = true;
               emittedUserTranscript = parsedTrans;
               this.lastHeardText = parsedTrans;
+              voiceDebugStore.recordFirstTranscript(parsedTrans);
               this.options.onTranscription?.('user', parsedTrans, true);
             } else {
               transcriptValidated = false;
@@ -2577,14 +2645,22 @@ export class GeminiLiveSession {
           this.micStream.getAudioTracks().some((t) => t.readyState === 'live');
         if (!hasLiveTrack) {
           const mlSettings = getMicListeningSettings();
+          const isApp = isAndroidApp();
           this.micStream = await getGlobalMicStream({
-            audio: {
-              echoCancellation: false,
-              noiseSuppression: mlSettings.cleanVoice,
-              autoGainControl: false,
-              sampleRate: { ideal: 48000 },
-              channelCount: { ideal: 1 },
-            },
+            audio: isApp
+              ? {
+                  autoGainControl: true,
+                  noiseSuppression: true,
+                  echoCancellation: true,
+                  channelCount: { ideal: 1 },
+                }
+              : {
+                  echoCancellation: false,
+                  noiseSuppression: mlSettings.cleanVoice,
+                  autoGainControl: false,
+                  sampleRate: { ideal: 48000 },
+                  channelCount: { ideal: 1 },
+                },
           });
           if (!this.wasStoppedByUser && this.micStream && (this.currentState as string) !== 'speaking') {
             this.micReleasedAt = 0;
@@ -2768,6 +2844,7 @@ export class GeminiLiveSession {
           }
 
           // SampleRate strictly 24000; browser resamples cleanly to ctx.sampleRate
+          voiceDebugStore.recordFirstRoseAudio();
           const audioBuffer = ctx.createBuffer(1, float32.length, 24000);
           audioBuffer.copyToChannel(float32, 0);
 

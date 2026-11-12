@@ -1,25 +1,36 @@
-
-class AudioProcessor extends AudioWorkletProcessor {
+class RoseAudioProcessor extends AudioWorkletProcessor {
   constructor() {
     super();
-    this.buffer = new Int16Array(1024);
-    this.offset = 0;
+    const sr = typeof sampleRate === 'number' && sampleRate > 0 ? sampleRate : 48000;
+    // Target ~40ms chunk size (never > 100ms)
+    this.targetSamples = Math.max(128, Math.min(Math.round(sr * 0.1), Math.round(sr * 0.04)));
+    this._buffer = new Float32Array(this.targetSamples);
+    this._offset = 0;
   }
 
-  process(inputs, outputs, parameters) {
+  process(inputs) {
     const input = inputs[0];
-    if (input.length > 0) {
-      const channel = input[0];
-      // Convert Float32 to Int16
-      const pcm16 = new Int16Array(channel.length);
-      for (let i = 0; i < channel.length; i++) {
-        const s = Math.max(-1, Math.min(1, channel[i]));
-        pcm16[i] = s < 0 ? s * 0x8000 : s * 0x7FFF;
+    if (input && input.length > 0) {
+      const channelData = input[0];
+      if (channelData && channelData.length > 0) {
+        let i = 0;
+        while (i < channelData.length) {
+          const remaining = this.targetSamples - this._offset;
+          const toCopy = Math.min(remaining, channelData.length - i);
+          this._buffer.set(channelData.subarray(i, i + toCopy), this._offset);
+          this._offset += toCopy;
+          i += toCopy;
+
+          if (this._offset >= this.targetSamples) {
+            const out = new Float32Array(this._buffer);
+            this.port.postMessage(out, [out.buffer]);
+            this._offset = 0;
+          }
+        }
       }
-      this.port.postMessage(pcm16.buffer, [pcm16.buffer]);
     }
     return true;
   }
 }
 
-registerProcessor('audio-processor', AudioProcessor);
+registerProcessor('rose-audio-processor', RoseAudioProcessor);

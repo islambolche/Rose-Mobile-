@@ -81,15 +81,24 @@ export async function getGlobalMicStream(
       throw notFoundErr;
     }
 
+    const isApp = typeof window !== 'undefined' && (window as any).Capacitor?.isNativePlatform?.() === true;
     const { cleanVoice } = getMicListeningSettings();
-    const audioConstraints: MediaTrackConstraints = {
-      ...(typeof options?.audio === 'object' ? options.audio : {}),
-      echoCancellation: false,
-      noiseSuppression: cleanVoice,
-      autoGainControl: false,
-      sampleRate: { ideal: 48000 },
-      channelCount: { ideal: 1 },
-    };
+    const audioConstraints: MediaTrackConstraints = isApp
+      ? {
+          ...(typeof options?.audio === 'object' ? options.audio : {}),
+          autoGainControl: true,
+          noiseSuppression: true,
+          echoCancellation: true,
+          channelCount: { ideal: 1 },
+        }
+      : {
+          ...(typeof options?.audio === 'object' ? options.audio : {}),
+          echoCancellation: false,
+          noiseSuppression: cleanVoice,
+          autoGainControl: false,
+          sampleRate: { ideal: 48000 },
+          channelCount: { ideal: 1 },
+        };
 
     const stream = await navigator.mediaDevices.getUserMedia({
       ...options,
