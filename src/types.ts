@@ -83,6 +83,7 @@ export interface UserPreferences {
   showVoiceDebug?: boolean;
   viewMode?: 'auto' | 'mobile' | 'pc';
   backgroundCallEnabled?: boolean;
+  floatingCallEnabled?: boolean;
   [key: string]: any;
 }
 

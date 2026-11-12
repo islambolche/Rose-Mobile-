@@ -69,6 +69,7 @@ import {
   Activity,
   Move,
   Sliders,
+  PictureInPicture,
 } from "lucide-react";
 import {
   AssistantSettings,
@@ -8208,6 +8209,7 @@ export function App() {
       onToast: (msg) => setToast(msg),
       micStream: micStream,
       backgroundCallEnabled: prefsRef.current.backgroundCallEnabled,
+       floatingCallEnabled: prefsRef.current.floatingCallEnabled,
       onStateChange: (state) => {
         if (state === 'listening') transitionToState("LISTENING");
         else if (state === 'thinking') transitionToState("THINKING");
@@ -11322,6 +11324,45 @@ export function App() {
             >
               <span className="w-6 h-6 rounded-full bg-white shadow-md" />
             </button>
+          </div>
+
+          {/* Floating Call Toggle */}
+          <div className="w-full p-5 bg-[#0F172A]/80 rounded-[2.5rem] border border-purple-500/30 shadow-2xl flex items-center justify-between">
+            <div className="flex items-center gap-4">
+              <div className="w-12 h-12 rounded-full bg-purple-600/10 border border-purple-500/20 flex items-center justify-center text-purple-400 shrink-0">
+                <PictureInPicture className="w-6 h-6" />
+              </div>
+              <div>
+                <h4 className="text-base font-black uppercase tracking-wider text-white leading-none mb-1">
+                  FLOATING CALL
+                </h4>
+                <p className="text-[10px] text-slate-400 font-bold uppercase tracking-widest">
+                  PIP MODE FOR CALLS
+                </p>
+                {!document.pictureInPictureEnabled && (
+                  <p className="text-[9px] text-red-400 mt-1 font-bold">এই ফোনের ব্রাউজারে ভাসমান জানালা চলে না, APK লাগবে</p>
+                )}
+              </div>
+            </div>
+            {document.pictureInPictureEnabled && (
+              <button
+                type="button"
+                role="switch"
+                aria-checked={prefs.floatingCallEnabled}
+                onClick={() => {
+                  const next = !prefs.floatingCallEnabled;
+                  setPrefs((p) => ({ ...p, floatingCallEnabled: next }));
+                  localStorage.setItem("iyabd_prefs", JSON.stringify({ ...prefs, floatingCallEnabled: next }));
+                  prefsRef.current = { ...prefs, floatingCallEnabled: next };
+                }}
+                className={
+                  "w-14 h-8 rounded-full p-1 transition-colors shrink-0 flex items-center " +
+                  (prefs.floatingCallEnabled ? "bg-purple-600 justify-end" : "bg-slate-700 justify-start")
+                }
+              >
+                <span className="w-6 h-6 rounded-full bg-white shadow-md" />
+              </button>
+            )}
           </div>
 
           {/* b. LISTEN WHEN APP OPENS */}
@@ -14867,13 +14908,23 @@ export function App() {
                 <h2 className="text-2xl font-black italic text-purple-200 tracking-tight">Rose 🌹</h2>
                 <div className="w-2.5 h-2.5 rounded-full bg-teal-400 animate-pulse shadow-sm shadow-teal-400" />
               </div>
-              <button
-                onClick={() => setIsCallMinimized(true)}
-                className="p-3 bg-white/5 border border-white/10 rounded-2xl text-slate-300 hover:text-white active:scale-95 transition-transform"
-                aria-label="Minimize Call"
-              >
-                <ChevronDown className="w-6 h-6" />
-              </button>
+              <div className="flex items-center gap-2">
+                {prefs.floatingCallEnabled && (
+                  <button
+                    onClick={() => liveSessionRef.current?.enterPiP()}
+                    className="px-4 py-2 bg-purple-600 rounded-full text-xs font-bold text-white shadow-lg active:scale-95 transition-transform"
+                  >
+                    ভাসমান
+                  </button>
+                )}
+                <button
+                  onClick={() => setIsCallMinimized(true)}
+                  className="p-3 bg-white/5 border border-white/10 rounded-2xl text-slate-300 hover:text-white active:scale-95 transition-transform"
+                  aria-label="Minimize Call"
+                >
+                  <ChevronDown className="w-6 h-6" />
+                </button>
+              </div>
             </div>
 
             {/* Empty spacer to preserve exact orb and bottom controls position */}

@@ -77,6 +77,7 @@ export interface GeminiLiveOptions {
   playbackAudioContext?: AudioContext;
   micStream?: MediaStream;
   backgroundCallEnabled?: boolean;
+  floatingCallEnabled?: boolean;
 }
 
 export function parseAndFormatGeminiError(status: number | string, rawMsg: string): { bengali: string; original: string } {
@@ -368,6 +369,58 @@ export class GeminiLiveSession {
 
   constructor(private options: GeminiLiveOptions) {}
 
+  private pipVideoElement: HTMLVideoElement | null = null;
+  private pipCanvas: HTMLCanvasElement | null = null;
+  private pipStream: MediaStream | null = null;
+  
+  public enterPiP() {
+    if (!this.pipVideoElement) {
+      this.pipVideoElement = document.createElement('video');
+      this.pipVideoElement.muted = true;
+      this.pipVideoElement.playsInline = true;
+      this.pipCanvas = document.createElement('canvas');
+      this.pipCanvas.width = 320;
+      this.pipCanvas.height = 320;
+      this.pipStream = (this.pipCanvas as any).captureStream(5);
+      this.pipVideoElement.srcObject = this.pipStream;
+      this.pipVideoElement.play();
+      this.drawPiP();
+    }
+    this.pipVideoElement.requestPictureInPicture();
+  }
+
+  public exitPiP() {
+    if (document.pictureInPictureElement) {
+      document.exitPictureInPicture();
+    }
+    if (this.pipVideoElement) {
+      this.pipVideoElement.pause();
+      this.pipVideoElement = null;
+      this.pipCanvas = null;
+      this.pipStream = null;
+    }
+  }
+
+  private drawPiP() {
+    if (!this.pipCanvas || !this.pipVideoElement) return;
+    const ctx = this.pipCanvas.getContext('2d');
+    if (!ctx) return;
+    ctx.fillStyle = '#4c1d95';
+    ctx.fillRect(0, 0, 320, 320);
+    ctx.beginPath();
+    ctx.arc(160, 160, 80 + (this.currentOutputLevel * 20), 0, 2 * Math.PI);
+    ctx.strokeStyle = '#c084fc';
+    ctx.stroke();
+    ctx.fillStyle = '#fff';
+    ctx.beginPath();
+    ctx.arc(160, 160, 60, 0, 2 * Math.PI);
+    ctx.fill();
+    ctx.fillStyle = '#000';
+    ctx.font = '20px sans-serif';
+    ctx.fillText('কল চলছে', 120, 280);
+    requestAnimationFrame(() => this.drawPiP());
+  }
+
   private setupMediaSession() {
     if ('mediaSession' in navigator && this.options.backgroundCallEnabled) {
       navigator.mediaSession.metadata = new MediaMetadata({
@@ -561,6 +614,8 @@ export class GeminiLiveSession {
             if (document.visibilityState === 'visible') {
               if (this.audioCtx && this.audioCtx.state === 'suspended') this.audioCtx.resume();
               if (this.playbackAudioCtx && this.playbackAudioCtx.state === 'suspended') this.playbackAudioCtx.resume();
+            } else if (document.visibilityState === 'hidden' && this.options.floatingCallEnabled) {
+              this.enterPiP();
             }
           };
           document.addEventListener('visibilitychange', this.visChangeHandler);
@@ -3028,6 +3083,7 @@ export class GeminiLiveSession {
   }
 
   public stop() {
+    this.exitPiP();
     this.wasStoppedByUser = true;
     this.isReconnecting = false;
     this.visualizerRunning = false;
