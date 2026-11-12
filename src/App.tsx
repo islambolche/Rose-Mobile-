@@ -184,6 +184,7 @@ import { PcSetupPage, PcSetupPageId } from "./components/PcSetupViews";
 import { buildRoseSystemInstruction } from "./lib/roseConfig";
 import { sendPcCommand } from "./lib/pcCommand";
 import { PAGES_REGISTRY } from "./lib/navRegistry";
+import { sendTypedChat } from "./lib/typedChat";
 import { Folder, ShieldCheck } from "lucide-react";
 
 const APP_VERSION = "v1.4.0";
@@ -6434,6 +6435,30 @@ export function App() {
         }
       } catch (err) {
         console.warn("[LocalRouter] Execution error:", err);
+      }
+
+      if (isTypedChat) {
+        try {
+          const replyText = await sendTypedChat(chatHistoryRef.current, userText);
+          updateSharedRoseBubble(replyText);
+          isProcessingGeminiRef.current = false;
+          setStatus("idle");
+          return;
+        } catch (err: any) {
+          const exactMsg = err?.message || String(err);
+          setLiveErrorMsg(exactMsg);
+          setToast(exactMsg);
+          pushSharedMessage({
+            role: "system",
+            text: exactMsg,
+            isError: true,
+            debugLine: exactMsg,
+            retryText: userText,
+          } as any);
+          isProcessingGeminiRef.current = false;
+          setStatus("idle");
+          return;
+        }
       }
 
       const extractCompletedSentences = () => {
