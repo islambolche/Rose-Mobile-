@@ -21,6 +21,7 @@ import {
 import { NoiseGateEngine } from './noiseGate';
 import {
   getMicListeningSettings,
+  saveMicListeningSettings,
   getSensitivityThresholds,
   preloadAudioEnhancementsInBackground,
   loadRnnoiseWasmBinary,
@@ -311,6 +312,7 @@ export class GeminiLiveSession {
   private isFallbackMode = false;
   private lastTtsAttemptError: string | null = null;
   private cachedApiKey = '';
+  private vadConfigRejected = false;
 
   // Watchdog & Reconnect timers / state
   private watchdogTimer: any = null;
@@ -1097,13 +1099,16 @@ export class GeminiLiveSession {
           outputAudioTranscription: {},
         };
 
-        if (micSettings.fastReply) {
+        if (micSettings.fastReply && !this.vadConfigRejected) {
+          let silenceMs = 500;
+          if (micSettings.fastReplySpeed === 'Normal') silenceMs = 800;
+          else if (micSettings.fastReplySpeed === 'Very fast') silenceMs = 350;
+
           setupPayload.realtimeInputConfig = {
             automaticActivityDetection: {
-              startOfSpeechSensitivity: 'LOW',
               endOfSpeechSensitivity: 'HIGH',
               prefixPaddingMs: 200,
-              silenceDurationMs: micSettings.streetMode ? 400 : 500,
+              silenceDurationMs: silenceMs,
             },
           };
         }
@@ -1162,6 +1167,26 @@ export class GeminiLiveSession {
               String(msg.error?.message || msg.error?.status || 'server_error')
             );
             console.log('[GeminiLive] Server error message — reason:', safeErr);
+            
+            // Check if VAD config was rejected
+            if (safeErr.toLowerCase().includes('automatic_activity_detection') || safeErr.toLowerCase().includes('realtime_input_config')) {
+              console.warn('[GeminiLive] Server rejected VAD config. Retrying without it.');
+              this.vadConfigRejected = true;
+              const micSettings = getMicListeningSettings();
+              if (micSettings.fastReply) {
+                saveMicListeningSettings({ fastReply: false });
+                this.options.onToast?.("Fast reply এই মডেলে চলে না");
+              }
+              if (!settled) {
+                finish(false);
+                return;
+              }
+              if (!this.wasStoppedByUser && this.ws === socket) {
+                void this.handleLiveDisconnectAndAutoReconnect(apiKey, 'vad_config_rejected', 1);
+              }
+              return;
+            }
+
             if (!settled) {
               finish(false);
               return;
@@ -1506,6 +1531,7 @@ export class GeminiLiveSession {
             if (this.currentState !== 'speaking') {
               this.awaitingReplySince = Date.now();
             }
+            // Continuous update for user transcription
             this.options.onTranscription?.('user', combined, false);
           }
         }
@@ -1542,6 +1568,7 @@ export class GeminiLiveSession {
           cleanAssistantReplyText(this.liveAssistantBuffer.trim(), this.options.language)
         );
         if (cleanedLive) {
+          // Continuous update for assistant transcription
           this.options.onTranscription?.('assistant', cleanedLive, false);
         }
       }
@@ -1587,6 +1614,7 @@ export class GeminiLiveSession {
             cleanAssistantReplyText(this.liveAssistantBuffer.trim(), this.options.language)
           );
           if (cleanedLive) {
+            // Continuous update for assistant transcription
             this.options.onTranscription?.('assistant', cleanedLive, false);
           }
         }

@@ -42,6 +42,7 @@ import {
   resetAudioSettings,
   MicListeningSettings,
   NoiseGateSensitivity,
+  FastReplySpeed,
 } from "../lib/cleanVoiceAndVad";
 import { NoiseGateEngine } from "../lib/noiseGate";
 
@@ -1446,16 +1447,38 @@ export const VoiceLanguageSettings: React.FC<VoiceLanguageSettingsProps> = ({
                         </button>
                       </div>
 
+                      {/* Reply speed selector */}
                       <div className="pt-3 border-t border-white/5 space-y-2">
-                        <h5 className="text-xs font-bold uppercase tracking-wider text-purple-400">Active Parameters</h5>
+                        <label className="text-xs font-bold text-slate-300 uppercase tracking-wider block">
+                          Reply speed
+                        </label>
+                        <div className="grid grid-cols-3 gap-2">
+                          {(["Normal", "Fast", "Very fast"] as FastReplySpeed[]).map((speed) => {
+                            const isSel = micSettingsState.fastReplySpeed === speed;
+                            return (
+                              <button
+                                key={speed}
+                                type="button"
+                                onClick={() => updateMicConfig({ fastReplySpeed: speed })}
+                                className={`py-2.5 rounded-xl border text-[10px] font-black uppercase transition-all ${
+                                  isSel
+                                    ? "bg-purple-600 border-purple-400 text-white shadow-lg shadow-purple-900/40"
+                                    : "bg-slate-900 border-white/10 text-slate-400 hover:text-white"
+                                }`}
+                              >
+                                {speed}
+                              </button>
+                            );
+                          })}
+                        </div>
+                      </div>
+
+                      <div className="pt-3 border-t border-white/5 space-y-2">
+                        <h5 className="text-xs font-bold uppercase tracking-wider text-purple-400">Active VAD Parameters</h5>
                         <div className="bg-slate-900/80 rounded-xl p-3 space-y-1.5 font-mono text-xs border border-white/5 text-slate-300">
                           <div className="flex justify-between">
-                            <span className="text-slate-400">startOfSpeechSensitivity:</span>
-                            <span className="text-emerald-400 font-bold">LOW</span>
-                          </div>
-                          <div className="flex justify-between">
                             <span className="text-slate-400">endOfSpeechSensitivity:</span>
-                            <span className="text-emerald-400 font-bold">HIGH</span>
+                            <span className="text-emerald-400 font-bold uppercase">HIGH</span>
                           </div>
                           <div className="flex justify-between">
                             <span className="text-slate-400">prefixPaddingMs:</span>
@@ -1463,7 +1486,10 @@ export const VoiceLanguageSettings: React.FC<VoiceLanguageSettingsProps> = ({
                           </div>
                           <div className="flex justify-between">
                             <span className="text-slate-400">silenceDurationMs:</span>
-                            <span className="text-amber-400 font-bold">{micSettingsState.streetMode ? "400 ms (Street)" : "500 ms"}</span>
+                            <span className="text-amber-400 font-bold">
+                              {micSettingsState.fastReplySpeed === 'Normal' ? '800 ms' : 
+                               micSettingsState.fastReplySpeed === 'Very fast' ? '350 ms' : '500 ms'}
+                            </span>
                           </div>
                         </div>
                       </div>

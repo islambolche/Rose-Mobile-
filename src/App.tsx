@@ -4697,8 +4697,11 @@ export function App() {
     };
     setChatHistory((prev) => [...prev, userMsg]);
 
+    const assistantMsgId = `msg-assistant-${Date.now()}`;
+    let accumulatedText = "";
+    let statusSetToIdle = false;
+
     try {
-      let data: any = null;
       const geminiKey = (getGeminiKey() || apiKeys.gemini || "").replace(/["'\r\n\t\s]+/g, "").trim();
       if (!geminiKey) {
         setToast("Add your Gemini key in Settings > Connections.");
@@ -4706,64 +4709,74 @@ export function App() {
         return;
       }
 
-      for (const model of PRIORITY_ANSWER_MODELS) {
-        if (isModelExhausted(model)) continue;
+      await directGeminiStream(
+        {
+          contents: [{ role: "user", parts: [{ text: formatUserPromptWithCharacterGuard(text, settings, prefs) }] }],
+          systemInstruction: buildSystemInstruction(settings, prefs, mode === "voice"),
+          generationConfig: {
+            temperature: 0.9,
+            maxOutputTokens:
+              settings.responseStyle === "Detailed"
+                ? 800
+                : settings.responseStyle === "Balanced"
+                  ? 350
+                  : 180,
+          },
+          apiKey: geminiKey,
+          model: PRIORITY_ANSWER_MODELS[0], // Try first model for stream
+        },
+        (chunk) => {
+          if (!chunk) return;
+          accumulatedText += chunk;
+          
+          if (!statusSetToIdle) {
+            setStatus("idle");
+            statusSetToIdle = true;
+          }
 
-        try {
-          const result = await directGeminiGenerate({
-            model: model,
-            contents: [{ role: "user", parts: [{ text: formatUserPromptWithCharacterGuard(text, settings, prefs) }] }],
-            systemInstruction: buildSystemInstruction(settings, prefs, mode === "voice"),
-            generationConfig: {
-              temperature: 0.9,
-              maxOutputTokens:
-                settings.responseStyle === "Detailed"
-                  ? 650
-                  : settings.responseStyle === "Balanced"
-                    ? 280
-                    : 140,
-            },
-            apiKey: geminiKey,
+          setChatHistory((prev) => {
+            const last = prev[prev.length - 1];
+            if (last && last.id === assistantMsgId) {
+              return [
+                ...prev.slice(0, -1),
+                { ...last, content: accumulatedText, text: accumulatedText }
+              ];
+            } else {
+              return [
+                ...prev,
+                {
+                  id: assistantMsgId,
+                  role: "assistant",
+                  content: accumulatedText,
+                  text: accumulatedText,
+                  replyMode: mode,
+                  time: new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })
+                }
+              ];
+            }
           });
-
-          const replyText = result.candidates?.[0]?.content?.parts?.[0]?.text;
-          if (replyText) {
-            incrementUsage("answer");
-            data = { app: "chat", message: replyText.trim() };
-            break;
-          }
-        } catch (err: any) {
-          const errMsg = (err.message || "").toLowerCase();
-          if (errMsg.includes("quota") || errMsg.includes("limit") || errMsg.includes("429")) {
-            markModelExhausted(model);
-          }
         }
-      }
+      );
 
-      if (!data) {
-        showQuotaToastOnce("Quota reached, will work again tomorrow", setToast);
-        data = {
-          app: "chat",
-          message: "Gemini quota limit reached. Will work again tomorrow.",
-        };
+      incrementUsage("answer");
+      if (mode === "voice" && accumulatedText) {
+        speakSentenceViaGeminiTTS(accumulatedText);
       }
-
-      if (data.app === "chat") {
-        const assistMsg: Message = { 
-          role: "assistant", 
-          content: data.message,
-          replyMode: mode 
-        };
-        setChatHistory((prev) => [...prev, assistMsg]);
-        if (mode === "voice") speakSentenceViaGeminiTTS(data.message);
-        setStatus("idle");
-      } else {
-        setCurrentAction(data);
-        setStatus("confirming");
-        if (mode === "voice") speakSentenceViaGeminiTTS(data.message);
+    } catch (error: any) {
+      console.error("Stream error:", error);
+      setStatus("idle");
+      // Fallback for non-streaming or error
+      if (!accumulatedText) {
+        setChatHistory((prev) => [
+          ...prev,
+          {
+            role: "assistant",
+            content: "Sorry, I encountered an error. Please try again.",
+            replyMode: mode
+          }
+        ]);
       }
-    } catch (error) {
-      console.error(error);
+    } finally {
       setStatus("idle");
     }
   };

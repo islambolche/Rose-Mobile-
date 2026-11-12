@@ -2,12 +2,14 @@ import * as ort from 'onnxruntime-web/wasm';
 
 export type MicSensitivityLevel = 'low' | 'medium' | 'high';
 export type NoiseGateSensitivity = 'Low' | 'Medium' | 'High';
+export type FastReplySpeed = 'Normal' | 'Fast' | 'Very fast';
 
 export interface MicListeningSettings {
   cleanVoice: boolean;
   noiseGate: boolean;
   noiseGateSensitivity: NoiseGateSensitivity;
   fastReply: boolean;
+  fastReplySpeed: FastReplySpeed;
   smartListen: boolean;
   streetMode: boolean;
   micSensitivity: MicSensitivityLevel;
@@ -17,6 +19,7 @@ const STORAGE_KEY_CLEAN_VOICE = 'rose_clean_voice';
 const STORAGE_KEY_NOISE_GATE = 'rose_noise_gate';
 const STORAGE_KEY_NOISE_GATE_SENS = 'rose_noise_gate_sens';
 const STORAGE_KEY_FAST_REPLY = 'rose_fast_reply';
+const STORAGE_KEY_FAST_REPLY_SPEED = 'rose_fast_reply_speed';
 const STORAGE_KEY_SMART_LISTEN = 'rose_smart_listen';
 const STORAGE_KEY_STREET_MODE = 'rose_street_mode';
 const STORAGE_KEY_MIC_SENSITIVITY = 'rose_mic_sensitivity';
@@ -29,7 +32,8 @@ export function getMicListeningSettings(): MicListeningSettings {
         cleanVoice: false,
         noiseGate: false,
         noiseGateSensitivity: 'Medium',
-        fastReply: false,
+        fastReply: true,
+        fastReplySpeed: 'Fast',
         smartListen: true,
         streetMode: false,
         micSensitivity: 'medium',
@@ -40,7 +44,7 @@ export function getMicListeningSettings(): MicListeningSettings {
     if (localStorage.getItem(STORAGE_KEY_MIGRATION_RESET_V3) !== 'true') {
       localStorage.setItem(STORAGE_KEY_CLEAN_VOICE, 'false');
       localStorage.setItem(STORAGE_KEY_NOISE_GATE, 'false');
-      localStorage.setItem(STORAGE_KEY_FAST_REPLY, 'false');
+      localStorage.setItem(STORAGE_KEY_FAST_REPLY, 'true'); // User wants default On now
       localStorage.setItem(STORAGE_KEY_STREET_MODE, 'false');
       localStorage.setItem(STORAGE_KEY_MIGRATION_RESET_V3, 'true');
     }
@@ -49,6 +53,7 @@ export function getMicListeningSettings(): MicListeningSettings {
     const rawGate = localStorage.getItem(STORAGE_KEY_NOISE_GATE);
     const rawGateSens = localStorage.getItem(STORAGE_KEY_NOISE_GATE_SENS);
     const rawFast = localStorage.getItem(STORAGE_KEY_FAST_REPLY);
+    const rawFastSpeed = localStorage.getItem(STORAGE_KEY_FAST_REPLY_SPEED);
     const rawSmart = localStorage.getItem(STORAGE_KEY_SMART_LISTEN);
     const rawStreet = localStorage.getItem(STORAGE_KEY_STREET_MODE);
     const rawSens = localStorage.getItem(STORAGE_KEY_MIC_SENSITIVITY);
@@ -63,18 +68,23 @@ export function getMicListeningSettings(): MicListeningSettings {
       : rawGateSens === 'Low' || rawGateSens === 'Medium' || rawGateSens === 'High'
       ? rawGateSens
       : 'Medium';
-    const fastReply = streetMode ? true : rawFast === 'true';
+    const fastReply = streetMode ? true : rawFast === null ? true : rawFast === 'true';
+    const fastReplySpeed: FastReplySpeed =
+      rawFastSpeed === 'Normal' || rawFastSpeed === 'Fast' || rawFastSpeed === 'Very fast'
+        ? (rawFastSpeed as FastReplySpeed)
+        : 'Fast';
     const smartListen = rawSmart === null ? true : rawSmart === 'true';
     const micSensitivity: MicSensitivityLevel =
       rawSens === 'low' || rawSens === 'medium' || rawSens === 'high' ? rawSens : 'medium';
 
-    return { cleanVoice, noiseGate, noiseGateSensitivity, fastReply, smartListen, streetMode, micSensitivity };
+    return { cleanVoice, noiseGate, noiseGateSensitivity, fastReply, fastReplySpeed, smartListen, streetMode, micSensitivity };
   } catch {
     return {
       cleanVoice: false,
       noiseGate: false,
       noiseGateSensitivity: 'Medium',
-      fastReply: false,
+      fastReply: true,
+      fastReplySpeed: 'Fast',
       smartListen: true,
       streetMode: false,
       micSensitivity: 'medium',
@@ -103,6 +113,7 @@ export function saveMicListeningSettings(partial: Partial<MicListeningSettings>)
       localStorage.setItem(STORAGE_KEY_NOISE_GATE, String(next.noiseGate));
       localStorage.setItem(STORAGE_KEY_NOISE_GATE_SENS, next.noiseGateSensitivity);
       localStorage.setItem(STORAGE_KEY_FAST_REPLY, String(next.fastReply));
+      localStorage.setItem(STORAGE_KEY_FAST_REPLY_SPEED, next.fastReplySpeed);
       localStorage.setItem(STORAGE_KEY_SMART_LISTEN, String(next.smartListen));
       localStorage.setItem(STORAGE_KEY_STREET_MODE, String(next.streetMode));
       localStorage.setItem(STORAGE_KEY_MIC_SENSITIVITY, next.micSensitivity);
@@ -116,7 +127,8 @@ export function resetAudioSettings(): MicListeningSettings {
     cleanVoice: false,
     noiseGate: false,
     noiseGateSensitivity: 'Medium',
-    fastReply: false,
+    fastReply: true,
+    fastReplySpeed: 'Fast',
     smartListen: true,
     streetMode: false,
     micSensitivity: 'medium',
@@ -126,7 +138,8 @@ export function resetAudioSettings(): MicListeningSettings {
       localStorage.setItem(STORAGE_KEY_CLEAN_VOICE, 'false');
       localStorage.setItem(STORAGE_KEY_NOISE_GATE, 'false');
       localStorage.setItem(STORAGE_KEY_NOISE_GATE_SENS, 'Medium');
-      localStorage.setItem(STORAGE_KEY_FAST_REPLY, 'false');
+      localStorage.setItem(STORAGE_KEY_FAST_REPLY, 'true');
+      localStorage.setItem(STORAGE_KEY_FAST_REPLY_SPEED, 'Fast');
       localStorage.setItem(STORAGE_KEY_SMART_LISTEN, 'true');
       localStorage.setItem(STORAGE_KEY_STREET_MODE, 'false');
       localStorage.setItem(STORAGE_KEY_MIC_SENSITIVITY, 'medium');
