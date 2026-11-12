@@ -46,8 +46,7 @@ import {
   getTeamStatus,
   TEAM_SYSTEM_INSTRUCTION,
 } from './team';
-import { findMatchingPage } from './navRegistry';
-import { navigateTo, getIdsForPageId, MAIN_SETTINGS_ORDER, VOICE_SETTINGS_ORDER } from './navExecutor';
+import { openPage, goBack } from './nav';
 
 export interface GeminiLiveOptions {
   assistantName?: string;
@@ -1427,86 +1426,27 @@ export class GeminiLiveSession {
           });
         } else if (name === 'app_action') {
           try {
-            const action = String(args.action || 'open').toLowerCase();
-            const pageName = String(args.page || '');
-            const num = typeof args.number === 'number' ? args.number : parseInt(args.number, 10);
-
-            let targetIds: string[] = [];
-            let targetPageTitle = '';
-
-            if (action === 'back') {
-              targetIds = ['back'];
-              targetPageTitle = 'পেছনে';
+            const action = String(args.action || '').toLowerCase();
+            const pageId = String(args.page || '');
+            let ok = false;
+            if (action === 'open' && pageId) {
+              ok = await openPage(pageId);
+            } else if (action === 'back') {
+              ok = await goBack();
             } else if (action === 'home') {
-              targetIds = ['home'];
-              targetPageTitle = 'হোম';
-            } else if (action === 'clear_chat') {
-              const clearBtn = document.querySelector('[data-nav-id="clear_chat"]') as HTMLElement;
-              if (clearBtn) clearBtn.click();
-              targetIds = [];
-              targetPageTitle = 'চ্যাট সাফ';
-            } else if (!isNaN(num) && num > 0) {
-              const currentViewAttr = document.querySelector('[data-current-view]')?.getAttribute('data-current-view') || '';
-              let targetId = '';
-              if (currentViewAttr === 'voice' || document.querySelector('[data-nav-id="voice_language"]')) {
-                targetId = VOICE_SETTINGS_ORDER[num - 1] || MAIN_SETTINGS_ORDER[num - 1];
-              } else {
-                targetId = MAIN_SETTINGS_ORDER[num - 1];
-              }
-              if (targetId) {
-                targetIds = getIdsForPageId(targetId);
-                const { page } = findMatchingPage(targetId);
-                targetPageTitle = page?.titleBn || targetId;
-              }
-            } else if (pageName) {
-              const { page } = findMatchingPage(pageName);
-              if (page) {
-                targetIds = getIdsForPageId(page.id);
-                targetPageTitle = page.titleBn;
-              }
+              ok = await openPage('home');
             }
-
-            if (targetIds.length > 0) {
-              const res = await navigateTo(targetIds);
-              functionResponses.push({
-                response: {
-                  output: {
-                    ok: res.ok,
-                    page: targetPageTitle,
-                    missing: res.missing,
-                  },
-                },
-                id: callId,
-              });
-            } else if (action === 'clear_chat') {
-              functionResponses.push({
-                response: {
-                  output: {
-                    ok: true,
-                    page: 'চ্যাট সাফ',
-                  },
-                },
-                id: callId,
-              });
-            } else {
-              functionResponses.push({
-                response: {
-                  output: {
-                    ok: false,
-                    reason: 'Page or action not found',
-                  },
-                },
-                id: callId,
-              });
-            }
+            functionResponses.push({
+              response: {
+                output: { ok },
+              },
+              id: callId,
+            });
           } catch (err: any) {
             console.warn('[GeminiLive] app_action error:', err);
             functionResponses.push({
               response: {
-                output: {
-                  ok: false,
-                  reason: err?.message || 'Action failed',
-                },
+                output: { ok: false },
               },
               id: callId,
             });

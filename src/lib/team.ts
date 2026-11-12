@@ -241,21 +241,25 @@ export const ROSE_TEAM_TOOLS = [
       },
       {
         name: 'app_action',
-        description: 'Control app navigation and UI actions: open pages, go back, go home, scroll, clear chat.',
+        description: 'Control app navigation: open pages, go back, or go home.',
         parameters: {
           type: 'OBJECT',
           properties: {
             action: {
               type: 'STRING',
-              description: 'Action name: "open", "back", "home", "scroll_down", "scroll_up", or "clear_chat"',
+              enum: ['open', 'back', 'home'],
+              description: 'Action to perform',
             },
             page: {
               type: 'STRING',
-              description: 'Target page name or alias if action is open',
-            },
-            number: {
-              type: 'NUMBER',
-              description: 'Bar position number on the current Settings page (1-9 for main settings, 1-12 for voice settings)',
+              enum: [
+                'home', 'chat', 'history', 'settings',
+                'about_guide', 'connections', 'live_voice_model', 'voice_language', 'chats_memory', 'look_feel', 'phone_control', 'pc_setup', 'privacy_controls',
+                'tts_model', 'assistant_name', 'your_name', 'personality', 'affection', 'language', 'response_style', 'voice', 'voice_model', 'voice_tuning', 'voice_check', 'mic_listening',
+                'theme', 'orb_style', 'rose_alive', 'quick_actions', 'app_permissions',
+                'pc_helper', 'pc_control', 'pc_files', 'confirmations', 'pc_history', 'safety', 'local_ai', 'view_mode'
+              ],
+              description: 'Target page ID (only for open)',
             },
           },
           required: ['action'],

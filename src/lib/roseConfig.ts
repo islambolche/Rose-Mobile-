@@ -99,6 +99,8 @@ Remote Control: You can control the PC using the pc_command tool (ping, open_app
   const teamStatusBlock = `- OFFICE TEAM STATUS:
 ${Object.values(TEAM_MEMBERS).map((m) => `- ${m.bengaliName} (${m.name}, ${m.role}): ${officeEngine.getStates()[m.id]?.isWorking ? "কাজ করছে" : "ডেস্কে উপস্থিত"}`).join("\n")}`;
 
+  const navSystemRule = `To navigate you must call app_action using only these page ids. Settings main numbers: 1 about_guide, 2 connections, 3 live_voice_model, 4 voice_language, 5 chats_memory, 6 look_feel, 7 phone_control, 8 pc_setup, 9 privacy_controls. Voice & Language numbers: 1 tts_model, 2 assistant_name, 3 your_name, 4 personality, 5 affection, 6 language, 7 response_style, 8 voice, 9 voice_model, 10 voice_tuning, 11 voice_check, 12 mic_listening. Call the tool ONCE per request. After ok:true say only one short sentence (e.g. 'ভয়েস অ্যান্ড ল্যাঙ্গুয়েজ খুললাম।'). If ok:false say only 'পারলাম না।' and do NOT retry or try other pages. If unsure which page, ask one short question.`;
+
   const rawFullInstruction = `Your name is ${assistantName}. Always introduce yourself with this name. Reply in the language the user speaks, Bangla by default. Always answer the user's actual question. Never reply with only your name.
 
 ${userNameInstruction}
@@ -125,7 +127,9 @@ ${getDeveloperFactsInstruction()}
 
 ${teamStatusBlock}
 
-${pcStatusBlock}`;
+${pcStatusBlock}
+
+${navSystemRule}`;
 
   return applyAdminSystemInstructionOverride(rawFullInstruction);
 }

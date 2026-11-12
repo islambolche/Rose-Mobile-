@@ -183,7 +183,6 @@ import { routeUserMessageForTeamTask, routePcCommandMessage } from "./lib/teamRo
 import { PcSetupPage, PcSetupPageId } from "./components/PcSetupViews";
 import { buildRoseSystemInstruction } from "./lib/roseConfig";
 import { sendPcCommand } from "./lib/pcCommand";
-import { PAGES_REGISTRY } from "./lib/navRegistry";
 import { sendTypedChat } from "./lib/typedChat";
 import { Folder, ShieldCheck } from "lucide-react";
 
@@ -2568,7 +2567,7 @@ export function App() {
   }, []);
 
   // Navigation State
-  const [currentView, setCurrentView] = useState<AppView>("home");
+  const [currentView, _setCurrentView] = useState<AppView>("home");
   const viewRef = useRef<AppView>(currentView);
   useEffect(() => { viewRef.current = currentView; }, [currentView]);
 
@@ -2592,23 +2591,9 @@ export function App() {
     }, 50);
   }, []);
 
-  useEffect(() => {
-    if (typeof window !== 'undefined' && (import.meta as any).env?.DEV) {
-      console.log("[Self-Test] Running openSettingsPage self-test for all registered pages...");
-      PAGES_REGISTRY.forEach((p) => {
-        try {
-          openSettingsPage(p.path);
-          console.log(`OK: openSettingsPage("${p.path}" / "${p.id}")`);
-        } catch (err) {
-          console.error(`FAIL: openSettingsPage("${p.path}" / "${p.id}"):`, err);
-        }
-      });
-      setTimeout(() => setCurrentView("home"), 200);
-    }
-  }, [openSettingsPage]);
   const [developerFrom, setDeveloperFrom] = useState<AppView>("home");
   const [activeAboutSection, setActiveAboutSection] = useState<string | null>(null);
-  const [activeTab, setActiveTab] = useState<"home" | "chat" | "history">("home");
+  const [activeTab, _setActiveTab] = useState<"home" | "chat" | "history">("home");
   const [agentTaskHistoryModalId, setAgentTaskHistoryModalId] = useState<string | null>(null);
   const [agentTasksList, setAgentTasksList] = useState<any[]>([]);
   const [activePcSetupSubPage, setActivePcSetupSubPage] = useState<PcSetupPageId | null>(null);
@@ -3913,6 +3898,30 @@ export function App() {
   const [isCallScreenOpen, setIsCallScreenOpen] = useState(false);
   const isCallScreenOpenRef = useRef(false);
   const [isCallMinimized, setIsCallMinimized] = useState(false);
+  const isCallOpenRef = useRef(false);
+  const isCallMinRef = useRef(false);
+  useEffect(() => { isCallOpenRef.current = isCallScreenOpen; }, [isCallScreenOpen]);
+  useEffect(() => { isCallMinRef.current = isCallMinimized; }, [isCallMinimized]);
+
+  const setCurrentView = useCallback((view: any) => {
+    _setCurrentView(view);
+    if (isCallOpenRef.current && !isCallMinRef.current) {
+      setIsCallMinimized(true);
+    }
+  }, []);
+
+  const setActiveTab = useCallback((tab: any) => {
+    _setActiveTab(tab);
+    if (isCallOpenRef.current && !isCallMinRef.current) {
+      setIsCallMinimized(true);
+    }
+  }, []);
+
+  useEffect(() => {
+    (window as any).setCurrentView = setCurrentView;
+    (window as any).setActiveTab = setActiveTab;
+  }, [setCurrentView, setActiveTab]);
+
   const [isMuted, setIsMuted] = useState(false);
   const isMutedRef = useRef(false);
   const [liveReconnectStatus, setLiveReconnectStatus] = useState<string | null>(null);
