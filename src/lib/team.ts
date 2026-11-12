@@ -1,152 +1,216 @@
 import { supabase } from './supabase';
 
-export type TeamAgentId = 'rose' | 'mira' | 'arin' | 'zayan' | 'naira';
+export type TeamAgentId = 'mira' | 'arin' | 'zayan' | 'naira';
 
 export interface TeamMemberConfig {
   id: TeamAgentId;
   name: string;
   bengaliName: string;
   role: string;
+  roleBengali: string;
   bengaliRole: string;
-  color: string;
   avatar: string;
-  aliases: string[];
-  systemPrompt: string;
+  skills: string[];
+  color?: string;
 }
 
 export const TEAM_MEMBERS: Record<TeamAgentId, TeamMemberConfig> = {
-  rose: {
-    id: 'rose',
-    name: 'Rose',
-    bengaliName: 'রোজ',
-    role: 'Chief Business Manager',
-    bengaliRole: 'চিফ বিজনেস ম্যানেজার ও টিম লিডার',
-    color: '#EC4899',
-    avatar: '/office/avatars/rose.png',
-    aliases: ['Rose', 'রোজ', 'রোজ আপু', 'আপু', 'ম্যানেজার'],
-    systemPrompt: 'You are Rose, Chief Business Manager and team leader of this 5-member AI company.',
-  },
   mira: {
     id: 'mira',
     name: 'Mira',
     bengaliName: 'মিরা',
     role: 'Customer Communication',
-    bengaliRole: 'কাস্টমার কমিউনিকেশন ও ইনবক্স সাপোর্ট',
-    color: '#10B981',
-    avatar: '/office/avatars/mira.png',
-    aliases: [
-      'Mira', 'মিরা', 'মীরা', 'মিরাকে', 'মিরার', 'মিরারে', 'মীরাকে', 'মীরার', 'মীরারে',
-      'Meera', 'Miraa', 'মিরু',
-    ],
-    systemPrompt:
-      'You are Mira (Customer Communication). You handle customer inquiries, order confirmations, polite client messages, WhatsApp/Facebook message replies, and customer satisfaction in fluent, polite Bengali.',
+    roleBengali: 'গ্রাহক সেবা ও মেসেজ ইনবক্স',
+    bengaliRole: 'গ্রাহক সেবা ও মেসেজ ইনবক্স',
+    avatar: 'https://images.unsplash.com/photo-1534528741775-53994a69daeb?w=150',
+    skills: ['Inbox Management', 'Customer Support', 'FAQ Resolution'],
   },
   arin: {
     id: 'arin',
     name: 'Arin',
     bengaliName: 'আরিন',
     role: 'Sales & Order',
-    bengaliRole: 'সেলস, ইনভেন্টরি ও অর্ডার ম্যানেজমেন্ট',
-    color: '#3B82F6',
-    avatar: '/office/avatars/arin.png',
-    aliases: [
-      'Arin', 'আরিন', 'আরিনকে', 'আরিনের', 'আরিনরে', 'Arian', 'Erin', 'আরিফ', 'আরিয়ান',
-      'আরিয়ানকে', 'আরিফকে', 'Arif',
-    ],
-    systemPrompt:
-      'You are Arin (Sales & Order). You manage customer sales, product stock checks, inventory updates, daily revenue calculations, and discount approvals in concise, business-smart Bengali.',
+    roleBengali: 'সেলস ও অর্ডার কনফার্মেশন',
+    bengaliRole: 'সেলস ও অর্ডার কনফার্মেশন',
+    avatar: 'https://images.unsplash.com/photo-1507003211169-0a1dd7228f2d?w=150',
+    skills: ['Order Processing', 'Stock Verification', 'Sales Analytics'],
   },
   zayan: {
     id: 'zayan',
     name: 'Zayan',
     bengaliName: 'জায়ান',
     role: 'Parcel & Delivery',
-    bengaliRole: 'পার্সেল, কুরিয়ার ও ডেলিভারি ট্র্যাকিং',
-    color: '#F97316',
-    avatar: '/office/avatars/zayan.png',
-    aliases: [
-      'Zayan', 'জায়ান', 'জায়ানকে', 'জায়ানের', 'জায়ানরে', 'যায়ান', 'যায়ানকে', 'যায়ানের',
-      'যায়ানরে', 'Jayan', 'Zain', 'জায়ন', 'জায়া', 'জায়ন', 'জেয়ান',
-    ],
-    systemPrompt:
-      'You are Zayan (Parcel & Delivery). You manage logistics, courier dispatches (Pathao, Steadfast, RedX), package tracking codes, delivery confirmations, and returns in crisp, efficient Bengali.',
+    roleBengali: 'পার্সেল ও কুরিয়ার ট্র্যাকিং',
+    bengaliRole: 'পার্সেল ও কুরিয়ার ট্র্যাকিং',
+    avatar: 'https://images.unsplash.com/photo-1500648767791-00dcc994a43e?w=150',
+    skills: ['Courier Dispatch', 'Delivery Tracking', 'Logistics'],
   },
   naira: {
     id: 'naira',
     name: 'Naira',
     bengaliName: 'নাইরা',
     role: 'Business Audit & Analytics',
-    bengaliRole: 'বিজনেস অডিট, লাভ-লোকসান ও অ্যানালিটিক্স',
-    color: '#A855F7',
-    avatar: '/office/avatars/naira.png',
-    aliases: [
-      'Naira', 'নাইরা', 'নাইরাকে', 'নাইরার', 'নাইরারে', 'নায়রা', 'নায়রাকে', 'নায়রার',
-      'নায়রারে', 'Nyra', 'Nira', 'নায়রা', 'নায়েরা',
-    ],
-    systemPrompt:
-      'You are Naira (Business Audit & Analytics). You inspect company finances, audit expenses, calculate net profit margins, detect financial discrepancies, and generate executive summaries in analytical, clear Bengali.',
+    roleBengali: 'অডিট ও ব্যবসায়িক হিসাব',
+    bengaliRole: 'অডিট ও ব্যবসায়িক হিসাব',
+    avatar: 'https://images.unsplash.com/photo-1494790108377-be9c29b29330?w=150',
+    skills: ['Financial Audit', 'Profit/Loss Tracking', 'Business Reports'],
   },
 };
 
-export const TEAM_MEMBERS_LIST: TeamMemberConfig[] = Object.values(TEAM_MEMBERS);
+export const TEAM_MEMBERS_LIST = Object.values(TEAM_MEMBERS);
 
-/**
- * Resolves a spoken or typed name/alias to an exact TeamAgentId
- */
-export function resolveAgentId(input: string): TeamAgentId | null {
-  if (!input || typeof input !== 'string') return null;
-  const raw = input.trim();
-  const lower = raw.toLowerCase();
+export function updateLocalTaskState(task: any) {
+  try {
+    const tasks = JSON.parse(localStorage.getItem('local_tasks') || '[]');
+    const idx = tasks.findIndex((t: any) => t.id === task.id);
+    if (idx >= 0) {
+      tasks[idx] = task;
+    } else {
+      tasks.unshift(task);
+    }
+    localStorage.setItem('local_tasks', JSON.stringify(tasks));
+  } catch (e) {}
+}
 
-  for (const member of TEAM_MEMBERS_LIST) {
-    if (member.id.toLowerCase() === lower) return member.id;
-    if (member.name.toLowerCase() === lower) return member.id;
-    if (member.bengaliName === raw) return member.id;
+export function subscribeToLocalTasks(callback: (task: any) => void) {
+  const handler = (e: StorageEvent) => {
+    if (e.key === 'local_tasks') {
+      try {
+        const tasks = JSON.parse(e.newValue || '[]');
+        if (tasks.length > 0) callback(tasks[0]);
+      } catch (err) {}
+    }
+  };
+  if (typeof window !== 'undefined') {
+    window.addEventListener('storage', handler);
+  }
+  return () => {
+    if (typeof window !== 'undefined') {
+      window.removeEventListener('storage', handler);
+    }
+  };
+}
 
-    for (const alias of member.aliases) {
-      const aliasLower = alias.toLowerCase();
-      if (aliasLower === lower || lower.includes(aliasLower) || raw.includes(alias)) {
-        return member.id;
-      }
+export interface AgentTaskRecord {
+  id: string;
+  created_at: string;
+  from_agent: string;
+  to_agent: TeamAgentId;
+  instruction: string;
+  status: 'assigned' | 'working' | 'done' | 'failed';
+  reply: string | null;
+  result: string | null;
+  source: 'mobile' | 'pc';
+}
+
+export function generateTaskId(): string {
+  return 'task_' + Math.random().toString(36).substring(2, 9);
+}
+
+export async function assignTask(params: {
+  agent: string;
+  instruction: string;
+  source?: 'mobile' | 'pc';
+}): Promise<{ success: boolean; message: string; task: AgentTaskRecord }> {
+  const targetRaw = params.agent.toLowerCase().trim();
+  let targetAgent: TeamAgentId = 'mira';
+
+  if (targetRaw.includes('arin') || targetRaw.includes('আরিন')) targetAgent = 'arin';
+  else if (targetRaw.includes('zayan') || targetRaw.includes('জায়ান') || targetRaw.includes('যায়ান')) targetAgent = 'zayan';
+  else if (targetRaw.includes('naira') || targetRaw.includes('নাইরা') || targetRaw.includes('নায়রা')) targetAgent = 'naira';
+  else if (targetRaw.includes('mira') || targetRaw.includes('মিরা') || targetRaw.includes('মীরা')) targetAgent = 'mira';
+
+  const member = TEAM_MEMBERS[targetAgent];
+  const taskId = generateTaskId();
+  const source = params.source || 'mobile';
+
+  const task: AgentTaskRecord = {
+    id: taskId,
+    created_at: new Date().toISOString(),
+    from_agent: 'rose',
+    to_agent: targetAgent,
+    instruction: params.instruction,
+    status: 'assigned',
+    reply: null,
+    result: null,
+    source,
+  };
+
+  if (supabase) {
+    try {
+      await supabase.from('tasks').insert([task]);
+    } catch (err) {
+      console.warn('[Team Assign] Supabase insert warning:', err);
     }
   }
 
-  // Common keyword fallback
-  if (lower.includes('কাস্টমার') || lower.includes('মেসেজ') || lower.includes('customer') || lower.includes('inbox')) {
-    return 'mira';
-  }
-  if (lower.includes('সেলস') || lower.includes('অর্ডার') || lower.includes('sales') || lower.includes('order') || lower.includes('স্টক')) {
-    return 'arin';
-  }
-  if (lower.includes('পার্সেল') || lower.includes('কুরিয়ার') || lower.includes('ডেলিভারি') || lower.includes('parcel') || lower.includes('delivery')) {
-    return 'zayan';
-  }
-  if (lower.includes('অডিট') || lower.includes('হিসাব') || lower.includes('লাভ') || lower.includes('audit') || lower.includes('analytics')) {
-    return 'naira';
+  return {
+    success: true,
+    message: `ঠিক আছে, ${member.bengaliName}কে কাজটি দিলাম: "${params.instruction}"`,
+    task,
+  };
+}
+
+export async function getTeamStatus(agentParam?: string): Promise<{ success: boolean; summary: string }> {
+  if (!supabase) {
+    return { success: true, summary: 'টিম সিস্টেম অনলাইনে আছে।' };
   }
 
-  return null;
+  try {
+    const { data, error } = await supabase
+      .from('tasks')
+      .select('*')
+      .order('created_at', { ascending: false })
+      .limit(15);
+
+    if (error || !data || data.length === 0) {
+      return { success: true, summary: 'আজ কাউকে কোনো কাজ দেওয়া হয়নি, সবাই ফাঁকা।' };
+    }
+
+    if (agentParam) {
+      const targetRaw = agentParam.toLowerCase().trim();
+      let targetAgent: TeamAgentId = 'mira';
+      if (targetRaw.includes('arin') || targetRaw.includes('আরিন')) targetAgent = 'arin';
+      else if (targetRaw.includes('zayan') || targetRaw.includes('জায়ান')) targetAgent = 'zayan';
+      else if (targetRaw.includes('naira') || targetRaw.includes('নাইরা')) targetAgent = 'naira';
+      
+      const member = TEAM_MEMBERS[targetAgent];
+      const lastTask = data.find((t: any) => t.to_agent === targetAgent);
+      if (lastTask) {
+        return {
+          success: true,
+          summary: `${member.bengaliName} এখন "${lastTask.instruction}" নিয়ে কাজ করছে।`,
+        };
+      }
+      return { success: true, summary: `${member.bengaliName} এখন ডেস্কে ফাঁকা আছে।` };
+    }
+
+    const statuses: string[] = [];
+    const agents: TeamAgentId[] = ['mira', 'arin', 'zayan', 'naira'];
+    for (const id of agents) {
+      const t = data.find((x: any) => x.to_agent === id);
+      if (t) {
+        statuses.push(`${TEAM_MEMBERS[id].bengaliName}: "${t.instruction}"`);
+      }
+    }
+
+    return {
+      success: true,
+      summary: statuses.length > 0 ? `টিমের বর্তমান অবস্থা: ${statuses.join(', ')}।` : 'সবাই ডেস্কে ফাঁকা আছে।',
+    };
+  } catch (err) {
+    return { success: false, summary: 'টিমের স্থিতি পাওয়া যায়নি।' };
+  }
 }
 
 export const TEAM_SYSTEM_INSTRUCTION = `
-You are Rose, the chief manager of a 5-member AI team: Mira, Arin, Zayan, Naira (roles above). They are your team members inside this app, not phone contacts. Names in speech may be misheard; match them using the aliases. Never ask for a phone number for them.
-
-TEAM STRUCTURE & ROLES:
-- Mira: Customer Communication (গ্রাহক সেবা, মেসেজের রিপ্লাই ও ইনবক্স হ্যান্ডলিং)
-- Arin: Sales & Order (নতুন সেলস, স্টক যাচাই ও অর্ডার কনফার্মেশন)
-- Zayan: Parcel & Delivery (পার্সেল বুকিং, কুরিয়ার ট্র্যাকিং ও ডেলিভারি স্ট্যাটাস)
-- Naira: Business Audit & Analytics (অডিট, লাভ-লোকসান ও ব্যবসায়িক আর্থিক হিসাব)
-- Rose (You): Chief Business Manager (সবার বস ও সার্বিক সমন্বয়ক)
+You are Rose, the chief manager of a 5-member AI team: Mira, Arin, Zayan, Naira.
 
 APP NAVIGATION CONTROL:
-You CAN control this app: open any app page, go back, go home, scroll, and clear the chat (after the user says yes). Never say you cannot do these. You cannot open the phone's own Android settings or other apps yet; if asked, say in one sentence that phone control will come with the phone-control update. Use the app_action tool for these commands.
+To open any page, go back, go home, scroll or clear chat you MUST call the app_action tool. Never say you opened something unless the tool returned ok:true. After ok:true say only one short sentence like 'ভয়েস অ্যান্ড ল্যাঙ্গুয়েজ খুললাম।' If ok:false, say 'পাতাটা খুঁজে পাইনি।'
 
-WORK TASK COMMAND RULE (HIGHEST PRIORITY - OVERRIDES ALL OTHER EMOTION/BREVITY RULES FOR WORK COMMANDS):
-When the user asks you to give a task to, ask, or check on Mira, Arin, Zayan or Naira, do NOT ask clarifying questions and do NOT write long emotional text. Immediately call assign_task with a clear instruction (for example, 'ask what tasks you can do' is a valid instruction). 
-
-When the user asks what the team is doing, how the office is, or asks about "everyone" (সবাই কী করছে), call get_team_status immediately.
-
-After calling a tool, reply in one short warm sentence like 'ঠিক আছে ইউসুফ, জায়ানকে জিজ্ঞেস করছি।' বা 'সেটিংস খুললাম।' When the result comes back, tell the user the agent's answer or status briefly.
+WORK TASK COMMAND RULE:
+When the user asks you to give a task to, ask, or check on Mira, Arin, Zayan or Naira, immediately call assign_task or get_team_status.
 `.trim();
 
 export const ROSE_TEAM_TOOLS = [
@@ -155,38 +219,29 @@ export const ROSE_TEAM_TOOLS = [
     functionDeclarations: [
       {
         name: 'assign_task',
-        description: 'Assign a work task to an AI team member (mira, arin, zayan, or naira). They will acknowledge and start executing the task.',
+        description: 'Assign a work task to an AI team member (mira, arin, zayan, or naira).',
         parameters: {
           type: 'OBJECT',
           properties: {
-            agent: {
-              type: 'STRING',
-              description: 'Target team member ID or name: "mira", "arin", "zayan", or "naira"',
-            },
-            instruction: {
-              type: 'STRING',
-              description: 'Clear task instruction or work order for the agent',
-            },
+            agent: { type: 'STRING', description: 'Target team member ID: "mira", "arin", "zayan", or "naira"' },
+            instruction: { type: 'STRING', description: 'Clear task instruction' },
           },
           required: ['agent', 'instruction'],
         },
       },
       {
         name: 'get_team_status',
-        description: 'Check the status, current task, or recent activities of an AI team member or all team members.',
+        description: 'Check status of AI team members.',
         parameters: {
           type: 'OBJECT',
           properties: {
-            agent: {
-              type: 'STRING',
-              description: 'Optional agent name or ID ("mira", "arin", "zayan", "naira"). If omitted, checks all team members.',
-            },
+            agent: { type: 'STRING', description: 'Optional agent name' },
           },
         },
       },
       {
         name: 'app_action',
-        description: 'Control app navigation: open pages, go back, go home, scroll, clear chat.',
+        description: 'Control app navigation and UI actions: open pages, go back, go home, scroll, clear chat.',
         parameters: {
           type: 'OBJECT',
           properties: {
@@ -196,7 +251,11 @@ export const ROSE_TEAM_TOOLS = [
             },
             page: {
               type: 'STRING',
-              description: 'Target page name or alias if action is open (e.g. settings, connections, history, home, voice, etc.)',
+              description: 'Target page name or alias if action is open',
+            },
+            number: {
+              type: 'NUMBER',
+              description: 'Bar position number on the current Settings page (1-9 for main settings, 1-12 for voice settings)',
             },
           },
           required: ['action'],
@@ -204,18 +263,12 @@ export const ROSE_TEAM_TOOLS = [
       },
       {
         name: 'pc_command',
-        description: "Send a remote control command to the user's connected PC (apps, volume, lock, files, power, etc.).",
+        description: "Send remote control command to connected PC.",
         parameters: {
           type: 'OBJECT',
           properties: {
-            action: {
-              type: 'STRING',
-              description: 'Action name e.g. ping, open_app, open_url, open_path, list_dir, search_files, screenshot, type_text, hotkey, click, media, lock, shutdown, restart, cancel_shutdown, run_shell, ask_local_ai',
-            },
-            args: {
-              type: 'OBJECT',
-              description: 'Arguments e.g. { name: "chrome" }, { url: "https://..." }, { key: "volume_up" }, { path: "C:/..." }',
-            },
+            action: { type: 'STRING', description: 'Action name' },
+            args: { type: 'OBJECT', description: 'Arguments' },
           },
           required: ['action'],
         },
@@ -223,231 +276,3 @@ export const ROSE_TEAM_TOOLS = [
     ],
   },
 ];
-
-export interface AgentTaskRecord {
-  id: string;
-  created_at: string;
-  from_agent: string;
-  to_agent: string;
-  instruction: string;
-  status: 'assigned' | 'working' | 'done';
-  reply: string | null;
-  result: string | null;
-  source: 'mobile' | 'pc';
-}
-
-// In-memory fallback task store for offline / non-Supabase mode
-const fallbackTasks: AgentTaskRecord[] = [];
-const taskListeners = new Set<(task: AgentTaskRecord) => void>();
-
-export function subscribeToLocalTasks(listener: (task: AgentTaskRecord) => void): () => void {
-  taskListeners.add(listener);
-  return () => taskListeners.delete(listener);
-}
-
-function notifyLocalTask(task: AgentTaskRecord) {
-  taskListeners.forEach((fn) => {
-    try {
-      fn(task);
-    } catch {}
-  });
-}
-
-export function generateTaskId(): string {
-  if (typeof crypto !== 'undefined' && crypto.randomUUID) {
-    return crypto.randomUUID();
-  }
-  return 'task_' + Date.now() + '_' + Math.random().toString(36).slice(2, 8);
-}
-
-/**
- * Assign a task to an AI team member and insert into public.tasks (or fallback store)
- */
-export async function assignTask(params: {
-  agent: string;
-  instruction: string;
-  source?: 'mobile' | 'pc';
-}): Promise<{ success: boolean; task: AgentTaskRecord; message: string }> {
-  console.log('[ToolCall Received] assign_task:', params);
-
-  const resolvedId = resolveAgentId(params.agent) || 'mira';
-  const targetMember = TEAM_MEMBERS[resolvedId] || TEAM_MEMBERS.mira;
-
-  const currentSource: 'mobile' | 'pc' =
-    params.source ||
-    (typeof window !== 'undefined' && window.innerWidth >= 1024 ? 'pc' : 'mobile');
-
-  const newTask: AgentTaskRecord = {
-    id: generateTaskId(),
-    created_at: new Date().toISOString(),
-    from_agent: 'rose',
-    to_agent: targetMember.id,
-    instruction: params.instruction.trim(),
-    status: 'assigned',
-    reply: null,
-    result: null,
-    source: currentSource,
-  };
-
-  // Keep in local cache
-  fallbackTasks.unshift(newTask);
-  if (fallbackTasks.length > 50) fallbackTasks.pop();
-
-  if (supabase) {
-    try {
-      const { data, error } = await supabase.from('tasks').insert([newTask]).select();
-      if (!error && data && data.length > 0) {
-        console.log('[Supabase Insert Success] public.tasks row created:', {
-          id: data[0].id,
-          to_agent: data[0].to_agent,
-          status: data[0].status,
-        });
-        return {
-          success: true,
-          task: data[0] as AgentTaskRecord,
-          message: `ঠিক আছে, ${targetMember.bengaliName}-কে কাজ বুঝিয়ে দেওয়া হয়েছে।`,
-        };
-      } else if (error) {
-        console.error('[Supabase Insert Error] public.tasks insert failed:', error.message);
-        if (error.message.includes('Could not find the table') || error.message.includes('relation "tasks" does not exist')) {
-          console.warn('[Action Required] The "tasks" table is missing in Supabase. Please run the SQL schema in /supabase-schema.sql in your Supabase SQL Editor.');
-        }
-      }
-    } catch (err: any) {
-      console.error('[Supabase Insert Error] Exception during tasks insert:', err?.message || err);
-    }
-  }
-
-  // Fallback notification
-  notifyLocalTask(newTask);
-
-  return {
-    success: true,
-    task: newTask,
-    message: `ঠিক আছে, ${targetMember.bengaliName}-কে কাজ বুঝিয়ে দেওয়া হয়েছে।`,
-  };
-}
-
-/**
- * Retrieve team status or specific agent status from public.tasks (or fallback store)
- */
-export async function getTeamStatus(agentNameOrId?: string): Promise<{
-  success: boolean;
-  agent?: string;
-  summary: string;
-  tasks: AgentTaskRecord[];
-}> {
-  console.log('[ToolCall Received] get_team_status:', agentNameOrId);
-  const targetId = agentNameOrId ? resolveAgentId(agentNameOrId) : null;
-
-  if (supabase) {
-    try {
-      let query = supabase
-        .from('tasks')
-        .select('*')
-        .order('created_at', { ascending: false })
-        .limit(20);
-
-      if (targetId) {
-        query = query.eq('to_agent', targetId).limit(5);
-      }
-
-      const { data, error } = await query;
-      if (!error && data) {
-        const records = data as AgentTaskRecord[];
-        return formatStatusSummary(targetId, records);
-      }
-    } catch (err) {
-      console.warn('[Team] Supabase getTeamStatus failed, using local cache:', err);
-    }
-  }
-
-  // Fallback cache
-  const filtered = targetId
-    ? fallbackTasks.filter((t) => t.to_agent === targetId).slice(0, 5)
-    : fallbackTasks.slice(0, 10);
-
-  return formatStatusSummary(targetId, filtered);
-}
-
-function formatStatusSummary(
-  targetId: TeamAgentId | null,
-  tasks: AgentTaskRecord[]
-): {
-  success: boolean;
-  agent?: string;
-  summary: string;
-  tasks: AgentTaskRecord[];
-} {
-  if (targetId) {
-    const member = TEAM_MEMBERS[targetId];
-    const memberTasks = tasks.filter((t) => t.to_agent === targetId);
-    const activeTask = memberTasks.find((t) => t.status === 'working' || t.status === 'assigned');
-
-    if (activeTask) {
-      return {
-        success: true,
-        agent: targetId,
-        summary: `${member.bengaliName} বর্তমানে "${activeTask.instruction}" নিয়ে কাজ করছেন।`,
-        tasks: memberTasks,
-      };
-    }
-
-    const lastDone = memberTasks.find((t) => t.status === 'done');
-    if (lastDone && lastDone.result) {
-      return {
-        success: true,
-        agent: targetId,
-        summary: `${member.bengaliName} এখন ফাঁকা আছে। তার শেষ সম্পন্ন কাজ: ${lastDone.result}`,
-        tasks: memberTasks,
-      };
-    }
-
-    return {
-      success: true,
-      agent: targetId,
-      summary: `${member.bengaliName} এখন ফাঁকা আছে, নতুন কাজের জন্য প্রস্তুত।`,
-      tasks: memberTasks,
-    };
-  }
-
-  // Summary of all agents
-  const validAgentIds: TeamAgentId[] = ['mira', 'arin', 'zayan', 'naira'];
-  const workingAgents: string[] = [];
-
-  for (const id of validAgentIds) {
-    const member = TEAM_MEMBERS[id];
-    const memberTask = tasks.find((t) => t.to_agent === id && (t.status === 'working' || t.status === 'assigned'));
-    if (memberTask) {
-      workingAgents.push(`${member.bengaliName} (${memberTask.instruction})`);
-    }
-  }
-
-  if (workingAgents.length === 0) {
-    return {
-      success: true,
-      summary: "আজ কাউকে কোনো কাজ দেওয়া হয়নি, সবাই নতুন কাজের জন্য প্রস্তুত।",
-      tasks,
-    };
-  }
-
-  const workingText = workingAgents.join(', ');
-  const idleCount = validAgentIds.length - workingAgents.length;
-  const idleText = idleCount > 0 ? `বাকি ${idleCount} জন এখন ফাঁকা আছে।` : 'সবাই এখন কাজে ব্যস্ত।';
-
-  return {
-    success: true,
-    summary: `বর্তমানে ${workingText} নিয়ে কাজ চলছে। ${idleText}`,
-    tasks,
-  };
-}
-
-export function updateLocalTaskState(updated: AgentTaskRecord) {
-  const idx = fallbackTasks.findIndex((t) => t.id === updated.id);
-  if (idx >= 0) {
-    fallbackTasks[idx] = updated;
-  } else {
-    fallbackTasks.unshift(updated);
-  }
-  notifyLocalTask(updated);
-}

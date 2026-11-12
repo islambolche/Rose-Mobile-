@@ -275,7 +275,6 @@ class AgentWorkerManager {
     const member = TEAM_MEMBERS[agentId];
 
     const fallbackReplies: Record<TeamAgentId, string[]> = {
-      rose: ['ঠিক আছে, আমি কাজ এগিয়ে নিচ্ছি!'],
       mira: [
         'ঠিক আছে রোজ! আমি এখনই কাস্টমার মেসেজগুলোর উত্তর দেওয়া শুরু করছি।',
         'জি আপু, কাস্টমারদের সাথে যোগাযোগ করে আমি এখনই জানাচ্ছি!',
@@ -323,7 +322,6 @@ Give a short 1-sentence quick acknowledgment in warm, professional Bengali stati
     const member = TEAM_MEMBERS[agentId];
 
     const fallbackResults: Record<TeamAgentId, string[]> = {
-      rose: ['কাজটি সম্পন্ন হয়েছে।'],
       mira: [
         'কাস্টমারদের সব মেসেজের উত্তর সম্পন্ন হয়েছে এবং ৩ জন গ্রাহক অর্ডার নিশ্চিত করেছেন।',
         'ইনবক্সের সব পেন্ডিং প্রশ্নের উত্তর দেওয়া হয়েছে। গ্রাহকরা সন্তুষ্ট।',

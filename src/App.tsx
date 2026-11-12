@@ -10512,6 +10512,7 @@ export function App() {
   const renderSettings = () => (
     <motion.div
       key="settings"
+      data-current-view="settings"
       initial={{ x: "100%" }}
       animate={{ x: 0 }}
       exit={{ x: "100%" }}
@@ -10534,6 +10535,7 @@ export function App() {
         <div className="space-y-4">
           {/* 1. App Card */}
           <button
+            data-nav-id="about"
             onClick={() => {
               setActiveAboutSection(null);
               setCurrentView("about");
@@ -10556,6 +10558,7 @@ export function App() {
 
           {/* Individual Settings Buttons */}
           <button
+            data-nav-id="connections"
             onClick={() => setCurrentView("connections")}
             className="w-full p-5 bg-[#0F172A]/80 rounded-[2.5rem] border border-purple-500/30 shadow-2xl flex items-center justify-between active:scale-[0.98] transition-all text-left"
           >
@@ -10569,6 +10572,7 @@ export function App() {
           </button>
 
           <button
+            data-nav-id="live_voice_model"
             onClick={() => setCurrentView("live-model")}
             className="w-full p-5 bg-[#0F172A]/80 rounded-[2.5rem] border border-purple-500/30 shadow-2xl flex items-center justify-between active:scale-[0.98] transition-all text-left"
           >
@@ -10582,6 +10586,7 @@ export function App() {
           </button>
 
           <button
+            data-nav-id="voice_language"
             onClick={() => setCurrentView("voice")}
             className="w-full p-5 bg-[#0F172A]/80 rounded-[2.5rem] border border-purple-500/30 shadow-2xl flex items-center justify-between active:scale-[0.98] transition-all text-left"
           >
@@ -10595,6 +10600,7 @@ export function App() {
           </button>
 
           <button
+            data-nav-id="chats_memory"
             onClick={() => setCurrentView("memory")}
             className="w-full p-5 bg-[#0F172A]/80 rounded-[2.5rem] border border-purple-500/30 shadow-2xl flex items-center justify-between active:scale-[0.98] transition-all text-left"
           >
@@ -10608,6 +10614,7 @@ export function App() {
           </button>
 
           <button
+            data-nav-id="look_feel"
             onClick={() => setCurrentView("look")}
             className="w-full p-5 bg-[#0F172A]/80 rounded-[2.5rem] border border-purple-500/30 shadow-2xl flex items-center justify-between active:scale-[0.98] transition-all text-left"
           >
@@ -10621,6 +10628,7 @@ export function App() {
           </button>
 
           <button
+            data-nav-id="phone_control"
             onClick={() => setCurrentView("phone")}
             className="w-full p-5 bg-[#0F172A]/80 rounded-[2.5rem] border border-purple-500/30 shadow-2xl flex items-center justify-between active:scale-[0.98] transition-all text-left"
           >
@@ -10634,6 +10642,7 @@ export function App() {
           </button>
 
           <button
+            data-nav-id="pc_setup"
             onClick={() => setCurrentView("pc-setup")}
             className="w-full p-5 bg-[#0F172A]/80 rounded-[2.5rem] border border-purple-500/30 shadow-2xl flex items-center justify-between active:scale-[0.98] transition-all text-left"
           >
@@ -10668,6 +10677,7 @@ export function App() {
 
             <div className="bg-[#0F172A]/80 border border-purple-500/30 rounded-[2.5rem] overflow-hidden shadow-2xl">
               <button
+                data-nav-id="privacy"
                 onClick={() => setCurrentView("privacy")}
                 className="w-full flex items-center justify-between p-4.5 active:bg-white/5 active:scale-[0.99] transition-all text-left group"
               >
@@ -11058,6 +11068,7 @@ export function App() {
   const renderVoice = () => (
     <motion.div
       key="voice"
+      data-current-view="voice"
       initial={{ x: "100%" }}
       animate={{ x: 0 }}
       exit={{ x: "100%" }}
@@ -11079,6 +11090,7 @@ export function App() {
         <div className="space-y-4 pb-36">
           {/* 0. TTS MODEL */}
           <button
+            data-nav-id="tts_model"
             onClick={() => setCurrentView("tts-model")}
             className="w-full p-5 bg-[#0F172A]/80 rounded-[2.5rem] border border-purple-500/30 shadow-2xl flex items-center justify-between active:scale-[0.98] transition-all text-left"
           >
@@ -11104,6 +11116,7 @@ export function App() {
 
           {/* 1. Assistant name */}
           <button
+            data-nav-id="assistant_name"
             onClick={() => {
               setTempName(settings.assistantName || "ROSE");
               setCurrentView("edit-assistant-name");
@@ -11128,6 +11141,7 @@ export function App() {
 
           {/* 2. Your name */}
           <button
+            data-nav-id="owner_name"
             onClick={() => {
               setTempUserName(settings.ownerName || "");
               setCurrentView("edit-user-name");
@@ -11152,6 +11166,7 @@ export function App() {
 
           {/* 3. Personality */}
           <button
+            data-nav-id="personality"
             onClick={() => setCurrentView("personality")}
             className="w-full p-5 bg-[#0F172A]/80 rounded-[2.5rem] border border-purple-500/30 shadow-2xl flex items-center justify-between active:scale-[0.98] transition-all text-left"
           >
@@ -11173,6 +11188,7 @@ export function App() {
 
           {/* 3b. Affection */}
           <button
+            data-nav-id="affection"
             onClick={() => {
               setCustomAffectionInput((settings.customAffectionText || "").slice(0, 150));
               setCurrentView("affection");
@@ -11197,6 +11213,7 @@ export function App() {
 
           {/* 4. Language */}
           <button
+            data-nav-id="language_page"
             onClick={() => setCurrentView("language-list")}
             className="w-full p-5 bg-[#0F172A]/80 rounded-[2.5rem] border border-purple-500/30 shadow-2xl flex items-center justify-between active:scale-[0.98] transition-all text-left"
           >
@@ -11218,6 +11235,7 @@ export function App() {
 
           {/* 5. Response style */}
           <button
+            data-nav-id="response_style"
             onClick={() => setCurrentView("response-style-list")}
             className="w-full p-5 bg-[#0F172A]/80 rounded-[2.5rem] border border-purple-500/30 shadow-2xl flex items-center justify-between active:scale-[0.98] transition-all text-left"
           >
@@ -11239,6 +11257,7 @@ export function App() {
 
           {/* 6. Voice */}
           <button
+            data-nav-id="voice_page"
             onClick={() => {
               setSelectedVoiceId(prefs.voiceName || "Leda");
               setCurrentView("voice-list");
@@ -11263,6 +11282,7 @@ export function App() {
 
           {/* 7. Voice model */}
           <button
+            data-nav-id="voice_model_list"
             onClick={() => setCurrentView("voice-model-list")}
             className="w-full p-5 bg-[#0F172A]/80 rounded-[2.5rem] border border-purple-500/30 shadow-2xl flex items-center justify-between active:scale-[0.98] transition-all text-left"
           >
@@ -11286,6 +11306,7 @@ export function App() {
 
           {/* 8. VOICE TUNING */}
           <button
+            data-nav-id="voice_tuning"
             onClick={() => {
               setTempSpeed(clampSpeechSpeed(prefs.speechSpeed));
               const safeVol = prefs.voiceVolume && prefs.voiceVolume > 20 ? prefs.voiceVolume : 80;
@@ -11313,6 +11334,7 @@ export function App() {
 
           {/* 9. VOICE CHECK */}
           <button
+            data-nav-id="voice_check"
             onClick={() => setCurrentView("voice-debug")}
             className="w-full p-5 bg-[#0F172A]/80 rounded-[2.5rem] border border-purple-500/30 shadow-2xl flex items-center justify-between active:scale-[0.98] transition-all text-left"
           >
@@ -11334,6 +11356,7 @@ export function App() {
 
           {/* 10. MIC & LISTENING */}
           <button
+            data-nav-id="mic_listening"
             onClick={() => setCurrentView("mic-listening")}
             className="w-full p-5 bg-[#0F172A]/80 rounded-[2.5rem] border border-purple-500/30 shadow-2xl flex items-center justify-between active:scale-[0.98] transition-all text-left"
           >
@@ -15553,6 +15576,7 @@ export function App() {
         {true && (
           <nav className="h-20 bg-[var(--card)] backdrop-blur-3xl border-t border-[var(--border)] px-8 flex items-center justify-between z-[100] shrink-0 text-[var(--text)]">
             <button
+              data-nav-id="home"
               onClick={() => {
                 if (isCallScreenOpen) setIsCallMinimized(true);
                 setActiveTab("home");
@@ -15564,6 +15588,7 @@ export function App() {
               <span className="text-[8px] font-black uppercase tracking-tighter">Home</span>
             </button>
             <button
+              data-nav-id="chat"
               onClick={() => {
                 if (isCallScreenOpen) setIsCallMinimized(true);
                 setActiveTab("chat");
@@ -15637,6 +15662,7 @@ export function App() {
             </div>
 
             <button
+              data-nav-id="history"
               onClick={() => {
                 setActiveTab("history");
                 setCurrentView("home");
@@ -15647,6 +15673,7 @@ export function App() {
               <span className="text-[8px] font-black uppercase tracking-tighter">History</span>
             </button>
             <button
+              data-nav-id="settings"
               onClick={() => setCurrentView("settings")}
               className={'flex flex-col items-center gap-1 transition-colors ' + (currentView === "settings" ? "text-orange-500" : "text-slate-500")}
             >
