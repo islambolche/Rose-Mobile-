@@ -90,12 +90,31 @@ const PAGE_TO_NAV_ID: Record<string, string> = {
   view_mode: 'view_mode',
 };
 
-export function getCurrentView(): string {
+const NAV_ID_TO_PAGE: Record<string, string> = Object.fromEntries(
+  Object.entries(PAGE_TO_NAV_ID).map(([k, v]) => [v, k])
+);
+
+export function currentPage(): string {
   if (typeof document === 'undefined') return 'home';
+  const win = window as any;
+  if (win.__currentAppView && PAGES.some(p => p.id === win.__currentAppView)) {
+    return win.__currentAppView;
+  }
   const viewEl = document.querySelector('[data-current-view]');
   if (viewEl) {
     const v = viewEl.getAttribute('data-current-view');
-    if (v) return v;
+    if (v && NAV_ID_TO_PAGE[v]) return NAV_ID_TO_PAGE[v];
+    if (v && PAGES.some(p => p.id === v)) return v;
+  }
+  for (const p of PAGES) {
+    const navId = PAGE_TO_NAV_ID[p.id] || p.id;
+    const el = document.querySelector(`[data-nav-id="${navId}"]`);
+    if (el) {
+      const rect = el.getBoundingClientRect();
+      if (rect.width > 0 && rect.height > 0) {
+        return p.id;
+      }
+    }
   }
   return 'home';
 }
@@ -108,9 +127,7 @@ export function isPageVisible(id: string): boolean {
     const rect = el.getBoundingClientRect();
     if (rect.width > 0 && rect.height > 0) return true;
   }
-  const current = getCurrentView();
-  if (current === id || current === navId) return true;
-  return false;
+  return currentPage() === id;
 }
 
 export async function openPage(id: string): Promise<boolean> {
@@ -118,17 +135,16 @@ export async function openPage(id: string): Promise<boolean> {
   const pageDef = PAGES.find(p => p.id === id);
   if (!pageDef) return false;
 
+  const win = window as any;
+  if (win.setIsCallMinimized) {
+    win.setIsCallMinimized(true);
+  }
+
   if (pageDef.parent) {
     const parentDef = PAGES.find(p => p.id === pageDef.parent);
-    if (parentDef) {
-      const parentNavId = PAGE_TO_NAV_ID[parentDef.id] || parentDef.id;
-      const parentEl = document.querySelector(`[data-nav-id="${parentNavId}"]`) as HTMLElement;
-      if (parentEl) {
-        parentEl.click();
-        await new Promise(r => setTimeout(r, 300));
-      } else {
-        await openPage(parentDef.id);
-      }
+    if (parentDef && !isPageVisible(parentDef.id)) {
+      await openPage(parentDef.id);
+      await new Promise(r => setTimeout(r, 200));
     }
   }
 
@@ -141,12 +157,9 @@ export async function openPage(id: string): Promise<boolean> {
   if (targetEl) {
     targetEl.click();
     await new Promise(r => setTimeout(r, 400));
-  } else {
-    const win = window as any;
-    if (win.setCurrentView) {
-      win.setCurrentView(navId);
-      await new Promise(r => setTimeout(r, 300));
-    }
+  } else if (win.setCurrentView) {
+    win.setCurrentView(navId);
+    await new Promise(r => setTimeout(r, 300));
   }
 
   return isPageVisible(id);
@@ -154,7 +167,12 @@ export async function openPage(id: string): Promise<boolean> {
 
 export async function goBack(): Promise<boolean> {
   if (typeof document === 'undefined') return false;
-  const current = getCurrentView();
+  const cur = currentPage();
+
+  const win = window as any;
+  if (win.setIsCallMinimized) {
+    win.setIsCallMinimized(true);
+  }
 
   const backButtons = Array.from(document.querySelectorAll('[data-nav-id="back"]')) as HTMLElement[];
   const visibleBack = backButtons.find(el => {
@@ -165,31 +183,52 @@ export async function goBack(): Promise<boolean> {
   if (visibleBack) {
     visibleBack.click();
     await new Promise(r => setTimeout(r, 400));
-    return true;
+    const newCur = currentPage();
+    return newCur !== cur;
   }
 
-  const pageDef = PAGES.find(p => p.id === current || PAGE_TO_NAV_ID[p.id] === current);
+  const pageDef = PAGES.find(p => p.id === cur);
   if (pageDef && pageDef.parent) {
-    return openPage(pageDef.parent);
+    const ok = await openPage(pageDef.parent);
+    const newCur = currentPage();
+    return ok && newCur !== cur;
   }
 
-  const homeBtn = document.querySelector('[data-nav-id="home"]') as HTMLElement;
-  if (homeBtn) {
-    homeBtn.click();
-    await new Promise(r => setTimeout(r, 300));
-    return true;
-  }
-
-  const win = window as any;
-  if (win.setCurrentView) {
-    win.setCurrentView('home');
-    return true;
+  if (cur === 'settings' || cur === 'home') {
+    const ok = await openPage('home');
+    const newCur = currentPage();
+    return ok && newCur !== cur;
   }
 
   return false;
 }
 
+export const SETTINGS_MAIN_LIST = [
+  'about_guide', 'connections', 'live_voice_model', 'voice_language',
+  'chats_memory', 'look_feel', 'phone_control', 'pc_setup', 'privacy_controls'
+];
+
+export const VOICE_LANGUAGE_LIST = [
+  'tts_model', 'assistant_name', 'your_name', 'personality',
+  'affection', 'language', 'response_style', 'voice',
+  'voice_model', 'voice_tuning', 'voice_check', 'mic_listening'
+];
+
+export async function openNumber(n: number): Promise<{ ok: boolean; page?: string }> {
+  const cur = currentPage();
+  let list = SETTINGS_MAIN_LIST;
+  if (cur === 'voice_language') {
+    list = VOICE_LANGUAGE_LIST;
+  }
+  const targetId = list[n - 1];
+  if (!targetId) return { ok: false };
+  const ok = await openPage(targetId);
+  return { ok, page: targetId };
+}
+
 if (typeof window !== 'undefined') {
   (window as any).openPage = openPage;
   (window as any).goBack = goBack;
+  (window as any).openNumber = openNumber;
+  (window as any).currentPage = currentPage;
 }

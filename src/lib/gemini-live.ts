@@ -46,7 +46,7 @@ import {
   getTeamStatus,
   TEAM_SYSTEM_INSTRUCTION,
 } from './team';
-import { openPage, goBack } from './nav';
+import { openPage, goBack, openNumber, currentPage } from './nav';
 
 export interface GeminiLiveOptions {
   assistantName?: string;
@@ -1428,17 +1428,31 @@ export class GeminiLiveSession {
           try {
             const action = String(args.action || '').toLowerCase();
             const pageId = String(args.page || '');
+            const num = typeof args.number === 'number' ? args.number : parseInt(args.number, 10);
+
             let ok = false;
+            let targetPage = pageId;
+
             if (action === 'open' && pageId) {
               ok = await openPage(pageId);
             } else if (action === 'back') {
               ok = await goBack();
+              targetPage = currentPage();
             } else if (action === 'home') {
               ok = await openPage('home');
+              targetPage = 'home';
+            } else if (action === 'open_number' && !isNaN(num) && num > 0) {
+              const res = await openNumber(num);
+              ok = res.ok;
+              targetPage = res.page || '';
             }
+
             functionResponses.push({
               response: {
-                output: { ok },
+                output: {
+                  ok,
+                  page: targetPage,
+                },
               },
               id: callId,
             });
@@ -1446,7 +1460,10 @@ export class GeminiLiveSession {
             console.warn('[GeminiLive] app_action error:', err);
             functionResponses.push({
               response: {
-                output: { ok: false },
+                output: {
+                  ok: false,
+                  page: '',
+                },
               },
               id: callId,
             });

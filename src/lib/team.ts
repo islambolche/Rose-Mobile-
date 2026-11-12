@@ -241,13 +241,13 @@ export const ROSE_TEAM_TOOLS = [
       },
       {
         name: 'app_action',
-        description: 'Control app navigation: open pages, go back, or go home.',
+        description: 'Control app navigation: open, back, home, or open_number.',
         parameters: {
           type: 'OBJECT',
           properties: {
             action: {
               type: 'STRING',
-              enum: ['open', 'back', 'home'],
+              enum: ['open', 'back', 'home', 'open_number'],
               description: 'Action to perform',
             },
             page: {
@@ -259,7 +259,11 @@ export const ROSE_TEAM_TOOLS = [
                 'theme', 'orb_style', 'rose_alive', 'quick_actions', 'app_permissions',
                 'pc_helper', 'pc_control', 'pc_files', 'confirmations', 'pc_history', 'safety', 'local_ai', 'view_mode'
               ],
-              description: 'Target page ID (only for open)',
+              description: 'Target page ID (for open)',
+            },
+            number: {
+              type: 'INTEGER',
+              description: 'Item number (for open_number)',
             },
           },
           required: ['action'],

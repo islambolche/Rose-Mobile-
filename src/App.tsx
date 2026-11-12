@@ -3920,7 +3920,9 @@ export function App() {
   useEffect(() => {
     (window as any).setCurrentView = setCurrentView;
     (window as any).setActiveTab = setActiveTab;
-  }, [setCurrentView, setActiveTab]);
+    (window as any).setIsCallMinimized = setIsCallMinimized;
+    (window as any).__currentAppView = currentView;
+  }, [setCurrentView, setActiveTab, setIsCallMinimized, currentView]);
 
   const [isMuted, setIsMuted] = useState(false);
   const isMutedRef = useRef(false);
