@@ -3782,6 +3782,7 @@ export function App() {
   const [liveBottomError, setLiveBottomError] = useState<string | null>(null);
   const liveBottomErrorTimerRef = useRef<any>(null);
   const titlePressTimerRef = useRef<any>(null);
+  const pendingClearChatStateRef = useRef<{ active: boolean; timestamp: number }>({ active: false, timestamp: 0 });
 
   const triggerLiveBottomError = useCallback((msg: string) => {
     setLiveBottomError(msg);
@@ -6368,6 +6369,17 @@ export function App() {
             source: isPcLayoutActive ? "pc" : "mobile",
             isVoiceCall: replyMode === "voice",
             onToast: (msg) => setToast(msg),
+            setCurrentView: (v: string) => setCurrentView(v as any),
+            clearChatCallback: () => {
+              setChatHistory([]);
+              chatHistoryRef.current = [];
+              try {
+                localStorage.removeItem("iyabd_chat_history");
+                localStorage.removeItem("rose_messages");
+              } catch {}
+            },
+            pendingClearChatState: pendingClearChatStateRef.current,
+            setPendingClearChatState: (st) => { pendingClearChatStateRef.current = st; },
           });
         }
 
@@ -6552,7 +6564,7 @@ export function App() {
               thinkingBudget: 0,
             },
           },
-          tools: ROSE_TEAM_TOOLS,
+          tools: isTypedChat ? [{ googleSearch: {} }] : ROSE_TEAM_TOOLS,
           apiKey: sanitizedKey,
         };
 
@@ -6576,7 +6588,7 @@ export function App() {
         while (attempt < 2 && !reqSuccess) {
           attempt++;
           try {
-            const currentTools = (attempt === 2 && lastError) ? [] : ROSE_TEAM_TOOLS;
+            const currentTools = (attempt === 2 && lastError) ? undefined : (isTypedChat ? [{ googleSearch: {} }] : ROSE_TEAM_TOOLS);
             const currentPayload = {
               ...payload,
               tools: currentTools,
@@ -8411,6 +8423,17 @@ export function App() {
                   source: isPcLayoutActive ? 'pc' : 'mobile',
                   isVoiceCall: true,
                   onToast: (msg) => setToast(msg),
+                  setCurrentView: (v: string) => setCurrentView(v as any),
+                  clearChatCallback: () => {
+                    setChatHistory([]);
+                    chatHistoryRef.current = [];
+                    try {
+                      localStorage.removeItem("iyabd_chat_history");
+                      localStorage.removeItem("rose_messages");
+                    } catch {}
+                  },
+                  pendingClearChatState: pendingClearChatStateRef.current,
+                  setPendingClearChatState: (st) => { pendingClearChatStateRef.current = st; },
                 });
               }
               if (res.matched && res.roseReply) {

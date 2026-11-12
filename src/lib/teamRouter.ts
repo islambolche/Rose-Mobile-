@@ -6,13 +6,18 @@ import {
   generateTaskId,
 } from './team';
 import { officeEvents } from '../components/pc/office/officeEngine';
+import { PAGES_REGISTRY, findMatchingPage, PageRegistration } from './navRegistry';
 
 export interface RouteTaskResult {
   matched: boolean;
-  type?: 'assign' | 'status' | 'clarify';
+  type?: 'assign' | 'status' | 'clarify' | 'navigation' | 'scroll' | 'clear_chat_prompt' | 'clear_chat_execute';
   agentId?: TeamAgentId;
   roseReply?: string;
   task?: AgentTaskRecord;
+  navigationAction?: {
+    action: 'goto' | 'back' | 'home' | 'scroll_down' | 'scroll_up' | 'clear_chat';
+    pageId?: string;
+  };
 }
 
 export interface RouteMessageOptions {
@@ -20,15 +25,12 @@ export interface RouteMessageOptions {
   source?: 'mobile' | 'pc';
   isVoiceCall?: boolean;
   onToast?: (message: string) => void;
+  setCurrentView?: (view: string) => void;
+  clearChatCallback?: () => void;
+  pendingClearChatState?: { active: boolean; timestamp: number };
+  setPendingClearChatState?: (state: { active: boolean; timestamp: number }) => void;
 }
 
-/**
- * Exact required aliases with Bengali suffixes (কে/র/এর/রে/দের):
- * mira: মিরা, মীরা, মিরাকে, মিরার, মিরারে, মীরাকে, মীরার
- * arin: আরিন, আরিনকে, আরিনের, আরিনরে, আরিফ, আরিয়ান
- * zayan: জায়ান, জায়ানকে, জায়ানের, জায়ানরে, যায়ান, যায়ানকে, যায়ানের
- * naira: নাইরা, নাইরাকে, নাইরার, নাইরারে, নায়রা, নায়রাকে
- */
 export const TARGET_AGENT_ALIASES: Record<'mira' | 'arin' | 'zayan' | 'naira', string[]> = {
   mira: [
     'মিরা', 'মীরা', 'মিরাকে', 'মিরার', 'মিরারে', 'মীরাকে', 'মীরার', 'মীরারে', 'মিরু',
@@ -48,33 +50,22 @@ export const TARGET_AGENT_ALIASES: Record<'mira' | 'arin' | 'zayan' | 'naira', s
   ],
 };
 
-/**
- * Work words: কাজ, দাও, বল, বলো, বলে, জিজ্ঞেস, জানতে, দেখো, করতে, পাঠাও, ask, tell
- */
 export const WORK_WORDS = [
   'কাজ', 'দাও', 'বল', 'বলো', 'বলে', 'জিজ্ঞেস', 'জানতে', 'দেখো', 'করতে', 'পাঠাও',
   'ask', 'tell', 'task', 'order', 'parcel', 'audit',
 ];
 
-/**
- * Status words: কি করে, কী করে, কি করছে, কী করছে, করতেছে, করতাছে, কোথায়, কেমন আছে, status
- */
 export const STATUS_WORDS = [
   'কি করে', 'কী করে', 'কি করছে', 'কী করছে', 'করতেছে', 'করতাছে', 'কোথায়', 'কোথায়', 'কেমন আছে',
   'status', 'কি অবস্থা', 'কী অবস্থা', 'where',
 ];
 
-/**
- * Helper to detect target team agent even if the sentence is broken by voice transcription
- * or attached to Bengali suffixes (কে/র/এর/রে).
- */
 export function detectAgentInMessage(text: string): 'mira' | 'arin' | 'zayan' | 'naira' | null {
   if (!text || typeof text !== 'string') return null;
   const raw = text.trim();
   if (!raw) return null;
   const lower = raw.toLowerCase();
 
-  // 1. Direct Regex with Bengali suffixes (কে/র/এর/রে/দের)
   if (/(?:মিরা|মীরা)(?:কে|র|রে|দের)?/i.test(raw) || /\b(mira|meera|miraa)\b/i.test(lower)) {
     return 'mira';
   }
@@ -88,7 +79,6 @@ export function detectAgentInMessage(text: string): 'mira' | 'arin' | 'zayan' | 
     return 'naira';
   }
 
-  // 2. Full Alias array check
   const targetKeys: Array<'mira' | 'arin' | 'zayan' | 'naira'> = ['mira', 'arin', 'zayan', 'naira'];
   for (const agentId of targetKeys) {
     const aliases = TARGET_AGENT_ALIASES[agentId];
@@ -102,9 +92,6 @@ export function detectAgentInMessage(text: string): 'mira' | 'arin' | 'zayan' | 
   return null;
 }
 
-/**
- * Checks a user message against local team rules before sending to AI model.
- */
 export async function routeUserMessageForTeamTask(
   userMessage: string,
   options: RouteMessageOptions = {}
@@ -117,8 +104,129 @@ export async function routeUserMessageForTeamTask(
   if (!rawText) return { matched: false };
 
   const lower = rawText.toLowerCase();
+  const effectiveDisplayName = (options.userName || 'ইউসুফ').trim();
 
-  // 0. Team-wide status check: টিম, অফিস, team
+  // Pending clear chat yes/no check (within 15s)
+  if (options.pendingClearChatState?.active && (Date.now() - options.pendingClearChatState.timestamp < 15000)) {
+    if (/^(হ্যাঁ|হ্যা|yes|sure|ok|অবশ্যই|হাঁ)/i.test(rawText)) {
+      if (options.clearChatCallback) {
+        options.clearChatCallback();
+      }
+      if (options.setPendingClearChatState) {
+        options.setPendingClearChatState({ active: false, timestamp: 0 });
+      }
+      return {
+        matched: true,
+        type: 'clear_chat_execute',
+        roseReply: 'সব চ্যাট মুছে দিলাম।',
+      };
+    } else if (/^(না|no|dont|cancel|থাক)/i.test(rawText)) {
+      if (options.setPendingClearChatState) {
+        options.setPendingClearChatState({ active: false, timestamp: 0 });
+      }
+      return {
+        matched: true,
+        type: 'clear_chat_execute',
+        roseReply: 'ঠিক আছে, চ্যাট মুছলাম না।',
+      };
+    }
+  }
+
+  // 1. Clear chat command: "চ্যাট মুছে দাও / clear chat"
+  if (/চ্যাট\s*মুছে\s*দাও|clear\s*chat|সব\s*চ্যাট\s*মুছে/i.test(rawText)) {
+    if (options.setPendingClearChatState) {
+      options.setPendingClearChatState({ active: true, timestamp: Date.now() });
+    }
+    return {
+      matched: true,
+      type: 'clear_chat_prompt',
+      roseReply: 'সব চ্যাট মুছে দেব? হ্যাঁ বললে মুছব।',
+    };
+  }
+
+  // 2. Scroll commands: "নিচে যাও / নিচে নামাও / scroll down" & "উপরে যাও / scroll up"
+  if (/নিচে\s*যাও|নিচে\s*নামাও|scroll\s*down/i.test(rawText)) {
+    if (typeof window !== 'undefined') {
+      window.scrollBy({ top: window.innerHeight * 0.8, behavior: 'smooth' });
+    }
+    return {
+      matched: true,
+      type: 'scroll',
+      roseReply: 'নিচে নামালাম।',
+    };
+  }
+  if (/উপরে\s*যাও|scroll\s*up/i.test(rawText)) {
+    if (typeof window !== 'undefined') {
+      window.scrollBy({ top: -window.innerHeight * 0.8, behavior: 'smooth' });
+    }
+    return {
+      matched: true,
+      type: 'scroll',
+      roseReply: 'উপরে তুললাম।',
+    };
+  }
+
+  // 3. Home command: "হোমে যাও / হোম / home"
+  if (/^হোমে\s*যাও$|^হোম$|^home$/i.test(rawText) || rawText === 'home' || rawText === 'হোম') {
+    if (options.setCurrentView) {
+      options.setCurrentView('home');
+    }
+    return {
+      matched: true,
+      type: 'navigation',
+      roseReply: 'হোমে এলাম।',
+    };
+  }
+
+  // 4. Back command: "পেছনে যাও / ফিরে যাও / ব্যাক / back"
+  if (/পেছনে\s*যাও|ফিরে\s*যাও|ব্যাক|back/i.test(rawText)) {
+    if (typeof window !== 'undefined') {
+      window.history.back();
+    }
+    return {
+      matched: true,
+      type: 'navigation',
+      roseReply: 'পেছনে গেলাম।',
+    };
+  }
+
+  // 5. Open / Navigate command: "<page> খোলো / খুলো / যাও / এ যাও / নিয়ে যাও / দেখাও / open / go to"
+  const openRegex = /(?:(.+?)\s+)?(?:খোলো|খুলো|যাও|এ\s*যাও|নিয়ে\s*যাও|নিয়ে\s*যাও|দেখাও|open|go\s*to)/i;
+  const matchOpen = rawText.match(openRegex);
+  if (matchOpen || /(?:খোলো|খুলো|যাও|এ\s*যাও|নিয়ে\s*যাও|নিয়ে\s*যাও|দেখাও|open|go\s*to)/i.test(rawText)) {
+    // Extract target page keyword
+    let query = rawText
+      .replace(/খোলো|খুলো|যাও|এ\s*যাও|নিয়ে\s*যাও|নিয়ে\s*যাও|দেখাও|open|go\s*to/gi, '')
+      .trim();
+
+    if (!query) {
+      query = rawText;
+    }
+
+    const { page, matches } = findMatchingPage(query);
+    if (page && options.setCurrentView) {
+      options.setCurrentView(page.path);
+      return {
+        matched: true,
+        type: 'navigation',
+        roseReply: `${page.titleBn} খুললাম।`,
+      };
+    } else {
+      // Not found or ambiguous
+      let reply = 'এই নামে কোনো পাতা পেলাম না।';
+      if (matches.length > 0) {
+        const top3 = matches.slice(0, 3).map(m => m.titleBn).join(', ');
+        reply = `এই নামে কোনো পাতা পেলাম না। আপনি কি এগুলো খুঁজছেন: ${top3}?`;
+      }
+      return {
+        matched: true,
+        type: 'navigation',
+        roseReply: reply,
+      };
+    }
+  }
+
+  // 6. Team-wide status check: টিম, অফিস, team
   if (/(?:টিম|অফিস|team)/i.test(rawText)) {
     let summary = "আজ কাউকে কোনো কাজ দেওয়া হয়নি, সবাই ফাঁকা।";
     if (supabase) {
@@ -148,7 +256,6 @@ export async function routeUserMessageForTeamTask(
           if (activeStatuses.length > 0) {
             const joined = activeStatuses.join(', ');
             summary = `বর্তমানে ${joined}।`;
-            // Cap at ~2 sentences roughly by cutting if too long or just keeping it compact
             if (summary.length > 150) {
               summary = `বর্তমানে ${activeStatuses.slice(0, 2).join(', ')} এবং অন্যরা ডেস্কে আছে।`;
             }
@@ -166,29 +273,22 @@ export async function routeUserMessageForTeamTask(
     };
   }
 
-  // 1. Detect target agent anywhere in the message (handles broken voice transcription)
+  // 7. Detect target agent anywhere in the message
   const detectedAgent = detectAgentInMessage(rawText);
   if (!detectedAgent) {
     return { matched: false };
   }
 
   const member = TEAM_MEMBERS[detectedAgent];
-  const effectiveDisplayName = (options.userName || 'ইউসুফ').trim();
   const currentSource: 'mobile' | 'pc' =
     options.source ||
     (typeof window !== 'undefined' && window.innerWidth >= 1024 ? 'pc' : 'mobile');
 
-  // 2. Check if asking what they are doing (status words)
   const isStatusQuery = STATUS_WORDS.some(
     (w) => rawText.includes(w) || lower.includes(w.toLowerCase())
   );
 
   if (isStatusQuery) {
-    console.log('[Router Match] Detected agent status query:', {
-      agent: detectedAgent,
-      text: rawText,
-    });
-
     let roseReply = `${member.bengaliName} এখন নিজের ডেস্কে বসে আছে, কোনো কাজ নেই।`;
 
     if (supabase) {
@@ -226,18 +326,11 @@ export async function routeUserMessageForTeamTask(
     };
   }
 
-  // 3. Check if message contains a work word
   const hasWorkWord = WORK_WORDS.some(
     (w) => rawText.includes(w) || lower.includes(w.toLowerCase())
   );
 
   if (hasWorkWord) {
-    console.log('[Router Match] Detected agent work task assignment:', {
-      agent: detectedAgent,
-      instruction: rawText,
-      source: currentSource,
-    });
-
     const newTask: AgentTaskRecord = {
       id: generateTaskId(),
       created_at: new Date().toISOString(),
@@ -250,38 +343,15 @@ export async function routeUserMessageForTeamTask(
       source: currentSource,
     };
 
-    // Insert into Supabase public.tasks
     if (supabase) {
       try {
-        const { data, error } = await supabase
-          .from('tasks')
-          .insert([newTask])
-          .select();
-
-        if (error) {
-          console.error('[Supabase Insert Error] public.tasks insert failed:', error.message);
-          if (options.onToast) {
-            options.onToast('টাস্ক তৈরিতে সমস্যা: ' + error.message);
-          }
-        } else {
-          console.log('[Supabase Insert Success] public.tasks row created:', {
-            id: data?.[0]?.id || newTask.id,
-            to_agent: detectedAgent,
-            status: 'assigned',
-          });
-        }
+        await supabase.from('tasks').insert([newTask]).select();
       } catch (err: any) {
-        console.error('[Supabase Insert Error] Exception during tasks insert:', err?.message || err);
-        if (options.onToast) {
-          options.onToast('টাস্ক তৈরিতে সমস্যা: ' + (err?.message || 'Error'));
-        }
+        console.error('[Supabase Insert Error]:', err?.message || err);
       }
     }
 
-    // Trigger local office animation
     officeEvents.assign('rose', detectedAgent, rawText);
-
-    // One short sentence response: "ঠিক আছে <display name>, <agent Bengali name>-কে বলছি।"
     const roseReply = `ঠিক আছে ${effectiveDisplayName}, ${member.bengaliName}কে বলছি।`;
 
     return {
@@ -293,7 +363,6 @@ export async function routeUserMessageForTeamTask(
     };
   }
 
-  // 4. Otherwise → ask ONE short question: "ইউসুফ, <name>-কে কি কোনো কাজ দেব, নাকি জানতে চাও সে কী করছে?"
   const roseReply = `${effectiveDisplayName}, ${member.bengaliName}-কে কি কোনো কাজ দেব, নাকি জানতে চাও সে কী করছে?`;
   return {
     matched: true,
@@ -314,7 +383,6 @@ export async function routePcCommandMessage(
   const lower = text.toLowerCase();
   const effectiveDisplayName = (options.userName || 'ইউসুফ').trim();
 
-  // Simple PC command pattern matching
   let pcAction: string | null = null;
   let pcArgs: Record<string, any> = {};
   let confirmNeeded = false;
@@ -346,7 +414,7 @@ export async function routePcCommandMessage(
   if (!pcAction) return { matched: false };
 
   if (confirmNeeded) {
-    const res = await sendPcCommand(pcAction, pcArgs, { source: options.source, onToast: options.onToast });
+    await sendPcCommand(pcAction, pcArgs, { source: options.source, onToast: options.onToast });
     return {
       matched: true,
       roseReply: `${effectiveDisplayName}, ফোনে অনুমতি দাও।`,
@@ -355,7 +423,7 @@ export async function routePcCommandMessage(
 
   const res = await sendPcCommand(pcAction, pcArgs, { source: options.source, onToast: options.onToast });
   const roseReply = res.success
-    ? `ঠিক আছে ${effectiveDisplayName}, ${res.message}।`
+    ? `ঠিক আছে ${effectiveDisplayName}, ${res.message}።`
     : `ইউসুফ, ${res.message}`;
 
   return {
