@@ -132,3 +132,12 @@ export async function executeBack(): Promise<{ ok: boolean }> {
 
   return { ok: false };
 }
+
+export async function goBack(): Promise<{ ok: boolean }> {
+  return executeBack();
+}
+
+if (typeof window !== 'undefined') {
+  (window as any).goBack = goBack;
+}
+

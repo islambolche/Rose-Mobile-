@@ -7,6 +7,7 @@ import {
 } from './team';
 import { officeEvents } from '../components/pc/office/officeEngine';
 import { PAGES_REGISTRY, findMatchingPage, PageRegistration } from './navRegistry';
+import { goBack } from './navExecutor';
 
 export interface RouteTaskResult {
   matched: boolean;
@@ -166,8 +167,12 @@ export async function routeUserMessageForTeamTask(
 
   // 6. Back
   if (isDirectBack || /(পেছনে|পিছনে|ফিরে\s*যাও|ব্যাক|back)/i.test(rawText)) {
-    if (typeof window !== 'undefined') window.history.back();
-    return { matched: true, type: 'navigation', roseReply: 'পেছনে গেলাম।' };
+    const res = await goBack();
+    return {
+      matched: true,
+      type: 'navigation',
+      roseReply: res.ok ? 'পেছনে গেলাম।' : 'পেছনে যাওয়া গেল না।',
+    };
   }
 
   // 7. Remove filler words before fuzzy matching:
