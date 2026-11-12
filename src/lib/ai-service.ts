@@ -92,12 +92,14 @@ export const formatGeminiErrorForUI = (
   const sanitizedFullText = sanitizeOutApiKey(rawMsg, apiKey).trim();
 
   const attempts: GeminiAttemptLog[] = Array.isArray(err?.attempts) ? err.attempts : [];
-  const debugLine =
+  const baseDebug =
     attempts.length > 0
       ? attempts
           .map((a) => `${a.model} | ${a.status} | ${String(a.seconds).replace(/s$/i, '')}s`)
           .join('\n')
       : `${modelName} | ${statusVal} | ${String(timeSec).replace(/s$/i, '')}s`;
+
+  const debugLine = `${baseDebug}\n${sanitizedFullText}`;
 
   if (/key নেই|Add your Gemini key|missing_key/i.test(sanitizedFullText) || statusVal === 'missing_key') {
     return {
@@ -1024,6 +1026,7 @@ const callGeminiTextEndpoint = async (params: {
     const googleErrMsg = parsed?.error?.message
       ? `${rawGoogleErr} (HTTP ${res.status})`
       : `Cannot reach Gemini. Check your internet and your Gemini key. (HTTP ${res.status})`;
+    
     const err: any = new Error(googleErrMsg);
     err.status = res.status;
     err.modelName = cleanModel;
@@ -1031,6 +1034,15 @@ const callGeminiTextEndpoint = async (params: {
     err.googleMessage = rawGoogleErr;
     err.errorDetails = parsed?.error?.details;
     err.bodyText = googleErrMsg;
+    
+    // Log the real error for debugging
+    console.error('[Gemini API Error]', {
+      status: res.status,
+      message: parsed?.error?.message,
+      reason: parsed?.error?.status,
+      model: cleanModel
+    });
+    
     throw err;
   }
 
@@ -1104,198 +1116,191 @@ export const directGeminiGenerate = async (payload: any) => {
   const deadline = overallStart + GEMINI_TOTAL_CHAIN_TIMEOUT_MS;
   const initialModels = buildOrderedModelList(model);
 
-  const triedModels = new Set<string>();
-  const attempts: GeminiAttemptLog[] = [];
-  let lastError: any = null;
+  const runAllAttempts = async (currentTools?: any[]): Promise<any> => {
+    const triedModels = new Set<string>();
+    const attempts: GeminiAttemptLog[] = [];
+    let lastError: any = null;
 
-  const overallController = new AbortController();
-  const overallTimer = setTimeout(() => {
-    try {
-      overallController.abort('overall_timeout');
-    } catch (e) {
-      overallController.abort();
-    }
-  }, GEMINI_TOTAL_CHAIN_TIMEOUT_MS);
+    const overallController = new AbortController();
+    const overallTimer = setTimeout(() => {
+      try {
+        overallController.abort('overall_timeout');
+      } catch (e) {
+        overallController.abort();
+      }
+    }, GEMINI_TOTAL_CHAIN_TIMEOUT_MS);
 
-  const runSingleAttempt = async (
-    candidateModel: string,
-    parentSignal: AbortSignal
-  ): Promise<any> => {
-    const remainingMs = Math.max(1000, deadline - Date.now());
-    const attemptStart = Date.now();
-    triedModels.add(candidateModel);
-    try {
-      const result = await callGeminiTextEndpoint({
-        model: candidateModel,
-        contents: preparedContents,
-        systemInstruction,
-        generationConfig,
-        apiKey: cleanKey,
-        timeoutMs: remainingMs,
-        signal: parentSignal,
-        tools,
-      });
-      saveWorkingTextModel(candidateModel, result.elapsedMs);
-      return result;
-    } catch (err: any) {
-      if (err?.isHedgedCancel) {
+    const runSingleAttempt = async (
+      candidateModel: string,
+      parentSignal: AbortSignal
+    ): Promise<any> => {
+      const remainingMs = Math.max(1000, deadline - Date.now());
+      const attemptStart = Date.now();
+      triedModels.add(candidateModel);
+      try {
+        const result = await callGeminiTextEndpoint({
+          model: candidateModel,
+          contents: preparedContents,
+          systemInstruction,
+          generationConfig,
+          apiKey: cleanKey,
+          timeoutMs: remainingMs,
+          signal: parentSignal,
+          tools: currentTools,
+        });
+        saveWorkingTextModel(candidateModel, result.elapsedMs);
+        return result;
+      } catch (err: any) {
+        if (err?.isHedgedCancel) {
+          throw err;
+        }
+        const elapsedSec =
+          err?.elapsedSeconds || ((Date.now() - attemptStart) / 1000).toFixed(1);
+        const statusStr = err?.isTimeout
+          ? 'timeout'
+          : err?.status !== undefined
+            ? String(err.status)
+            : 'error';
+        attempts.push({
+          model: candidateModel,
+          status: statusStr,
+          seconds: String(elapsedSec).replace(/s$/i, ''),
+          error: err?.googleMessage || err?.message,
+        });
+        lastError = err;
+        clearWorkingTextModelIfMatches(candidateModel);
         throw err;
       }
-      const elapsedSec =
-        err?.elapsedSeconds || ((Date.now() - attemptStart) / 1000).toFixed(1);
-      const statusStr = err?.isTimeout
-        ? 'timeout'
-        : err?.status !== undefined
-          ? String(err.status)
-          : 'error';
-      attempts.push({
-        model: candidateModel,
-        status: statusStr,
-        seconds: String(elapsedSec).replace(/s$/i, ''),
-        error: err?.googleMessage || err?.message,
-      });
-      lastError = err;
-      clearWorkingTextModelIfMatches(candidateModel);
-      throw err;
-    }
-  };
+    };
 
-  try {
-    // Hedge race between first and second model (5s head start for first model)
-    if (initialModels.length >= 2) {
-      const firstModel = initialModels[0];
-      const secondModel = initialModels[1];
+    try {
+      if (initialModels.length >= 2) {
+        const firstModel = initialModels[0];
+        const secondModel = initialModels[1];
+        const ctrl1 = new AbortController();
+        const ctrl2 = new AbortController();
+        const onOverallAbort = () => {
+          try { ctrl1.abort('overall_timeout'); } catch (e) {}
+          try { ctrl2.abort('overall_timeout'); } catch (e) {}
+        };
+        overallController.signal.addEventListener('abort', onOverallAbort, { once: true });
 
-      const ctrl1 = new AbortController();
-      const ctrl2 = new AbortController();
-
-      const onOverallAbort = () => {
-        try {
-          ctrl1.abort('overall_timeout');
-        } catch (e) {}
-        try {
-          ctrl2.abort('overall_timeout');
-        } catch (e) {}
-      };
-      overallController.signal.addEventListener('abort', onOverallAbort, { once: true });
-
-      const raceResult = await new Promise<any>((resolve, reject) => {
-        let settled = false;
-        let secondStarted = false;
-        let pendingCount = 1;
-        let hedgeTimer: any = null;
-
-        const startSecond = () => {
-          if (settled || secondStarted || Date.now() >= deadline || overallController.signal.aborted) {
-            if (pendingCount === 0 && !settled) {
-              settled = true;
-              reject(lastError || new Error('Gemini request failed'));
+        const raceResult = await new Promise<any>((resolve, reject) => {
+          let settled = false;
+          let secondStarted = false;
+          let pendingCount = 1;
+          let hedgeTimer: any = null;
+          const startSecond = () => {
+            if (settled || secondStarted || Date.now() >= deadline || overallController.signal.aborted) {
+              if (pendingCount === 0 && !settled) {
+                settled = true;
+                reject(lastError || new Error('Gemini request failed'));
+              }
+              return;
             }
-            return;
-          }
-          // Do not start second model if first failed due to invalid API key (401/403)
-          if (lastError && (lastError.status === 401 || lastError.status === 403)) {
-            if (pendingCount === 0 && !settled) {
-              settled = true;
-              reject(lastError);
+            if (lastError && (lastError.status === 401 || lastError.status === 403)) {
+              if (pendingCount === 0 && !settled) { settled = true; reject(lastError); }
+              return;
             }
-            return;
-          }
-          secondStarted = true;
-          pendingCount++;
-          runSingleAttempt(secondModel, ctrl2.signal)
+            secondStarted = true;
+            pendingCount++;
+            runSingleAttempt(secondModel, ctrl2.signal)
+              .then((res) => {
+                if (settled) return; settled = true;
+                if (hedgeTimer) clearTimeout(hedgeTimer);
+                try { ctrl1.abort('hedged_winner'); } catch (e) {}
+                resolve(res);
+              })
+              .catch(() => {
+                pendingCount--;
+                if (pendingCount === 0 && !settled) {
+                  settled = true; if (hedgeTimer) clearTimeout(hedgeTimer);
+                  reject(lastError || new Error('Gemini request failed'));
+                }
+              });
+          };
+          hedgeTimer = setTimeout(() => { startSecond(); }, GEMINI_HEDGE_DELAY_MS);
+          runSingleAttempt(firstModel, ctrl1.signal)
             .then((res) => {
-              if (settled) return;
-              settled = true;
+              if (settled) return; settled = true;
               if (hedgeTimer) clearTimeout(hedgeTimer);
-              try {
-                ctrl1.abort('hedged_winner');
-              } catch (e) {}
+              try { ctrl2.abort('hedged_winner'); } catch (e) {}
               resolve(res);
             })
             .catch(() => {
               pendingCount--;
-              if (pendingCount === 0 && !settled) {
-                settled = true;
-                if (hedgeTimer) clearTimeout(hedgeTimer);
-                reject(lastError || new Error('Gemini request failed'));
+              if (hedgeTimer) { clearTimeout(hedgeTimer); hedgeTimer = null; }
+              if (!secondStarted) { startSecond(); }
+              else if (pendingCount === 0 && !settled) {
+                settled = true; reject(lastError || new Error('Gemini request failed'));
               }
             });
-        };
-
-        hedgeTimer = setTimeout(() => {
-          startSecond();
-        }, GEMINI_HEDGE_DELAY_MS);
-
-        runSingleAttempt(firstModel, ctrl1.signal)
-          .then((res) => {
-            if (settled) return;
-            settled = true;
-            if (hedgeTimer) clearTimeout(hedgeTimer);
-            try {
-              ctrl2.abort('hedged_winner');
-            } catch (e) {}
-            resolve(res);
-          })
-          .catch(() => {
-            pendingCount--;
-            if (hedgeTimer) {
-              clearTimeout(hedgeTimer);
-              hedgeTimer = null;
-            }
-            if (!secondStarted) {
-              startSecond();
-            } else if (pendingCount === 0 && !settled) {
-              settled = true;
-              reject(lastError || new Error('Gemini request failed'));
-            }
-          });
-      }).finally(() => {
-        overallController.signal.removeEventListener('abort', onOverallAbort);
-      });
-
-      return raceResult;
-    } else if (initialModels.length === 1) {
-      return await runSingleAttempt(initialModels[0], overallController.signal);
-    }
-  } catch (raceErr: any) {
-    // If key is invalid (401/403), do not try further models
-    if (lastError && (lastError.status === 401 || lastError.status === 403)) {
-      lastError.attempts = attempts;
-      throw lastError;
-    }
-
-    // Try remaining models sequentially if time remains within 25s
-    const remainingModels = initialModels.slice(2);
-    for (const nextModel of remainingModels) {
-      if (Date.now() >= deadline || overallController.signal.aborted) break;
-      try {
-        return await runSingleAttempt(nextModel, overallController.signal);
-      } catch (err: any) {
-        if (!isRetryableModelStatus(err?.status)) break;
+        }).finally(() => {
+          overallController.signal.removeEventListener('abort', onOverallAbort);
+        });
+        return raceResult;
+      } else if (initialModels.length === 1) {
+        return await runSingleAttempt(initialModels[0], overallController.signal);
       }
-    }
-
-    // Only run model discovery if all static models failed and time remains
-    if (Date.now() + 2000 < deadline && !overallController.signal.aborted) {
-      const discovered = await discoverAvailableFlashModels(cleanKey, triedModels);
-      for (const dm of discovered) {
+    } catch (raceErr: any) {
+      if (lastError && (lastError.status === 401 || lastError.status === 403)) {
+        lastError.attempts = attempts; throw lastError;
+      }
+      const remainingModels = initialModels.slice(2);
+      for (const nextModel of remainingModels) {
         if (Date.now() >= deadline || overallController.signal.aborted) break;
-        try {
-          return await runSingleAttempt(dm, overallController.signal);
-        } catch (err: any) {
-          if (!isRetryableModelStatus(err?.status)) break;
+        try { return await runSingleAttempt(nextModel, overallController.signal); }
+        catch (err: any) { if (!isRetryableModelStatus(err?.status)) break; }
+      }
+      if (Date.now() + 2000 < deadline && !overallController.signal.aborted) {
+        const discovered = await discoverAvailableFlashModels(cleanKey, triedModels);
+        for (const dm of discovered) {
+          if (Date.now() >= deadline || overallController.signal.aborted) break;
+          try { return await runSingleAttempt(dm, overallController.signal); }
+          catch (err: any) { if (!isRetryableModelStatus(err?.status)) break; }
         }
       }
+    } finally {
+      clearTimeout(overallTimer);
     }
-  } finally {
-    clearTimeout(overallTimer);
-  }
+    const finalErr: any = lastError || new Error('Cannot reach Gemini. Check your internet and your Gemini key.');
+    finalErr.attempts = attempts;
+    throw finalErr;
+  };
 
-  const finalErr: any =
-    lastError || new Error('Cannot reach Gemini. Check your internet and your Gemini key.');
-  finalErr.attempts = attempts;
-  throw finalErr;
+  // Main execution with retry logic
+  let currentTools = tools;
+  let retryCount = 0;
+  const maxRetries = 1;
+
+  while (true) {
+    try {
+      return await runAllAttempts(currentTools);
+    } catch (err: any) {
+      const errMsg = String(err?.googleMessage || err?.message || '').toLowerCase();
+      const isSearchToolError = errMsg.includes('google_search') || errMsg.includes('googlesearch') || errMsg.includes('tool');
+      
+      if (isSearchToolError && currentTools && currentTools.some((t: any) => t.googleSearch)) {
+        console.warn('[Gemini] Retrying without googleSearch tool...');
+        currentTools = currentTools.filter((t: any) => !t.googleSearch);
+        continue; // Immediate retry without tool
+      }
+
+      if (retryCount < maxRetries) {
+        console.warn(`[Gemini] Request failed, retrying in 500ms... (Attempt ${retryCount + 1})`, err);
+        retryCount++;
+        await new Promise(r => setTimeout(r, 500));
+        continue;
+      }
+
+      // Final failure: attach short real reason to message
+      if (err && !errMsg.includes('key')) {
+        const shortReason = errMsg.length > 60 ? errMsg.slice(0, 60) + '...' : errMsg;
+        err.googleMessage = `${err.googleMessage || 'Request failed'}\nReason: ${shortReason}`;
+      }
+      throw err;
+    }
+  }
 };
 
 // Stream Gemini replies via SSE (:streamGenerateContent?alt=sse) and fall back to directGeminiGenerate if needed
@@ -1309,7 +1314,11 @@ export const directGeminiStream = async (
     .replace(/[\r\n\t\s"']+/g, '')
     .trim();
 
-  if (cleanKey) {
+  if (!cleanKey) {
+    return await directGeminiGenerate(payload);
+  }
+
+  const runStreamAttempt = async (currentTools?: any[]): Promise<any> => {
     const normalizedContents = Array.isArray(contents) ? contents : [];
     const hasRichParts = normalizedContents.some(
       (c: any) =>
@@ -1324,27 +1333,54 @@ export const directGeminiStream = async (
     const orderedModels = buildOrderedModelList(model);
     const primaryModel = String(orderedModels[0] || '').replace(/^models\//, '').trim();
 
-    if (primaryModel) {
-      const reqStartTime = Date.now();
-      const startMinimal = isMinimalBodyStoredForModel(primaryModel);
-      const streamUrl = `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(primaryModel)}:streamGenerateContent?alt=sse&key=${cleanKey}`;
+    if (!primaryModel) return await directGeminiGenerate(payload);
 
-      let accumulatedRawText = '';
-      let emittedAnyChunk = false;
-      let lastGroundingMetadata: any = null;
-      const functionCallParts: any[] = [];
+    const reqStartTime = Date.now();
+    const startMinimal = isMinimalBodyStoredForModel(primaryModel);
+    const streamUrl = `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(primaryModel)}:streamGenerateContent?alt=sse&key=${cleanKey}`;
 
-      try {
-        const directBody = buildBodyForRequest(
+    let accumulatedRawText = '';
+    let emittedAnyChunk = false;
+    let lastGroundingMetadata: any = null;
+    const functionCallParts: any[] = [];
+
+    try {
+      const directBody = buildBodyForRequest(
+        preparedContents,
+        systemInstruction,
+        generationConfig,
+        startMinimal,
+        'full',
+        currentTools || [{ googleSearch: {} }]
+      );
+
+      let res = await fetchWithSignalTimeout(
+        streamUrl,
+        {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'x-goog-api-key': cleanKey,
+          },
+          body: JSON.stringify(directBody),
+        },
+        GEMINI_PER_REQUEST_TIMEOUT_MS,
+        primaryModel,
+        reqStartTime,
+        cleanKey
+      );
+
+      if (res.status === 400) {
+        const fallbackBody = buildBodyForRequest(
           preparedContents,
           systemInstruction,
           generationConfig,
           startMinimal,
-          'full',
-          tools || [{ googleSearch: {} }]
+          'none',
+          currentTools || [{ googleSearch: {} }]
         );
-
-        let res = await fetchWithSignalTimeout(
+        const remainingMs = Math.max(2000, GEMINI_PER_REQUEST_TIMEOUT_MS - (Date.now() - reqStartTime));
+        res = await fetchWithSignalTimeout(
           streamUrl,
           {
             method: 'POST',
@@ -1352,154 +1388,135 @@ export const directGeminiStream = async (
               'Content-Type': 'application/json',
               'x-goog-api-key': cleanKey,
             },
-            body: JSON.stringify(directBody),
+            body: JSON.stringify(fallbackBody),
           },
-          GEMINI_PER_REQUEST_TIMEOUT_MS,
+          remainingMs,
           primaryModel,
           reqStartTime,
           cleanKey
         );
+      }
 
-        if (res.status === 400) {
-          const fallbackBody = buildBodyForRequest(
-            preparedContents,
-            systemInstruction,
-            generationConfig,
-            startMinimal,
-            'none',
-            tools || [{ googleSearch: {} }]
-          );
-          const remainingMs = Math.max(2000, GEMINI_PER_REQUEST_TIMEOUT_MS - (Date.now() - reqStartTime));
-          res = await fetchWithSignalTimeout(
-            streamUrl,
-            {
-              method: 'POST',
-              headers: {
-                'Content-Type': 'application/json',
-                'x-goog-api-key': cleanKey,
+      if (!res.ok) {
+        const rawBody = await res.text().catch(() => '');
+        let parsed: any = null;
+        try { parsed = JSON.parse(rawBody); } catch {}
+        const rawGoogleErr = sanitizeOutApiKey(parsed?.error?.message || `HTTP ${res.status}`, cleanKey);
+        const err: any = new Error(rawGoogleErr);
+        err.status = res.status;
+        err.googleMessage = rawGoogleErr;
+        throw err;
+      }
+
+      if (res.body && typeof res.body.getReader === 'function') {
+        const reader = res.body.getReader();
+        const decoder = new TextDecoder('utf-8');
+        let lineBuffer = '';
+
+        const processSseLine = (line: string) => {
+          const trimmed = line.trim();
+          if (!trimmed.startsWith('data:')) return;
+          const jsonStr = trimmed.slice(5).trim();
+          if (!jsonStr || jsonStr === '[DONE]') return;
+          try {
+            const parsed = JSON.parse(jsonStr);
+            const groundingMetadata = parsed?.candidates?.[0]?.groundingMetadata;
+            if (groundingMetadata) { lastGroundingMetadata = groundingMetadata; }
+            const parts = parsed?.candidates?.[0]?.content?.parts || [];
+            for (const part of parts) {
+              if (!part || part.thought === true) continue;
+              if (part.functionCall) { functionCallParts.push(part); }
+              if (typeof part.text === 'string' && part.text.length > 0) {
+                accumulatedRawText += part.text;
+                emittedAnyChunk = true;
+                if (typeof onTextChunk === 'function') { onTextChunk(part.text); }
+              }
+            }
+          } catch {}
+        };
+
+        while (true) {
+          const { value, done } = await reader.read();
+          if (done) break;
+          lineBuffer += decoder.decode(value, { stream: true });
+          const lines = lineBuffer.split(/\r?\n/);
+          lineBuffer = lines.pop() || '';
+          for (const line of lines) { processSseLine(line); }
+        }
+        lineBuffer += decoder.decode();
+        if (lineBuffer.trim()) {
+          for (const line of lineBuffer.split(/\r?\n/)) { processSseLine(line); }
+        }
+
+        const finalCleaned = cleanAssistantReplyText(accumulatedRawText);
+        if (finalCleaned || functionCallParts.length > 0) {
+          const elapsedMs = Date.now() - reqStartTime;
+          saveWorkingTextModel(primaryModel, elapsedMs);
+          const resultParts: any[] = [];
+          if (finalCleaned) { resultParts.push({ text: finalCleaned }); }
+          return {
+            candidates: [
+              {
+                content: { role: 'model', parts: resultParts },
+                groundingMetadata: lastGroundingMetadata,
               },
-              body: JSON.stringify(fallbackBody),
-            },
-            remainingMs,
-            primaryModel,
-            reqStartTime,
-            cleanKey
-          );
-        }
-
-        if (res.ok && res.body && typeof res.body.getReader === 'function') {
-          const reader = res.body.getReader();
-          const decoder = new TextDecoder('utf-8');
-          let lineBuffer = '';
-
-          const processSseLine = (line: string) => {
-            const trimmed = line.trim();
-            if (!trimmed.startsWith('data:')) return;
-            const jsonStr = trimmed.slice(5).trim();
-            if (!jsonStr || jsonStr === '[DONE]') return;
-            try {
-              const parsed = JSON.parse(jsonStr);
-              const groundingMetadata = parsed?.candidates?.[0]?.groundingMetadata;
-              if (groundingMetadata) {
-                lastGroundingMetadata = groundingMetadata;
-              }
-              const parts = parsed?.candidates?.[0]?.content?.parts || [];
-              for (const part of parts) {
-                if (!part || part.thought === true) continue;
-                if (part.functionCall) {
-                  functionCallParts.push(part);
-                }
-                if (typeof part.text === 'string' && part.text.length > 0) {
-                  accumulatedRawText += part.text;
-                  emittedAnyChunk = true;
-                  if (typeof onTextChunk === 'function') {
-                    onTextChunk(part.text);
-                  }
-                }
-              }
-            } catch {}
+            ],
+            text: finalCleaned,
+            groundingMetadata: lastGroundingMetadata,
+            modelUsed: primaryModel,
+            elapsedMs,
+            elapsedSeconds: (elapsedMs / 1000).toFixed(1),
           };
-
-          while (true) {
-            const { value, done } = await reader.read();
-            if (done) break;
-            lineBuffer += decoder.decode(value, { stream: true });
-            const lines = lineBuffer.split(/\r?\n/);
-            lineBuffer = lines.pop() || '';
-            for (const line of lines) {
-              processSseLine(line);
-            }
-          }
-          lineBuffer += decoder.decode();
-          if (lineBuffer.trim()) {
-            for (const line of lineBuffer.split(/\r?\n/)) {
-              processSseLine(line);
-            }
-          }
-
-          const finalCleaned = cleanAssistantReplyText(accumulatedRawText);
-          if (finalCleaned || functionCallParts.length > 0) {
-            const elapsedMs = Date.now() - reqStartTime;
-            saveWorkingTextModel(primaryModel, elapsedMs);
-            const resultParts: any[] = [];
-            if (finalCleaned) {
-              resultParts.push({ text: finalCleaned });
-            }
-            return {
-              candidates: [
-                {
-                  content: {
-                    role: 'model',
-                    parts: resultParts,
-                  },
-                  groundingMetadata: lastGroundingMetadata,
-                },
-              ],
-              text: finalCleaned,
-              groundingMetadata: lastGroundingMetadata,
-              modelUsed: primaryModel,
-              elapsedMs,
-              elapsedSeconds: (elapsedMs / 1000).toFixed(1),
-            };
-          }
-        }
-      } catch (streamErr) {
-        if (emittedAnyChunk && accumulatedRawText.trim()) {
-          const partialCleaned = cleanAssistantReplyText(accumulatedRawText);
-          if (partialCleaned) {
-            return {
-              candidates: [
-                {
-                  content: {
-                    role: 'model',
-                    parts: [{ text: partialCleaned }],
-                  },
-                },
-              ],
-              text: partialCleaned,
-              modelUsed: primaryModel,
-            };
-          }
         }
       }
+    } catch (streamErr: any) {
+      if (emittedAnyChunk && accumulatedRawText.trim()) {
+        const partialCleaned = cleanAssistantReplyText(accumulatedRawText);
+        if (partialCleaned) {
+          return {
+            candidates: [{ content: { role: 'model', parts: [{ text: partialCleaned }] } }],
+            text: partialCleaned,
+            modelUsed: primaryModel,
+          };
+        }
+      }
+      throw streamErr;
+    }
+    return await directGeminiGenerate(payload);
+  };
+
+  // Main stream execution with retry
+  let currentTools = tools;
+  let retryCount = 0;
+  const maxRetries = 1;
+
+  while (true) {
+    try {
+      return await runStreamAttempt(currentTools);
+    } catch (err: any) {
+      const errMsg = String(err?.googleMessage || err?.message || '').toLowerCase();
+      const isSearchToolError = errMsg.includes('google_search') || errMsg.includes('googlesearch') || errMsg.includes('tool');
+
+      if (isSearchToolError && currentTools && currentTools.some((t: any) => t.googleSearch)) {
+        console.warn('[Gemini Stream] Retrying without googleSearch tool...');
+        currentTools = currentTools.filter((t: any) => !t.googleSearch);
+        continue;
+      }
+
+      if (retryCount < maxRetries) {
+        console.warn(`[Gemini Stream] Request failed, retrying in 500ms...`, err);
+        retryCount++;
+        await new Promise(r => setTimeout(r, 500));
+        continue;
+      }
+      
+      if (err && !errMsg.includes('key')) {
+        const shortReason = errMsg.length > 60 ? errMsg.slice(0, 60) + '...' : errMsg;
+        err.googleMessage = `${err.googleMessage || 'Request failed'}\nReason: ${shortReason}`;
+      }
+      throw err;
     }
   }
-
-  const res = await directGeminiGenerate(payload);
-  const fullText =
-    res?.text ||
-    res?.candidates?.[0]?.content?.parts
-      ?.map((p: any) => p?.text || '')
-      .join('')
-      .trim() ||
-    '';
-  if (fullText && typeof onTextChunk === 'function') {
-    onTextChunk(fullText);
-  }
-  return {
-    ...res,
-    text: fullText,
-  };
 };
 
 export const runGeminiSpeedTest = async (

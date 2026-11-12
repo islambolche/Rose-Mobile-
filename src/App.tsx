@@ -6220,6 +6220,12 @@ export function App() {
         console.warn("[VoiceInput] Already processing, ignoring duplicate call.");
         return;
       }
+
+      // Requirement: Stop Voice Leakage - while a live call is active, don't use typed chat for voice
+      if (liveSessionRef.current && !isTypedChat) {
+        console.log("[VoiceInput] Live session active, ignoring voice transcript in typed-chat pipeline.");
+        return;
+      }
       
       const now = Date.now();
       const prevText = lastSentUserMsgRef.current.text.trim().toLowerCase();
@@ -7363,11 +7369,14 @@ export function App() {
       if (document.visibilityState === "visible") {
         if (isAssistantEnabledRef.current) {
           requestWakeLock();
-          // Point 5: Restart mic if it was supposed to be active
-          if (voiceModeRef.current === "browser") {
-             startSingletonRecognitionSafely();
-          } else if (voiceModeRef.current === "recorder") {
-             startRecorderModeListening();
+          // Point 1: Keep call running, ensure mic is active if not in live session mode
+          // (Live session handles its own mic state)
+          if (!liveSessionRef.current) {
+            if (voiceModeRef.current === "browser") {
+              startSingletonRecognitionSafely();
+            } else if (voiceModeRef.current === "recorder") {
+              startRecorderModeListening();
+            }
           }
         }
       }

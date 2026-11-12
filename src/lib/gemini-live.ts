@@ -1423,7 +1423,7 @@ export class GeminiLiveSession {
     this.options.onClose?.({ reason: message });
   }
 
-  private async handleLiveDisconnectAndAutoReconnect(
+  public async handleLiveDisconnectAndAutoReconnect(
     apiKey: string,
     reason: string = 'disconnect',
     maxAttempts: number = 3
