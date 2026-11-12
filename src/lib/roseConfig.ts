@@ -99,7 +99,83 @@ Remote Control: You can control the PC using the pc_command tool (ping, open_app
   const teamStatusBlock = `- OFFICE TEAM STATUS:
 ${Object.values(TEAM_MEMBERS).map((m) => `- ${m.bengaliName} (${m.name}, ${m.role}): ${officeEngine.getStates()[m.id]?.isWorking ? "কাজ করছে" : "ডেস্কে উপস্থিত"}`).join("\n")}`;
 
-  const navSystemRule = `To navigate you must call app_action. Settings main list: 1 about_guide, 2 connections, 3 live_voice_model, 4 voice_language, 5 chats_memory, 6 look_feel, 7 phone_control, 8 pc_setup, 9 privacy_controls. Voice & Language list: 1 tts_model, 2 assistant_name, 3 your_name, 4 personality, 5 affection, 6 language, 7 response_style, 8 voice, 9 voice_model, 10 voice_tuning, 11 voice_check, 12 mic_listening. 'চার নম্বর' etc. means open_number on the current page. Call the tool ONCE per request. After ok:true say one short sentence with the page name. If ok:false say only 'পারলাম না।' Never retry or try other pages by yourself.`;
+  const navSystemRule = `APP PAGE MAP (memorize):
+BOTTOM NAV: HOME (home), CHAT (chat), HISTORY (history), SETTINGS (settings)
+
+SETTINGS (main list):
+1 ABOUT & GUIDE (about_guide)
+2 CONNECTIONS (connections)
+3 LIVE VOICE MODEL (live_voice_model)
+4 VOICE & LANGUAGE (voice_language)
+5 CHATS & MEMORY (chats_memory)
+6 LOOK & FEEL (look_feel)
+7 PHONE CONTROL (phone_control)
+8 PC SETUP (pc_setup)
+9 PRIVACY CONTROLS (privacy_controls)
+
+1 ABOUT & GUIDE:
+1 এই App সম্পর্কে (about_app)
+2 ডেভেলপার (developer)
+3 মূল্য ও প্ল্যান (pricing)
+4 শুরু করার নিয়ম (getting_started)
+5 কীভাবে ব্যবহার করবেন (how_to_use)
+6 ব্যবহারের নীতিমালা (guidelines)
+7 প্রাইভেসি ও তথ্য (privacy)
+8 সমস্যা সমাধান (troubleshooting)
+9 যোগাযোগ ও সাহায্য (help_support)
+
+2 CONNECTIONS:
+1 FREE · GEMINI (gemini_free)
+2 PAID (paid_model)
+
+3 LIVE VOICE MODEL: model list, AUTO FALLBACK, CUSTOM MODEL, CHAT MODEL OVERRIDE
+
+4 VOICE & LANGUAGE:
+1 TTS MODEL (tts_model)
+2 ASSISTANT NAME (assistant_name)
+3 YOUR NAME (your_name)
+4 PERSONALITY (personality)
+5 AFFECTION (affection)
+6 LANGUAGE (language)
+7 RESPONSE STYLE (response_style)
+8 VOICE (voice)
+9 VOICE MODEL (voice_model)
+10 VOICE TUNING (voice_tuning)
+11 VOICE CHECK (voice_check)
+12 MIC & LISTENING (mic_listening)
+
+5 CHATS & MEMORY: stats and SAVED CHATS list
+
+6 LOOK & FEEL:
+1 THEME (theme)
+2 ORB STYLE (orb_style)
+3 REDUCE MOTION (reduce_motion)
+4 ROSE ALIVE (rose_alive)
+
+7 PHONE CONTROL:
+1 QUICK ACTIONS (quick_actions)
+2 APP PERMISSIONS (app_permissions)
+
+8 PC SETUP:
+1 PC HELPER (pc_helper)
+2 PC CONTROL (pc_control)
+3 PC FILES (pc_files)
+4 CONFIRMATIONS (confirmations)
+5 PC HISTORY (pc_history)
+6 SAFETY (safety)
+7 LOCAL AI (local_ai)
+8 VIEW MODE (view_mode)
+9 OFFICE TEAM (office_team)
+10 SYSTEM STATUS (system_status)
+11 OFFICE TEST (office_test)
+12 OFFICE LAYOUT (office_layout)
+
+9 PRIVACY CONTROLS: Microphone Permission, Approximate Location, Chat History, Rose's Memory, API Key security, Privacy Policy & Terms, Account & Data Delete
+
+Rules:
+- "<n> নম্বর" opens bar n of the page that is open now; if a Settings sub-page with no numbered bars is open, or home/chat/history is open, use the SETTINGS main list.
+- "সেটিংসের <n> নম্বর" always uses the SETTINGS main list.
+- To navigate you must call app_action. Call the tool ONCE per request. After ok:true say one short sentence with the page name. If ok:false say only 'পারলাম না।' Never retry or try other pages by yourself.`;
 
   const rawFullInstruction = `Your name is ${assistantName}. Always introduce yourself with this name. Reply in the language the user speaks, Bangla by default. Always answer the user's actual question. Never reply with only your name.
 
