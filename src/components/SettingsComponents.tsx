@@ -89,6 +89,8 @@ export const Developer = ({
     >
       <header className="px-6 py-4 flex items-center gap-4 shrink-0 border-b border-white/5">
         <button
+          data-nav-id="back"
+          aria-label="Back"
           onClick={() => setCurrentView(backView)}
           className="p-2.5 bg-white/5 rounded-full active:scale-95 transition-transform"
         >
@@ -491,6 +493,8 @@ export const LiveModelSettings = ({
       >
         <header className="px-5 py-4 flex items-center gap-4 border-b border-purple-500/15 bg-[#020617]/95 backdrop-blur-md shrink-0">
           <button
+            data-nav-id="back"
+            aria-label="Back"
             onClick={() => setShowCustomPage(false)}
             className="p-2.5 bg-purple-500/10 border border-purple-500/30 rounded-2xl text-white active:scale-95 transition-transform"
           >

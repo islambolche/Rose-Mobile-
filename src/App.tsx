@@ -3280,9 +3280,20 @@ export function App() {
   const isSilentModeRef = useRef<boolean>(false);
   const [isContinuousConversation, setIsContinuousConversation] = useState(false);
   const [speakingState, setSpeakingState] = useState<"idle" | "listening" | "speaking" | "thinking">("idle");
+  const [thinkingStatusText, setThinkingStatusText] = useState("Rose is thinking...");
   useEffect(() => {
     speakingStateRef.current = speakingState;
   }, [speakingState]);
+
+  useEffect(() => {
+    const handler = (e: any) => {
+      const msg = e?.detail;
+      if (msg) setThinkingStatusText(msg);
+      else setThinkingStatusText("Rose is thinking...");
+    };
+    window.addEventListener('rose_typing_status', handler as EventListener);
+    return () => window.removeEventListener('rose_typing_status', handler as EventListener);
+  }, []);
 
   const [toast, setToast] = useState<string | ToastState | null>(null);
   const [isLiveLoading, setIsLiveLoading] = useState(false);
@@ -10424,7 +10435,7 @@ export function App() {
                       )}
                     </div>
                     <div className="bg-[#0F172A]/85 backdrop-blur-md border border-purple-500/25 text-purple-300 rounded-2xl rounded-tl-sm px-4 py-2.5 text-xs font-semibold italic animate-pulse shadow-lg">
-                      Rose is thinking...
+                      {thinkingStatusText}
                     </div>
                   </div>
                 </div>

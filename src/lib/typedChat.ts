@@ -53,22 +53,17 @@ export async function resolveChatModel(apiKey: string): Promise<string> {
   const validModels = await getValidFlashModels(apiKey);
   const chosen = (localStorage.getItem('chat_model') || '').replace(/^models\//, '').trim();
 
-  // If chosen is gemini-2.5-flash or not in valid list, replace automatically
   if (chosen && validModels.includes(chosen) && !chosen.includes('gemini-2.5')) {
-    console.log('[TypedChat] Using chosen chat model:', chosen);
     return chosen;
   }
 
   if (validModels.length > 0) {
     const best = validModels.find(m => m.toLowerCase().includes('flash')) || validModels[0];
     localStorage.setItem('chat_model', best);
-    console.log('[TypedChat] Dynamically selected chat model:', best, '(Valid models:', validModels, ')');
     return best;
   }
 
-  const fallback = 'gemini-3.8-flash';
-  console.log('[TypedChat] Using fallback chat model:', fallback);
-  return fallback;
+  return 'gemini-3.8-flash';
 }
 
 export async function sendTypedChat(
@@ -116,76 +111,126 @@ export async function sendTypedChat(
 
   const isSearchQuery = /(আজ|আজকের|এখন|বর্তমান|খবর|নিউজ|আপডেট|নতুন|latest|news|today|price|দাম|weather|আবহাওয়া)/i.test(userText);
 
-  const makeRequest = async (withSearch: boolean, currentModel: string, isRetry: boolean = false): Promise<string> => {
+  const setWaitingStatus = (msg: string) => {
+    if (typeof window !== 'undefined') {
+      window.dispatchEvent(new CustomEvent('rose_typing_status', { detail: msg }));
+    }
+  };
+
+  const executeFetch = async (withSearch: boolean, currentModel: string): Promise<string> => {
     const reqBody = { ...body };
     if (withSearch) {
       reqBody.tools = [{ google_search: {} }];
     }
     const url = `https://generativelanguage.googleapis.com/v1beta/models/${currentModel}:generateContent?key=${apiKey}`;
-    let res: Response;
-    try {
-      res = await fetch(url, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'x-goog-api-key': apiKey,
-        },
-        body: JSON.stringify(reqBody),
-      });
-    } catch (err: any) {
-      const netErr: any = new Error(`NETWORK: ${err?.message || 'Network request failed'}`);
-      netErr.modelUsed = currentModel;
-      throw netErr;
-    }
+    const res = await fetch(url, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'x-goog-api-key': apiKey,
+      },
+      body: JSON.stringify(reqBody),
+    });
 
     if (!res.ok) {
       const errText = await res.text();
-      // Auto-recovery check on 404 with update suggestion
       if (res.status === 404 && errText.includes('Please update your code to use models/')) {
         const match = errText.match(/models\/([a-zA-Z0-9_.-]+)/i);
-        if (match && match[1] && !isRetry) {
+        if (match && match[1]) {
           const newName = match[1];
-          console.log('[TypedChat] Auto-recovery: updating chat model to:', newName);
           localStorage.setItem('chat_model', newName);
-          if (typeof window !== 'undefined') {
-            window.dispatchEvent(new CustomEvent('rose_toast', { detail: `চ্যাট মডেল আপডেট হলো: ${newName}` }));
-          }
-          // Retry once with new model
-          return await makeRequest(withSearch, newName, true);
+          throw Object.assign(new Error(`Model deprecated, switched to ${newName}`), { newModel: newName, is404Update: true });
         }
       }
-
-      const httpErr: any = new Error(`HTTP ${res.status}: ${errText.slice(0, 300)}`);
-      httpErr.modelUsed = currentModel;
-      throw httpErr;
+      const errObj: any = new Error(`HTTP ${res.status}: ${errText.slice(0, 300)}`);
+      errObj.status = res.status;
+      errObj.modelUsed = currentModel;
+      throw errObj;
     }
 
     const data = await res.json();
     const parts = data?.candidates?.[0]?.content?.parts || [];
     const textPart = parts.find((p: any) => p && typeof p.text === 'string')?.text;
     if (typeof textPart !== 'string') {
-      const structErr: any = new Error('Invalid response structure from Gemini API');
-      structErr.modelUsed = currentModel;
-      throw structErr;
+      throw new Error('Invalid response structure from Gemini API');
     }
     return textPart;
   };
 
-  try {
-    let text = '';
-    if (isSearchQuery) {
-      try {
-        text = await makeRequest(true, model);
-      } catch (err: any) {
-        console.warn('[TypedChat] Search request failed, retrying without search tool:', err);
-        text = await makeRequest(false, model);
+  const isRetryable = (err: any): boolean => {
+    const msg = (err?.message || '').toLowerCase();
+    const status = err?.status;
+    return (
+      status === 503 ||
+      status === 429 ||
+      msg.includes('503') ||
+      msg.includes('429') ||
+      msg.includes('unavailable') ||
+      msg.includes('resource_exhausted') ||
+      msg.includes('high demand') ||
+      msg.includes('overloaded') ||
+      msg.includes('network')
+    );
+  };
+
+  let currentModel = model;
+  let lastError: any = null;
+
+  for (let attempt = 0; attempt <= 2; attempt++) {
+    try {
+      if (attempt > 0) {
+        const delay = attempt === 1 ? 1000 : 3000;
+        setWaitingStatus('একটু অপেক্ষা…');
+        await new Promise(r => setTimeout(r, delay));
       }
-    } else {
-      text = await makeRequest(false, model);
+
+      if (isSearchQuery) {
+        try {
+          const text = await executeFetch(true, currentModel);
+          setWaitingStatus('');
+          return { text, modelUsed: currentModel };
+        } catch (searchErr: any) {
+          if (isRetryable(searchErr) && attempt === 0) {
+            throw searchErr;
+          }
+          const text = await executeFetch(false, currentModel);
+          setWaitingStatus('');
+          return { text, modelUsed: currentModel };
+        }
+      } else {
+        const text = await executeFetch(false, currentModel);
+        setWaitingStatus('');
+        return { text, modelUsed: currentModel };
+      }
+    } catch (err: any) {
+      lastError = err;
+      if (err.is404Update && err.newModel) {
+        currentModel = err.newModel;
+        continue;
+      }
+      if (!isRetryable(err)) {
+        break;
+      }
     }
-    return { text, modelUsed: model };
-  } catch (err: any) {
-    if (!err.modelUsed) err.modelUsed = model;
-    throw err;
   }
+
+  try {
+    setWaitingStatus('একটু অপেক্ষা…');
+    const validModels = await getValidFlashModels(apiKey);
+    const nextModel = validModels.find(m => m !== currentModel) || validModels[0];
+    if (nextModel && nextModel !== currentModel) {
+      console.log('[TypedChat] Trying fallback valid model:', nextModel);
+      localStorage.setItem('chat_model', nextModel);
+      const text = await executeFetch(isSearchQuery, nextModel);
+      setWaitingStatus('');
+      return { text, modelUsed: nextModel };
+    }
+  } catch (fallbackErr: any) {
+    lastError = fallbackErr;
+  }
+
+  setWaitingStatus('');
+  if (!lastError) lastError = new Error('Cannot reach Gemini');
+  lastError.modelUsed = currentModel;
+  throw lastError;
 }
