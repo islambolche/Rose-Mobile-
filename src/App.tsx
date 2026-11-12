@@ -183,6 +183,7 @@ import { routeUserMessageForTeamTask, routePcCommandMessage } from "./lib/teamRo
 import { PcSetupPage, PcSetupPageId } from "./components/PcSetupViews";
 import { buildRoseSystemInstruction } from "./lib/roseConfig";
 import { sendPcCommand } from "./lib/pcCommand";
+import { PAGES_REGISTRY } from "./lib/navRegistry";
 import { Folder, ShieldCheck } from "lucide-react";
 
 const APP_VERSION = "v1.4.0";
@@ -2569,6 +2570,41 @@ export function App() {
   const [currentView, setCurrentView] = useState<AppView>("home");
   const viewRef = useRef<AppView>(currentView);
   useEffect(() => { viewRef.current = currentView; }, [currentView]);
+
+  const openSettingsPage = useCallback((id: string) => {
+    setCurrentView("settings");
+    setTimeout(() => {
+      const nestedVoiceBars = [
+        'tts-model', 'edit-assistant-name', 'edit-user-name', 
+        'personality', 'affection', 'language-list', 
+        'response-style-list', 'voice-list', 'voice-model-list', 
+        'voice-tuning', 'voice-debug', 'mic-listening'
+      ];
+      if (nestedVoiceBars.includes(id)) {
+        setCurrentView("voice");
+        setTimeout(() => {
+          setCurrentView(id as any);
+        }, 50);
+      } else if (id !== 'settings') {
+        setCurrentView(id as any);
+      }
+    }, 50);
+  }, []);
+
+  useEffect(() => {
+    if (typeof window !== 'undefined' && (import.meta as any).env?.DEV) {
+      console.log("[Self-Test] Running openSettingsPage self-test for all registered pages...");
+      PAGES_REGISTRY.forEach((p) => {
+        try {
+          openSettingsPage(p.path);
+          console.log(`OK: openSettingsPage("${p.path}" / "${p.id}")`);
+        } catch (err) {
+          console.error(`FAIL: openSettingsPage("${p.path}" / "${p.id}"):`, err);
+        }
+      });
+      setTimeout(() => setCurrentView("home"), 200);
+    }
+  }, [openSettingsPage]);
   const [developerFrom, setDeveloperFrom] = useState<AppView>("home");
   const [activeAboutSection, setActiveAboutSection] = useState<string | null>(null);
   const [activeTab, setActiveTab] = useState<"home" | "chat" | "history">("home");
@@ -6370,7 +6406,7 @@ export function App() {
             isVoiceCall: replyMode === "voice",
             onToast: (msg) => setToast(msg),
             setCurrentView: (v: string) => setCurrentView(v as any),
-            openPage: (v: string) => setCurrentView(v as any),
+            openPage: (v: string) => openSettingsPage(v),
             clearChatCallback: () => {
               setChatHistory([]);
               chatHistoryRef.current = [];
@@ -8426,7 +8462,7 @@ export function App() {
                   isVoiceCall: true,
                   onToast: (msg) => setToast(msg),
                   setCurrentView: (v: string) => setCurrentView(v as any),
-                  openPage: (v: string) => setCurrentView(v as any),
+                  openPage: (v: string) => openSettingsPage(v),
                   clearChatCallback: () => {
                     setChatHistory([]);
                     chatHistoryRef.current = [];

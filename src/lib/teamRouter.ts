@@ -133,18 +133,18 @@ export async function routeUserMessageForTeamTask(
     }
   }
 
-  // INTENT PRIORITY (Check in exact order, stop at first match):
-
-  // 1) Android system settings check
-  if (/(ওয়াইফাই|ব্লুটুথ|ব্রাইটনেস|অ্যান্ড্রয়েড সেটিং|phone system settings|wi-fi|bluetooth|brightness)/i.test(rawText)) {
+  // INTENT PRIORITY:
+  
+  // 1) Phone vs App settings & system controls
+  if (/(ফোনের\s*সেটিং|মোবাইলের\s*সেটিং|অ্যান্ড্রয়েড\s*সেটিং|ওয়াইফাই|ব্লুটুথ|ব্রাইটনেস|wifi|bluetooth|brightness)/i.test(rawText)) {
     return {
       matched: true,
       type: 'navigation',
-      roseReply: 'ফোনের নিজের সেটিংস ফোন-কন্ট্রোল আপডেটে আসবে।',
+      roseReply: 'ফোনের নিজের সেটিংস এখনো খুলতে পারি না, ফোন-কন্ট্রোল আপডেটে আসবে।',
     };
   }
 
-  // 2) a) Home: (হোম|home) + (যাও|আসো|এসো|ফিরে|নিয়ে|go) OR exact হোম / home
+  // 2) Home
   if (/^হোম$|^home$/i.test(rawText) || (/(হোম|home)/i.test(rawText) && /(যাও|আসো|এসো|ফিরে|নিয়ে|go)/i.test(rawText))) {
     const viewSetter = options.openPage || options.setCurrentView;
     if (viewSetter) {
@@ -157,7 +157,7 @@ export async function routeUserMessageForTeamTask(
     };
   }
 
-  // 3) b) Back: (পেছনে|পিছনে|ফিরে যাও|ব্যাক|back)
+  // 3) Back
   if (/(পেছনে|পিছনে|ফিরে\s*যাও|ব্যাক|back)/i.test(rawText)) {
     if (typeof window !== 'undefined') {
       window.history.back();
@@ -169,7 +169,7 @@ export async function routeUserMessageForTeamTask(
     };
   }
 
-  // 4) c) Open page: an action word (খোল|খুল|যাও|ঢুক|নিয়ে|দেখাও|open|go) + a page alias (or direct page alias)
+  // 4) Open page (action word + page alias or direct page alias)
   const hasOpenKeyword = /(খোলো|খুলো|খোল|খুল|যাও|এ\s*যাও|নিয়ে\s*যাও|নিয়ে\s*যাও|দেখাও|দেখো|ঢুকো|ঢুক|open|go)/i.test(rawText);
   if (hasOpenKeyword) {
     let query = rawText
@@ -191,7 +191,6 @@ export async function routeUserMessageForTeamTask(
     }
   }
 
-  // Direct page alias match (e.g. "সেটিংস", "ভয়েস অ্যান্ড ল্যাঙ্গুয়েজ", "কানেকশনস")
   const { page: directPage } = findMatchingPage(rawText);
   if (directPage) {
     const viewSetter = options.openPage || options.setCurrentView;
@@ -205,7 +204,7 @@ export async function routeUserMessageForTeamTask(
     };
   }
 
-  // 5) d) Clear chat: ONLY if the same message contains a delete word AND (চ্যাট|হিস্টরি|হিস্ট্রি|মেসেজ)
+  // 5) Clear chat
   const isClearIntent = /(মুছ|মুছে|ডিলিট|delete|clear|ক্লিয়ার)/i.test(rawText) && /(চ্যাট|হিস্টরি|হিস্ট্রি|মেসেজ)/i.test(rawText);
   if (isClearIntent) {
     if (options.setPendingClearChatState) {
@@ -218,7 +217,7 @@ export async function routeUserMessageForTeamTask(
     };
   }
 
-  // Scroll commands: "নিচে যাও / নিচে নামাও / scroll down" & "উপরে যাও / scroll up"
+  // Scroll commands
   if (/নিচে\s*যাও|নিচে\s*নামাও|scroll\s*down/i.test(rawText)) {
     if (typeof window !== 'undefined') {
       window.scrollBy({ top: window.innerHeight * 0.8, behavior: 'smooth' });
@@ -240,7 +239,7 @@ export async function routeUserMessageForTeamTask(
     };
   }
 
-  // 6) Team-wide status check: টিম, অফিস, team
+  // Team status check
   if (/(?:টিম|অফিস|team)/i.test(rawText)) {
     let summary = "আজ কাউকে কোনো কাজ দেওয়া হয়নি, সবাই ফাঁকা।";
     if (supabase) {
@@ -287,7 +286,7 @@ export async function routeUserMessageForTeamTask(
     };
   }
 
-  // 7. Detect target agent anywhere in the message
+  // Detect target agent
   const detectedAgent = detectAgentInMessage(rawText);
   if (!detectedAgent) {
     return { matched: false };
@@ -431,13 +430,13 @@ export async function routePcCommandMessage(
     await sendPcCommand(pcAction, pcArgs, { source: options.source, onToast: options.onToast });
     return {
       matched: true,
-      roseReply: `${effectiveDisplayName}, ফোনে অনুমতি অনুমতি দাও।`,
+      roseReply: `${effectiveDisplayName}, ফোনে অনুমতি দাও।`,
     };
   }
 
   const res = await sendPcCommand(pcAction, pcArgs, { source: options.source, onToast: options.onToast });
   const roseReply = res.success
-    ? `ঠিক আছে ${effectiveDisplayName}, ${res.message}।`
+    ? `ঠিক আছে ${effectiveDisplayName}, ${res.message}።`
     : `ইউসুফ, ${res.message}`;
 
   return {
