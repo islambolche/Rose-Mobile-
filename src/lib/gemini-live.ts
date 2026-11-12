@@ -482,10 +482,19 @@ export class GeminiLiveSession {
   public sendTextMessage(text: string) {
     if (this.ws && this.ws.readyState === WebSocket.OPEN && this.isSetupComplete) {
       try {
-        this.ws.send(JSON.stringify({ realtimeInput: { text } }));
+        this.ws.send(JSON.stringify({ realtimeInput: { mediaChunks: [], textChunks: [{ text }] } }));
       } catch {}
     }
   }
+
+  public sendClientContent(turn: any) {
+    if (this.ws && this.ws.readyState === WebSocket.OPEN && this.isSetupComplete) {
+      try {
+        this.ws.send(JSON.stringify({ clientContent: turn }));
+      } catch {}
+    }
+  }
+
 
   public injectSystemInstructionToSpeak(sentence: string) {
     if (this.ws && this.ws.readyState === WebSocket.OPEN && this.isSetupComplete) {

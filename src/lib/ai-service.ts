@@ -1308,7 +1308,7 @@ export const directGeminiStream = async (
   payload: any,
   onTextChunk?: (deltaText: string) => void
 ) => {
-  const { contents, systemInstruction, generationConfig, apiKey, model, tools } = payload || {};
+  const { contents, systemInstruction, generationConfig, apiKey, model, tools, signal } = payload || {};
 
   const cleanKey = String(apiKey || getGeminiKey() || '')
     .replace(/[\r\n\t\s"']+/g, '')
@@ -1367,7 +1367,8 @@ export const directGeminiStream = async (
         GEMINI_PER_REQUEST_TIMEOUT_MS,
         primaryModel,
         reqStartTime,
-        cleanKey
+        cleanKey,
+        signal
       );
 
       if (res.status === 400) {
@@ -1393,7 +1394,8 @@ export const directGeminiStream = async (
           remainingMs,
           primaryModel,
           reqStartTime,
-          cleanKey
+          cleanKey,
+          signal
         );
       }
 

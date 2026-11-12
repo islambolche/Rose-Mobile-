@@ -3,6 +3,7 @@ import { motion, AnimatePresence } from 'framer-motion';
 import { Mic, Send, X, Sparkles, MessageSquare, History, Settings, User, Volume2, VolumeX, ArrowLeft } from 'lucide-react';
 import { directGeminiGenerate } from '../lib/ai-service';
 import { extractReplyText, prepareHistory } from '../lib/ai-utils';
+import { getGeminiKey } from '../lib/geminiKey';
 
 interface Character {
   id: string;
@@ -58,21 +59,16 @@ const CHARACTERS: Character[] = [
   },
 ];
 
-export const OfficeScene = ({
-  apiKey,
-  onSwitchToClassic,
-  onOpenSettings,
-  onOpenHistory,
-  onOpenChat,
-  onOpenDeveloper,
-}: {
+export const OfficeScene = (props: {
   apiKey: string;
   onSwitchToClassic: () => void;
   onOpenSettings: () => void;
   onOpenHistory: () => void;
   onOpenChat: () => void;
   onOpenDeveloper: () => void;
+  liveSession: any;
 }) => {
+  const { apiKey, onSwitchToClassic, onOpenSettings, onOpenHistory, onOpenChat, onOpenDeveloper } = props;
   const [activeChar, setActiveChar] = useState<Character | null>(null);
   const [messages, setMessages] = useState<Array<{ sender: 'user' | 'assistant'; text: string; charName?: string }>>([]);
   const [inputText, setInputText] = useState('');
@@ -98,24 +94,44 @@ export const OfficeScene = ({
     return () => clearInterval(interval);
   }, [activeChar]);
 
-  const handleSendMessage = async () => {
+  const handleSendMessage = async (attempt = 1, useSearch = true) => {
     if (!inputText.trim() || !activeChar) return;
     const userText = inputText.trim();
-    setInputText('');
-    setMessages((prev) => [...prev, { sender: 'user', text: userText }]);
+    if (attempt === 1) {
+      setInputText('');
+      setMessages((prev) => [...prev, { sender: 'user', text: userText }]);
+    }
 
     try {
       setIsSpeaking(true);
+
+      // 1. If live call is active, send to live session
+      if (props.liveSession && typeof props.liveSession.sendClientContent === 'function') {
+        props.liveSession.sendClientContent({
+          turns: [{ role: 'user', parts: [{ text: userText }] }],
+          turnComplete: true
+        });
+        return; // Live session handles the response
+      }
+
+      // 2. Chat API path
       const currentMessages = [...messages, { sender: 'user', text: userText }];
       const preparedHistory = prepareHistory(currentMessages.map(m => ({ role: m.sender === 'user' ? 'user' : 'model', text: m.text })), activeChar.systemInstruction);
-      console.log("FINAL TEXT:", userText, "CONTENTS LEN:", preparedHistory.length);
       
+      const tools = useSearch ? [{ googleSearch: {} }] : undefined;
+
+      const apiKeyToUse = apiKey || getGeminiKey() || '';
+      if (!apiKeyToUse) {
+        throw new Error("CONNECTIONS-এ Gemini key সেভ করো");
+      }
+
       const data = await directGeminiGenerate({
         model: 'gemini-1.5-flash',
         systemInstruction: activeChar.systemInstruction,
         contents: preparedHistory,
         generationConfig: { temperature: 0.7, maxOutputTokens: 200 },
-        apiKey
+        apiKey: apiKeyToUse,
+        tools
       });
       const reply = extractReplyText(data);
       setMessages((prev) => [...prev, { sender: 'assistant', text: reply.trim(), charName: activeChar.name }]);
@@ -128,8 +144,13 @@ export const OfficeScene = ({
         localStorage.setItem('iyabd_chat_history', JSON.stringify(history));
       } catch (e) {}
 
-    } catch (e) {
-      setMessages((prev) => [...prev, { sender: 'assistant', text: "Sorry, I encountered an error connecting to Gemini.", charName: activeChar.name }]);
+    } catch (e: any) {
+      if (attempt === 1 && (!props.liveSession)) {
+        await new Promise(r => setTimeout(r, 500));
+        return handleSendMessage(2, useSearch && !e?.message?.includes('googleSearch'));
+      }
+      const realError = `${e.name || 'Error'}: ${e.message || 'Unknown error'}`;
+      setMessages((prev) => [...prev, { sender: 'assistant', text: `Error: ${realError}`, charName: activeChar.name }]);
     } finally {
       setIsSpeaking(false);
     }
@@ -283,7 +304,7 @@ export const OfficeScene = ({
                 className="flex-1 bg-[#090D1A] border border-white/10 rounded-2xl px-4 py-3 text-xs text-white placeholder:text-slate-500 outline-none focus:ring-1 focus:ring-purple-500 font-medium"
               />
               <button
-                onClick={handleSendMessage}
+                onClick={() => handleSendMessage()}
                 disabled={!inputText.trim() || isSpeaking}
                 className="p-3 bg-purple-600 hover:bg-purple-500 disabled:opacity-40 text-white rounded-2xl shadow-lg active:scale-95 transition-all shrink-0"
               >

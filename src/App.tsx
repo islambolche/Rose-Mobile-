@@ -3750,6 +3750,7 @@ export function App() {
   const [chunksSent, setChunksSent] = useState(0);
   const chunksSentRef = useRef(0);
   const [hasReceivedAudio, setHasReceivedAudio] = useState(false);
+  const typedAbortControllerRef = useRef<AbortController | null>(null);
   const [liveErrorMsg, setLiveErrorMsg] = useState<string | null>(null);
   const [showDiagnosticPanel, setShowDiagnosticPanel] = useState<boolean>(false);
   const [activeCaption, setActiveCaption] = useState<{ speaker: 'user' | 'rose'; text: string } | null>(null);
@@ -6382,15 +6383,21 @@ export function App() {
         const selectedEngineStatus = getProviderStatus(activeChatEngine);
 
         if (isTypedChat) {
-          if (!selectedEngineKey || selectedEngineStatus === "INVALID") {
-            const pName = activeProviderConfig.displayName || activeProviderConfig.name;
-            const missingMsg = `${pName}-এর key দিন বা অন্য সেবা বাছুন`;
+          if (!selectedEngineKey || selectedEngineStatus === "INVALID" || (activeChatEngine === "gemini" && !sanitizedKey)) {
+            const missingMsg = activeChatEngine === "gemini" 
+              ? "CONNECTIONS-এ Gemini key সেভ করো"
+              : `${activeProviderConfig.displayName || activeProviderConfig.name}-এর key দিন বা অন্য সেবা বাছুন`;
             setLiveErrorMsg(missingMsg);
             setToast(missingMsg);
             pushSharedMessage({
               role: "system",
               text: missingMsg,
-            });
+              isError: true,
+              debugLine: "Error: Gemini API key missing (HTTP 401)",
+              retryText: userText,
+            } as any);
+            isProcessingGeminiRef.current = false;
+            setStatus("idle");
             return;
           }
         } else {
@@ -6528,139 +6535,178 @@ export function App() {
         let groundingLinks: Array<{ title: string; url: string }> = [];
         let generatedText = "";
 
-        if (activeChatEngine !== "gemini") {
-          const simplifiedHistory = historyWithoutSystem.map((m) => ({
-            role: m.role === "model" ? ("assistant" as const) : ("user" as const),
-            text: m.parts?.[0]?.text || "",
-          }));
-
-          const engineResult = await generateTextWithSelectedEngine({
-            userText,
-            systemPrompt: systemInst,
-            historyWithoutSystem: simplifiedHistory,
-            maxTokens: targetMaxTokens,
-          });
-          generatedText = cleanAssistantReplyText(engineResult.text, prefsRef.current.language);
-          fullAccumulatedText = generatedText;
-          sentenceBuffer = "";
-          updateSharedRoseBubble(generatedText);
-        } else {
-          // Gemini selected engine (or voice): stream chunks immediately and queue sentences for TTS as they arrive
-          const geminiRes: any = await directGeminiStream(payload, (deltaText: string) => {
-            if (replyMode === "voice" && speechTokenRef.current !== turnToken) return;
-            if (!deltaText) return;
-            fullAccumulatedText += deltaText;
-            sentenceBuffer += deltaText;
-            const liveCleaned = cleanAssistantReplyText(
-              fullAccumulatedText,
-              prefsRef.current.language
-            );
-            if (liveCleaned) {
-              updateSharedRoseBubble(liveCleaned);
-            }
-            if (replyMode === "voice") {
-              extractCompletedSentences();
-            }
-          });
-          if (replyMode === "voice" && speechTokenRef.current !== turnToken) return;
-
-          const candidates = geminiRes?.candidates || [];
-          const rawParts = candidates[0]?.content?.parts || [];
-          const nonThoughtParts = rawParts.filter((p: any) => p && p.thought !== true);
-
-          const fullReplyText = cleanAssistantReplyText(
-            geminiRes?.text || extractNonThoughtTextFromParts(nonThoughtParts, prefsRef.current.language) || fullAccumulatedText || "",
-            prefsRef.current.language
-          );
-          
-          groundingLinks = [];
-          const gMeta = geminiRes?.groundingMetadata || candidates[0]?.groundingMetadata;
-          if (gMeta?.groundingChunks) {
-            groundingLinks = gMeta.groundingChunks
-              .map((chunk: any) => ({
-                title: chunk.web?.title || chunk.web?.uri || "",
-                url: chunk.web?.uri || "",
-              }))
-              .filter((link: any) => link.url)
-              .slice(0, 3);
+        if (isTypedChat) {
+          if (typedAbortControllerRef.current) {
+            try {
+              typedAbortControllerRef.current.abort("new_request");
+            } catch (e) {}
           }
+          typedAbortControllerRef.current = new AbortController();
+        }
 
-          if (fullReplyText) {
-            fullAccumulatedText = fullReplyText;
-            updateSharedRoseBubble(fullAccumulatedText, undefined, groundingLinks);
-          }
+        const reqSignal = isTypedChat ? typedAbortControllerRef.current?.signal : undefined;
+        let attempt = 0;
+        let reqSuccess = false;
+        let lastError: any = null;
 
-          const functionCallPart = nonThoughtParts.find((p: any) => Boolean(p.functionCall));
+        while (attempt < 2 && !reqSuccess) {
+          attempt++;
+          try {
+            const currentTools = (attempt === 2 && lastError) ? [] : ROSE_TEAM_TOOLS;
+            const currentPayload = {
+              ...payload,
+              tools: currentTools,
+              signal: reqSignal,
+            };
 
-          if (functionCallPart && functionCallPart.functionCall) {
-            const { name: toolName, args: toolArgs } = functionCallPart.functionCall;
-            console.log("[Gemini Function Call]", toolName, toolArgs);
+            if (activeChatEngine !== "gemini") {
+              const simplifiedHistory = historyWithoutSystem.map((m) => ({
+                role: m.role === "model" ? ("assistant" as const) : ("user" as const),
+                text: m.parts?.[0]?.text || "",
+              }));
 
-            if (toolName === "assign_task") {
-              const res = await assignTask({
-                agent: String(toolArgs?.agent || "mira"),
-                instruction: String(toolArgs?.instruction || ""),
-                source: viewMode === "pc" || (viewMode === "auto" && window.innerWidth >= 1024) ? "pc" : "mobile",
+              const engineResult = await generateTextWithSelectedEngine({
+                userText,
+                systemPrompt: systemInst,
+                historyWithoutSystem: simplifiedHistory,
+                maxTokens: targetMaxTokens,
               });
-              fullAccumulatedText = res.message;
-              updateSharedRoseBubble(res.message);
-              if (replyMode === "voice") {
-                anySentenceEnqueued = true;
-                enqueueSentenceForToken(res.message, turnToken, lockedEngineMode);
-              }
-              return;
-            }
-
-            if (toolName === "get_team_status") {
-              const res = await getTeamStatus(toolArgs?.agent ? String(toolArgs.agent) : undefined);
-              fullAccumulatedText = res.summary;
-              updateSharedRoseBubble(res.summary);
-              if (replyMode === "voice") {
-                anySentenceEnqueued = true;
-                enqueueSentenceForToken(res.summary, turnToken, lockedEngineMode);
-              }
-              return;
-            }
-
-            const actionRes = await executePhoneAction(toolName, toolArgs || {});
-            setActionHistory(getPhoneActionHistory());
-
-            if (actionRes.status === "confirmation_needed" && actionRes.confirmation) {
-              const conf = actionRes.confirmation;
-              setPendingActionConfirmation(conf);
-              fullAccumulatedText = conf.cardPrompt;
-              updateSharedRoseBubble(conf.cardPrompt, conf);
-              if (replyMode === "voice") {
-                anySentenceEnqueued = true;
-                enqueueSentenceForToken(conf.cardPrompt, turnToken, lockedEngineMode);
-              }
-            } else if (actionRes.status === "refused") {
-              fullAccumulatedText = actionRes.message;
-              updateSharedRoseBubble(actionRes.message);
-              if (replyMode === "voice") {
-                anySentenceEnqueued = true;
-                enqueueSentenceForToken(actionRes.message, turnToken, lockedEngineMode);
-              }
-            } else if (actionRes.status === "unsupported") {
-              fullAccumulatedText = "Needs Android app";
-              updateSharedRoseBubble("Needs Android app");
-              if (replyMode === "voice") {
-                anySentenceEnqueued = true;
-                enqueueSentenceForToken("Needs Android app", turnToken, lockedEngineMode);
-              }
+              generatedText = cleanAssistantReplyText(engineResult.text, prefsRef.current.language);
+              fullAccumulatedText = generatedText;
+              sentenceBuffer = "";
+              updateSharedRoseBubble(generatedText);
+              reqSuccess = true;
             } else {
-              fullAccumulatedText = actionRes.message;
-              updateSharedRoseBubble(actionRes.message);
-              if (replyMode === "voice") {
-                anySentenceEnqueued = true;
-                enqueueSentenceForToken(actionRes.message, turnToken, lockedEngineMode);
+              // Gemini selected engine (or voice): stream chunks immediately and queue sentences for TTS as they arrive
+              const geminiRes: any = await directGeminiStream(currentPayload, (deltaText: string) => {
+                if (replyMode === "voice" && speechTokenRef.current !== turnToken) return;
+                if (!deltaText) return;
+                fullAccumulatedText += deltaText;
+                sentenceBuffer += deltaText;
+                const liveCleaned = cleanAssistantReplyText(
+                  fullAccumulatedText,
+                  prefsRef.current.language
+                );
+                if (liveCleaned) {
+                  updateSharedRoseBubble(liveCleaned);
+                }
+                if (replyMode === "voice") {
+                  extractCompletedSentences();
+                }
+              });
+              if (replyMode === "voice" && speechTokenRef.current !== turnToken) return;
+
+              const candidates = geminiRes?.candidates || [];
+              const rawParts = candidates[0]?.content?.parts || [];
+              const nonThoughtParts = rawParts.filter((p: any) => p && p.thought !== true);
+
+              const fullReplyText = cleanAssistantReplyText(
+                geminiRes?.text || extractNonThoughtTextFromParts(nonThoughtParts, prefsRef.current.language) || fullAccumulatedText || "",
+                prefsRef.current.language
+              );
+              
+              groundingLinks = [];
+              const gMeta = geminiRes?.groundingMetadata || candidates[0]?.groundingMetadata;
+              if (gMeta?.groundingChunks) {
+                groundingLinks = gMeta.groundingChunks
+                  .map((chunk: any) => ({
+                    title: chunk.web?.title || chunk.web?.uri || "",
+                    url: chunk.web?.uri || "",
+                  }))
+                  .filter((link: any) => link.url)
+                  .slice(0, 3);
               }
+
+              if (fullReplyText) {
+                fullAccumulatedText = fullReplyText;
+                updateSharedRoseBubble(fullAccumulatedText, undefined, groundingLinks);
+              }
+
+              const functionCallPart = nonThoughtParts.find((p: any) => Boolean(p.functionCall));
+
+              if (functionCallPart && functionCallPart.functionCall) {
+                const { name: toolName, args: toolArgs } = functionCallPart.functionCall;
+                console.log("[Gemini Function Call]", toolName, toolArgs);
+
+                if (toolName === "assign_task") {
+                  const res = await assignTask({
+                    agent: String(toolArgs?.agent || "mira"),
+                    instruction: String(toolArgs?.instruction || ""),
+                    source: viewMode === "pc" || (viewMode === "auto" && window.innerWidth >= 1024) ? "pc" : "mobile",
+                  });
+                  fullAccumulatedText = res.message;
+                  updateSharedRoseBubble(res.message);
+                  if (replyMode === "voice") {
+                    anySentenceEnqueued = true;
+                    enqueueSentenceForToken(res.message, turnToken, lockedEngineMode);
+                  }
+                  reqSuccess = true;
+                  return;
+                }
+
+                if (toolName === "get_team_status") {
+                  const res = await getTeamStatus(toolArgs?.agent ? String(toolArgs.agent) : undefined);
+                  fullAccumulatedText = res.summary;
+                  updateSharedRoseBubble(res.summary);
+                  if (replyMode === "voice") {
+                    anySentenceEnqueued = true;
+                    enqueueSentenceForToken(res.summary, turnToken, lockedEngineMode);
+                  }
+                  reqSuccess = true;
+                  return;
+                }
+
+                const actionRes = await executePhoneAction(toolName, toolArgs || {});
+                setActionHistory(getPhoneActionHistory());
+
+                if (actionRes.status === "confirmation_needed" && actionRes.confirmation) {
+                  const conf = actionRes.confirmation;
+                  setPendingActionConfirmation(conf);
+                  fullAccumulatedText = conf.cardPrompt;
+                  updateSharedRoseBubble(conf.cardPrompt, conf);
+                  if (replyMode === "voice") {
+                    anySentenceEnqueued = true;
+                    enqueueSentenceForToken(conf.cardPrompt, turnToken, lockedEngineMode);
+                  }
+                } else if (actionRes.status === "refused") {
+                  fullAccumulatedText = actionRes.message;
+                  updateSharedRoseBubble(actionRes.message);
+                  if (replyMode === "voice") {
+                    anySentenceEnqueued = true;
+                    enqueueSentenceForToken(actionRes.message, turnToken, lockedEngineMode);
+                  }
+                } else if (actionRes.status === "unsupported") {
+                  fullAccumulatedText = "Needs Android app";
+                  updateSharedRoseBubble("Needs Android app");
+                  if (replyMode === "voice") {
+                    anySentenceEnqueued = true;
+                    enqueueSentenceForToken("Needs Android app", turnToken, lockedEngineMode);
+                  }
+                } else {
+                  fullAccumulatedText = actionRes.message;
+                  updateSharedRoseBubble(actionRes.message);
+                  if (replyMode === "voice") {
+                    anySentenceEnqueued = true;
+                    enqueueSentenceForToken(actionRes.message, turnToken, lockedEngineMode);
+                  }
+                }
+                reqSuccess = true;
+                return;
+              } else {
+                generatedText =
+                  fullAccumulatedText ||
+                  extractNonThoughtTextFromParts(nonThoughtParts, prefsRef.current.language);
+              }
+              reqSuccess = true;
             }
-            return;
-          } else {
-            generatedText =
-              fullAccumulatedText ||
-              extractNonThoughtTextFromParts(nonThoughtParts, prefsRef.current.language);
+          } catch (err: any) {
+            lastError = err;
+            if (attempt === 1 && isTypedChat) {
+              console.warn("[TypedChat] Attempt 1 failed, retrying after 500ms without googleSearch tool if applicable...", err);
+              await new Promise((r) => setTimeout(r, 500));
+            } else {
+              throw err;
+            }
           }
         }
 
@@ -6720,29 +6766,16 @@ export function App() {
             }
           }
         } else {
-          let bengaliMessage = "";
-          let debugLine = "";
-          const activeChatEngine = getSelectedChatEngine();
-          const activeProviderConfig =
-            FREE_CHAT_PROVIDERS.find((p) => p.id === activeChatEngine) || FREE_CHAT_PROVIDERS[0];
+          const errName = err?.name || "Error";
+          const errMsg = String(err?.googleMessage || err?.message || err || "Unknown error").trim();
+          const httpStatus = err?.status || err?.statusCode || (err?.response ? err.response.status : undefined);
+          const realErrorDetail = `${errName}: ${errMsg}${httpStatus ? ` (HTTP ${httpStatus})` : ""}`;
 
-          const rawMsg = String(err?.googleMessage || err?.message || "").trim();
-          if (
-            rawMsg.includes("key নেই") ||
-            rawMsg.includes("Connections-এ key দিন") ||
-            rawMsg.startsWith("Gemini ") ||
-            rawMsg.startsWith("Groq ") ||
-            rawMsg.startsWith("নেটওয়ার্ক সমস্যা")
-          ) {
-            bengaliMessage = rawMsg;
-            debugLine = `engine: ${activeChatEngine} | ${rawMsg}`;
-          } else if (err?.isKeyMissingOrInvalid) {
-            bengaliMessage = "Gemini key নেই। Settings → Connections-এ key দিন।";
-            debugLine = `engine: ${activeChatEngine} | missing_key`;
-          } else {
-            const formatted = formatGeminiErrorForUI(err, sanitizedKey);
-            bengaliMessage = formatted.bengaliMessage;
-            debugLine = formatted.debugLine;
+          let bengaliMessage = "Cannot reach Gemini";
+          if (!sanitizedKey) {
+            bengaliMessage = "CONNECTIONS-এ Gemini key সেভ করো";
+          } else if (errMsg.includes("CONNECTIONS-এ")) {
+            bengaliMessage = errMsg;
           }
 
           setLiveErrorMsg(bengaliMessage);
@@ -6751,9 +6784,10 @@ export function App() {
           pushSharedMessage({
             role: "system",
             text: bengaliMessage,
-            debugLine,
+            isError: true,
+            debugLine: realErrorDetail,
             retryText: userText
-          });
+          } as any);
         }
       } finally {
         // Always reset thinking/processing status in finally block so Rose is NEVER stuck on thinking
@@ -8512,8 +8546,7 @@ export function App() {
       setToast("Rose স্বাভাবিক মোডে ফিরল");
     }
 
-    processCommand(inputText);
-    setInputText("");
+    sendTypedMessageToRose(inputText);
   };
 
   const updateOwnerName = () => {
@@ -9131,6 +9164,7 @@ export function App() {
           onOpenHistory={() => setCurrentView("history")}
           onOpenChat={() => setCurrentView("chat")}
           onOpenDeveloper={() => setCurrentView("developer")}
+          liveSession={liveSessionRef.current}
         />
       );
     }
@@ -9907,6 +9941,29 @@ export function App() {
     const text = rawText.trim();
     if (!text) return;
     setInputText("");
+
+    if (liveSessionRef.current) {
+      pushSharedMessage({
+        role: "user",
+        text,
+        replyMode: "text",
+      });
+      try {
+        liveSessionRef.current.sendClientContent({
+          turns: [
+            {
+              role: "user",
+              parts: [{ text }],
+            },
+          ],
+          turnComplete: true,
+        });
+      } catch (err) {
+        console.error("[LiveSession] sendClientContent error:", err);
+      }
+      return;
+    }
+
     pushSharedMessage({
       role: "user",
       text,
