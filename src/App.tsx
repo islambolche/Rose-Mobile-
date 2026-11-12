@@ -8829,7 +8829,9 @@ export function App() {
         if (!rawClean) return;
         const cleanText =
           role === "assistant"
-            ? stripStageCues(cleanAssistantReplyText(rawClean, prefsRef.current.language))
+            ? isFinal
+              ? stripStageCues(cleanAssistantReplyText(rawClean, prefsRef.current.language))
+              : stripStageCues(rawClean)
             : rawClean;
         if (!cleanText) return;
         
@@ -8854,22 +8856,24 @@ export function App() {
             const cleanedPrev = prev.filter(
               (m) => !(m.id === streamId && (m.text === "শুনছি..." || m.text === "শুনছি…"))
             );
+            const existingIdx = cleanedPrev.findIndex((m) => m.id === streamId);
             const last = cleanedPrev[cleanedPrev.length - 1];
             const finalId = `msg-${Date.now()}-${Math.random().toString(36).substring(2, 7)}`;
             let next: Message[];
-            if (last && last.id === streamId) {
-              next = [
-                ...cleanedPrev.slice(0, -1),
-                {
-                  ...last,
-                  id: finalId,
-                  role: speaker,
-                  text: cleanText,
-                  content: cleanText,
-                  time: last.time || nowTime,
-                  replyMode: "voice",
-                },
-              ];
+            if (existingIdx !== -1) {
+              next = cleanedPrev.map((m, idx) =>
+                idx === existingIdx
+                  ? {
+                      ...m,
+                      id: finalId,
+                      role: speaker,
+                      text: cleanText,
+                      content: cleanText,
+                      time: m.time || nowTime,
+                      replyMode: "voice",
+                    }
+                  : m
+              );
             } else if (
               last &&
               last.role === speaker &&
@@ -8926,11 +8930,6 @@ export function App() {
               ];
             }
             chatHistoryRef.current = next;
-            try {
-              const serialized = JSON.stringify(next);
-              localStorage.setItem("iyabd_chat_history", serialized);
-              localStorage.setItem("rose_messages", serialized);
-            } catch (e) {}
             return next;
           });
         }

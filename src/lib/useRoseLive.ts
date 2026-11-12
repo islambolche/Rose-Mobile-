@@ -1,4 +1,5 @@
 import { useRef, useState } from "react";
+import { EndSensitivity, StartSensitivity } from "@google/genai";
 import { getGeminiKey } from "./geminiKey";
 import { getGlobalMicStream, stopGlobalMicStream } from "./audio-manager";
 
@@ -88,6 +89,16 @@ export function useRoseLive(getOpts: () => Opts) {
                 },
               },
             },
+            inputAudioTranscription: {},
+            outputAudioTranscription: {},
+            realtimeInputConfig: {
+              automaticActivityDetection: {
+                startOfSpeechSensitivity: StartSensitivity.START_SENSITIVITY_HIGH,
+                endOfSpeechSensitivity: EndSensitivity.END_SENSITIVITY_HIGH,
+                prefixPaddingMs: 100,
+                silenceDurationMs: 500,
+              },
+            },
             ...(o.systemInstruction
               ? { systemInstruction: { parts: [{ text: o.systemInstruction }] } }
               : {}),
@@ -109,11 +120,13 @@ export function useRoseLive(getOpts: () => Opts) {
             if (content.modelTurn) {
               for (const part of content.modelTurn.parts || []) {
                 if (part.inlineData) { s.recvN++; setRecv(s.recvN); play(part.inlineData.data); }
-                if (part.text) o.onRoseText?.(part.text);
               }
             }
-            if (content.inputTranscription) {
+            if (content.inputTranscription?.text) {
               o.onUserText?.(content.inputTranscription.text);
+            }
+            if (content.outputTranscription?.text) {
+              o.onRoseText?.(content.outputTranscription.text);
             }
             if (content.turnComplete) o.onTurnComplete?.();
           }

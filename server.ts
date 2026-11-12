@@ -2,7 +2,7 @@ import express from 'express';
 import fs from 'fs';
 import path from 'path';
 import { exec } from 'child_process';
-import { GoogleGenAI, Type, Modality, LiveServerMessage } from "@google/genai";
+import { GoogleGenAI, Type, Modality, LiveServerMessage, EndSensitivity, StartSensitivity } from "@google/genai";
 import dotenv from 'dotenv';
 import { createServer } from 'http';
 import { WebSocketServer } from 'ws';
@@ -307,8 +307,16 @@ wss.on('connection', async (clientWs, req) => {
       speechConfig: {
         voiceConfig: { prebuiltVoiceConfig: { voiceName: voiceName } },
       },
-      inputAudioTranscription: { model: "whisper-1" },
-      outputAudioTranscription: { model: "whisper-1" },
+      inputAudioTranscription: {},
+      outputAudioTranscription: {},
+      realtimeInputConfig: {
+        automaticActivityDetection: {
+          startOfSpeechSensitivity: StartSensitivity.START_SENSITIVITY_HIGH,
+          endOfSpeechSensitivity: EndSensitivity.END_SENSITIVITY_HIGH,
+          prefixPaddingMs: 100,
+          silenceDurationMs: 500,
+        },
+      },
     };
 
     console.log(`[Live WS] Connecting to Gemini Live with model: ${model}`);

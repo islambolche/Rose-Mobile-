@@ -1,3 +1,4 @@
+import { EndSensitivity, StartSensitivity } from '@google/genai';
 import { logVoiceEvent } from './voiceLogger';
 import { getGeminiKey } from './geminiKey';
 import {
@@ -1356,20 +1357,18 @@ export class GeminiLiveSession {
             : ROSE_TEAM_TOOLS,
           inputAudioTranscription: {},
           outputAudioTranscription: {},
+          realtimeInputConfig: {
+            automaticActivityDetection: {
+              startOfSpeechSensitivity: StartSensitivity.START_SENSITIVITY_HIGH,
+              endOfSpeechSensitivity: EndSensitivity.END_SENSITIVITY_HIGH,
+              prefixPaddingMs: 100,
+              silenceDurationMs: 500,
+            },
+          },
         };
 
-        if (micSettings.fastReply && !this.vadConfigRejected) {
-          let silenceMs = 500;
-          if (micSettings.fastReplySpeed === 'Normal') silenceMs = 800;
-          else if (micSettings.fastReplySpeed === 'Very fast') silenceMs = 350;
-
-          setupPayload.realtimeInputConfig = {
-            automaticActivityDetection: {
-              endOfSpeechSensitivity: 'HIGH',
-              prefixPaddingMs: 200,
-              silenceDurationMs: silenceMs,
-            },
-          };
+        if (this.vadConfigRejected) {
+          delete setupPayload.realtimeInputConfig;
         }
 
         if (includeResumptionAndCompression) {
@@ -1918,95 +1917,46 @@ export class GeminiLiveSession {
   private liveStreetAllowed = true;
 
   private handleLiveServerContent(content: any) {
-    const inTrans =
-      content.inputTranscription ||
-      content.inputAudioTranscription ||
-      content.input_audio_transcription ||
-      content.userTurn?.parts?.find((p: any) => p.text);
-    if (inTrans) {
-      const rawText = typeof inTrans === 'string' ? inTrans : inTrans.text || inTrans.parts?.[0]?.text;
-      if (typeof rawText === 'string' && rawText.length > 0) {
-        // Strip only noise markers like <noise>, [noise], etc., and emit immediately without debounce or min-length gating
-        const cleanedChunk = rawText.replace(/<[^>]*>|\[[^\]]*\]/g, '');
-        if (cleanedChunk.length > 0) {
-          this.liveUserBuffer += cleanedChunk;
-          const combined = this.liveUserBuffer.trim();
-          if (combined.length > 0) {
-            this.liveStreetAllowed = passesStreetModeFilter(
-              combined,
-              this.options.assistantName,
-              isPushToTalkCurrentlyActive()
-            );
-            if (this.liveStreetAllowed) {
-              this.lastHeardText = combined;
-              if (this.currentState !== 'speaking') {
-                this.awaitingReplySince = Date.now();
-              }
-              voiceDebugStore.recordFirstTranscript(combined);
-              // Immediate emission the moment each chunk arrives (no waiting, no debounce)
-              this.options.onTranscription?.('user', combined, false);
+    if (content.inputTranscription?.text) {
+      const cleanedChunk = content.inputTranscription.text.replace(/<[^>]*>|\[[^\]]*\]/g, '');
+      if (cleanedChunk.length > 0) {
+        this.liveUserBuffer += cleanedChunk;
+        const combined = this.liveUserBuffer.trim();
+        if (combined.length > 0) {
+          this.liveStreetAllowed = passesStreetModeFilter(
+            combined,
+            this.options.assistantName,
+            isPushToTalkCurrentlyActive()
+          );
+          if (this.liveStreetAllowed) {
+            this.lastHeardText = combined;
+            if (this.currentState !== 'speaking') {
+              this.awaitingReplySince = Date.now();
             }
+            voiceDebugStore.recordFirstTranscript(combined);
+            this.options.onTranscription?.('user', combined, false);
           }
         }
       }
     }
 
-    const outTrans =
-      content.outputTranscription ||
-      content.outputAudioTranscription ||
-      content.output_audio_transcription;
-    if (outTrans) {
+    if (content.outputTranscription?.text) {
       this.awaitingReplySince = 0;
       this.watchdogReconnectedForTurn = false;
-      if (this.liveUserBuffer.trim()) {
-        const finalUser = this.liveUserBuffer.trim();
-        this.liveUserBuffer = '';
-        this.liveStreetAllowed = passesStreetModeFilter(
-          finalUser,
-          this.options.assistantName,
-          consumePushToTalkTurnFlag()
-        );
-        if (this.liveStreetAllowed) {
-          voiceDebugStore.recordFirstTranscript(finalUser);
-          this.options.onTranscription?.('user', finalUser, true);
-        }
-      }
       if (!this.liveStreetAllowed) {
         this.stopAllAudioPlayback();
         return;
       }
-      const textVal = typeof outTrans === 'string' ? outTrans : outTrans.text || outTrans.parts?.[0]?.text;
-      if (textVal) {
-        if (this.liveAssistantBuffer === '...') {
-          this.liveAssistantBuffer = '';
-        }
-        this.liveAssistantBuffer += textVal;
-        const cleanedLive = stripStageCues(
-          cleanAssistantReplyText(this.liveAssistantBuffer.trim(), this.options.language)
-        );
-        if (cleanedLive) {
-          // Continuous update for assistant transcription
-          this.options.onTranscription?.('assistant', cleanedLive, false);
-        }
+      this.liveAssistantBuffer += content.outputTranscription.text;
+      const cleanedLive = stripStageCues(this.liveAssistantBuffer).trim();
+      if (cleanedLive) {
+        this.options.onTranscription?.('assistant', cleanedLive, false);
       }
     }
 
     if (content.modelTurn) {
       this.awaitingReplySince = 0;
       this.watchdogReconnectedForTurn = false;
-      if (this.liveUserBuffer.trim()) {
-        const finalUser = this.liveUserBuffer.trim();
-        this.liveUserBuffer = '';
-        this.liveStreetAllowed = passesStreetModeFilter(
-          finalUser,
-          this.options.assistantName,
-          consumePushToTalkTurnFlag()
-        );
-        if (this.liveStreetAllowed) {
-          voiceDebugStore.recordFirstTranscript(finalUser);
-          this.options.onTranscription?.('user', finalUser, true);
-        }
-      }
       if (!this.liveStreetAllowed) {
         this.stopAllAudioPlayback();
         return;
@@ -2026,25 +1976,6 @@ export class GeminiLiveSession {
           this.updateState('speaking');
           this.stateEnteredAt = Date.now();
           this.playPcmAudioChunk(part.inlineData.data);
-
-          // Typing indicator: show "..." if audio starts but no text transcript has arrived yet
-          if (!this.liveAssistantBuffer.trim()) {
-            this.options.onTranscription?.('assistant', '...', false);
-          }
-        }
-        if (part.text && !outTrans) {
-          // If we had a "..." placeholder, clear it before appending real text
-          if (this.liveAssistantBuffer === '...') {
-            this.liveAssistantBuffer = '';
-          }
-          this.liveAssistantBuffer += part.text;
-          const cleanedLive = stripStageCues(
-            cleanAssistantReplyText(this.liveAssistantBuffer.trim(), this.options.language)
-          );
-          if (cleanedLive) {
-            // Continuous update for assistant transcription
-            this.options.onTranscription?.('assistant', cleanedLive, false);
-          }
         }
       }
     }
@@ -2066,7 +1997,6 @@ export class GeminiLiveSession {
       this.watchdogReconnectedForTurn = false;
       if (this.liveUserBuffer.trim()) {
         const finalUser = this.liveUserBuffer.trim();
-        this.liveUserBuffer = '';
         this.liveStreetAllowed = passesStreetModeFilter(
           finalUser,
           this.options.assistantName,
@@ -2077,7 +2007,6 @@ export class GeminiLiveSession {
           this.options.onTranscription?.('user', finalUser, true);
         }
       } else if (this.userStartedSpeakingEmitted) {
-        // Clear placeholder if no text arrived before turn complete
         this.options.onTranscription?.('user', '', true);
       }
       if (this.liveStreetAllowed && this.liveAssistantBuffer.trim()) {
