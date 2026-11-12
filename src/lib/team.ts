@@ -287,6 +287,9 @@ export async function assignTask(params: {
         };
       } else if (error) {
         console.error('[Supabase Insert Error] public.tasks insert failed:', error.message);
+        if (error.message.includes('Could not find the table') || error.message.includes('relation "tasks" does not exist')) {
+          console.warn('[Action Required] The "tasks" table is missing in Supabase. Please run the SQL schema in /supabase-schema.sql in your Supabase SQL Editor.');
+        }
       }
     } catch (err: any) {
       console.error('[Supabase Insert Error] Exception during tasks insert:', err?.message || err);

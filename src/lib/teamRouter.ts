@@ -118,6 +118,54 @@ export async function routeUserMessageForTeamTask(
 
   const lower = rawText.toLowerCase();
 
+  // 0. Team-wide status check: টিম, অফিস, team
+  if (/(?:টিম|অফিস|team)/i.test(rawText)) {
+    let summary = "আজ কাউকে কোনো কাজ দেওয়া হয়নি, সবাই ফাঁকা।";
+    if (supabase) {
+      try {
+        const { data, error } = await supabase
+          .from('tasks')
+          .select('*')
+          .order('created_at', { ascending: false })
+          .limit(20);
+
+        if (!error && data && data.length > 0) {
+          const agents: TeamAgentId[] = ['mira', 'arin', 'zayan', 'naira'];
+          const activeStatuses: string[] = [];
+          
+          for (const id of agents) {
+            const lastTask = data.find((t: any) => t.to_agent === id);
+            if (lastTask) {
+              const name = TEAM_MEMBERS[id].bengaliName;
+              if (lastTask.status === 'working' || lastTask.status === 'assigned') {
+                activeStatuses.push(`${name} "${lastTask.instruction}" নিয়ে কাজ করছে`);
+              } else if (lastTask.status === 'done' && lastTask.result) {
+                activeStatuses.push(`${name} "${lastTask.result}" সম্পন্ন করেছে`);
+              }
+            }
+          }
+
+          if (activeStatuses.length > 0) {
+            const joined = activeStatuses.join(', ');
+            summary = `বর্তমানে ${joined}।`;
+            // Cap at ~2 sentences roughly by cutting if too long or just keeping it compact
+            if (summary.length > 150) {
+              summary = `বর্তমানে ${activeStatuses.slice(0, 2).join(', ')} এবং অন্যরা ডেস্কে আছে।`;
+            }
+          }
+        }
+      } catch (err) {
+        console.warn('[Team Router] Team status fetch failed:', err);
+      }
+    }
+
+    return {
+      matched: true,
+      type: 'status',
+      roseReply: summary,
+    };
+  }
+
   // 1. Detect target agent anywhere in the message (handles broken voice transcription)
   const detectedAgent = detectAgentInMessage(rawText);
   if (!detectedAgent) {

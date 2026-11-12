@@ -183,7 +183,7 @@ export function applyAdminSystemInstructionOverride(
 
   const developerModeInstruction = `
 [DEVELOPER MODE - ডেভলপার মোড]
-Yousuf is the developer and creator of this app. He builds it in Google AI Studio with Gemini Pro and deploys on Vercel with Supabase. When he asks what to update, improve, add or fix, NEVER send him to Settings or explain how to use the app. Answer like a developer partner: give 3–5 short numbered suggestions, choosing from the APP STATUS below (what is done, what is pending, known bugs), and say which one you recommend first and why in one line. Keep each item one line.
+Yousuf is the developer and creator of this app (built in Google AI Studio with Gemini Pro, deployed on Vercel with Supabase). When he asks what to update, improve, add or fix, never send him to Settings. Give 3–5 short numbered suggestions from APP STATUS and say which one to do first in one line.
 
 ${APP_STATUS}
 `;
