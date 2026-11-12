@@ -3813,6 +3813,15 @@ export function App() {
   const [hasReceivedAudio, setHasReceivedAudio] = useState(false);
   const typedAbortControllerRef = useRef<AbortController | null>(null);
   const [liveErrorMsg, setLiveErrorMsg] = useState<string | null>(null);
+  const [typedChatLastErrorModel, setTypedChatLastErrorModel] = useState<string | null>(null);
+
+  useEffect(() => {
+    const handleRoseToast = (e: any) => {
+      if (e?.detail) setToast(e.detail);
+    };
+    window.addEventListener('rose_toast', handleRoseToast);
+    return () => window.removeEventListener('rose_toast', handleRoseToast);
+  }, [setToast]);
   const [showDiagnosticPanel, setShowDiagnosticPanel] = useState<boolean>(false);
   const [activeCaption, setActiveCaption] = useState<{ speaker: 'user' | 'rose'; text: string } | null>(null);
   const captionFadeTimerRef = useRef<any>(null);
@@ -6438,15 +6447,19 @@ export function App() {
       }
 
       if (isTypedChat) {
+        setTypedChatLastErrorModel(null);
         try {
-          const replyText = await sendTypedChat(chatHistoryRef.current, userText);
+          const result = await sendTypedChat(chatHistoryRef.current, userText);
+          const replyText = typeof result === 'string' ? result : result.text;
           updateSharedRoseBubble(replyText);
           isProcessingGeminiRef.current = false;
           setStatus("idle");
           return;
         } catch (err: any) {
           const exactMsg = err?.message || String(err);
+          const modelUsed = err?.modelUsed || '';
           setLiveErrorMsg(exactMsg);
+          setTypedChatLastErrorModel(modelUsed);
           setToast(exactMsg);
           pushSharedMessage({
             role: "system",
@@ -9416,16 +9429,23 @@ export function App() {
             {/* Reserved empty space (~90px) for voice dots animation; error banner preserved */}
             <div className="w-full h-[90px] min-h-[90px] flex flex-col items-center justify-center gap-1 mb-[20px] shrink-0 mt-auto pointer-events-none">
               {liveErrorMsg && (
-                <span
-                  onClick={() => {
-                    if (liveErrorMsg.includes("Connection lost")) {
-                      toggleListeningSwitch();
-                    }
-                  }}
-                  className="text-[10px] font-semibold text-rose-300 bg-rose-950/85 border border-rose-500/40 rounded-lg px-2.5 py-1 animate-pulse max-w-[320px] break-words text-center shadow-lg pointer-events-auto cursor-pointer"
-                >
-                  {liveErrorMsg}
-                </span>
+                <div className="flex flex-col items-center pointer-events-auto">
+                  <span
+                    onClick={() => {
+                      if (liveErrorMsg.includes("Connection lost")) {
+                        toggleListeningSwitch();
+                      }
+                    }}
+                    className="text-[10px] font-semibold text-rose-300 bg-rose-950/85 border border-rose-500/40 rounded-lg px-2.5 py-1 animate-pulse max-w-[320px] break-words text-center shadow-lg cursor-pointer"
+                  >
+                    {liveErrorMsg}
+                  </span>
+                  {typedChatLastErrorModel && (
+                    <span className="text-[9px] text-slate-500 font-mono mt-0.5">
+                      Model: {typedChatLastErrorModel}
+                    </span>
+                  )}
+                </div>
               )}
               {voiceDiag && (
                 <span className="text-[9px] text-slate-400 font-mono tracking-tight text-center px-2 leading-tight">
