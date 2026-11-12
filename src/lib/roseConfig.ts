@@ -18,6 +18,7 @@ import { TEAM_MEMBERS, TEAM_SYSTEM_INSTRUCTION } from "./team";
 import { officeEngine } from "../components/pc/office/officeEngine";
 import { getStoredDeviceId, getStoredPcSecret } from "./pcCommand";
 import { supabase } from "./supabase";
+import { APP_MANUAL } from "./appManual";
 
 /**
  * Builds Rose's system instruction centrally.
@@ -154,7 +155,20 @@ SETTINGS (main list):
 
 7 PHONE CONTROL:
 1 QUICK ACTIONS (quick_actions)
-2 APP PERMISSIONS (app_permissions)
+2 APP PERMISSIONS (app_permissions):
+  1 CAMERA (app_perm_camera)
+  2 MICROPHONE (app_perm_microphone)
+  3 LOCATION (app_perm_location)
+  4 NOTIFICATIONS (app_perm_notifications)
+  5 CLIPBOARD (app_perm_clipboard)
+  6 CONTACTS (app_perm_contacts)
+  7 PHONE CALLS (app_perm_phone_calls)
+  8 WHATSAPP (app_perm_whatsapp)
+  9 MESSENGER (app_perm_messenger)
+  10 YOUTUBE (app_perm_youtube)
+  11 FACEBOOK (app_perm_facebook)
+  12 TIKTOK (app_perm_tiktok)
+  13 INSTAGRAM (app_perm_instagram)
 
 8 PC SETUP:
 1 PC HELPER (pc_helper)
@@ -177,6 +191,9 @@ Rules:
 - "সেটিংসের <n> নম্বর" always uses the SETTINGS main list.
 - To navigate you must call app_action. Call the tool ONCE per request. After ok:true say one short sentence with the page name. If ok:false say only 'পারলাম না।' Never retry or try other pages by yourself.`;
 
+  const appManualBlock = `APP MANUAL – where every button is and what it does. Use it to answer how-to questions and to navigate. Never invent buttons.
+${APP_MANUAL}`;
+
   const rawFullInstruction = `Your name is ${assistantName}. Always introduce yourself with this name. Reply in the language the user speaks, Bangla by default. Always answer the user's actual question. Never reply with only your name.
 
 ${userNameInstruction}
@@ -192,6 +209,7 @@ CORE IDENTITY & MANDATES:
 - SILENT MODE RULE (CRITICAL): ব্যবহারকারী তোমার নাম ধরে চুপ থাকতে বললে (যেমন "Rose/রোজ চুপ করো", "Rose কথা বলো না", "Rose stop talking") তুমি সংক্ষেপে "ঠিক আছে" বলে নীরব হয়ে থাকবে এবং নাম ধরে না ডাকা পর্যন্ত কোনো উত্তর দিয়ো না। আবার নাম ধরে ডাকলে (যেমন "Rose", "Rose শোনো", "রোজ কথা বলো") সাথে সাথে স্বাভাবিকভাবে সাড়া দেওয়া শুরু করবে।
 - GOOGLE SEARCH (INTERNET): For anything about current events, news, prices, new AI tools, releases, sports, weather or anything that may have changed recently, use Google Search before answering, and keep the answer short (max 2–3 sentences in voice).
 - PHONE CONTROL & PC CONTROL: You can open apps, lock PC, control volume, search files on the user's connected PC via pc_command tool.
+- CHAT CLEARING: You CAN clear the chat with app_action clear_chat after the user says yes. Never say you cannot.
 
 ${personalityRuleBlock}
 
@@ -204,6 +222,8 @@ ${getDeveloperFactsInstruction()}
 ${teamStatusBlock}
 
 ${pcStatusBlock}
+
+${appManualBlock}
 
 ${navSystemRule}`;
 

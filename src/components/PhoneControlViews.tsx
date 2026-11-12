@@ -1,95 +1,200 @@
 import React, { useState, useEffect } from 'react';
 import { 
-  ArrowLeft, Smartphone, ChevronRight, Mic, Camera, Bluetooth, 
-  Bell, PhoneCall, Users, Mail, MapPin, Image as ImageIcon, 
-  Layers, Shield, Sun, Volume2, Globe, Play, Zap, Clock, Wifi, Lock, Plus, Check, AlertCircle,
-  Settings as SettingsIcon
+  ArrowLeft, Smartphone, ChevronRight, Mic, Camera,
+  Bell, PhoneCall, Users, MapPin,
+  Shield, Zap, Check, AlertCircle, Copy, MessageCircle, MessageSquare, Youtube, Facebook, Instagram,
+  ExternalLink
 } from 'lucide-react';
-import * as Permissions from '../lib/permissions';
 
-interface PermissionItem {
+export interface PermissionItemConfig {
   id: string;
+  num: number;
   name: string;
-  subtitle: string;
+  desc: string;
   icon: any;
-  status: 'Allowed' | 'Skipped' | 'Needs Android app' | 'Off';
-  type: 'runtime' | 'special';
+  type: 'browser' | 'apk' | 'api';
+  browserSettingName?: string;
+  buttonLabel?: string;
+  actionUrl?: string;
 }
 
-const INITIAL_PERMISSIONS: PermissionItem[] = [
-  // Basic
-  { id: 'camera', name: 'Camera', subtitle: 'Required for photos and visual input', icon: Camera, status: 'Off', type: 'runtime' },
-  { id: 'microphone', name: 'Microphone', subtitle: 'Required for voice commands', icon: Mic, status: 'Off', type: 'runtime' },
-  { id: 'headphones', name: 'Headphones/Bluetooth', subtitle: 'Connect to audio devices', icon: Bluetooth, status: 'Needs Android app', type: 'runtime' },
-  { id: 'notifications', name: 'Notifications', subtitle: 'Send alerts and updates', icon: Bell, status: 'Off', type: 'runtime' },
-  { id: 'phoneCalls', name: 'Phone & Calls', subtitle: 'No permission needed · Opens dialer', icon: PhoneCall, status: 'Allowed', type: 'runtime' },
-  { id: 'contacts', name: 'Contacts', subtitle: 'Lookup names and numbers for voice actions', icon: Users, status: Permissions.hasContactsApi() ? (Permissions.getSavedContactsCount() > 0 ? 'Allowed' : 'Off') : 'Needs Android app', type: 'runtime' },
-  { id: 'sms', name: 'SMS', subtitle: 'Send and read text messages', icon: Mail, status: 'Needs Android app', type: 'runtime' },
-  { id: 'location', name: 'Location', subtitle: 'Map and geofencing support', icon: MapPin, status: 'Off', type: 'runtime' },
-  { id: 'mediaFiles', name: 'Photos/Media/Files', subtitle: 'Access images and documents', icon: ImageIcon, status: 'Needs Android app', type: 'runtime' },
-  // Advanced
-  { id: 'displayOverApps', name: 'Display over other apps', subtitle: 'Draw overlays and popups', icon: Layers, status: 'Needs Android app', type: 'special' },
-  { id: 'notificationAccess', name: 'Notification access', subtitle: 'Read incoming notification content', icon: Bell, status: 'Needs Android app', type: 'special' },
-  { id: 'dndAccess', name: 'Do Not Disturb access', subtitle: 'Manage silent mode settings', icon: Shield, status: 'Needs Android app', type: 'special' },
-  { id: 'modifySettings', name: 'Modify system settings', subtitle: 'Change system-level preferences', icon: SettingsIcon || Smartphone, status: 'Needs Android app', type: 'special' },
-  { id: 'accessibility', name: 'Accessibility service', subtitle: 'Deep phone automation control', icon: Shield, status: 'Needs Android app', type: 'special' },
-  { id: 'batteryOpt', name: 'Ignore battery optimization', subtitle: 'Allow app to run in background', icon: Zap, status: 'Needs Android app', type: 'special' },
+export const PERMISSIONS_CONFIG: PermissionItemConfig[] = [
+  {
+    id: 'app_perm_camera',
+    num: 1,
+    name: 'CAMERA',
+    desc: 'Rose আপনার ক্যামেরা ব্যবহার করে ছবি বা চারপাশের দৃশ্য দেখতে পারবে।',
+    icon: Camera,
+    type: 'browser',
+    browserSettingName: 'Camera',
+    buttonLabel: 'অনুমতি দাও',
+  },
+  {
+    id: 'app_perm_microphone',
+    num: 2,
+    name: 'MICROPHONE',
+    desc: 'Rose আপনার কণ্ঠ শুনে সরাসরি কথা বলা ও ভয়েস নির্দেশনার জন্য মাইক্রোফোন ব্যবহার করে।',
+    icon: Mic,
+    type: 'browser',
+    browserSettingName: 'Microphone',
+    buttonLabel: 'অনুমতি দাও',
+  },
+  {
+    id: 'app_perm_location',
+    num: 3,
+    name: 'LOCATION',
+    desc: 'আপনার বর্তমান অবস্থান, স্থানীয় আবহাওয়া ও দূরত্বের তথ্যের জন্য লোকেশন প্রয়োজন।',
+    icon: MapPin,
+    type: 'browser',
+    browserSettingName: 'Location',
+    buttonLabel: 'অনুমতি দাও',
+  },
+  {
+    id: 'app_perm_notifications',
+    num: 4,
+    name: 'NOTIFICATIONS',
+    desc: 'জরুরি বার্তা, রিমাইন্ডার এবং সময়োপযোগী তথ্য পাঠানোর জন্য নোটিফিকেশন প্রয়োজন।',
+    icon: Bell,
+    type: 'browser',
+    browserSettingName: 'Notifications',
+    buttonLabel: 'অনুমতি দাও',
+  },
+  {
+    id: 'app_perm_clipboard',
+    num: 5,
+    name: 'CLIPBOARD',
+    desc: 'আপনার কপি করা লেখা সহজে পড়তে এবং চ্যাটে ইনপুট দেওয়ার জন্য ক্লিপবোর্ড অনুমতি দরকার।',
+    icon: Copy,
+    type: 'browser',
+    browserSettingName: 'Clipboard',
+    buttonLabel: 'অনুমতি দাও',
+  },
+  {
+    id: 'app_perm_contacts',
+    num: 6,
+    name: 'CONTACTS',
+    desc: 'মোবাইলের কন্টাক্ট তালিকা দেখে ভয়েসে সহজে যোগাযোগের জন্য এই সুবিধা আসবে।',
+    icon: Users,
+    type: 'apk',
+    buttonLabel: 'APK-তে আসবে',
+  },
+  {
+    id: 'app_perm_phone_calls',
+    num: 7,
+    name: 'PHONE CALLS',
+    desc: 'সরাসরি ভয়েস নির্দেশে ফোন কল করার সুবিধা APK সংস্করণে যুক্ত হবে।',
+    icon: PhoneCall,
+    type: 'apk',
+    buttonLabel: 'APK-তে আসবে',
+  },
+  {
+    id: 'app_perm_whatsapp',
+    num: 8,
+    name: 'WHATSAPP',
+    desc: 'WhatsApp চ্যাটে বার্তা পাঠানো ও অ্যাপ ওপেন করার সুবিধা যুক্ত হবে।',
+    icon: MessageCircle,
+    type: 'apk',
+    buttonLabel: 'WhatsApp খোলো',
+    actionUrl: 'https://wa.me/',
+  },
+  {
+    id: 'app_perm_messenger',
+    num: 9,
+    name: 'MESSENGER',
+    desc: 'Facebook Messenger-এ দ্রুত বার্তা আদান-প্রদানের জন্য সংযোগ সুবিধা আসবে।',
+    icon: MessageSquare,
+    type: 'apk',
+    buttonLabel: 'Messenger খোলো',
+    actionUrl: 'https://m.me/',
+  },
+  {
+    id: 'app_perm_youtube',
+    num: 10,
+    name: 'YOUTUBE',
+    desc: 'YouTube-এ সরাসরি ভিডিও খোঁজা ও চালানোর জন্য API সংযোগ পরে আসবে।',
+    icon: Youtube,
+    type: 'api',
+    buttonLabel: 'YouTube খোলো',
+    actionUrl: 'https://www.youtube.com/',
+  },
+  {
+    id: 'app_perm_facebook',
+    num: 11,
+    name: 'FACEBOOK',
+    desc: 'Facebook পোস্ট ও আপডেটের সাথে যুক্ত হওয়ার API সুবিধা পরে আসবে।',
+    icon: Facebook,
+    type: 'api',
+    buttonLabel: 'Facebook খোলো',
+    actionUrl: 'https://www.facebook.com/',
+  },
+  {
+    id: 'app_perm_tiktok',
+    num: 12,
+    name: 'TIKTOK',
+    desc: 'TikTok ট্রেন্ডিং ভিডিও ও কন্টেন্ট দেখার সংযোগ সুবিধা পরে আসবে।',
+    icon: Smartphone,
+    type: 'api',
+    buttonLabel: 'TikTok খোলো',
+    actionUrl: 'https://www.tiktok.com/',
+  },
+  {
+    id: 'app_perm_instagram',
+    num: 13,
+    name: 'INSTAGRAM',
+    desc: 'Instagram প্রোফাইল ও ফটো শেয়ারিংয়ের সংযোগ সুবিধা পরে আসবে।',
+    icon: Instagram,
+    type: 'api',
+    buttonLabel: 'Instagram খোলো',
+    actionUrl: 'https://www.instagram.com/',
+  },
 ];
 
-interface QuickActionItem {
-  id: string;
-  name: string;
-  icon: any;
-  requiredPermission: string;
-  enabled: boolean;
-}
+export type PermissionStatusType = 'চালু' | 'বন্ধ' | 'জিজ্ঞেস করা হয়নি' | 'APK-তে আসবে' | 'API সংযোগ পরে আসবে';
 
-const INITIAL_QUICK_ACTIONS: QuickActionItem[] = [
-  { id: 'openApp', name: 'Open any app', icon: Smartphone, requiredPermission: 'displayOverApps', enabled: true },
-  { id: 'makeCall', name: 'Phone call', icon: PhoneCall, requiredPermission: 'phoneCalls', enabled: true },
-  { id: 'sendSms', name: 'Send SMS', icon: Mail, requiredPermission: 'sms', enabled: true },
-  { id: 'openCamera', name: 'Camera / take photo', icon: Camera, requiredPermission: 'camera', enabled: true },
-  { id: 'flashlight', name: 'Flashlight', icon: Zap, requiredPermission: 'modifySettings', enabled: true },
-  { id: 'wifi', name: 'Wi-Fi', icon: Wifi, requiredPermission: 'modifySettings', enabled: true },
-  { id: 'bluetooth', name: 'Bluetooth', icon: Bluetooth, requiredPermission: 'headphones', enabled: true },
-  { id: 'volume', name: 'Volume', icon: Volume2, requiredPermission: 'modifySettings', enabled: true },
-  { id: 'brightness', name: 'Brightness', icon: Sun, requiredPermission: 'modifySettings', enabled: true },
-  { id: 'alarm', name: 'Alarm/Timer', icon: Clock, requiredPermission: 'notifications', enabled: true },
-  { id: 'dnd', name: 'Do Not Disturb', icon: Shield, requiredPermission: 'dndAccess', enabled: true },
-  { id: 'notifications', name: 'Read notifications', icon: Bell, requiredPermission: 'notificationAccess', enabled: true },
-  { id: 'maps', name: 'Maps', icon: MapPin, requiredPermission: 'location', enabled: true },
-  { id: 'media', name: 'Media play/pause', icon: Play, requiredPermission: 'mediaFiles', enabled: true },
-];
-
-export const PhoneControlHome = ({ settings, setSettings, setCurrentView }: any) => {
+export const PhoneControlHome = ({ setCurrentView }: any) => {
   return (
-    <div className="fixed inset-0 z-[80] bg-[#020617] overflow-y-auto no-scrollbar flex flex-col">
+    <div data-current-view="phone_control" className="fixed inset-0 z-[80] bg-[#020617] overflow-y-auto no-scrollbar flex flex-col">
       <header className="px-5 py-6 flex items-center gap-4 shrink-0">
-        <button onClick={() => setCurrentView?.('settings')} className="p-2.5 bg-white/5 rounded-2xl active:scale-95 transition-transform"><ArrowLeft className="w-5 h-5 text-slate-300" /></button>
-        <h2 className="text-xl font-black italic uppercase tracking-tighter text-white">Phone control</h2>
+        <button
+          data-nav-id="back"
+          onClick={() => setCurrentView?.('settings')}
+          className="p-2.5 bg-white/5 rounded-2xl active:scale-95 transition-transform"
+          aria-label="Back to Settings"
+        >
+          <ArrowLeft className="w-5 h-5 text-slate-300" />
+        </button>
+        <h2 className="text-xl font-black italic uppercase tracking-tighter text-white">7. PHONE CONTROL</h2>
       </header>
       <div className="px-6 py-4 space-y-4 pb-32">
-        <button onClick={() => setCurrentView?.('quick-actions')} className="w-full p-5 bg-[#0F172A]/80 border border-purple-500/30 rounded-[2.5rem] shadow-2xl flex items-center justify-between active:scale-[0.98] transition-all text-left">
+        <button
+          data-nav-id="quick_actions"
+          onClick={() => setCurrentView?.('quick-actions')}
+          className="w-full p-5 bg-[#0F172A]/80 border border-purple-500/30 rounded-[2.5rem] shadow-2xl flex items-center justify-between active:scale-[0.98] transition-all text-left"
+        >
           <div className="flex items-center gap-4">
             <div className="w-12 h-12 rounded-full bg-purple-600/10 border border-purple-500/20 flex items-center justify-center text-purple-400 shrink-0">
               <Zap className="w-6 h-6" />
             </div>
             <div>
-              <h4 className="text-base font-black uppercase tracking-wider text-white leading-tight">Quick actions</h4>
-              <p className="text-[11px] text-slate-400 font-medium leading-tight mt-0.5">Configure device actions and shortcuts</p>
+              <h4 className="text-base font-black uppercase tracking-wider text-white leading-tight">1. QUICK ACTIONS</h4>
+              <p className="text-[11px] text-slate-400 font-bold uppercase tracking-widest mt-0.5">Device actions & shortcuts</p>
             </div>
           </div>
           <ChevronRight className="w-5 h-5 text-slate-500 shrink-0" />
         </button>
 
-        <button onClick={() => setCurrentView?.('app-permissions')} className="w-full p-5 bg-[#0F172A]/80 border border-purple-500/30 rounded-[2.5rem] shadow-2xl flex items-center justify-between active:scale-[0.98] transition-all text-left">
+        <button
+          data-nav-id="app_permissions"
+          onClick={() => setCurrentView?.('app-permissions')}
+          className="w-full p-5 bg-[#0F172A]/80 border border-purple-500/30 rounded-[2.5rem] shadow-2xl flex items-center justify-between active:scale-[0.98] transition-all text-left"
+        >
           <div className="flex items-center gap-4">
             <div className="w-12 h-12 rounded-full bg-purple-600/10 border border-purple-500/20 flex items-center justify-center text-purple-400 shrink-0">
               <Shield className="w-6 h-6" />
             </div>
             <div>
-              <h4 className="text-base font-black uppercase tracking-wider text-white leading-tight">App permissions</h4>
-              <p className="text-[11px] text-slate-400 font-medium leading-tight mt-0.5">Manage microphone, calls, and device access</p>
+              <h4 className="text-base font-black uppercase tracking-wider text-white leading-tight">2. APP PERMISSIONS</h4>
+              <p className="text-[11px] text-slate-400 font-bold uppercase tracking-widest mt-0.5">Camera, mic, location & apps</p>
             </div>
           </div>
           <ChevronRight className="w-5 h-5 text-slate-500 shrink-0" />
@@ -100,434 +205,478 @@ export const PhoneControlHome = ({ settings, setSettings, setCurrentView }: any)
 };
 
 export const AppPermissionsView = ({ setCurrentView, setToast }: any) => {
-  const [expanded, setExpanded] = useState<Record<string, boolean>>({ basic: true, advanced: true });
-  const [hiddenIds, setHiddenIds] = useState<string[]>(() => {
-    try { return JSON.parse(localStorage.getItem('iyabd_permissions_hidden_v5') || '[]'); } catch (e) { return []; }
+  const [selectedSubPerm, setSelectedSubPerm] = useState<string | null>(null);
+  const [statuses, setStatuses] = useState<Record<string, PermissionStatusType>>({
+    app_perm_camera: 'জিজ্ঞেস করা হয়নি',
+    app_perm_microphone: 'জিজ্ঞেস করা হয়নি',
+    app_perm_location: 'জিজ্ঞেস করা হয়নি',
+    app_perm_notifications: 'জিজ্ঞেস করা হয়নি',
+    app_perm_clipboard: 'জিজ্ঞেস করা হয়নি',
+    app_perm_contacts: 'APK-তে আসবে',
+    app_perm_phone_calls: 'APK-তে আসবে',
+    app_perm_whatsapp: 'APK-তে আসবে',
+    app_perm_messenger: 'APK-তে আসবে',
+    app_perm_youtube: 'API সংযোগ পরে আসবে',
+    app_perm_facebook: 'API সংযোগ পরে আসবে',
+    app_perm_tiktok: 'API সংযোগ পরে আসবে',
+    app_perm_instagram: 'API সংযোগ পরে আসবে',
   });
-  const [permissions, setPermissions] = useState<PermissionItem[]>(() => {
+  const [isProcessing, setIsProcessing] = useState(false);
+
+  // Sync current app view with global window for nav router visibility checks
+  useEffect(() => {
+    if (typeof window !== 'undefined') {
+      (window as any).__currentAppView = selectedSubPerm || 'app_permissions';
+    }
+    return () => {
+      if (typeof window !== 'undefined') {
+        (window as any).__currentAppView = null;
+      }
+    };
+  }, [selectedSubPerm]);
+
+  // Check browser permissions on mount
+  const refreshStatuses = async () => {
+    const updated: Record<string, PermissionStatusType> = {
+      app_perm_contacts: 'APK-তে আসবে',
+      app_perm_phone_calls: 'APK-তে আসবে',
+      app_perm_whatsapp: 'APK-তে আসবে',
+      app_perm_messenger: 'APK-তে আসবে',
+      app_perm_youtube: 'API সংযোগ পরে আসবে',
+      app_perm_facebook: 'API সংযোগ পরে আসবে',
+      app_perm_tiktok: 'API সংযোগ পরে আসবে',
+      app_perm_instagram: 'API সংযোগ পরে আসবে',
+    };
+
+    // 1. Camera
     try {
-      const saved = localStorage.getItem('iyabd_permissions_list_v5');
-      const parsed = saved ? JSON.parse(saved) : {};
-      return INITIAL_PERMISSIONS.map(p => {
-        const stored = parsed[p.id];
-        if (stored === 'Allowed' || stored === 'Granted') return { ...p, status: 'Allowed' as const };
-        if (stored === 'Skipped' || stored === 'Denied') return { ...p, status: 'Skipped' as const };
-        if (stored === 'Needs Android app') return { ...p, status: 'Needs Android app' as const };
-        
-        const helperStatus = Permissions.getStoredPermissionStatus(p.id);
-        if (helperStatus === 'Needs Android app') return { ...p, status: 'Needs Android app' as const };
-        if (helperStatus === 'Allowed') return { ...p, status: 'Allowed' as const };
-        if (helperStatus === 'Skipped') return { ...p, status: 'Skipped' as const };
-
-        return { ...p, status: 'Off' as const };
-      });
-    } catch (e) {}
-    return INITIAL_PERMISSIONS.map(p => ({
-      ...p,
-      status: Permissions.getStoredPermissionStatus(p.id) === 'Needs Android app' ? 'Needs Android app' as const : 'Off' as const
-    }));
-  });
-
-  const callBridge = (method: string, args: any = {}) => {
-    if ((window as any).AndroidIYABD && (window as any).AndroidIYABD[method]) {
-      try { (window as any).AndroidIYABD[method](JSON.stringify(args)); } catch (e) {}
-    } else {
-      console.log(`[Bridge] ${method}`, args);
+      if (navigator.permissions && navigator.permissions.query) {
+        const res = await navigator.permissions.query({ name: 'camera' as any });
+        updated.app_perm_camera = res.state === 'granted' ? 'চালু' : res.state === 'denied' ? 'বন্ধ' : 'জিজ্ঞেস করা হয়নি';
+      } else {
+        const saved = localStorage.getItem('perm_camera_status');
+        updated.app_perm_camera = saved === 'granted' ? 'চালু' : saved === 'denied' ? 'বন্ধ' : 'জিজ্ঞেস করা হয়নি';
+      }
+    } catch {
+      const saved = localStorage.getItem('perm_camera_status');
+      updated.app_perm_camera = saved === 'granted' ? 'চালু' : saved === 'denied' ? 'বন্ধ' : 'জিজ্ঞেস করা হয়নি';
     }
-  };
 
-  const checkStatuses = async () => {
-    const isAndroid = typeof window !== 'undefined' && Boolean((window as any).AndroidIYABD);
-    let micStatus: 'Allowed' | 'Skipped' | null = null;
-    let notifStatus: 'Allowed' | 'Skipped' | null = null;
-
-    if (navigator.permissions && navigator.permissions.query) {
-      try {
+    // 2. Microphone
+    try {
+      if (navigator.permissions && navigator.permissions.query) {
         const res = await navigator.permissions.query({ name: 'microphone' as any });
-        if (res.state === 'granted') micStatus = 'Allowed';
-        else if (res.state === 'denied') micStatus = 'Skipped';
-      } catch (e) {}
-    }
-    if (typeof Notification !== 'undefined') {
-      if (Notification.permission === 'granted') notifStatus = 'Allowed';
-      else if (Notification.permission === 'denied') notifStatus = 'Skipped';
+        updated.app_perm_microphone = res.state === 'granted' ? 'চালু' : res.state === 'denied' ? 'বন্ধ' : 'জিজ্ঞেস করা হয়নি';
+      } else {
+        const saved = localStorage.getItem('perm_mic_status');
+        updated.app_perm_microphone = saved === 'granted' ? 'চালু' : saved === 'denied' ? 'বন্ধ' : 'জিজ্ঞেস করা হয়নি';
+      }
+    } catch {
+      const saved = localStorage.getItem('perm_mic_status');
+      updated.app_perm_microphone = saved === 'granted' ? 'চালু' : saved === 'denied' ? 'বন্ধ' : 'জিজ্ঞেস করা হয়নি';
     }
 
-    setPermissions(prev => {
-      const updated = prev.map(p => {
-        if (p.id === 'phoneCalls') {
-          return { ...p, status: 'Allowed' as const, subtitle: 'No permission needed · Opens dialer' };
-        }
-        if (p.id === 'contacts') {
-          if (!Permissions.hasContactsApi() && !isAndroid) {
-            return { ...p, status: 'Needs Android app' as const, subtitle: 'Android app required' };
-          }
-          const cnt = Permissions.getSavedContactsCount();
-          return {
-            ...p,
-            status: cnt > 0 ? ('Allowed' as const) : ('Off' as const),
-            subtitle: cnt > 0 ? `${cnt} contacts saved for voice actions` : 'Tap to pick contacts for voice actions',
-          };
-        }
-        if (!isAndroid && Permissions.ANDROID_ONLY_IDS.includes(p.id as any)) {
-          return { ...p, status: 'Needs Android app' as const };
-        }
-        if (p.id === 'microphone' && micStatus) {
-          return { ...p, status: micStatus };
-        }
-        if (p.id === 'notifications' && notifStatus) {
-          return { ...p, status: notifStatus };
-        }
-        return p;
-      });
-      return updated;
-    });
+    // 3. Location
+    try {
+      if (navigator.permissions && navigator.permissions.query) {
+        const res = await navigator.permissions.query({ name: 'geolocation' as any });
+        updated.app_perm_location = res.state === 'granted' ? 'চালু' : res.state === 'denied' ? 'বন্ধ' : 'জিজ্ঞেস করা হয়নি';
+      } else {
+        const saved = localStorage.getItem('perm_location_status');
+        updated.app_perm_location = saved === 'granted' ? 'চালু' : saved === 'denied' ? 'বন্ধ' : 'জিজ্ঞেস করা হয়নি';
+      }
+    } catch {
+      const saved = localStorage.getItem('perm_location_status');
+      updated.app_perm_location = saved === 'granted' ? 'চালু' : saved === 'denied' ? 'বন্ধ' : 'জিজ্ঞেস করা হয়নি';
+    }
+
+    // 4. Notifications
+    try {
+      if (typeof Notification !== 'undefined') {
+        updated.app_perm_notifications = Notification.permission === 'granted' ? 'চালু' : Notification.permission === 'denied' ? 'বন্ধ' : 'জিজ্ঞেস করা হয়নি';
+      } else {
+        updated.app_perm_notifications = 'বন্ধ';
+      }
+    } catch {
+      updated.app_perm_notifications = 'জিজ্ঞেস করা হয়নি';
+    }
+
+    // 5. Clipboard
+    try {
+      if (navigator.permissions && navigator.permissions.query) {
+        const res = await navigator.permissions.query({ name: 'clipboard-read' as any });
+        updated.app_perm_clipboard = res.state === 'granted' ? 'চালু' : res.state === 'denied' ? 'বন্ধ' : 'জিজ্ঞেস করা হয়নি';
+      } else {
+        const saved = localStorage.getItem('perm_clipboard_status');
+        updated.app_perm_clipboard = saved === 'granted' ? 'চালু' : saved === 'denied' ? 'বন্ধ' : 'জিজ্ঞেস করা হয়নি';
+      }
+    } catch {
+      const saved = localStorage.getItem('perm_clipboard_status');
+      updated.app_perm_clipboard = saved === 'granted' ? 'চালু' : saved === 'denied' ? 'বন্ধ' : 'জিজ্ঞেস করা হয়নি';
+    }
+
+    setStatuses(prev => ({ ...prev, ...updated }));
   };
 
   useEffect(() => {
-    checkStatuses();
-    window.addEventListener('focus', checkStatuses);
-    return () => window.removeEventListener('focus', checkStatuses);
+    refreshStatuses();
+    window.addEventListener('focus', refreshStatuses);
+    return () => window.removeEventListener('focus', refreshStatuses);
   }, []);
 
-  const updateSingle = (id: string, status: 'Allowed' | 'Skipped' | 'Needs Android app' | 'Off') => {
-    setPermissions(prev => {
-      const updated = prev.map(p => p.id === id ? { ...p, status } : p);
-      const map: Record<string, string> = {};
-      updated.forEach(p => map[p.id] = p.status);
-      localStorage.setItem('iyabd_permissions_list_v5', JSON.stringify(map));
-      return updated;
-    });
-  };
-
-  const toggleHide = (e: React.MouseEvent, id: string) => {
-    e.stopPropagation();
-    const next = hiddenIds.includes(id) ? hiddenIds.filter(i => i !== id) : [...hiddenIds, id];
-    setHiddenIds(next);
-    localStorage.setItem('iyabd_permissions_hidden_v5', JSON.stringify(next));
-  };
-
-  const handleRowClick = async (perm: PermissionItem) => {
-    if ((window as any).AndroidIYABD) {
-      if (perm.status === 'Allowed') {
-        callBridge('openSettings', { permission: perm.id });
-        setToast?.(`Opening settings for ${perm.name}`);
-      } else {
-        callBridge('requestPermission', { permission: perm.id });
-        setToast?.(`Requesting ${perm.name}`);
+  const handleAction = async (perm: PermissionItemConfig) => {
+    if (perm.type === 'apk') {
+      if (perm.actionUrl) {
+        window.open(perm.actionUrl, '_blank', 'noopener,noreferrer');
+        setToast?.(`${perm.name} খোলা হচ্ছে`);
       }
       return;
     }
 
-    // In Browser:
-    if (perm.id === 'phoneCalls') {
-      setToast?.("Phone calls are ready via browser dialer");
-      updateSingle('phoneCalls', 'Allowed');
-      return;
-    }
-
-    if (perm.id === 'contacts') {
-      if (Permissions.hasContactsApi()) {
-        try {
-          const selected = await (navigator as any).contacts.select(['name', 'tel'], { multiple: true });
-          if (selected && selected.length > 0) {
-            const count = Permissions.saveContactsFromPicker(selected);
-            setToast?.(`${count} contacts saved for voice actions`);
-            checkStatuses();
-          }
-        } catch (e) {
-          console.warn("Contact picker cancelled or error:", e);
-        }
-      } else {
-        setToast?.("Contacts lookup requires native Android app");
+    if (perm.type === 'api') {
+      if (perm.actionUrl) {
+        window.open(perm.actionUrl, '_blank', 'noopener,noreferrer');
+        setToast?.(`${perm.name} খোলা হচ্ছে`);
       }
       return;
     }
 
-    if (perm.id === 'notifications') {
-      const isIframe = typeof window !== 'undefined' && window.self !== window.top;
-      if (isIframe) {
-        setToast?.("Open the app link in a new Chrome tab to allow notifications");
-      } else {
-        setToast?.("Requesting notification permission...");
-      }
-      if (typeof Notification !== 'undefined') {
-        try {
-          const res = await Notification.requestPermission();
-          const st = res === 'granted' ? 'Allowed' : 'Skipped';
-          updateSingle(perm.id, st);
-          setToast?.(st === 'Allowed' ? "Notifications allowed" : "Notifications skipped");
+    // Browser Permissions
+    setIsProcessing(true);
+
+    if (perm.id === 'app_perm_camera') {
+      try {
+        if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+          setStatuses(prev => ({ ...prev, app_perm_camera: 'বন্ধ' }));
+          setToast?.('ক্যামেরা সমর্থিত নয়');
+          setIsProcessing(false);
           return;
-        } catch (e) {}
+        }
+        const stream = await navigator.mediaDevices.getUserMedia({ video: true });
+        stream.getTracks().forEach(t => t.stop());
+        setStatuses(prev => ({ ...prev, app_perm_camera: 'চালু' }));
+        localStorage.setItem('perm_camera_status', 'granted');
+        setToast?.('ক্যামেরা অনুমতি চালু হয়েছে');
+      } catch (err) {
+        setStatuses(prev => ({ ...prev, app_perm_camera: 'বন্ধ' }));
+        localStorage.setItem('perm_camera_status', 'denied');
+        setToast?.('ক্যামেরা অনুমতি দেওয়া হয়নি');
+      } finally {
+        setIsProcessing(false);
       }
-      const res = await Permissions.requestNotificationsWithTimeout(8000);
-      updateSingle(perm.id, res);
-      setToast?.(res === 'Allowed' ? "Notifications allowed" : "Notifications skipped");
-      return;
-    }
-
-    if (perm.status === 'Needs Android app' || Permissions.ANDROID_ONLY_IDS.includes(perm.id as any)) {
-      setToast?.(`${perm.name} requires the native Android app`);
-      return;
-    }
-
-    if (perm.id === 'microphone') {
-      setToast?.("Requesting microphone permission...");
-      const res = await Permissions.requestMicrophoneWithTimeout(8000);
-      updateSingle(perm.id, res);
-      setToast?.(res === 'Allowed' ? "Microphone allowed" : "Microphone skipped");
-    } else if (perm.id === 'camera') {
-      setToast?.("Requesting camera permission...");
-      const res = await Permissions.requestCameraWithTimeout(8000);
-      updateSingle(perm.id, res);
-      setToast?.(res === 'Allowed' ? "Camera allowed" : "Camera skipped");
-    } else if (perm.id === 'location') {
-      setToast?.("Requesting location permission...");
-      const res = await Permissions.requestLocationWithTimeout(8000);
-      updateSingle(perm.id, res);
-      setToast?.(res === 'Allowed' ? "Location allowed" : "Location skipped");
+    } else if (perm.id === 'app_perm_microphone') {
+      try {
+        if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+          setStatuses(prev => ({ ...prev, app_perm_microphone: 'বন্ধ' }));
+          setToast?.('মাইক্রোফোন সমর্থিত নয়');
+          setIsProcessing(false);
+          return;
+        }
+        const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+        stream.getTracks().forEach(t => t.stop());
+        setStatuses(prev => ({ ...prev, app_perm_microphone: 'চালু' }));
+        localStorage.setItem('perm_mic_status', 'granted');
+        setToast?.('মাইক্রোফোন অনুমতি চালু হয়েছে');
+      } catch (err) {
+        setStatuses(prev => ({ ...prev, app_perm_microphone: 'বন্ধ' }));
+        localStorage.setItem('perm_mic_status', 'denied');
+        setToast?.('মাইক্রোফোন অনুমতি দেওয়া হয়নি');
+      } finally {
+        setIsProcessing(false);
+      }
+    } else if (perm.id === 'app_perm_location') {
+      if (!navigator.geolocation) {
+        setStatuses(prev => ({ ...prev, app_perm_location: 'বন্ধ' }));
+        setToast?.('লোকেশন সমর্থিত নয়');
+        setIsProcessing(false);
+        return;
+      }
+      navigator.geolocation.getCurrentPosition(
+        () => {
+          setStatuses(prev => ({ ...prev, app_perm_location: 'চালু' }));
+          localStorage.setItem('perm_location_status', 'granted');
+          setToast?.('লোকেশন অনুমতি চালু হয়েছে');
+          setIsProcessing(false);
+        },
+        () => {
+          setStatuses(prev => ({ ...prev, app_perm_location: 'বন্ধ' }));
+          localStorage.setItem('perm_location_status', 'denied');
+          setToast?.('লোকেশন অনুমতি দেওয়া হয়নি');
+          setIsProcessing(false);
+        },
+        { timeout: 10000 }
+      );
+    } else if (perm.id === 'app_perm_notifications') {
+      if (typeof Notification === 'undefined') {
+        setStatuses(prev => ({ ...prev, app_perm_notifications: 'বন্ধ' }));
+        setToast?.('নোটিফিকেশন সমর্থিত নয়');
+        setIsProcessing(false);
+        return;
+      }
+      try {
+        const res = await Notification.requestPermission();
+        if (res === 'granted') {
+          setStatuses(prev => ({ ...prev, app_perm_notifications: 'চালু' }));
+          setToast?.('নোটিফিকেশন অনুমতি চালু হয়েছে');
+        } else {
+          setStatuses(prev => ({ ...prev, app_perm_notifications: 'বন্ধ' }));
+          setToast?.('নোটিফিকেশন অনুমতি দেওয়া হয়নি');
+        }
+      } catch {
+        setStatuses(prev => ({ ...prev, app_perm_notifications: 'বন্ধ' }));
+      } finally {
+        setIsProcessing(false);
+      }
+    } else if (perm.id === 'app_perm_clipboard') {
+      try {
+        if (!navigator.clipboard || !navigator.clipboard.readText) {
+          setStatuses(prev => ({ ...prev, app_perm_clipboard: 'বন্ধ' }));
+          setToast?.('ক্লিপবোর্ড সমর্থিত নয়');
+          setIsProcessing(false);
+          return;
+        }
+        await navigator.clipboard.readText();
+        setStatuses(prev => ({ ...prev, app_perm_clipboard: 'চালু' }));
+        localStorage.setItem('perm_clipboard_status', 'granted');
+        setToast?.('ক্লিপবোর্ড অনুমতি চালু হয়েছে');
+      } catch {
+        setStatuses(prev => ({ ...prev, app_perm_clipboard: 'বন্ধ' }));
+        localStorage.setItem('perm_clipboard_status', 'denied');
+        setToast?.('ক্লিপবোর্ড অনুমতি দেওয়া হয়নি');
+      } finally {
+        setIsProcessing(false);
+      }
     }
   };
 
-  const allowAll = async () => {
-    setToast?.("Checking permissions...");
-
-    if ((window as any).AndroidIYABD) {
-      callBridge('requestAllPermissions', { permissions: permissions.map(p => p.id) });
-      return;
+  const renderStatusPill = (status: PermissionStatusType) => {
+    let colorClass = 'bg-slate-800 text-slate-300 border-slate-700';
+    if (status === 'চালু') {
+      colorClass = 'bg-emerald-500/20 text-emerald-400 border-emerald-500/30';
+    } else if (status === 'বন্ধ') {
+      colorClass = 'bg-rose-500/20 text-rose-400 border-rose-500/30';
+    } else if (status === 'জিজ্ঞেস করা হয়নি') {
+      colorClass = 'bg-amber-500/20 text-amber-300 border-amber-500/30';
+    } else if (status === 'APK-তে আসবে') {
+      colorClass = 'bg-purple-500/20 text-purple-300 border-purple-500/30';
+    } else if (status === 'API সংযোগ পরে আসবে') {
+      colorClass = 'bg-indigo-500/20 text-indigo-300 border-indigo-500/30';
     }
 
-    // Browser implementation: request one by one with 8-second timeouts
-    const micRes = await Permissions.requestMicrophoneWithTimeout(8000);
-    const notifRes = await Permissions.requestNotificationsWithTimeout(8000);
-    const camRes = await Permissions.requestCameraWithTimeout(8000);
-    const locRes = await Permissions.requestLocationWithTimeout(8000);
-
-    const map: Record<string, string> = {};
-    const updated = permissions.map(p => {
-      let st: 'Allowed' | 'Skipped' | 'Needs Android app' | 'Off' = p.status;
-      if (p.id === 'microphone') st = micRes;
-      else if (p.id === 'notifications') st = notifRes;
-      else if (p.id === 'phoneCalls') st = 'Allowed';
-      else if (p.id === 'contacts') st = Permissions.hasContactsApi() ? (Permissions.getSavedContactsCount() > 0 ? 'Allowed' : 'Off') : 'Needs Android app';
-      else if (p.id === 'camera') st = camRes;
-      else if (p.id === 'location') st = locRes;
-      else if (Permissions.ANDROID_ONLY_IDS.includes(p.id as any)) st = 'Needs Android app';
-      map[p.id] = st;
-      return { ...p, status: st };
-    });
-
-    setPermissions(updated);
-    localStorage.setItem('iyabd_permissions_list_v5', JSON.stringify(map));
-    setToast?.("Permissions updated");
+    return (
+      <span className={`px-2.5 py-0.5 rounded-full text-[10px] font-black uppercase tracking-wider border shrink-0 ${colorClass}`}>
+        {status}
+      </span>
+    );
   };
 
-  const renderSection = (title: string, id: string, items: PermissionItem[]) => (
-    <div className="space-y-1">
-      <button 
-        onClick={() => setExpanded(prev => ({ ...prev, [id]: !prev[id] }))}
-        className="w-full flex items-center justify-between px-2 py-1 text-[10px] font-black text-slate-600 uppercase tracking-widest mt-2"
-      >
-        <span>{title}</span>
-        <ChevronRight className={`w-3 h-3 transition-transform ${expanded[id] ? 'rotate-90' : ''}`} />
-      </button>
-      {expanded[id] && (
-        <div className="bg-[#0F172A]/40 border border-purple-500/10 rounded-2xl overflow-hidden divide-y divide-purple-500/5 shadow-inner">
-          {items.map(perm => {
-            const Icon = perm.icon;
-            const isAllowed = perm.status === 'Allowed';
-            const isSkipped = perm.status === 'Skipped';
-            const isNeedsAndroid = perm.status === 'Needs Android app';
-            const isHidden = hiddenIds.includes(perm.id);
+  // If a sub-permission is selected, render its small page
+  if (selectedSubPerm) {
+    const perm = PERMISSIONS_CONFIG.find(p => p.id === selectedSubPerm);
+    if (perm) {
+      const Icon = perm.icon;
+      const status = statuses[perm.id] || 'জিজ্ঞেস করা হয়নি';
+      const isDenied = status === 'বন্ধ';
 
-            let badgeText = 'OFF';
-            let badgeClass = 'text-slate-500';
+      return (
+        <div
+          data-current-view={perm.id}
+          data-nav-id={perm.id}
+          className="fixed inset-0 z-[90] bg-[#020617] text-white overflow-y-auto no-scrollbar flex flex-col"
+        >
+          {/* Header with back button */}
+          <header className="px-5 py-6 flex items-center gap-4 shrink-0 border-b border-purple-500/20 bg-[#0A051C]/90 backdrop-blur-md sticky top-0 z-50">
+            <button
+              data-nav-id="back"
+              onClick={() => setSelectedSubPerm(null)}
+              className="p-2.5 bg-white/5 rounded-2xl active:scale-95 transition-transform border border-white/10 text-slate-300 hover:text-white"
+              aria-label="Back to App Permissions"
+            >
+              <ArrowLeft className="w-5 h-5" />
+            </button>
+            <div>
+              <h2 className="text-lg font-black uppercase tracking-wider text-white leading-tight">
+                {perm.num}. {perm.name}
+              </h2>
+              <p className="text-[10px] font-bold uppercase text-purple-300 tracking-wider">
+                App Permissions · {perm.name}
+              </p>
+            </div>
+          </header>
 
-            if (isHidden) {
-              badgeText = 'HIDDEN';
-              badgeClass = 'text-slate-500';
-            } else if (perm.id === 'phoneCalls') {
-              badgeText = 'READY (opens dialer)';
-              badgeClass = 'text-emerald-400 text-[8px] bg-emerald-950/60 border border-emerald-500/30 px-2 py-0.5 rounded-full font-bold';
-            } else if (perm.id === 'contacts') {
-              if (Permissions.hasContactsApi()) {
-                const count = Permissions.getSavedContactsCount();
-                if (count > 0) {
-                  badgeText = `${count} CONTACTS SAVED`;
-                  badgeClass = 'text-emerald-400 text-[8px] bg-emerald-950/60 border border-emerald-500/30 px-2 py-0.5 rounded-full font-bold';
-                } else {
-                  badgeText = 'PICK CONTACT';
-                  badgeClass = 'text-purple-300 text-[8px] bg-purple-600/60 border border-purple-500/40 px-2 py-0.5 rounded-full font-bold';
-                }
-              } else {
-                badgeText = 'NEEDS ANDROID APP';
-                badgeClass = 'text-purple-400 text-[8px] bg-purple-950/60 border border-purple-500/30 px-2 py-0.5 rounded-full font-bold';
-              }
-            } else if (perm.id === 'notifications' && isSkipped) {
-              badgeText = 'TAP TO RETRY';
-              badgeClass = 'text-amber-400 text-[8px] bg-amber-950/60 border border-amber-500/30 px-2 py-0.5 rounded-full font-bold';
-            } else if (isAllowed) {
-              badgeText = 'ALLOWED';
-              badgeClass = 'text-emerald-400';
-            } else if (isSkipped) {
-              badgeText = 'SKIPPED';
-              badgeClass = 'text-amber-400';
-            } else if (isNeedsAndroid) {
-              badgeText = 'NEEDS ANDROID APP';
-              badgeClass = 'text-purple-400 text-[8px] bg-purple-950/60 border border-purple-500/30 px-2 py-0.5 rounded-full font-bold';
-            }
-
-            return (
-              <button 
-                key={perm.id}
-                onClick={() => handleRowClick(perm)}
-                className="w-full flex items-center justify-between p-3.5 px-4 active:bg-white/5 transition-colors text-left group"
-              >
-                <div className="flex items-center gap-3.5 min-w-0 pr-2">
-                  <div className="w-8 h-8 bg-purple-600/15 border border-purple-500/20 rounded-xl flex items-center justify-center text-purple-400 shrink-0 group-active:scale-90 transition-transform">
-                    <Icon className="w-4 h-4" />
+          <main className="flex-1 p-5 max-w-lg w-full mx-auto space-y-5 pb-36">
+            {/* Permission Detail Card */}
+            <div className="p-6 rounded-[2.5rem] bg-[#0F172A]/90 border border-purple-500/30 shadow-2xl space-y-5">
+              <div className="flex items-center justify-between pb-4 border-b border-white/10">
+                <div className="flex items-center gap-3.5">
+                  <div className="w-12 h-12 rounded-full bg-purple-600/10 border border-purple-500/20 flex items-center justify-center text-purple-400 shrink-0">
+                    <Icon className="w-6 h-6" />
                   </div>
-                  <div className="min-w-0">
-                    <h4 className="text-[12px] font-black uppercase tracking-tight text-white truncate">{perm.name}</h4>
-                    <p className="text-[9px] text-slate-500 font-bold uppercase tracking-widest truncate">{perm.subtitle}</p>
+                  <div>
+                    <h3 className="text-base font-black uppercase tracking-wider text-white">
+                      {perm.name}
+                    </h3>
+                    <span className="text-[10px] font-bold text-slate-400 uppercase tracking-widest block mt-0.5">
+                      স্ট্যাটাস
+                    </span>
                   </div>
                 </div>
-                <span 
-                  onClick={(e) => isAllowed && toggleHide(e, perm.id)}
-                  className={`text-[9px] font-black uppercase tracking-[2px] shrink-0 ${badgeClass} ${isAllowed ? 'cursor-pointer select-none' : ''}`}
-                >
-                  {badgeText}
-                </span>
+                {renderStatusPill(status)}
+              </div>
+
+              {/* Description (Bengali, 1-2 lines) */}
+              <div className="p-4 rounded-2xl bg-black/40 border border-white/5">
+                <p className="text-xs text-slate-200 leading-relaxed font-medium">
+                  {perm.desc}
+                </p>
+              </div>
+
+              {/* If denied/blocked callout */}
+              {isDenied && perm.browserSettingName && (
+                <div className="p-4 rounded-2xl bg-rose-500/10 border border-rose-500/30 text-rose-300 text-xs flex items-start gap-2.5 shadow-inner">
+                  <AlertCircle className="w-4 h-4 shrink-0 text-rose-400 mt-0.5" />
+                  <div>
+                    <p className="font-semibold leading-relaxed">
+                      ব্রাউজারের সেটিংস থেকে চালু করো: Chrome → Site settings → {perm.browserSettingName}
+                    </p>
+                  </div>
+                </div>
+              )}
+
+              {/* Exactly ONE button */}
+              <div className="pt-2">
+                {perm.type === 'apk' && !perm.actionUrl ? (
+                  <button
+                    disabled
+                    className="w-full py-4 px-5 rounded-2xl bg-white/5 border border-white/10 text-slate-400 font-bold text-xs uppercase tracking-wider cursor-not-allowed flex items-center justify-center gap-2"
+                  >
+                    APK-তে আসবে
+                  </button>
+                ) : (
+                  <button
+                    disabled={isProcessing}
+                    onClick={() => handleAction(perm)}
+                    className="w-full py-4 px-5 rounded-2xl bg-gradient-to-r from-purple-600 to-indigo-600 hover:from-purple-500 hover:to-indigo-500 text-white font-black text-xs uppercase tracking-wider active:scale-[0.98] transition-all shadow-lg flex items-center justify-center gap-2"
+                  >
+                    {isProcessing ? (
+                      <span>অনুরোধ করা হচ্ছে...</span>
+                    ) : perm.actionUrl ? (
+                      <>
+                        <span>{perm.buttonLabel}</span>
+                        <ExternalLink className="w-4 h-4 text-purple-200" />
+                      </>
+                    ) : (
+                      <>
+                        <Check className="w-4 h-4 text-purple-200" />
+                        <span>{status === 'চালু' ? 'পুনরায় অনুমতি পরীক্ষা করো' : (perm.buttonLabel || 'অনুমতি দাও')}</span>
+                      </>
+                    )}
+                  </button>
+                )}
+              </div>
+            </div>
+          </main>
+        </div>
+      );
+    }
+  }
+
+  // Main App Permissions Page (13 separate bar-buttons)
+  return (
+    <div
+      data-current-view="app_permissions"
+      data-nav-id="app_permissions"
+      className="fixed inset-0 z-[90] bg-[#020617] text-white overflow-y-auto no-scrollbar flex flex-col"
+    >
+      <header className="px-5 py-6 flex items-center gap-4 shrink-0 border-b border-purple-500/20 bg-[#0A051C]/90 backdrop-blur-md sticky top-0 z-50">
+        <button
+          data-nav-id="back"
+          onClick={() => setCurrentView?.('phone')}
+          className="p-2.5 bg-white/5 rounded-2xl active:scale-95 transition-transform border border-white/10 text-slate-300 hover:text-white"
+          aria-label="Back to Phone Control"
+        >
+          <ArrowLeft className="w-5 h-5 text-slate-300" />
+        </button>
+        <div>
+          <h2 className="text-xl font-black italic uppercase tracking-tighter text-white">
+            2. APP PERMISSIONS
+          </h2>
+          <p className="text-[10px] font-bold uppercase text-purple-300 tracking-wider">
+            Phone Control Subsystem
+          </p>
+        </div>
+      </header>
+
+      <div className="px-5 py-4 space-y-4 pb-36 max-w-lg w-full mx-auto">
+        {/* Top Summary Line */}
+        <div className="p-3.5 rounded-2xl bg-purple-950/40 border border-purple-500/25 text-center shadow-lg">
+          <p className="text-xs font-semibold text-purple-200 leading-relaxed">
+            ৫টা অনুমতি এখন দেওয়া যায়, বাকিগুলো APK/API ধাপে আসবে।
+          </p>
+        </div>
+
+        {/* 13 Separate Bar-Buttons */}
+        <div className="space-y-3">
+          {PERMISSIONS_CONFIG.map((perm) => {
+            const Icon = perm.icon;
+            const status = statuses[perm.id] || 'জিজ্ঞেস করা হয়নি';
+
+            return (
+              <button
+                key={perm.id}
+                data-nav-id={perm.id}
+                onClick={() => setSelectedSubPerm(perm.id)}
+                className="w-full p-4 sm:p-5 bg-[#0F172A]/80 border border-purple-500/30 rounded-[2.5rem] shadow-2xl flex items-center justify-between active:scale-[0.98] transition-all text-left group"
+              >
+                <div className="flex items-center gap-4 min-w-0 pr-2">
+                  <div className="w-12 h-12 rounded-full bg-purple-600/10 border border-purple-500/20 flex items-center justify-center text-purple-400 shrink-0 group-active:scale-90 transition-transform">
+                    <Icon className="w-6 h-6" />
+                  </div>
+                  <div className="min-w-0">
+                    <h4 className="text-base font-black uppercase tracking-wider text-white leading-tight truncate">
+                      {perm.num}. {perm.name}
+                    </h4>
+                    <div className="mt-1 flex items-center gap-2">
+                      <span className="text-[11px] text-slate-400 font-bold uppercase tracking-widest">
+                        স্ট্যাটাস:
+                      </span>
+                      {renderStatusPill(status)}
+                    </div>
+                  </div>
+                </div>
+                <ChevronRight className="w-5 h-5 text-slate-500 shrink-0 group-hover:text-purple-400 transition-colors" />
               </button>
             );
           })}
         </div>
-      )}
-    </div>
-  );
-
-  return (
-    <div className="fixed inset-0 z-[90] bg-[#020617] overflow-y-auto no-scrollbar flex flex-col">
-      <header className="px-5 py-6 flex items-center gap-4 shrink-0">
-        <button onClick={() => setCurrentView?.('phone')} className="p-2.5 bg-white/5 rounded-2xl active:scale-95 transition-transform">
-          <ArrowLeft className="w-5 h-5 text-slate-300" />
-        </button>
-        <h2 className="text-xl font-black italic uppercase tracking-tighter text-white">App permissions</h2>
-      </header>
-
-      <div className="px-5 space-y-3 pb-36">
-        <button 
-          onClick={allowAll}
-          className="w-full flex items-center justify-between p-4 bg-purple-600/20 border border-purple-500/30 rounded-2xl active:bg-purple-600/30 transition-colors text-left group shadow-lg"
-        >
-          <div className="flex items-center gap-3.5">
-            <div className="w-9 h-9 bg-purple-600 rounded-xl flex items-center justify-center text-white shrink-0 shadow-lg shadow-purple-900/40 group-active:scale-90 transition-transform">
-              <Check className="w-5 h-5" />
-            </div>
-            <span className="text-[12px] font-black text-white uppercase tracking-[2px]">ALLOW ALL</span>
-          </div>
-          <ChevronRight className="w-4 h-4 text-slate-500" />
-        </button>
-
-        <div className="bg-[#0F172A]/40 border border-red-500/20 rounded-2xl p-4 text-center">
-          <p className="text-[10px] font-bold text-slate-400 uppercase tracking-widest leading-relaxed">
-            ফুল ফোন কন্ট্রোলের জন্য Android নেটিভ অ্যাপ লাগবে।
-          </p>
-        </div>
-
-        {renderSection("Basic", "basic", permissions.filter(p => p.type === 'runtime'))}
-        {renderSection("Advanced", "advanced", permissions.filter(p => p.type === 'special'))}
       </div>
     </div>
   );
 };
 
 export const QuickActionsView = ({ setCurrentView, setToast }: any) => {
-  const [expanded, setExpanded] = useState(true);
-  const [actions, setActions] = useState<QuickActionItem[]>(() => {
-    try {
-      const saved = localStorage.getItem('iyabd_quick_actions_v5');
-      if (saved) {
-        const parsed = JSON.parse(saved);
-        return INITIAL_QUICK_ACTIONS.map(action => ({
-          ...action,
-          enabled: parsed.find((a: any) => a.id === action.id)?.enabled ?? action.enabled
-        }));
-      }
-    } catch (e) {}
-    return INITIAL_QUICK_ACTIONS;
-  });
-
-  const [permissionsStatus, setPermissionsStatus] = useState<Record<string, string>>(() => {
-    try {
-      const saved = localStorage.getItem('iyabd_permissions_list_v5');
-      if (saved) return JSON.parse(saved);
-    } catch (e) {}
-    return {};
-  });
-
-  const toggleAction = (action: QuickActionItem) => {
-    const isGranted = permissionsStatus[action.requiredPermission] === 'Granted' || !action.requiredPermission;
-    if (!isGranted) {
-      setToast?.(`Requires ${action.requiredPermission} permission`);
-      setCurrentView?.('app-permissions');
-      return;
-    }
-
-    const updated = actions.map(a => a.id === action.id ? { ...a, enabled: !a.enabled } : a);
-    setActions(updated);
-    localStorage.setItem('iyabd_quick_actions_v5', JSON.stringify(updated));
-    setToast?.(`${action.name} ${!action.enabled ? 'ENABLED' : 'DISABLED'}`);
-  };
-
   return (
-    <div className="fixed inset-0 z-[90] bg-[#020617] overflow-y-auto no-scrollbar flex flex-col">
+    <div data-current-view="quick_actions" className="fixed inset-0 z-[90] bg-[#020617] overflow-y-auto no-scrollbar flex flex-col">
       <header className="px-5 py-6 flex items-center gap-4 shrink-0">
-        <button onClick={() => setCurrentView?.('phone')} className="p-2.5 bg-white/5 rounded-2xl active:scale-95 transition-transform">
+        <button
+          data-nav-id="back"
+          onClick={() => setCurrentView?.('phone')}
+          className="p-2.5 bg-white/5 rounded-2xl active:scale-95 transition-transform"
+          aria-label="Back to Phone Control"
+        >
           <ArrowLeft className="w-5 h-5 text-slate-300" />
         </button>
-        <h2 className="text-xl font-black italic uppercase tracking-tighter text-white">Quick actions</h2>
+        <h2 className="text-xl font-black italic uppercase tracking-tighter text-white">1. Quick actions</h2>
       </header>
 
-      <div className="px-5 space-y-2 pb-36">
-        <button 
-          onClick={() => setExpanded(!expanded)}
-          className="w-full flex items-center justify-between px-2 py-1 text-[10px] font-black text-slate-600 uppercase tracking-widest mt-2"
-        >
-          <span>Device Actions</span>
-          <ChevronRight className={`w-3 h-3 transition-transform ${expanded ? 'rotate-90' : ''}`} />
-        </button>
-
-        {expanded && (
-          <div className="bg-[#0F172A]/40 border border-purple-500/10 rounded-[2rem] overflow-hidden divide-y divide-purple-500/5 shadow-inner">
-            {actions.map(action => {
-              const Icon = action.icon;
-              const isGranted = permissionsStatus[action.requiredPermission] === 'Granted' || !action.requiredPermission;
-              
-              return (
-                <div key={action.id} className="w-full flex items-center justify-between p-4 px-5 group">
-                  <div className="flex items-center gap-4 min-w-0">
-                    <div className="w-9 h-9 bg-purple-600/15 border border-purple-500/20 rounded-xl flex items-center justify-center text-purple-400 shrink-0 group-active:scale-90 transition-transform">
-                      <Icon className="w-5 h-5" />
-                    </div>
-                    <div className="min-w-0">
-                      <h4 className="text-[13px] font-black uppercase tracking-tight text-white truncate leading-none">{action.name}</h4>
-                      <span className={`text-[8px] font-black uppercase tracking-[2px] mt-1.5 block ${!isGranted ? 'text-red-500/70' : action.enabled ? 'text-emerald-400' : 'text-slate-500'}`}>
-                        {!isGranted ? 'PERMISSION MISSING' : action.enabled ? 'ENABLED' : 'DISABLED'}
-                      </span>
-                    </div>
-                  </div>
-                  <button 
-                    onClick={() => toggleAction(action)}
-                    className={`w-11 h-6 rounded-full transition-all flex items-center px-0.5 shrink-0 ${action.enabled ? 'bg-purple-600 shadow-lg shadow-purple-900/40' : 'bg-slate-700'}`}
-                  >
-                    <div className={`w-5 h-5 bg-white rounded-full shadow-md transition-transform ${action.enabled ? 'translate-x-5' : 'translate-x-0'}`} />
-                  </button>
-                </div>
-              );
-            })}
-          </div>
-        )}
+      <div className="px-5 space-y-4 pb-36 max-w-lg w-full mx-auto">
+        <div className="p-5 bg-[#0F172A]/80 border border-purple-500/30 rounded-[2.5rem] shadow-2xl text-center space-y-2">
+          <Zap className="w-10 h-10 text-purple-400 mx-auto" />
+          <h4 className="text-base font-black uppercase text-white">Device Shortcuts</h4>
+          <p className="text-xs text-slate-400">
+            Quick device actions and automation triggers for mobile and desktop.
+          </p>
+        </div>
       </div>
     </div>
   );

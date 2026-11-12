@@ -188,10 +188,15 @@ Yousuf is the developer and creator of this app (built in Google AI Studio with 
 ${APP_STATUS}
 `;
 
+  const cameraInstruction = `
+[ADMIN LIVE CAMERA]
+When the camera is on you can see Yousuf and his room. Speak naturally about what you see only when it is relevant or when he asks. Never describe or store private details unnecessarily.
+`;
+
   if (hadLiveVoiceTail) {
-    return `${base}\n\n${ADMIN_MIN_LENGTH_OVERRIDE} ${ADMIN_LIVE_VOICE_DIRECTION}\n\n${ADMIN_EMOTION_RULE}\n\n${ADMIN_VOICE_DELIVERY_INSTRUCTION}\n\n${developerModeInstruction}`;
+    return `${base}\n\n${ADMIN_MIN_LENGTH_OVERRIDE} ${ADMIN_LIVE_VOICE_DIRECTION}\n\n${ADMIN_EMOTION_RULE}\n\n${ADMIN_VOICE_DELIVERY_INSTRUCTION}\n\n${developerModeInstruction}\n\n${cameraInstruction}`;
   }
-  return `${base}\n\n${ADMIN_MIN_LENGTH_OVERRIDE} ${ADMIN_STAGE_CUE_HINT}\n\n${ADMIN_EMOTION_RULE}\n\n${developerModeInstruction}`;
+  return `${base}\n\n${ADMIN_MIN_LENGTH_OVERRIDE} ${ADMIN_STAGE_CUE_HINT}\n\n${ADMIN_EMOTION_RULE}\n\n${developerModeInstruction}\n\n${cameraInstruction}`;
 }
 
 

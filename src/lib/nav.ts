@@ -6,7 +6,8 @@ export interface PageDef {
 export const PAGES: PageDef[] = [
   { id: 'home', parent: null },
   { id: 'chat', parent: null },
-  { id: 'history', parent: null },
+  { id: 'history', parent: 'home' },
+  { id: 'camera_toggle', parent: null },
   { id: 'settings', parent: null },
 
   { id: 'about_guide', parent: 'settings' },
@@ -52,6 +53,19 @@ export const PAGES: PageDef[] = [
 
   { id: 'quick_actions', parent: 'phone_control' },
   { id: 'app_permissions', parent: 'phone_control' },
+  { id: 'app_perm_camera', parent: 'app_permissions' },
+  { id: 'app_perm_microphone', parent: 'app_permissions' },
+  { id: 'app_perm_location', parent: 'app_permissions' },
+  { id: 'app_perm_notifications', parent: 'app_permissions' },
+  { id: 'app_perm_clipboard', parent: 'app_permissions' },
+  { id: 'app_perm_contacts', parent: 'app_permissions' },
+  { id: 'app_perm_phone_calls', parent: 'app_permissions' },
+  { id: 'app_perm_whatsapp', parent: 'app_permissions' },
+  { id: 'app_perm_messenger', parent: 'app_permissions' },
+  { id: 'app_perm_youtube', parent: 'app_permissions' },
+  { id: 'app_perm_facebook', parent: 'app_permissions' },
+  { id: 'app_perm_tiktok', parent: 'app_permissions' },
+  { id: 'app_perm_instagram', parent: 'app_permissions' },
 
   { id: 'pc_helper', parent: 'pc_setup' },
   { id: 'pc_control', parent: 'pc_setup' },
@@ -71,6 +85,7 @@ const PAGE_TO_NAV_ID: Record<string, string> = {
   home: 'home',
   chat: 'chat',
   history: 'history',
+  camera_toggle: 'camera_toggle',
   settings: 'settings',
   about_guide: 'about',
   connections: 'connections',
@@ -115,6 +130,19 @@ const PAGE_TO_NAV_ID: Record<string, string> = {
 
   quick_actions: 'quick_actions',
   app_permissions: 'app_permissions',
+  app_perm_camera: 'app_perm_camera',
+  app_perm_microphone: 'app_perm_microphone',
+  app_perm_location: 'app_perm_location',
+  app_perm_notifications: 'app_perm_notifications',
+  app_perm_clipboard: 'app_perm_clipboard',
+  app_perm_contacts: 'app_perm_contacts',
+  app_perm_phone_calls: 'app_perm_phone_calls',
+  app_perm_whatsapp: 'app_perm_whatsapp',
+  app_perm_messenger: 'app_perm_messenger',
+  app_perm_youtube: 'app_perm_youtube',
+  app_perm_facebook: 'app_perm_facebook',
+  app_perm_tiktok: 'app_perm_tiktok',
+  app_perm_instagram: 'app_perm_instagram',
 
   pc_helper: 'pc_helper',
   pc_control: 'pc_control',
@@ -187,6 +215,16 @@ export async function openPage(id: string): Promise<boolean> {
 
   const pageDef = PAGES.find(p => p.id === id);
   if (!pageDef) return false;
+
+  // Handle camera_toggle
+  if (id === 'camera_toggle') {
+    const camBtn = document.querySelector('[data-nav-id="camera_toggle"]') as HTMLElement;
+    if (camBtn) {
+      camBtn.click();
+      return true;
+    }
+    return false;
+  }
 
   // Handle main tabs: home, chat, history
   if (id === 'home' || id === 'chat' || id === 'history') {
@@ -337,6 +375,22 @@ export const LOOK_FEEL_LIST = ['theme', 'orb_style', 'reduce_motion', 'rose_aliv
 
 export const PHONE_CONTROL_LIST = ['quick_actions', 'app_permissions'];
 
+export const APP_PERMISSIONS_LIST = [
+  'app_perm_camera',
+  'app_perm_microphone',
+  'app_perm_location',
+  'app_perm_notifications',
+  'app_perm_clipboard',
+  'app_perm_contacts',
+  'app_perm_phone_calls',
+  'app_perm_whatsapp',
+  'app_perm_messenger',
+  'app_perm_youtube',
+  'app_perm_facebook',
+  'app_perm_tiktok',
+  'app_perm_instagram',
+];
+
 export const PC_SETUP_LIST = [
   'pc_helper', 'pc_control', 'pc_files', 'confirmations', 'pc_history',
   'safety', 'local_ai', 'view_mode', 'office_team', 'system_status',
@@ -352,6 +406,7 @@ export async function openNumber(n: number): Promise<{ ok: boolean; page?: strin
   else if (cur === 'voice_language') list = VOICE_LANGUAGE_LIST;
   else if (cur === 'look_feel') list = LOOK_FEEL_LIST;
   else if (cur === 'phone_control') list = PHONE_CONTROL_LIST;
+  else if (cur === 'app_permissions') list = APP_PERMISSIONS_LIST;
   else if (cur === 'pc_setup') list = PC_SETUP_LIST;
   else list = SETTINGS_MAIN_LIST;
 

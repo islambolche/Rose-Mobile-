@@ -513,23 +513,31 @@ export class GeminiLiveSession {
     }
   }
 
-  public sendRealtimeVideoFrame(base64DataUrlOrRaw: string) {
-    if (this.ws && this.ws.readyState === WebSocket.OPEN && this.isSetupComplete) {
-      try {
-        const cleanBase64 = base64DataUrlOrRaw.replace(/^data:image\/[a-z]+;base64,/, '');
-        this.ws.send(
-          JSON.stringify({
-            realtimeInput: {
-              mediaChunks: [
-                {
-                  mimeType: 'image/jpeg',
-                  data: cleanBase64,
-                },
-              ],
-            },
-          })
-        );
-      } catch {}
+  public supportsVideo(): boolean {
+    return !this.isFallbackMode && this.activeMode === 'live' && this.socketStatus === 'open' && this.isSetupComplete;
+  }
+
+  public sendRealtimeVideoFrame(base64DataUrlOrRaw: string): boolean {
+    if (!this.supportsVideo() || !this.ws || this.ws.readyState !== WebSocket.OPEN) {
+      return false;
+    }
+    try {
+      const cleanBase64 = base64DataUrlOrRaw.replace(/^data:image\/[a-z]+;base64,/, '');
+      this.ws.send(
+        JSON.stringify({
+          realtimeInput: {
+            mediaChunks: [
+              {
+                mimeType: 'image/jpeg',
+                data: cleanBase64,
+              },
+            ],
+          },
+        })
+      );
+      return true;
+    } catch {
+      return false;
     }
   }
 
@@ -1332,6 +1340,11 @@ export class GeminiLiveSession {
             }
             if (!this.wasStoppedByUser && this.ws === socket) {
               const reason = String(msg.error?.message || '').toLowerCase();
+              if (reason.includes('video') || reason.includes('media_chunk') || reason.includes('mediachunk') || reason.includes('image')) {
+                if (typeof window !== 'undefined') {
+                  window.dispatchEvent(new CustomEvent('live-camera-unsupported'));
+                }
+              }
               if (reason.includes('google_search') || reason.includes('grounding')) {
                 this.skipGrounding = true;
                 void this.handleLiveDisconnectAndAutoReconnect(apiKey, 'grounding_tool_rejected', 1);
@@ -1445,6 +1458,42 @@ export class GeminiLiveSession {
               const res = await openNumber(num);
               ok = res.ok;
               targetPage = res.page || '';
+            } else if (action === 'clear_chat') {
+              try {
+                if (typeof window !== 'undefined') {
+                  localStorage.removeItem('iyabd_chat_history');
+                  localStorage.removeItem('rose_messages');
+                  window.dispatchEvent(new CustomEvent('clear-chat-history'));
+                }
+                ok = true;
+                targetPage = currentPage();
+              } catch {
+                ok = false;
+              }
+            } else if (action === 'camera_on') {
+              if (isAdmin() && typeof window !== 'undefined') {
+                window.dispatchEvent(new CustomEvent('live-camera-command', { detail: { command: 'on' } }));
+                ok = true;
+                targetPage = currentPage();
+              } else {
+                ok = false;
+              }
+            } else if (action === 'camera_off') {
+              if (isAdmin() && typeof window !== 'undefined') {
+                window.dispatchEvent(new CustomEvent('live-camera-command', { detail: { command: 'off' } }));
+                ok = true;
+                targetPage = currentPage();
+              } else {
+                ok = false;
+              }
+            } else if (action === 'camera_switch') {
+              if (isAdmin() && typeof window !== 'undefined') {
+                window.dispatchEvent(new CustomEvent('live-camera-command', { detail: { command: 'switch' } }));
+                ok = true;
+                targetPage = currentPage();
+              } else {
+                ok = false;
+              }
             }
 
             functionResponses.push({

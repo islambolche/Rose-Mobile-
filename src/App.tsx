@@ -70,6 +70,10 @@ import {
   Move,
   Sliders,
   PictureInPicture,
+  Camera,
+  CameraOff,
+  RefreshCw,
+  Clock,
 } from "lucide-react";
 import {
   AssistantSettings,
@@ -3046,6 +3050,19 @@ export function App() {
     } catch (e) {}
   }, [chatHistory]);
 
+  useEffect(() => {
+    const handleClearEvent = () => {
+      setChatHistory([]);
+      chatHistoryRef.current = [];
+      try {
+        localStorage.removeItem("iyabd_chat_history");
+        localStorage.removeItem("rose_messages");
+      } catch {}
+    };
+    window.addEventListener('clear-chat-history', handleClearEvent);
+    return () => window.removeEventListener('clear-chat-history', handleClearEvent);
+  }, []);
+
   const [interimSpeechText, setInterimSpeechText] = useState<string>("");
   const [thinkingSeconds, setThinkingSeconds] = useState<number>(0);
 
@@ -3383,6 +3400,7 @@ export function App() {
   const [writings, setWritings] = useState<any[]>([]);
   const [globalStats, setGlobalStats] = useState<any>(null);
   const [historySearchTerm, setHistorySearchTerm] = useState("");
+  const [selectedHistoryConv, setSelectedHistoryConv] = useState<any | null>(null);
   const [writeTab, setWriteTab] = useState<"Notes" | "Code" | "Content">("Notes");
   const [writePrompt, setWriteSearchPrompt] = useState("");
   const [writeResult, setWriteResult] = useState("");
@@ -3928,6 +3946,202 @@ export function App() {
   const [isMuted, setIsMuted] = useState(false);
   const isMutedRef = useRef(false);
   const [liveReconnectStatus, setLiveReconnectStatus] = useState<string | null>(null);
+
+  // Admin Live Call Camera State
+  const [isCameraActive, setIsCameraActive] = useState(false);
+  const isCameraActiveRef = useRef(false);
+  const [cameraFacingMode, setCameraFacingMode] = useState<'user' | 'environment'>('user');
+  const cameraFacingModeRef = useRef<'user' | 'environment'>('user');
+  const cameraStreamRef = useRef<MediaStream | null>(null);
+  const cameraVideoRef = useRef<HTMLVideoElement | null>(null);
+  const cameraFrameTimerRef = useRef<any>(null);
+  const offscreenCanvasRef = useRef<HTMLCanvasElement | null>(null);
+
+  useEffect(() => {
+    isCameraActiveRef.current = isCameraActive;
+  }, [isCameraActive]);
+
+  useEffect(() => {
+    cameraFacingModeRef.current = cameraFacingMode;
+  }, [cameraFacingMode]);
+
+  const stopCamera = useCallback(() => {
+    if (cameraFrameTimerRef.current) {
+      clearInterval(cameraFrameTimerRef.current);
+      cameraFrameTimerRef.current = null;
+    }
+    if (cameraStreamRef.current) {
+      cameraStreamRef.current.getTracks().forEach((track) => track.stop());
+      cameraStreamRef.current = null;
+    }
+    if (cameraVideoRef.current) {
+      cameraVideoRef.current.srcObject = null;
+    }
+    setIsCameraActive(false);
+    isCameraActiveRef.current = false;
+  }, []);
+
+  const captureAndSendFrame = useCallback(() => {
+    if (!isCameraActiveRef.current || !cameraVideoRef.current) {
+      return;
+    }
+    // Only send frames to Rose when admin is true AND a live call is active
+    if (!isAdmin() || !liveSessionRef.current || !isCallOpenRef.current) {
+      return;
+    }
+
+    const video = cameraVideoRef.current;
+    if (video.readyState < 2 || !video.videoWidth || !video.videoHeight) {
+      return;
+    }
+
+    if (!liveSessionRef.current.supportsVideo?.()) {
+      stopCamera();
+      setToast("এই লাইভ মডেল ক্যামেরা দেখতে পারে না");
+      return;
+    }
+
+    try {
+      if (!offscreenCanvasRef.current) {
+        offscreenCanvasRef.current = document.createElement("canvas");
+      }
+      const canvas = offscreenCanvasRef.current;
+      let width = video.videoWidth;
+      let height = video.videoHeight;
+      const maxDim = 640;
+
+      if (width > maxDim || height > maxDim) {
+        if (width >= height) {
+          height = Math.round((height * maxDim) / width);
+          width = maxDim;
+        } else {
+          width = Math.round((width * maxDim) / height);
+          height = maxDim;
+        }
+      }
+
+      canvas.width = width;
+      canvas.height = height;
+      const ctx = canvas.getContext("2d");
+      if (!ctx) return;
+
+      ctx.drawImage(video, 0, 0, width, height);
+      const jpegDataUrl = canvas.toDataURL("image/jpeg", 0.6);
+
+      const ok = liveSessionRef.current.sendRealtimeVideoFrame(jpegDataUrl);
+      if (!ok) {
+        stopCamera();
+        setToast("এই লাইভ মডেল ক্যামেরা দেখতে পারে না");
+      }
+    } catch (err) {
+      console.warn("Failed to capture/send camera frame:", err);
+    }
+  }, [stopCamera, setToast]);
+
+  const startCamera = useCallback(async (facing: 'user' | 'environment' = cameraFacingModeRef.current) => {
+    if (!isAdmin()) {
+      setToast("এই ফিচার এখন শুধু অ্যাডমিনের জন্য");
+      return;
+    }
+
+    try {
+      if (cameraFrameTimerRef.current) {
+        clearInterval(cameraFrameTimerRef.current);
+        cameraFrameTimerRef.current = null;
+      }
+      if (cameraStreamRef.current) {
+        cameraStreamRef.current.getTracks().forEach((track) => track.stop());
+        cameraStreamRef.current = null;
+      }
+
+      const stream = await navigator.mediaDevices.getUserMedia({
+        video: {
+          facingMode: facing,
+          width: { ideal: 640 },
+          height: { ideal: 480 },
+        },
+        audio: false,
+      });
+
+      cameraStreamRef.current = stream;
+      setCameraFacingMode(facing);
+      cameraFacingModeRef.current = facing;
+      setIsCameraActive(true);
+      isCameraActiveRef.current = true;
+
+      if (cameraVideoRef.current) {
+        cameraVideoRef.current.srcObject = stream;
+        cameraVideoRef.current.play().catch(() => {});
+      }
+
+      cameraFrameTimerRef.current = setInterval(() => {
+        captureAndSendFrame();
+      }, 1000);
+
+      setTimeout(() => {
+        captureAndSendFrame();
+      }, 600);
+    } catch (err: any) {
+      console.error("Camera access failed:", err);
+      stopCamera();
+      setToast("ক্যামেরা অন করা সম্ভব হয়নি");
+    }
+  }, [captureAndSendFrame, stopCamera, setToast]);
+
+  const switchCamera = useCallback(() => {
+    const nextMode = cameraFacingModeRef.current === 'user' ? 'environment' : 'user';
+    startCamera(nextMode);
+  }, [startCamera]);
+
+  const toggleCamera = useCallback(() => {
+    if (!isAdmin()) {
+      setToast("এই ফিচার এখন শুধু অ্যাডমিনের জন্য");
+      return;
+    }
+    if (isCameraActiveRef.current) {
+      stopCamera();
+    } else {
+      startCamera();
+    }
+  }, [stopCamera, startCamera, setToast]);
+
+  useEffect(() => {
+    if (isCameraActive && cameraStreamRef.current && cameraVideoRef.current) {
+      if (cameraVideoRef.current.srcObject !== cameraStreamRef.current) {
+        cameraVideoRef.current.srcObject = cameraStreamRef.current;
+        cameraVideoRef.current.play().catch(() => {});
+      }
+    }
+  }, [isCameraActive, cameraFacingMode]);
+
+  useEffect(() => {
+    const handleCameraCommand = (e: any) => {
+      if (!isAdmin()) return;
+      const cmd = e.detail?.command;
+      if (cmd === 'on') {
+        startCamera();
+      } else if (cmd === 'off') {
+        stopCamera();
+      } else if (cmd === 'switch') {
+        switchCamera();
+      }
+    };
+
+    const handleCameraUnsupported = () => {
+      if (isCameraActiveRef.current) {
+        stopCamera();
+      }
+      setToast("এই লাইভ মডেল ক্যামেরা দেখতে পারে না");
+    };
+
+    window.addEventListener('live-camera-command', handleCameraCommand);
+    window.addEventListener('live-camera-unsupported', handleCameraUnsupported);
+
+    return () => {
+      window.removeEventListener('live-camera-command', handleCameraCommand);
+      window.removeEventListener('live-camera-unsupported', handleCameraUnsupported);
+    };
+  }, [startCamera, stopCamera, switchCamera, setToast]);
 
   useEffect(() => {
     if (!isCallScreenOpen) return;
@@ -8630,6 +8844,7 @@ export function App() {
       setConversations(prev => [newConv, ...prev]);
     }
 
+    stopCamera();
     callStartTimeRef.current = null;
     setLiveReconnectStatus(null);
     setIsCallScreenOpen(false);
@@ -8640,7 +8855,7 @@ export function App() {
     setVoiceModeEnabled(false);
     stopListening();
     setToast("Live call ended");
-  }, [stopListening, chatHistory]);
+  }, [stopListening, chatHistory, stopCamera]);
 
   const handleVoiceToggle = useCallback(() => {
     ensureAudioContext();
@@ -9496,21 +9711,21 @@ export function App() {
               </button>
 
               <button
+                data-nav-id="history"
                 onClick={() => {
-                  setChatHistory((prev) => [...prev, { role: "user", content: "Create an image" }]);
-                  setActiveTab("chat");
+                  setActiveTab("history");
                   setCurrentView("home");
                 }}
                 className="flex-1 bg-[#0F172A]/75 border border-purple-500/30 rounded-2xl p-2 sm:p-2.5 flex flex-col items-center text-center active:scale-95 transition-transform backdrop-blur-md shadow-xl"
               >
                 <div className="w-7 h-7 sm:w-8 sm:h-8 rounded-full bg-purple-500/20 flex items-center justify-center text-purple-300 mb-1 shrink-0">
-                  <ImageIcon className="w-3.5 h-3.5 sm:w-4 sm:h-4" />
+                  <Clock className="w-3.5 h-3.5 sm:w-4 sm:h-4" />
                 </div>
                 <span className="text-[10px] sm:text-[11px] font-black uppercase text-white leading-tight">
-                  Create Image
+                  HISTORY
                 </span>
                 <span className="text-[7.5px] sm:text-[8px] font-medium text-slate-300 leading-tight mt-0.5">
-                  Photos into sketches
+                  পুরনো কথোপকথন
                 </span>
               </button>
 
@@ -9763,168 +9978,291 @@ export function App() {
   };
 
   const renderHistory = () => {
-    const isAdmin = currentUserEmail === "islambolche@gmail.com";
-    
-    const filteredHistory = conversations.filter(conv => 
-      conv.messages.some((m: any) => (m.content || m.text || "").toLowerCase().includes(historySearchTerm.toLowerCase())) ||
-      conv.title.toLowerCase().includes(historySearchTerm.toLowerCase())
+    // If a conversation is opened for full view
+    if (selectedHistoryConv) {
+      const firstUserMsg =
+        selectedHistoryConv.messages?.find((m: any) => m.role === "user" || m.sender === "user")?.content ||
+        selectedHistoryConv.messages?.find((m: any) => m.role === "user" || m.sender === "user")?.text ||
+        selectedHistoryConv.title ||
+        "কথোপকথন";
+
+      const timeStr = new Date(selectedHistoryConv.updatedAt || selectedHistoryConv.timestamp || Date.now()).toLocaleTimeString([], {
+        hour: "2-digit",
+        minute: "2-digit",
+      });
+
+      return (
+        <div className="flex-1 flex flex-col overflow-hidden w-full relative bg-[#020617]">
+          {/* Top Bar for Opened Conversation */}
+          <div className="px-4 py-3.5 border-b border-white/5 flex items-center justify-between shrink-0 bg-[#020617]/85 backdrop-blur-md">
+            <button
+              onClick={() => setSelectedHistoryConv(null)}
+              className="p-2 -ml-1 rounded-xl text-slate-300 hover:text-white active:scale-95 transition-transform flex items-center gap-1.5"
+              aria-label="Back to History"
+            >
+              <ArrowLeft className="w-5 h-5 text-purple-400" />
+              <span className="text-xs font-bold">পেছনে</span>
+            </button>
+            <div className="text-center min-w-0 px-2 flex-1">
+              <h3 className="text-xs sm:text-sm font-bold text-white truncate">{firstUserMsg}</h3>
+              <p className="text-[10px] text-slate-400">{timeStr} • {selectedHistoryConv.messages?.length || 0}টি মেসেজ</p>
+            </div>
+            <button
+              onClick={() => {
+                if (window.confirm("নিশ্চিত? মুছে ফেলব?")) {
+                  setConversations((prev) => prev.filter((c) => c.id !== selectedHistoryConv.id));
+                  setSelectedHistoryConv(null);
+                  setToast("কথোপকথন মুছে ফেলা হয়েছে");
+                }
+              }}
+              className="p-2 text-slate-400 hover:text-red-400 rounded-xl hover:bg-red-500/10 active:scale-90 transition-all shrink-0"
+              title="মুছে ফেলুন"
+              aria-label="Delete"
+            >
+              <Trash2 className="w-4 h-4" />
+            </button>
+          </div>
+
+          {/* Messages List */}
+          <div className="flex-1 overflow-y-auto p-4 space-y-3 no-scrollbar">
+            {(!selectedHistoryConv.messages || selectedHistoryConv.messages.length === 0) ? (
+              <div className="h-40 flex items-center justify-center text-slate-500 text-xs">
+                কোনো মেসেজ নেই
+              </div>
+            ) : (
+              selectedHistoryConv.messages.map((msg: any, idx: number) => {
+                const isUser = msg.role === "user" || msg.sender === "user";
+                const text = msg.content || msg.text || "";
+                return (
+                  <div
+                    key={idx}
+                    className={`flex flex-col ${isUser ? "items-end" : "items-start"}`}
+                  >
+                    <div
+                      className={`max-w-[85%] sm:max-w-[75%] rounded-2xl p-3 text-xs leading-relaxed break-words ${
+                        isUser
+                          ? "bg-purple-600 text-white rounded-br-sm shadow-md"
+                          : "bg-[#0F172A] border border-white/10 text-slate-100 rounded-bl-sm shadow-sm"
+                      }`}
+                    >
+                      {renderMessageContent(text)}
+                    </div>
+                  </div>
+                );
+              })
+            )}
+          </div>
+
+          {/* Bottom Button: Load into chat and continue */}
+          <div className="p-4 border-t border-white/5 bg-[#020617]/95 backdrop-blur-md shrink-0 pb-20">
+            <button
+              onClick={() => {
+                setChatHistory(selectedHistoryConv.messages || []);
+                setActiveTab("chat");
+                setCurrentView("home");
+                setSelectedHistoryConv(null);
+              }}
+              className="w-full py-3.5 px-4 bg-gradient-to-r from-purple-600 via-pink-600 to-purple-700 hover:from-purple-500 hover:to-pink-500 text-white font-bold text-xs sm:text-sm rounded-2xl shadow-xl shadow-purple-900/40 active:scale-95 transition-all flex items-center justify-center gap-2"
+            >
+              <MessageSquare className="w-4 h-4" />
+              <span>এখান থেকে আবার কথা বলো</span>
+            </button>
+          </div>
+        </div>
+      );
+    }
+
+    // Main History List View
+    const filteredHistory = conversations.filter((conv) => {
+      if (!historySearchTerm.trim()) return true;
+      const term = historySearchTerm.toLowerCase();
+      const hasInMsg = conv.messages?.some((m: any) =>
+        (m.content || m.text || "").toLowerCase().includes(term)
+      );
+      const hasInTitle = (conv.title || "").toLowerCase().includes(term);
+      return hasInMsg || hasInTitle;
+    });
+
+    const getGroupCategory = (dateVal: any): "আজ" | "গতকাল" | "এই সপ্তাহ" | "আগের" => {
+      const d = new Date(dateVal);
+      if (isNaN(d.getTime())) return "আগের";
+      const now = new Date();
+      const today = new Date(now.getFullYear(), now.getMonth(), now.getDate()).getTime();
+      const target = new Date(d.getFullYear(), d.getMonth(), d.getDate()).getTime();
+      const diffDays = Math.round((today - target) / 86400000);
+      if (diffDays <= 0) return "আজ";
+      if (diffDays === 1) return "গতকাল";
+      if (diffDays <= 7) return "এই সপ্তাহ";
+      return "আগের";
+    };
+
+    const grouped: Record<"আজ" | "গতকাল" | "এই সপ্তাহ" | "আগের", any[]> = {
+      "আজ": [],
+      "গতকাল": [],
+      "এই সপ্তাহ": [],
+      "আগের": [],
+    };
+
+    // Sort newest first
+    const sortedList = [...filteredHistory].sort(
+      (a, b) => new Date(b.updatedAt || b.timestamp || 0).getTime() - new Date(a.updatedAt || a.timestamp || 0).getTime()
     );
 
-    const grouped = filteredHistory.reduce((acc: any, conv) => {
-      const date = new Date(conv.updatedAt).toLocaleDateString();
-      if (!acc[date]) acc[date] = [];
-      acc[date].push(conv);
-      return acc;
-    }, {});
+    sortedList.forEach((conv) => {
+      const cat = getGroupCategory(conv.updatedAt || conv.timestamp || Date.now());
+      grouped[cat].push(conv);
+    });
 
-    const sortedDates = Object.keys(grouped).sort((a, b) => new Date(b).getTime() - new Date(a).getTime());
+    const CATEGORIES: ("আজ" | "গতকাল" | "এই সপ্তাহ" | "আগের")[] = ["আজ", "গতকাল", "এই সপ্তাহ", "আগের"];
 
     return (
       <div className="flex-1 flex flex-col overflow-hidden w-full relative bg-[#020617]">
-        {/* Header */}
-        <div className="px-5 py-4 border-b border-white/5 flex flex-col gap-4 shrink-0 bg-[#020617]/80 backdrop-blur-md">
+        {/* Header: Back arrow at top-left goes Home + Title + Clear All */}
+        <div className="px-5 py-4 border-b border-white/5 flex flex-col gap-3 shrink-0 bg-[#020617]/80 backdrop-blur-md">
           <div className="flex items-center justify-between">
             <div className="flex items-center gap-2">
+              <button
+                onClick={() => {
+                  setActiveTab("home");
+                  setCurrentView("home");
+                }}
+                className="p-2 -ml-2 rounded-xl text-slate-300 hover:text-white active:scale-95 transition-transform"
+                aria-label="Go Home"
+                title="হোমে ফিরুন"
+              >
+                <ArrowLeft className="w-5 h-5 text-purple-400" />
+              </button>
               <h2 className="text-xl font-black italic tracking-tight text-white uppercase">History</h2>
               <span className="text-[10px] font-bold text-purple-400 bg-purple-500/10 px-2 py-0.5 rounded-full border border-purple-500/20">
                 {conversations.length}
               </span>
             </div>
-            <button
-              onClick={() => {
-                if (confirm("Clear all history?")) {
-                  setConversations([]);
-                  localStorage.removeItem("iyabd_action_history");
-                  setActionHistory([]);
-                  setToast("History cleared");
-                }
-              }}
-              className="px-3 py-1.5 rounded-xl bg-red-600/10 text-red-400 text-[10px] font-black uppercase tracking-wider active:scale-95 transition-all"
-            >
-              Clear All
-            </button>
+            {conversations.length > 0 && (
+              <button
+                onClick={() => {
+                  if (window.confirm("সব কথোপকথন মুছে ফেলবেন?")) {
+                    setConversations([]);
+                    localStorage.removeItem("iyabd_action_history");
+                    setActionHistory([]);
+                    setToast("History cleared");
+                  }
+                }}
+                className="px-3 py-1.5 rounded-xl bg-red-600/10 hover:bg-red-600/20 text-red-400 text-[10px] font-black uppercase tracking-wider active:scale-95 transition-all"
+              >
+                Clear All
+              </button>
+            )}
           </div>
-          
+
+          {/* Search box (filters by text in any message) */}
           <div className="relative">
             <input
               type="text"
               value={historySearchTerm}
               onChange={(e) => setHistorySearchTerm(e.target.value)}
-              placeholder="Search conversations..."
-              className="w-full bg-[#0F172A] border border-white/5 rounded-2xl h-10 pl-10 pr-4 text-xs text-white placeholder:text-slate-500 outline-none focus:ring-1 focus:ring-purple-500"
+              placeholder="মেসেজ খুঁজুন (Search messages)..."
+              className="w-full bg-[#0F172A] border border-white/10 rounded-2xl h-10 pl-10 pr-9 text-xs text-white placeholder:text-slate-500 outline-none focus:ring-1 focus:ring-purple-500"
             />
             <MessageSquare className="absolute left-3.5 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-500" />
+            {historySearchTerm && (
+              <button
+                onClick={() => setHistorySearchTerm("")}
+                className="absolute right-3 top-1/2 -translate-y-1/2 text-slate-400 hover:text-white"
+              >
+                <X className="w-3.5 h-3.5" />
+              </button>
+            )}
           </div>
         </div>
 
+        {/* Content list */}
         <div className="flex-1 overflow-y-auto px-4 py-4 space-y-6 no-scrollbar pb-32">
-          {actionHistory.length > 0 && (
-            <div className="bg-[#0F172A]/80 border border-purple-500/20 rounded-3xl p-4 space-y-2.5 shadow-lg">
-              <div className="flex items-center justify-between px-1">
-                <div className="flex items-center gap-2">
-                  <Smartphone className="w-4 h-4 text-purple-400" />
-                  <h4 className="text-[10px] font-black text-purple-300 uppercase tracking-[2px]">Phone Actions Log</h4>
-                </div>
-                <span className="text-[9px] font-bold text-slate-500">{actionHistory.length} actions</span>
-              </div>
-              <div className="space-y-1.5 max-h-48 overflow-y-auto no-scrollbar">
-                {actionHistory.slice(0, 15).map((act) => (
-                  <div key={act.id} className="p-2.5 rounded-2xl bg-black/40 border border-white/5 flex items-center justify-between text-xs">
-                    <div className="min-w-0 pr-2">
-                      <p className="font-bold text-white text-[11px] truncate">{act.summary}</p>
-                      <p className="text-[9px] text-slate-500">{new Date(act.timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</p>
-                    </div>
-                    <span className={`text-[8px] font-black uppercase tracking-wider px-2 py-0.5 rounded-full shrink-0 ${
-                      act.status === 'executed' || act.status === 'confirmed' ? 'bg-emerald-500/10 text-emerald-400 border border-emerald-500/20' :
-                      act.status === 'refused' ? 'bg-amber-500/10 text-amber-400 border border-amber-500/20' :
-                      act.status === 'cancelled' ? 'bg-rose-500/10 text-rose-400 border border-rose-500/20' :
-                      'bg-purple-500/10 text-purple-400 border border-purple-500/20'
-                    }`}>
-                      {act.status}
-                    </span>
-                  </div>
-                ))}
-              </div>
-            </div>
-          )}
-          {isAdmin && globalStats && (
-            <div className="bg-purple-600/10 border border-purple-500/30 rounded-[2rem] p-5 shadow-lg">
-              <h3 className="text-[10px] font-black text-purple-400 uppercase tracking-[3px] mb-3">Admin Stats</h3>
-              <div className="grid grid-cols-2 gap-3">
-                <div className="bg-black/40 p-3 rounded-2xl border border-white/5">
-                  <span className="text-slate-400 font-bold uppercase text-[8px] block">Users</span>
-                  <span className="font-mono text-white font-black text-sm">{globalStats.totalUsers}</span>
-                </div>
-                <div className="bg-black/40 p-3 rounded-2xl border border-white/5">
-                  <span className="text-slate-400 font-bold uppercase text-[8px] block">Calls Today</span>
-                  <span className="font-mono text-white font-black text-sm">{globalStats.callsToday}</span>
-                </div>
-                <div className="bg-black/40 p-3 rounded-2xl border border-white/5">
-                  <span className="text-slate-400 font-bold uppercase text-[8px] block">Total Minutes</span>
-                  <span className="font-mono text-white font-black text-sm">{globalStats.totalMinutes}</span>
-                </div>
-                <div className="bg-black/40 p-3 rounded-2xl border border-white/5">
-                  <span className="text-slate-400 font-bold uppercase text-[8px] block">Last 7 Days</span>
-                  <span className="font-mono text-white font-black text-sm">{globalStats.callsLast7Days}</span>
-                </div>
-              </div>
-            </div>
-          )}
-
           {conversations.length === 0 ? (
             <div className="h-48 flex flex-col items-center justify-center text-center opacity-70">
               <History className="w-12 h-12 text-slate-700 mb-3" />
               <p className="text-sm font-black uppercase text-white tracking-wider">No history yet</p>
               <p className="text-[10px] text-slate-500 font-medium">Your conversations with Rose will appear here</p>
             </div>
+          ) : filteredHistory.length === 0 ? (
+            <div className="h-48 flex flex-col items-center justify-center text-center opacity-70">
+              <MessageSquare className="w-10 h-10 text-slate-700 mb-2" />
+              <p className="text-xs font-bold text-white">কোনো ফলাফল পাওয়া যায়নি</p>
+              <p className="text-[10px] text-slate-500">অন্য শব্দ দিয়ে খুঁজুন</p>
+            </div>
           ) : (
-            sortedDates.map(date => (
-              <div key={date} className="space-y-3">
-                <h4 className="text-[9px] font-black text-slate-600 uppercase tracking-[4px] pl-2">
-                  {date === new Date().toLocaleDateString() ? "Today" : date}
-                </h4>
-                {grouped[date].map((conv: any) => (
-                  <button
-                    key={conv.id}
-                    onClick={() => {
-                      setChatHistory(conv.messages);
-                      setActiveTab("chat");
-                    }}
-                    onContextMenu={(e) => {
-                      e.preventDefault();
-                      if (confirm("Delete this conversation?")) {
-                        setConversations(prev => prev.filter(c => c.id !== conv.id));
-                      }
-                    }}
-                    className="w-full p-4 bg-[#0F172A]/60 border border-white/5 rounded-3xl flex items-center justify-between active:scale-[0.98] transition-all text-left group"
-                  >
-                    <div className="flex items-center gap-4 overflow-hidden">
-                      <div className="w-10 h-10 rounded-xl bg-purple-600/10 border border-purple-500/20 flex items-center justify-center text-purple-400 shrink-0">
-                        {conv.type === "voice" ? <Mic className="w-5 h-5" /> : <MessageSquare className="w-5 h-5" />}
-                      </div>
-                      <div className="overflow-hidden">
-                        <h5 className="text-[13px] font-black text-white truncate leading-tight uppercase tracking-wide">
-                          {conv.title || (conv.type === "voice" ? "Voice Call" : "Chat Session")}
-                        </h5>
-                        <p className="text-[10px] text-slate-500 font-medium truncate mt-1">
-                          {conv.messages[conv.messages.length - 1]?.content || conv.messages[conv.messages.length - 1]?.text || "Empty conversation"}
-                        </p>
-                      </div>
-                    </div>
-                    <div className="text-right shrink-0">
-                      <span className="text-[9px] font-bold text-slate-600 uppercase block">
-                        {new Date(conv.updatedAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
-                      </span>
-                      {conv.duration && (
-                        <span className="text-[8px] font-black text-purple-500 uppercase mt-0.5">
-                          {conv.duration}s
-                        </span>
-                      )}
-                    </div>
-                  </button>
-                ))}
-              </div>
-            ))
+            CATEGORIES.map((cat) => {
+              const list = grouped[cat];
+              if (!list || list.length === 0) return null;
+
+              return (
+                <div key={cat} className="space-y-2.5">
+                  <h4 className="text-[10px] font-black text-purple-400 uppercase tracking-[2px] pl-2 flex items-center gap-1.5">
+                    <span>{cat}</span>
+                    <span className="text-[8px] font-semibold text-slate-500">({list.length})</span>
+                  </h4>
+                  <div className="space-y-2">
+                    {list.map((conv: any) => {
+                      const firstUserMsg =
+                        conv.messages?.find((m: any) => m.role === "user" || m.sender === "user")?.content ||
+                        conv.messages?.find((m: any) => m.role === "user" || m.sender === "user")?.text ||
+                        conv.title ||
+                        "কথোপকথন";
+
+                      const timeStr = new Date(conv.updatedAt || conv.timestamp || Date.now()).toLocaleTimeString([], {
+                        hour: "2-digit",
+                        minute: "2-digit",
+                      });
+                      const msgCount = conv.messages?.length || 0;
+
+                      return (
+                        <div
+                          key={conv.id}
+                          onClick={() => setSelectedHistoryConv(conv)}
+                          className="w-full p-3.5 bg-[#0F172A]/70 hover:bg-[#0F172A] border border-white/5 hover:border-purple-500/30 rounded-2xl flex items-center justify-between gap-3 active:scale-[0.99] transition-all cursor-pointer group shadow-sm"
+                        >
+                          <div className="flex items-center gap-3 min-w-0 flex-1">
+                            <div className="w-9 h-9 rounded-xl bg-purple-600/10 border border-purple-500/20 flex items-center justify-center text-purple-400 shrink-0">
+                              {conv.type === "voice" ? <Mic className="w-4 h-4" /> : <MessageSquare className="w-4 h-4" />}
+                            </div>
+                            <div className="min-w-0 flex-1">
+                              <h5 className="text-[12px] font-bold text-white truncate leading-tight">
+                                {firstUserMsg}
+                              </h5>
+                              <div className="flex items-center gap-2 mt-1 text-[9px] text-slate-400">
+                                <span>{timeStr}</span>
+                                <span>•</span>
+                                <span className="text-purple-300 font-semibold">{msgCount}টি মেসেজ</span>
+                                {conv.duration && (
+                                  <>
+                                    <span>•</span>
+                                    <span className="text-slate-400">{conv.duration}s</span>
+                                  </>
+                                )}
+                              </div>
+                            </div>
+                          </div>
+                          <button
+                            type="button"
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              if (window.confirm("নিশ্চিত? মুছে ফেলব?")) {
+                                setConversations((prev) => prev.filter((c) => c.id !== conv.id));
+                                setToast("কথোপকথন মুছে ফেলা হয়েছে");
+                              }
+                            }}
+                            className="p-2 text-slate-500 hover:text-red-400 active:scale-90 transition-all shrink-0 rounded-xl hover:bg-red-500/10"
+                            title="মুছে ফেলুন"
+                            aria-label="Delete"
+                          >
+                            <Trash2 className="w-4 h-4" />
+                          </button>
+                        </div>
+                      );
+                    })}
+                  </div>
+                </div>
+              );
+            })
           )}
         </div>
       </div>
@@ -15262,7 +15600,7 @@ export function App() {
                 )}
               </div>
 
-              {/* Bottom 3 Action Buttons */}
+              {/* Bottom Action Buttons */}
               <div className="flex items-center justify-evenly w-full pb-4">
                 {/* 1. Mute Button */}
                 <button
@@ -15283,6 +15621,23 @@ export function App() {
                 >
                   {isMuted ? <MicOff className="w-6 h-6" /> : <Mic className="w-6 h-6" />}
                 </button>
+
+                {/* Admin Camera Button (Round camera button next to mic button, admin only) */}
+                {isAdmin() && (
+                  <button
+                    onClick={toggleCamera}
+                    className={
+                      "w-14 h-14 sm:w-16 sm:h-16 rounded-full flex items-center justify-center transition-all active:scale-95 border " +
+                      (isCameraActive
+                        ? "bg-teal-500/25 border-teal-400 text-teal-300 shadow-lg shadow-teal-500/30 ring-2 ring-teal-400/50"
+                        : "bg-white/10 border-white/15 text-white shadow-lg hover:bg-white/15")
+                    }
+                    aria-label={isCameraActive ? "Turn Off Camera" : "Turn On Camera"}
+                    title={isCameraActive ? "ক্যামেরা বন্ধ করুন" : "ক্যামেরা চালু করুন"}
+                  >
+                    {isCameraActive ? <Camera className="w-6 h-6" /> : <CameraOff className="w-6 h-6" />}
+                  </button>
+                )}
 
                 {/* 2. End Button (Large Red Center - Plain Downward Phone Handset) */}
                 <button
@@ -15319,6 +15674,13 @@ export function App() {
           >
             <div className="flex items-center gap-3">
               <div className="w-3 h-3 rounded-full bg-teal-400 animate-ping shrink-0" />
+              {/* Tiny camera dot when camera is active while minimized */}
+              {isCameraActive && (
+                <span
+                  className="w-2.5 h-2.5 rounded-full bg-red-500 shadow-sm shadow-red-500 animate-pulse shrink-0"
+                  title="ক্যামেরা চালু আছে"
+                />
+              )}
               <div>
                 <p className="text-xs font-black text-white italic">
                   {liveReconnectStatus ? `Rose 🌹 ${liveReconnectStatus}` : "Rose 🌹 Live Call Active"}
@@ -15340,6 +15702,35 @@ export function App() {
           </motion.div>
         )}
       </AnimatePresence>
+
+      {/* Admin Live Camera Preview (small rounded ~120x160 at top-right with red LIVE dot & switch button) */}
+      {isAdmin() && isCameraActive && (
+        <div className={`fixed ${isCallScreenOpen && !isCallMinimized ? 'top-20' : 'top-4'} right-4 sm:right-6 z-[130] w-[120px] h-[160px] rounded-2xl overflow-hidden border-2 border-white/20 shadow-2xl bg-black flex flex-col justify-between pointer-events-auto`}>
+          <video
+            ref={cameraVideoRef}
+            autoPlay
+            playsInline
+            muted
+            className={`w-full h-full object-cover ${cameraFacingMode === 'user' ? '-scale-x-100' : ''}`}
+          />
+          <div className="absolute top-2 left-2 flex items-center gap-1 bg-black/70 backdrop-blur-md px-2 py-0.5 rounded-full text-[9px] font-bold text-red-400 tracking-wider pointer-events-none select-none">
+            <span className="w-1.5 h-1.5 rounded-full bg-red-500 animate-pulse" />
+            <span>● LIVE</span>
+          </div>
+          <button
+            type="button"
+            onClick={(e) => {
+              e.stopPropagation();
+              switchCamera();
+            }}
+            className="absolute bottom-2 right-2 p-1.5 bg-black/70 hover:bg-black/90 backdrop-blur-md text-white rounded-full shadow border border-white/20 active:scale-90 transition-transform"
+            title="ক্যামেরা পরিবর্তন করুন"
+            aria-label="Switch front and back camera"
+          >
+            <RefreshCw className="w-3.5 h-3.5" />
+          </button>
+        </div>
+      )}
     </>
   );
 
@@ -15685,15 +16076,26 @@ export function App() {
             </div>
 
             <button
-              data-nav-id="history"
+              data-nav-id="camera_toggle"
               onClick={() => {
-                setActiveTab("history");
-                setCurrentView("home");
+                if (!isAdmin()) {
+                  setToast("এই ফিচার এখন শুধু অ্যাডমিনের জন্য");
+                  return;
+                }
+                toggleCamera();
               }}
-              className={'flex flex-col items-center gap-1 transition-colors ' + (activeTab === "history" ? "text-purple-500" : "text-slate-500")}
+              className={
+                'flex flex-col items-center gap-1 transition-all active:scale-95 ' +
+                (isCameraActive
+                  ? "text-purple-400 drop-shadow-[0_0_8px_rgba(168,85,247,0.85)]"
+                  : "text-slate-500 hover:text-slate-300")
+              }
+              aria-label={isCameraActive ? "Camera On" : "Camera"}
             >
-              <History className="w-6 h-6" />
-              <span className="text-[8px] font-black uppercase tracking-tighter">History</span>
+              <Camera className={"w-6 h-6 transition-transform " + (isCameraActive ? "scale-105" : "")} />
+              <span className="text-[8px] font-black uppercase tracking-tighter">
+                {isCameraActive ? "CAMERA ON" : "CAMERA"}
+              </span>
             </button>
             <button
               data-nav-id="settings"

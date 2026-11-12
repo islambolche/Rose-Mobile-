@@ -163,7 +163,12 @@ export async function getTeamStatus(agentParam?: string): Promise<{ success: boo
       .order('created_at', { ascending: false })
       .limit(15);
 
-    if (error || !data || data.length === 0) {
+    if (error) {
+      console.error('[getTeamStatus] Supabase error:', error);
+      return { success: false, summary: 'টিমের তথ্য এখন আনতে পারছি না।' };
+    }
+
+    if (!data || data.length === 0) {
       return { success: true, summary: 'আজ কাউকে কোনো কাজ দেওয়া হয়নি, সবাই ফাঁকা।' };
     }
 
@@ -176,7 +181,7 @@ export async function getTeamStatus(agentParam?: string): Promise<{ success: boo
       
       const member = TEAM_MEMBERS[targetAgent];
       const lastTask = data.find((t: any) => t.to_agent === targetAgent);
-      if (lastTask) {
+      if (lastTask && lastTask.instruction) {
         return {
           success: true,
           summary: `${member.bengaliName} এখন "${lastTask.instruction}" নিয়ে কাজ করছে।`,
@@ -189,17 +194,18 @@ export async function getTeamStatus(agentParam?: string): Promise<{ success: boo
     const agents: TeamAgentId[] = ['mira', 'arin', 'zayan', 'naira'];
     for (const id of agents) {
       const t = data.find((x: any) => x.to_agent === id);
-      if (t) {
+      if (t && t.instruction) {
         statuses.push(`${TEAM_MEMBERS[id].bengaliName}: "${t.instruction}"`);
       }
     }
 
     return {
       success: true,
-      summary: statuses.length > 0 ? `টিমের বর্তমান অবস্থা: ${statuses.join(', ')}।` : 'সবাই ডেস্কে ফাঁকা আছে।',
+      summary: statuses.length > 0 ? `টিমের বর্তমান অবস্থা: ${statuses.join(', ')}।` : 'আজ কাউকে কোনো কাজ দেওয়া হয়নি, সবাই ফাঁকা।',
     };
   } catch (err) {
-    return { success: false, summary: 'টিমের স্থিতি পাওয়া যায়নি।' };
+    console.error('[getTeamStatus] Exception:', err);
+    return { success: false, summary: 'টিমের তথ্য এখন আনতে পারছি না।' };
   }
 }
 
@@ -211,6 +217,9 @@ To open any page, go back, go home, scroll or clear chat you MUST call the app_a
 
 WORK TASK COMMAND RULE:
 When the user asks you to give a task to, ask, or check on Mira, Arin, Zayan or Naira, immediately call assign_task or get_team_status.
+
+CHAT CLEARING RULE:
+You CAN clear the chat with app_action clear_chat after the user says yes. Never say you cannot.
 `.trim();
 
 export const ROSE_TEAM_TOOLS = [
@@ -223,7 +232,7 @@ export const ROSE_TEAM_TOOLS = [
         parameters: {
           type: 'OBJECT',
           properties: {
-            agent: { type: 'STRING', description: 'Target team member ID: "mira", "arin", "zayan", or "naira"' },
+            agent: { type: 'STRING', enum: ['mira', 'arin', 'zayan', 'naira'], description: 'Target team member ID: "mira", "arin", "zayan", or "naira"' },
             instruction: { type: 'STRING', description: 'Clear task instruction' },
           },
           required: ['agent', 'instruction'],
@@ -235,19 +244,19 @@ export const ROSE_TEAM_TOOLS = [
         parameters: {
           type: 'OBJECT',
           properties: {
-            agent: { type: 'STRING', description: 'Optional agent name' },
+            agent: { type: 'STRING', enum: ['mira', 'arin', 'zayan', 'naira'], description: 'Optional agent name' },
           },
         },
       },
       {
         name: 'app_action',
-        description: 'Control app navigation: open, back, home, or open_number.',
+        description: 'Control app navigation and admin features: open, back, home, open_number, clear_chat, camera_on, camera_off, camera_switch.',
         parameters: {
           type: 'OBJECT',
           properties: {
             action: {
               type: 'STRING',
-              enum: ['open', 'back', 'home', 'open_number'],
+              enum: ['open', 'back', 'home', 'open_number', 'clear_chat', 'camera_on', 'camera_off', 'camera_switch'],
               description: 'Action to perform',
             },
             page: {
@@ -257,6 +266,7 @@ export const ROSE_TEAM_TOOLS = [
                 'about_guide', 'connections', 'live_voice_model', 'voice_language', 'chats_memory', 'look_feel', 'phone_control', 'pc_setup', 'privacy_controls',
                 'tts_model', 'assistant_name', 'your_name', 'personality', 'affection', 'language', 'response_style', 'voice', 'voice_model', 'voice_tuning', 'voice_check', 'mic_listening',
                 'theme', 'orb_style', 'rose_alive', 'quick_actions', 'app_permissions',
+                'app_perm_camera', 'app_perm_microphone', 'app_perm_location', 'app_perm_notifications', 'app_perm_clipboard', 'app_perm_contacts', 'app_perm_phone_calls', 'app_perm_whatsapp', 'app_perm_messenger', 'app_perm_youtube', 'app_perm_facebook', 'app_perm_tiktok', 'app_perm_instagram',
                 'pc_helper', 'pc_control', 'pc_files', 'confirmations', 'pc_history', 'safety', 'local_ai', 'view_mode'
               ],
               description: 'Target page ID (for open)',

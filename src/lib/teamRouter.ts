@@ -4,8 +4,10 @@ import {
   TeamAgentId,
   AgentTaskRecord,
   assignTask,
+  getTeamStatus,
 } from './team';
 import { officeEvents } from '../components/pc/office/officeEngine';
+import { isAdmin } from './admin';
 
 export interface RouteTaskResult {
   matched: boolean;
@@ -105,20 +107,49 @@ export async function routeUserMessageForTeamTask(
     };
   }
 
-  // 4. Team agent detection
-  const detectedAgent = detectAgentInMessage(rawText);
-  if (detectedAgent) {
-    const isStatusQuery = STATUS_WORDS.some(w => lower.includes(w));
-    if (isStatusQuery) {
-      const member = TEAM_MEMBERS[detectedAgent];
+  // Camera voice commands (Admin only)
+  const isCameraSwitchCmd = /(পেছনের\s*ক্যামেরা|সামনের\s*ক্যামেরা|ক্যামেরা\s*ঘোরাও|ক্যামেরা\s*সুইচ|switch\s*camera|flip\s*camera)/i.test(rawText);
+  const isCameraOffCmd = /(ক্যামেরা|camera).*(বন্ধ|অফ|off|stop|disable|close)/i.test(rawText) && !isCameraSwitchCmd;
+  const isCameraOnCmd = /(ক্যামেরা|camera).*(চালু|অন|open|start|enable)/i.test(rawText) && !isCameraSwitchCmd;
+
+  if (isCameraOnCmd || isCameraOffCmd || isCameraSwitchCmd) {
+    if (!isAdmin()) {
       return {
         matched: true,
-        type: 'status',
-        agentId: detectedAgent,
-        roseReply: `${member.bengaliName} (${member.role}) এখন ডেস্কে উপস্থিত আছেন।`,
+        roseReply: 'ক্যামেরা সুবিধা শুধু অ্যাডমিনের জন্য।',
       };
     }
+    if (typeof window !== 'undefined') {
+      const cmd = isCameraOffCmd ? 'off' : isCameraSwitchCmd ? 'switch' : 'on';
+      window.dispatchEvent(new CustomEvent('live-camera-command', { detail: { command: cmd } }));
+    }
+    const reply = isCameraOffCmd
+      ? 'ক্যামেরা বন্ধ করলাম।'
+      : isCameraSwitchCmd
+      ? 'ক্যামেরা পরিবর্তন করলাম।'
+      : 'ক্যামেরা চালু করলাম।';
+    return {
+      matched: true,
+      roseReply: reply,
+    };
+  }
 
+  // 4. Team agent or team status detection
+  const isTeamGeneralStatus = /(টিম|অফিস|সবাই)/i.test(rawText);
+  const detectedAgent = detectAgentInMessage(rawText);
+  const isStatusQuery = isTeamGeneralStatus || STATUS_WORDS.some(w => lower.includes(w)) || (detectedAgent && STATUS_WORDS.some(w => lower.includes(w)));
+
+  if (isTeamGeneralStatus || (detectedAgent && isStatusQuery)) {
+    const statusRes = await getTeamStatus(detectedAgent || undefined);
+    return {
+      matched: true,
+      type: 'status',
+      agentId: detectedAgent || undefined,
+      roseReply: statusRes.summary,
+    };
+  }
+
+  if (detectedAgent) {
     const isWorkRequest = WORK_WORDS.some(w => lower.includes(w)) || rawText.length > 5;
     if (isWorkRequest) {
       const member = TEAM_MEMBERS[detectedAgent];
