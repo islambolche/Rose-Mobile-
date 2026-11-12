@@ -26,6 +26,7 @@ export interface RouteMessageOptions {
   isVoiceCall?: boolean;
   onToast?: (message: string) => void;
   setCurrentView?: (view: string) => void;
+  openPage?: (view: string) => void;
   clearChatCallback?: () => void;
   pendingClearChatState?: { active: boolean; timestamp: number };
   setPendingClearChatState?: (state: { active: boolean; timestamp: number }) => void;
@@ -132,12 +133,80 @@ export async function routeUserMessageForTeamTask(
     }
   }
 
-  // 1. Clear chat command (flexible: muvh/delete/clear + chat/history/message/all OR short follow-up)
-  const isClearIntent = (
-    (/(মুছ|মুছে|ডিলিট|delete|clear|ক্লিয়ার)/i.test(rawText) && /(চ্যাট|হিস্টরি|হিস্ট্রি|মেসেজ|সব)/i.test(rawText)) ||
-    (/(তুমি|পারবে|কি|কী)/i.test(rawText) && /(মুছ|মুছে|ডিলিট|delete|clear)/i.test(rawText))
-  );
+  // INTENT PRIORITY (Check in exact order, stop at first match):
 
+  // 1) Android system settings check
+  if (/(ওয়াইফাই|ব্লুটুথ|ব্রাইটনেস|অ্যান্ড্রয়েড সেটিং|phone system settings|wi-fi|bluetooth|brightness)/i.test(rawText)) {
+    return {
+      matched: true,
+      type: 'navigation',
+      roseReply: 'ফোনের নিজের সেটিংস ফোন-কন্ট্রোল আপডেটে আসবে।',
+    };
+  }
+
+  // 2) a) Home: (হোম|home) + (যাও|আসো|এসো|ফিরে|নিয়ে|go) OR exact হোম / home
+  if (/^হোম$|^home$/i.test(rawText) || (/(হোম|home)/i.test(rawText) && /(যাও|আসো|এসো|ফিরে|নিয়ে|go)/i.test(rawText))) {
+    const viewSetter = options.openPage || options.setCurrentView;
+    if (viewSetter) {
+      viewSetter('home');
+    }
+    return {
+      matched: true,
+      type: 'navigation',
+      roseReply: 'হোমে এলাম।',
+    };
+  }
+
+  // 3) b) Back: (পেছনে|পিছনে|ফিরে যাও|ব্যাক|back)
+  if (/(পেছনে|পিছনে|ফিরে\s*যাও|ব্যাক|back)/i.test(rawText)) {
+    if (typeof window !== 'undefined') {
+      window.history.back();
+    }
+    return {
+      matched: true,
+      type: 'navigation',
+      roseReply: 'পেছনে গেলাম।',
+    };
+  }
+
+  // 4) c) Open page: an action word (খোল|খুল|যাও|ঢুক|নিয়ে|দেখাও|open|go) + a page alias (or direct page alias)
+  const hasOpenKeyword = /(খোলো|খুলো|খোল|খুল|যাও|এ\s*যাও|নিয়ে\s*যাও|নিয়ে\s*যাও|দেখাও|দেখো|ঢুকো|ঢুক|open|go)/i.test(rawText);
+  if (hasOpenKeyword) {
+    let query = rawText
+      .replace(/খোলো|খুলো|খোল|খুল|যাও|এ\s*যাও|নিয়ে\s*যাও|নিয়ে\s*যাও|দেখাও|দেখো|ঢুকো|ঢুক|open|go|to/gi, '')
+      .trim();
+    if (!query) query = rawText;
+
+    const { page } = findMatchingPage(query || rawText);
+    if (page) {
+      const viewSetter = options.openPage || options.setCurrentView;
+      if (viewSetter) {
+        viewSetter(page.path);
+      }
+      return {
+        matched: true,
+        type: 'navigation',
+        roseReply: `${page.titleBn} খুললাম।`,
+      };
+    }
+  }
+
+  // Direct page alias match (e.g. "সেটিংস", "ভয়েস অ্যান্ড ল্যাঙ্গুয়েজ", "কানেকশনস")
+  const { page: directPage } = findMatchingPage(rawText);
+  if (directPage) {
+    const viewSetter = options.openPage || options.setCurrentView;
+    if (viewSetter) {
+      viewSetter(directPage.path);
+    }
+    return {
+      matched: true,
+      type: 'navigation',
+      roseReply: `${directPage.titleBn} খুললাম।`,
+    };
+  }
+
+  // 5) d) Clear chat: ONLY if the same message contains a delete word AND (চ্যাট|হিস্টরি|হিস্ট্রি|মেসেজ)
+  const isClearIntent = /(মুছ|মুছে|ডিলিট|delete|clear|ক্লিয়ার)/i.test(rawText) && /(চ্যাট|হিস্টরি|হিস্ট্রি|মেসেজ)/i.test(rawText);
   if (isClearIntent) {
     if (options.setPendingClearChatState) {
       options.setPendingClearChatState({ active: true, timestamp: Date.now() });
@@ -149,7 +218,7 @@ export async function routeUserMessageForTeamTask(
     };
   }
 
-  // 2. Scroll commands: "নিচে যাও / নিচে নামাও / scroll down" & "উপরে যাও / scroll up"
+  // Scroll commands: "নিচে যাও / নিচে নামাও / scroll down" & "উপরে যাও / scroll up"
   if (/নিচে\s*যাও|নিচে\s*নামাও|scroll\s*down/i.test(rawText)) {
     if (typeof window !== 'undefined') {
       window.scrollBy({ top: window.innerHeight * 0.8, behavior: 'smooth' });
@@ -171,69 +240,7 @@ export async function routeUserMessageForTeamTask(
     };
   }
 
-  // 3. Home command: "হোমে যাও / হোম / home"
-  if (/^হোমে\s*যাও$|^হোম$|^home$/i.test(rawText) || rawText === 'home' || rawText === 'হোম') {
-    if (options.setCurrentView) {
-      options.setCurrentView('home');
-    }
-    return {
-      matched: true,
-      type: 'navigation',
-      roseReply: 'হোমে এলাম।',
-    };
-  }
-
-  // 4. Back command: "পেছনে যাও / ফিরে যাও / ব্যাক / back"
-  if (/পেছনে\s*যাও|ফিরে\s*যাও|ব্যাক|back/i.test(rawText)) {
-    if (typeof window !== 'undefined') {
-      window.history.back();
-    }
-    return {
-      matched: true,
-      type: 'navigation',
-      roseReply: 'পেছনে গেলাম।',
-    };
-  }
-
-  // 5. Open / Navigate command (flexible: khol/jao/niye/dekh/open/go + page alias anywhere in text)
-  const hasOpenKeyword = /(খোলো|খুলো|খোল|খুল|যাও|এ\s*যাও|নিয়ে\s*যাও|নিয়ে\s*যাও|দেখাও|দেখো|ঢুকো|ঢুক|open|go)/i.test(rawText);
-  if (hasOpenKeyword || rawText.length < 30) {
-    let query = rawText
-      .replace(/খোলো|খুলো|খোল|খুল|যাও|এ\s*যাও|নিয়ে\s*যাও|নিয়ে\s*যাও|দেখাও|দেখো|ঢুকো|ঢুক|open|go|to/gi, '')
-      .trim();
-
-    if (!query) {
-      query = rawText;
-    }
-
-    const { page, matches } = findMatchingPage(query || rawText);
-    if (page && options.setCurrentView) {
-      options.setCurrentView(page.path);
-      return {
-        matched: true,
-        type: 'navigation',
-        roseReply: `${page.titleBn} খুললাম।`,
-      };
-    } else if (hasOpenKeyword && matches.length > 0) {
-      const topMatch = matches[0];
-      if (options.setCurrentView) {
-        options.setCurrentView(topMatch.path);
-      }
-      return {
-        matched: true,
-        type: 'navigation',
-        roseReply: `${topMatch.titleBn} খুললাম।`,
-      };
-    } else if (hasOpenKeyword) {
-      return {
-        matched: true,
-        type: 'navigation',
-        roseReply: 'এই নামে কোনো পাতা পেলাম না।',
-      };
-    }
-  }
-
-  // 6. Team-wide status check: টিম, অফিস, team
+  // 6) Team-wide status check: টিম, অফিস, team
   if (/(?:টিম|অফিস|team)/i.test(rawText)) {
     let summary = "আজ কাউকে কোনো কাজ দেওয়া হয়নি, সবাই ফাঁকা।";
     if (supabase) {
@@ -424,13 +431,13 @@ export async function routePcCommandMessage(
     await sendPcCommand(pcAction, pcArgs, { source: options.source, onToast: options.onToast });
     return {
       matched: true,
-      roseReply: `${effectiveDisplayName}, ফোনে অনুমতি দাও।`,
+      roseReply: `${effectiveDisplayName}, ফোনে অনুমতি অনুমতি দাও।`,
     };
   }
 
   const res = await sendPcCommand(pcAction, pcArgs, { source: options.source, onToast: options.onToast });
   const roseReply = res.success
-    ? `ঠিক আছে ${effectiveDisplayName}, ${res.message}።`
+    ? `ঠিক আছে ${effectiveDisplayName}, ${res.message}।`
     : `ইউসুফ, ${res.message}`;
 
   return {

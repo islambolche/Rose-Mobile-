@@ -6370,6 +6370,7 @@ export function App() {
             isVoiceCall: replyMode === "voice",
             onToast: (msg) => setToast(msg),
             setCurrentView: (v: string) => setCurrentView(v as any),
+            openPage: (v: string) => setCurrentView(v as any),
             clearChatCallback: () => {
               setChatHistory([]);
               chatHistoryRef.current = [];
@@ -8425,6 +8426,7 @@ export function App() {
                   isVoiceCall: true,
                   onToast: (msg) => setToast(msg),
                   setCurrentView: (v: string) => setCurrentView(v as any),
+                  openPage: (v: string) => setCurrentView(v as any),
                   clearChatCallback: () => {
                     setChatHistory([]);
                     chatHistoryRef.current = [];
