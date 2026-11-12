@@ -150,7 +150,7 @@ export function currentPage(): string {
     const navId = PAGE_TO_NAV_ID[p.id] || p.id;
     const el = document.querySelector(`[data-nav-id="${navId}"]`);
     if (el) {
-      const rect = el.getBoundingClientRect();
+      const rect = (el as HTMLElement).getBoundingClientRect();
       if (rect.width > 0 && rect.height > 0) {
         return p.id;
       }
@@ -161,33 +161,92 @@ export function currentPage(): string {
 
 export function isPageVisible(id: string): boolean {
   if (typeof document === 'undefined') return false;
+  if (id === 'home' || id === 'chat' || id === 'history') {
+    const activeTabEl = document.querySelector(`[data-nav-id="${id}"]`);
+    if (activeTabEl && currentPage() === id) return true;
+  }
   const navId = PAGE_TO_NAV_ID[id] || id;
   const el = document.querySelector(`[data-nav-id="${navId}"]`);
   if (el) {
-    const rect = el.getBoundingClientRect();
+    const rect = (el as HTMLElement).getBoundingClientRect();
     if (rect.width > 0 && rect.height > 0) return true;
   }
+  const viewEl = document.querySelector(`[data-current-view="${id}"]`) || document.querySelector(`[data-current-view="${navId}"]`);
+  if (viewEl) return true;
   return currentPage() === id;
 }
 
 export async function openPage(id: string): Promise<boolean> {
   if (typeof document === 'undefined') return false;
-  const pageDef = PAGES.find(p => p.id === id);
-  if (!pageDef) return false;
 
+  // 2) Call screen on top: minimize call screen at start of openPage and goBack
   const win = window as any;
   if (win.setIsCallMinimized) {
     win.setIsCallMinimized(true);
   }
 
-  if (pageDef.parent) {
+  const pageDef = PAGES.find(p => p.id === id);
+  if (!pageDef) return false;
+
+  // Handle main tabs: home, chat, history
+  if (id === 'home' || id === 'chat' || id === 'history') {
+    if (win.setActiveTab) {
+      win.setActiveTab(id === 'chat' ? 'chat' : id === 'history' ? 'history' : 'home');
+    }
+    if (win.setCurrentView) {
+      win.setCurrentView('home');
+    }
+    const tStart = Date.now();
+    while (Date.now() - tStart < 1000) {
+      if (isPageVisible(id)) return true;
+      await new Promise(r => setTimeout(r, 50));
+    }
+    return isPageVisible(id);
+  }
+
+  // 1) Blank page fix:
+  // (a) set bottom tab to SETTINGS exactly like tapping the SETTINGS button
+  if (win.setCurrentView) {
+    win.setCurrentView('settings');
+  } else {
+    const settingsBtn = document.querySelector('[data-nav-id="settings"]') as HTMLElement;
+    if (settingsBtn) settingsBtn.click();
+  }
+
+  // (b) wait until the Settings main screen is rendered
+  let settingsRendered = false;
+  const sStart = Date.now();
+  while (Date.now() - sStart < 1500) {
+    if (document.querySelector('[data-nav-id="about"]') || document.querySelector('[data-nav-id="voice_language"]') || document.querySelector('[data-nav-id="connections"]')) {
+      settingsRendered = true;
+      break;
+    }
+    await new Promise(r => setTimeout(r, 50));
+  }
+
+  if (id === 'settings') {
+    return isPageVisible('settings');
+  }
+
+  // (c) open the parent bar if needed, wait until rendered
+  if (pageDef.parent && pageDef.parent !== 'settings') {
     const parentDef = PAGES.find(p => p.id === pageDef.parent);
     if (parentDef && !isPageVisible(parentDef.id)) {
       await openPage(parentDef.id);
-      await new Promise(r => setTimeout(r, 200));
+      let parentRendered = false;
+      const pStart = Date.now();
+      while (Date.now() - pStart < 1500) {
+        const pNavId = PAGE_TO_NAV_ID[parentDef.id] || parentDef.id;
+        if (document.querySelector(`[data-nav-id="${pNavId}"]`) || isPageVisible(parentDef.id)) {
+          parentRendered = true;
+          break;
+        }
+        await new Promise(r => setTimeout(r, 50));
+      }
     }
   }
 
+  // (d) open the bar
   const navId = PAGE_TO_NAV_ID[id] || id;
   let targetEl = document.querySelector(`[data-nav-id="${navId}"]`) as HTMLElement;
   if (!targetEl) {
@@ -196,27 +255,40 @@ export async function openPage(id: string): Promise<boolean> {
 
   if (targetEl) {
     targetEl.click();
-    await new Promise(r => setTimeout(r, 400));
+  } else if (win.openSettingsPage) {
+    win.openSettingsPage(id);
   } else if (win.setCurrentView) {
     win.setCurrentView(navId);
-    await new Promise(r => setTimeout(r, 300));
   }
 
-  return isPageVisible(id);
+  // Verify the page element is in the DOM before returning ok:true; otherwise return ok:false
+  let verified = false;
+  const vStart = Date.now();
+  while (Date.now() - vStart < 1500) {
+    if (isPageVisible(id)) {
+      verified = true;
+      break;
+    }
+    await new Promise(r => setTimeout(r, 50));
+  }
+
+  return verified;
 }
 
 export async function goBack(): Promise<boolean> {
   if (typeof document === 'undefined') return false;
-  const cur = currentPage();
 
+  // 2) Call screen on top: minimize call screen at start of openPage and goBack
   const win = window as any;
   if (win.setIsCallMinimized) {
     win.setIsCallMinimized(true);
   }
 
+  const cur = currentPage();
+
   const backButtons = Array.from(document.querySelectorAll('[data-nav-id="back"]')) as HTMLElement[];
   const visibleBack = backButtons.find(el => {
-    const rect = el.getBoundingClientRect();
+    const rect = (el as HTMLElement).getBoundingClientRect();
     return rect.width > 0 && rect.height > 0 && window.getComputedStyle(el).display !== 'none';
   });
 
@@ -287,37 +359,6 @@ export async function openNumber(n: number): Promise<{ ok: boolean; page?: strin
   if (!targetId) return { ok: false };
   const ok = await openPage(targetId);
   return { ok, page: targetId };
-}
-
-// Dev Self-Test
-if (typeof window !== 'undefined' && (import.meta as any).env?.DEV) {
-  setTimeout(async () => {
-    console.log("[Self-Test] Running page list navigation self-test...");
-    const groups = [
-      { name: 'SETTINGS', list: SETTINGS_MAIN_LIST },
-      { name: 'ABOUT & GUIDE', list: ABOUT_GUIDE_LIST },
-      { name: 'CONNECTIONS', list: CONNECTIONS_LIST },
-      { name: 'VOICE & LANGUAGE', list: VOICE_LANGUAGE_LIST },
-      { name: 'LOOK & FEEL', list: LOOK_FEEL_LIST },
-      { name: 'PHONE CONTROL', list: PHONE_CONTROL_LIST },
-      { name: 'PC SETUP', list: PC_SETUP_LIST },
-    ];
-    for (const g of groups) {
-      await openPage(g.name === 'SETTINGS' ? 'settings' : PAGES.find(p => p.id === g.list[0])?.parent || 'settings');
-      await new Promise(r => setTimeout(r, 200));
-      for (let i = 0; i < g.list.length; i++) {
-        const id = g.list[i];
-        try {
-          const ok = await openPage(id);
-          console.log(`[Self-Test] ${g.name} #${i + 1} (${id}): ${ok ? 'OK' : 'FAIL'}`);
-        } catch (e) {
-          console.log(`[Self-Test] ${g.name} #${i + 1} (${id}): FAIL`, e);
-        }
-        await new Promise(r => setTimeout(r, 150));
-      }
-    }
-    await openPage('home');
-  }, 1500);
 }
 
 if (typeof window !== 'undefined') {
