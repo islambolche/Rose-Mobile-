@@ -82,5 +82,7 @@ export interface UserPreferences {
   animations?: boolean;
   showVoiceDebug?: boolean;
   viewMode?: 'auto' | 'mobile' | 'pc';
+  backgroundCallEnabled?: boolean;
   [key: string]: any;
 }
+

@@ -1,4 +1,5 @@
 import React, { useState, useEffect } from 'react';
+import { ApiKeyCard } from './ApiKeyCard';
 import {
   ArrowLeft,
   ExternalLink,
@@ -761,116 +762,18 @@ export const ConnectionsView = ({
 
         {/* Single Selected Service Configuration Section (Requirement 3) */}
         <div key={selectedItem.id} className="space-y-3 pt-1">
-          {/* Service Name & Status Header (Shown once, no duplicate card) */}
-          <div className="w-full p-4 sm:p-5 bg-[#0F172A]/85 rounded-[2rem] border border-purple-500/30 shadow-xl flex items-center justify-between gap-3">
-            <div className="flex items-center gap-3.5 min-w-0">
-              <div className="w-11 h-11 rounded-full bg-purple-600 border border-purple-400/30 flex items-center justify-center text-white shrink-0 shadow-md">
-                <SelectedIconComp className="w-5 h-5" />
-              </div>
-              <h3 className="font-black text-lg tracking-wider text-white truncate">
-                {selectedItem.displayName}
-              </h3>
-            </div>
-            {renderStatusBadge(selectedItem.id)}
-          </div>
-
-          {/* 1. Key Input (masked with eye icon toggle) */}
-          <div className="relative w-full">
-            <div className="absolute left-4 top-1/2 -translate-y-1/2 text-purple-400 pointer-events-none">
-              <Lock className="w-4 h-4" />
-            </div>
-            <input
-              id={`key-input-${selectedItem.id}`}
-              type={showKey[selectedItem.id] ? 'text' : 'password'}
-              value={typedKeys[selectedItem.id] || ''}
-              onChange={(e) => {
-                const val = e.target.value;
-                setTypedKeys((prev) => ({ ...prev, [selectedItem.id]: val }));
-              }}
-              placeholder={selectedItem.placeholder}
-              autoComplete="off"
-              spellCheck={false}
-              className="w-full p-4 pl-11 pr-12 bg-[#0F172A]/90 rounded-2xl border border-purple-500/30 focus:border-purple-400 text-xs sm:text-sm text-white font-mono outline-none shadow-lg transition-colors"
-            />
-            <button
-              type="button"
-              onClick={() =>
-                setShowKey((prev) => ({ ...prev, [selectedItem.id]: !prev[selectedItem.id] }))
-              }
-              className="absolute right-3 top-1/2 -translate-y-1/2 p-2 text-slate-400 hover:text-white active:scale-95 transition-transform"
-              aria-label={showKey[selectedItem.id] ? 'Hide key' : 'Show key'}
-            >
-              {showKey[selectedItem.id] ? (
-                <EyeOff className="w-4 h-4" />
-              ) : (
-                <Eye className="w-4 h-4" />
-              )}
-            </button>
-          </div>
-
-          {/* 2. PASTE Button */}
-          <button
-            type="button"
-            onClick={() => handlePaste(selectedItem.id)}
-            className="w-full p-4 bg-[#0F172A]/85 hover:bg-[#0F172A] rounded-2xl border border-purple-500/30 shadow-xl flex items-center justify-center gap-2.5 text-xs font-black uppercase tracking-widest text-white active:scale-[0.98] transition-all"
-          >
-            <ClipboardPaste className="w-4 h-4 text-purple-400" />
-            <span>PASTE</span>
-          </button>
-
-          {/* 3. GET KEY Button */}
-          <div className="space-y-2">
-            <button
-              type="button"
-              onClick={() => handleGetKey(selectedItem.link)}
-              className="w-full p-4 bg-[#0F172A]/85 hover:bg-[#0F172A] rounded-2xl border border-purple-500/30 shadow-xl flex items-center justify-center gap-2.5 text-xs font-black uppercase tracking-widest text-white active:scale-[0.98] transition-all"
-            >
-              <ExternalLink className="w-4 h-4 text-purple-400" />
-              <span>GET KEY</span>
-            </button>
-            <div className="p-3 bg-purple-950/30 border border-purple-500/20 rounded-2xl text-[10px] text-purple-200/80 space-y-2">
-              <p>যদি লগইন করার পর মূল পেজে না যান:</p>
-              <button
-                type="button"
-                onClick={() => window.open(selectedItem.link, '_blank')}
-                className="w-full p-2 bg-purple-600/50 hover:bg-purple-600 rounded-lg text-white font-bold"
-              >
-                OPEN API KEYS DIRECTLY
-              </button>
-              <p className="text-[9px] opacity-70">লগইন করার পর এই বাটনটি চাপ দিন এবং API Key কপি করে নিচে পেস্ট করুন।</p>
-            </div>
-          </div>
-
-          {/* 4. SAVE KEY & TEST Buttons */}
-          <div className="grid grid-cols-2 gap-3">
-            <button
-              type="button"
-              onClick={() => handleSave(selectedItem.id)}
-              disabled={verifyingMap[selectedItem.id]}
-              className="p-4 bg-purple-600 hover:bg-purple-500 disabled:opacity-60 rounded-2xl border border-purple-400/40 shadow-xl shadow-purple-950/50 flex items-center justify-center gap-2 text-xs font-black uppercase tracking-widest text-white active:scale-[0.98] transition-all"
-            >
-              {verifyingMap[selectedItem.id] ? (
-                <Loader2 className="w-4 h-4 animate-spin text-white" />
-              ) : (
-                <Save className="w-4 h-4 text-white" />
-              )}
-              <span>SAVE KEY</span>
-            </button>
-
-            <button
-              type="button"
-              onClick={() => handleTestKey(selectedItem.id)}
-              disabled={verifyingMap[selectedItem.id]}
-              className="p-4 bg-slate-800 hover:bg-slate-700 disabled:opacity-60 rounded-2xl border border-purple-500/30 shadow-xl flex items-center justify-center gap-2 text-xs font-black uppercase tracking-widest text-white active:scale-[0.98] transition-all"
-            >
-              {verifyingMap[selectedItem.id] ? (
-                <Loader2 className="w-4 h-4 animate-spin text-purple-300" />
-              ) : (
-                <Sparkles className="w-4 h-4 text-purple-300" />
-              )}
-              <span>TEST</span>
-            </button>
-          </div>
+          <ApiKeyCard
+            displayName={selectedItem.displayName}
+            icon={SelectedIconComp}
+            status={statusMap[selectedItem.id]}
+            apiKey={typedKeys[selectedItem.id]}
+            placeholder={selectedItem.placeholder}
+            link={selectedItem.link}
+            onSave={(key: string) => handleSave(selectedItem.id)}
+            onPaste={() => handlePaste(selectedItem.id)}
+            onGet={() => handleGetKey(selectedItem.link)}
+            isVerifying={verifyingMap[selectedItem.id]}
+          />
 
           {/* Result / Error Box */}
           {(testResults[selectedItem.id] || selectedErrorMsg) && (

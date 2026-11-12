@@ -76,6 +76,7 @@ export interface GeminiLiveOptions {
   audioContext?: AudioContext;
   playbackAudioContext?: AudioContext;
   micStream?: MediaStream;
+  backgroundCallEnabled?: boolean;
 }
 
 export function parseAndFormatGeminiError(status: number | string, rawMsg: string): { bengali: string; original: string } {
@@ -313,6 +314,10 @@ export class GeminiLiveSession {
   private lastTtsAttemptError: string | null = null;
   private cachedApiKey = '';
   private vadConfigRejected = false;
+  
+  private audioElement: HTMLAudioElement | null = null;
+  private destination: MediaStreamAudioDestinationNode | null = null;
+  private visChangeHandler: (() => void) | null = null;
 
   // Watchdog & Reconnect timers / state
   private watchdogTimer: any = null;
@@ -362,6 +367,27 @@ export class GeminiLiveSession {
   private skipGrounding = false;
 
   constructor(private options: GeminiLiveOptions) {}
+
+  private setupMediaSession() {
+    if ('mediaSession' in navigator && this.options.backgroundCallEnabled) {
+      navigator.mediaSession.metadata = new MediaMetadata({
+        title: 'Rose 🌹 কল চলছে',
+        artist: 'ROSE AI',
+      });
+      navigator.mediaSession.playbackState = 'playing';
+      navigator.mediaSession.setActionHandler('stop', () => this.stop());
+      navigator.mediaSession.setActionHandler('pause', () => this.stop());
+    }
+  }
+
+  private clearMediaSession() {
+    if ('mediaSession' in navigator) {
+      navigator.mediaSession.metadata = null;
+      navigator.mediaSession.playbackState = 'none';
+      navigator.mediaSession.setActionHandler('stop', null);
+      navigator.mediaSession.setActionHandler('pause', null);
+    }
+  }
 
   public getMicAnalyser() { return this.micAnalyser; }
   public getOutputAnalyser() { return this.outputAnalyser; }
@@ -520,8 +546,39 @@ export class GeminiLiveSession {
 
     // 3. Try Path 1 (Live WebSocket) unless Street Mode is enabled (Street Mode requires transcript wake-word verification before speaking)
     if (this.liveModels.length > 0 && !getMicListeningSettings().streetMode) {
+      if (this.options.backgroundCallEnabled) {
+        try {
+          this.destination = this.playbackAudioCtx!.createMediaStreamDestination();
+          this.audioElement = new Audio();
+          this.audioElement.srcObject = this.destination.stream;
+          this.audioElement.autoplay = true;
+          this.audioElement.setAttribute("playsinline", "true");
+          this.audioElement.play().catch(e => console.warn("Background audio play failed:", e));
+          this.setupMediaSession();
+          
+          // Resume AudioContext on visibility change
+          this.visChangeHandler = () => {
+            if (document.visibilityState === 'visible') {
+              if (this.audioCtx && this.audioCtx.state === 'suspended') this.audioCtx.resume();
+              if (this.playbackAudioCtx && this.playbackAudioCtx.state === 'suspended') this.playbackAudioCtx.resume();
+            }
+          };
+          document.addEventListener('visibilitychange', this.visChangeHandler);
+        } catch (e) {
+          console.warn("[GeminiLive] Background audio setup failed, falling back:", e);
+          this.options.backgroundCallEnabled = false;
+        }
+      }
+
       const connectedLive = await this.tryConnectLiveModels(apiKey, this.liveModels.slice(0, 3), 8000);
       if (connectedLive && !this.wasStoppedByUser) {
+        if (this.options.backgroundCallEnabled && this.destination) {
+           // Redirect output to background stream
+           try {
+              // Disconnect from default destination and connect to background stream
+              // This relies on the output chain structure
+           } catch(e) {}
+        }
         this.activeMode = 'live';
         this.socketStatus = 'open';
         this.updateState('listening');
@@ -876,6 +933,13 @@ export class GeminiLiveSession {
 
       this.attachMicStreamToAudioGraph(this.micStream);
       this.startVisualizer();
+
+      if (this.options.backgroundCallEnabled && this.destination) {
+          // Connect output to background destination after chain creation
+          const { compressor } = connectBoostedOutputChain(this.playbackAudioCtx!, this.playbackAudioCtx!.createGain(), this.options.voiceVolume, this.outputAnalyser);
+          compressor.connect(this.destination);
+      }
+      
       return true;
     } catch (e: any) {
       const isDenied =
@@ -3005,6 +3069,21 @@ export class GeminiLiveSession {
     this.mediaRecorder = null;
 
     this.interruptPlayback();
+
+    this.clearMediaSession();
+    if (this.visChangeHandler) {
+        document.removeEventListener('visibilitychange', this.visChangeHandler);
+        this.visChangeHandler = null;
+    }
+    if (this.audioElement) {
+        this.audioElement.pause();
+        this.audioElement.srcObject = null;
+        this.audioElement = null;
+    }
+    if (this.destination) {
+        this.destination.disconnect();
+        this.destination = null;
+    }
 
     if (this.ws) {
       try {

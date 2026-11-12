@@ -247,6 +247,7 @@ const DEFAULT_PREFS: UserPreferences = {
   listenOnOpen: true,
   showVoiceDebug: false,
   viewMode: "auto",
+  backgroundCallEnabled: true,
 };
 
 
@@ -7379,13 +7380,15 @@ export function App() {
             }
           }
         }
+      } else {
+        releaseWakeLock();
       }
     };
     document.addEventListener("visibilitychange", handleVisibilityChange);
     return () => {
       document.removeEventListener("visibilitychange", handleVisibilityChange);
     };
-  }, [requestWakeLock, startSingletonRecognitionSafely, startRecorderModeListening]);
+  }, [requestWakeLock, releaseWakeLock, startSingletonRecognitionSafely, startRecorderModeListening]);
 
   // Live Settings Sync: Volume
   useEffect(() => {
@@ -8204,6 +8207,7 @@ export function App() {
       playbackAudioContext: outputAudioCtxRef.current as AudioContext,
       onToast: (msg) => setToast(msg),
       micStream: micStream,
+      backgroundCallEnabled: prefsRef.current.backgroundCallEnabled,
       onStateChange: (state) => {
         if (state === 'listening') transitionToState("LISTENING");
         else if (state === 'thinking') transitionToState("THINKING");
@@ -11160,6 +11164,7 @@ export function App() {
   );
 
   const renderMicListening = () => (
+    <>
     <motion.div
       key="mic-listening"
       initial={{ x: "100%" }}
@@ -11278,34 +11283,45 @@ export function App() {
                 {micTestActive ? "Testing..." : "Start Test"}
               </button>
             </div>
-            
-            {micTestActive && (
-              <div className="space-y-2">
-                <div className="flex justify-between items-center px-1">
-                  <span className="text-[10px] font-bold text-slate-400 uppercase">Live Volume</span>
-                  <span className="text-[10px] font-mono text-purple-400">{micTestVolume.toFixed(0)}</span>
-                </div>
-                <div className="w-full h-2 bg-black/40 rounded-full overflow-hidden">
-                  <motion.div 
-                    className="h-full bg-purple-500"
-                    initial={{ width: 0 }}
-                    animate={{ width: `${Math.min(100, micTestVolume * 2)}%` }}
-                  />
-                </div>
-              </div>
+            {micTestResult && typeof micTestResult === 'object' && (
+              <p className={`text-[11px] font-bold ${micTestResult.trackState === 'live' ? "text-emerald-400" : "text-rose-400"}`}>
+                {micTestResult.message}
+              </p>
             )}
-            
-            {micTestResult && (
-              <div className="p-4 bg-black/40 rounded-2xl border border-white/5 space-y-1">
-                <p className={'text-xs font-bold ' + (micTestResult.maxVol > 5 ? "text-teal-400" : "text-red-400")}>
-                  {micTestResult.message}
+          </div>
+
+          {/* Background Call Toggle */}
+          <div className="w-full p-5 bg-[#0F172A]/80 rounded-[2.5rem] border border-purple-500/30 shadow-2xl flex items-center justify-between">
+            <div className="flex items-center gap-4">
+              <div className="w-12 h-12 rounded-full bg-purple-600/10 border border-purple-500/20 flex items-center justify-center text-purple-400 shrink-0">
+                <Zap className="w-6 h-6" />
+              </div>
+              <div>
+                <h4 className="text-base font-black uppercase tracking-wider text-white leading-none mb-1">
+                  BACKGROUND CALL
+                </h4>
+                <p className="text-[10px] text-slate-400 font-bold uppercase tracking-widest">
+                  KEEP CALL ACTIVE IN BACKGROUND
                 </p>
-                <div className="flex gap-3 text-[9px] font-bold text-slate-500 uppercase tracking-tight">
-                  <span>Sample Rate: {micTestResult.sampleRate}Hz</span>
-                  <span>Track: {micTestResult.trackState}</span>
-                </div>
               </div>
-            )}
+            </div>
+            <button
+              type="button"
+              role="switch"
+              aria-checked={prefs.backgroundCallEnabled}
+              onClick={() => {
+                const next = !prefs.backgroundCallEnabled;
+                setPrefs((p) => ({ ...p, backgroundCallEnabled: next }));
+                localStorage.setItem("iyabd_prefs", JSON.stringify({ ...prefs, backgroundCallEnabled: next }));
+                prefsRef.current = { ...prefs, backgroundCallEnabled: next };
+              }}
+              className={
+                "w-14 h-8 rounded-full p-1 transition-colors shrink-0 flex items-center " +
+                (prefs.backgroundCallEnabled ? "bg-purple-600 justify-end" : "bg-slate-700 justify-start")
+              }
+            >
+              <span className="w-6 h-6 rounded-full bg-white shadow-md" />
+            </button>
           </div>
 
           {/* b. LISTEN WHEN APP OPENS */}
@@ -11366,6 +11382,10 @@ export function App() {
         </div>
       </div>
     </motion.div>
+    
+
+
+    </>
   );
 
   const renderMemory = () => {
