@@ -176,7 +176,11 @@ import { PhoneControl, PHONE_CONTROL_TOOLS } from "./lib/phoneControl";
 import { AlwaysListen } from "./lib/alwaysListen";
 import { OfficeScene } from "./components/OfficeScene";
 import { isDesktopMode } from "./lib/desktop";
-import { GeminiLiveSession } from "./lib/gemini-live";
+import {
+  GeminiLiveSession,
+  isLiveSessionActive,
+  stopActiveGlobalLiveSession,
+} from "./lib/gemini-live";
 import { PcLayout, PcNavItem } from "./components/pc/PcLayout";
 import { officeEvents, officeEngine } from "./components/pc/office/officeEngine";
 import { OfficeLayoutEditorModal } from "./components/pc/office/OfficeLayoutEditorModal";
@@ -3734,6 +3738,11 @@ export function App() {
   const recognitionRef = useRef<any>(null);
   const wsRef = useRef<WebSocket | null>(null);
   const liveSessionRef = useRef<GeminiLiveSession | null>(null);
+  const callStartAttemptRef = useRef<number>(0);
+  const isLiveCallActiveNow = useCallback(
+    () => Boolean(liveSessionRef.current) || isLiveSessionActive(),
+    []
+  );
   const inputAudioCtxRef = useRef<AudioContext | null>(null);
   const outputAudioCtxRef = useRef<AudioContext | null>(null);
   const gainNodeRef = useRef<GainNode | null>(null);
@@ -4802,6 +4811,11 @@ export function App() {
   };
 
   const processAudioQueue = async () => {
+    if (isLiveCallActiveNow()) {
+      audioQueueRef.current = [];
+      isPlayingRef.current = false;
+      return;
+    }
     if (audioQueueRef.current.length === 0) {
       isPlayingRef.current = false;
       setSpeakingState("idle");
@@ -4874,6 +4888,7 @@ export function App() {
 
   // Safe Voice Interaction Fallback (Strictly Female Voice Only)
   const speak = (text: string, onEnd?: () => void) => {
+    if (isLiveCallActiveNow()) return;
     if (!settings.masterAccess || !isAssistantEnabled) return;
 
     if (typeof window === "undefined" || !("speechSynthesis" in window)) {
@@ -5779,6 +5794,7 @@ export function App() {
 
   // Helper: abort inside try/catch, wait 300ms, then start inside try/catch (ignoring "already started")
   const startSingletonRecognitionSafely = useCallback(() => {
+    if (isLiveCallActiveNow()) return;
     if (!settingsRef.current.masterAccess || !isAssistantEnabledRef.current) return;
     if (micNotAllowedRef.current) return;
     if (
@@ -6009,6 +6025,10 @@ export function App() {
       overrideVol?: number,
       overrideRate?: number
     ): Promise<boolean> => {
+      if (isLiveCallActiveNow()) {
+        console.log("[TTS] Blocked playPrefetchedGeminiAudio while live session is active");
+        return false;
+      }
       if (!base64Audio || speechTokenRef.current !== token) return false;
 
       const vol = overrideVol ?? prefsRef.current.voiceVolume ?? 80;
@@ -6248,6 +6268,10 @@ export function App() {
   // Speak a single sentence using browser speechSynthesis (preferring female Bengali voice) and return true if spoken
   const speakSentenceWithPhoneVoice = useCallback(
     async (clean: string, token: number): Promise<boolean> => {
+      if (isLiveCallActiveNow()) {
+        console.log("[TTS] Blocked fallback phone voice while live session is active");
+        return false;
+      }
       if (!clean || speechTokenRef.current !== token) return false;
       if (typeof window === "undefined" || !("speechSynthesis" in window)) {
         return false;
@@ -6430,6 +6454,10 @@ export function App() {
         spoken?: boolean;
       }
     ): Promise<void> => {
+      if (isLiveCallActiveNow()) {
+        console.log("[TTS] Blocked fallback speakSingleSentenceWithToken while live session is active");
+        return;
+      }
       if (item.spoken) return;
       item.spoken = true;
 
@@ -6530,6 +6558,7 @@ export function App() {
 
   const enqueueSentenceForToken = useCallback(
     (sentence: string, token: number, _engineMode: "fast" | "quality" = "quality") => {
+      if (isLiveCallActiveNow()) return;
       if (speechTokenRef.current !== token) return;
       const clean = sentence.replace(/[*#_~`]/g, "").trim();
       if (!clean) return;
@@ -6548,6 +6577,10 @@ export function App() {
 
   const speakReplyWithTTS = useCallback(
     async (text: string) => {
+      if (isLiveCallActiveNow()) {
+        console.log("[TTS] Blocked fallback speakReplyWithTTS while live session is active");
+        return;
+      }
       const token = cancelAllSpeechAndAudio(true);
       const engineMode: "fast" | "quality" = "quality";
       streamFinishedForTokenRef.current = { token, done: true };
@@ -6619,7 +6652,7 @@ export function App() {
       }
 
       // Requirement: Stop Voice Leakage - while a live call is active, don't use typed chat for voice
-      if (liveSessionRef.current && !isTypedChat) {
+      if (isLiveCallActiveNow() && !isTypedChat) {
         console.log("[VoiceInput] Live session active, ignoring voice transcript in typed-chat pipeline.");
         return;
       }
@@ -7358,6 +7391,7 @@ export function App() {
   }, [pushSharedMessage]);
 
   const stopListening = useCallback(() => {
+    callStartAttemptRef.current += 1;
     isAssistantEnabledRef.current = false;
     setIsAssistantEnabled(false);
     isBusyRef.current = false;
@@ -7377,6 +7411,7 @@ export function App() {
       liveSessionRef.current.stop();
       liveSessionRef.current = null;
     }
+    stopActiveGlobalLiveSession();
 
     if (recognitionStartTimerRef.current) {
       try {
@@ -7455,6 +7490,7 @@ export function App() {
   }, []);
 
   const startRecorderModeListening = useCallback(async () => {
+    if (isLiveCallActiveNow()) return;
     if (!settingsRef.current.masterAccess || !isAssistantEnabledRef.current) return;
     if (micNotAllowedRef.current) return;
 
@@ -8383,6 +8419,10 @@ export function App() {
   };
 
   const speakSentenceViaGeminiTTS = async (sentence: string, key?: string, voiceName?: string, personalityId: string = "Normal"): Promise<Int16Array | null> => {
+    if (isLiveCallActiveNow()) {
+      console.log("[TTS] Blocked fallback speakSentenceViaGeminiTTS while live session is active");
+      return null;
+    }
     const cleanSentence = sentence.trim();
     if (!cleanSentence || !key) return null;
     const config = PERSONALITY_CONFIGS[personalityId] || PERSONALITY_CONFIGS["Normal"];
@@ -8498,6 +8538,7 @@ export function App() {
   };
 
   const playAudioChunkImmediately = async (pcm: Int16Array) => {
+    if (isLiveCallActiveNow()) return;
     try {
       if (!outputAudioCtxRef.current) {
         outputAudioCtxRef.current = new AudioContext({ sampleRate: 24000 });
@@ -8738,6 +8779,16 @@ export function App() {
       return;
     }
 
+    const startAttemptId = ++callStartAttemptRef.current;
+    // Close any prior live session and stop any fallback TTS/recognition immediately before starting
+    cancelAllSpeechAndAudio(true);
+    stopRecorderVadLoop(true);
+    if (liveSessionRef.current) {
+      liveSessionRef.current.stop();
+      liveSessionRef.current = null;
+    }
+    stopActiveGlobalLiveSession();
+
     // Requirement 2c: Make sure mic is NOT muted by default when call starts
     setIsMuted(false);
     isMutedRef.current = false;
@@ -8814,10 +8865,16 @@ export function App() {
       return;
     }
 
-    if (liveSessionRef.current) {
-      liveSessionRef.current.stop();
+    if (callStartAttemptRef.current !== startAttemptId || !isCallScreenOpenRef.current) {
+      return;
+    }
+
+    const existingSessionAfterMic = liveSessionRef.current as GeminiLiveSession | null;
+    if (existingSessionAfterMic) {
+      existingSessionAfterMic.stop();
       liveSessionRef.current = null;
     }
+    stopActiveGlobalLiveSession();
 
     setIsAssistantEnabled(true);
     isAssistantEnabledRef.current = true;
@@ -8848,6 +8905,7 @@ export function App() {
       backgroundCallEnabled: prefsRef.current.backgroundCallEnabled,
        floatingCallEnabled: prefsRef.current.floatingCallEnabled,
       onStateChange: (state) => {
+        if (liveSessionRef.current !== session) return;
         if (state === 'listening') transitionToState("LISTENING");
         else if (state === 'thinking') transitionToState("THINKING");
         else if (state === 'speaking') transitionToState("SPEAKING");
@@ -8858,6 +8916,7 @@ export function App() {
         }
       },
       onTranscription: (role, text, isFinal) => {
+        if (liveSessionRef.current !== session) return;
         const rawClean = (text || "").trim();
         const speaker = role === 'assistant' ? 'rose' : 'user';
         const streamId = speaker === "user" ? "live-stream-user" : "live-stream-rose";
@@ -9027,6 +9086,7 @@ export function App() {
         }
       },
       onTurnComplete: () => {
+        if (liveSessionRef.current !== session) return;
         setInterimSpeechText("");
         if (captionFadeTimerRef.current) clearTimeout(captionFadeTimerRef.current);
         captionFadeTimerRef.current = setTimeout(() => {
@@ -9034,12 +9094,14 @@ export function App() {
         }, 3000);
       },
       onError: (msg) => {
+        if (liveSessionRef.current !== session) return;
         setDiagLastError(msg);
         setLiveErrorMsg(msg);
         triggerLiveBottomError(msg);
         setToast(msg);
       },
       onReconnectStatus: (status, message) => {
+        if (liveSessionRef.current !== session) return;
         if (status === 'reconnecting') {
           setLiveReconnectStatus(message || "Reconnecting…");
         } else if (status === 'connected') {
@@ -9070,9 +9132,12 @@ export function App() {
         }
       },
       onClose: () => {
-        liveSessionRef.current = null;
+        if (liveSessionRef.current === session) {
+          liveSessionRef.current = null;
+        }
       },
       onEndCall: () => {
+        if (liveSessionRef.current !== null && liveSessionRef.current !== session) return;
         endLiveCallRef.current();
       }
     });
@@ -9098,6 +9163,7 @@ export function App() {
   }, [transitionToState, ensureAudioContext, updateLiveCaption, triggerLiveBottomError, stopListening]);
 
   const endLiveCall = useCallback(() => {
+    callStartAttemptRef.current += 1;
     if (chatHistory.length > 0) {
       const durationSeconds = callStartTimeRef.current ? Math.floor((Date.now() - callStartTimeRef.current) / 1000) : 30;
       
@@ -9468,6 +9534,7 @@ export function App() {
   };
 
   const playPcmBuffer = (pcm: Int16Array, voiceId: string, rateOverride?: number, volOverride?: number) => {
+    if (isLiveCallActiveNow()) return;
     try {
       const vol = volOverride ?? prefsRef.current.voiceVolume ?? 80;
       if (vol <= 0) {

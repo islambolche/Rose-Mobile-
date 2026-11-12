@@ -8,6 +8,7 @@ import {
   extractNonThoughtTextFromParts,
   ensureNoThoughtSystemInstruction,
   connectBoostedOutputChain,
+  configureBoostedOutputRoute,
   resetOutputGainForReply,
   volumeSliderToGain,
   isValidVoiceTranscript,
@@ -17,6 +18,7 @@ import {
   pauseGlobalMicForSpeech,
   resumeGlobalMicAfterSpeech,
   getGlobalMicStream,
+  stopGlobalMicStream,
   setBrowserAudioSessionType,
 } from './audio-manager';
 import { logDevError } from './devLog';
@@ -337,7 +339,35 @@ function blobToBase64(blob: Blob): Promise<string> {
   });
 }
 
+let activeGlobalLiveSession: GeminiLiveSession | null = null;
+let globalLiveSessionCounter = 0;
+let globalReconnectLock = false;
+
+export function getActiveLiveSession(): GeminiLiveSession | null {
+  return activeGlobalLiveSession;
+}
+
+export function isLiveSessionActive(): boolean {
+  const s = activeGlobalLiveSession;
+  return Boolean(s && !s.isStopped() && s.isSessionRunning());
+}
+
+export function stopActiveGlobalLiveSession(): void {
+  if (activeGlobalLiveSession) {
+    try {
+      activeGlobalLiveSession.stop();
+    } catch {}
+    activeGlobalLiveSession = null;
+  }
+}
+
 export class GeminiLiveSession {
+  public sessionId: string = `live_${++globalLiveSessionCounter}_${Date.now()}`;
+  private sessionLifecycleState: 'active' | 'closing' | 'closed' = 'active';
+  private currentSocketSeq = 0;
+  private activeSocketSeq = 0;
+  private activeAudioRoute: 'direct' | 'background' = 'direct';
+  private isRoseTurnActive = false;
   private ws: WebSocket | null = null;
   private audioCtx: AudioContext | null = null;
   private playbackAudioCtx: AudioContext | null = null;
@@ -495,6 +525,197 @@ export class GeminiLiveSession {
   public getMicAnalyser() { return this.micAnalyser; }
   public getOutputAnalyser() { return this.outputAnalyser; }
   public isBrowserSpeechActive() { return this.isBrowserTtsSpeaking; }
+  public getSessionId() { return this.sessionId; }
+  public getAudioRoute() { return this.activeAudioRoute; }
+  public isStopped() { return this.wasStoppedByUser || this.sessionLifecycleState === 'closed'; }
+  public isSessionRunning() {
+    return !this.wasStoppedByUser && this.sessionLifecycleState !== 'closed' && this.currentState !== 'off';
+  }
+
+  private isCurrentSession(
+    socket?: WebSocket | null,
+    socketSeq?: number,
+    expectedSessionId?: string
+  ): boolean {
+    if (this.wasStoppedByUser) return false;
+    if (this.sessionLifecycleState !== 'active') return false;
+    if (activeGlobalLiveSession !== this) return false;
+    if (expectedSessionId !== undefined && this.sessionId !== expectedSessionId) return false;
+    if (socket !== undefined && socket !== null && this.ws !== socket) return false;
+    if (socketSeq !== undefined && this.activeSocketSeq !== socketSeq) return false;
+    return true;
+  }
+
+  private releaseExistingSocketOnly(closeReason: string = 'closing') {
+    this.isSetupComplete = false;
+    this.activeSocketSeq = 0;
+    if (this.ws) {
+      const sock = this.ws;
+      this.ws = null;
+      try {
+        sock.onopen = null;
+        sock.onmessage = null;
+        sock.onerror = null;
+        sock.onclose = null;
+        if (sock.readyState === WebSocket.OPEN || sock.readyState === WebSocket.CONNECTING) {
+          sock.close(1000, closeReason);
+        }
+      } catch {}
+    }
+  }
+
+  private disconnectAllMicAndAudioNodes() {
+    if (this.micSourceNode) {
+      try {
+        this.micSourceNode.disconnect();
+      } catch {}
+      this.micSourceNode = null;
+    }
+
+    if (this.rnnoiseNode) {
+      try {
+        this.rnnoiseNode.port.onmessage = null;
+        this.rnnoiseNode.disconnect();
+      } catch {}
+      this.rnnoiseNode = null;
+    }
+
+    if (this.audioWorkletNode) {
+      try {
+        this.audioWorkletNode.port.onmessage = null;
+        this.audioWorkletNode.disconnect();
+      } catch {}
+      this.audioWorkletNode = null;
+    }
+
+    if (this.scriptProcessor) {
+      try {
+        this.scriptProcessor.onaudioprocess = null;
+        this.scriptProcessor.disconnect();
+      } catch {}
+      this.scriptProcessor = null;
+    }
+
+    if (this.cleanDestNode) {
+      try {
+        this.cleanDestNode.disconnect();
+      } catch {}
+      this.cleanDestNode = null;
+    }
+
+    if (this.micAnalyser) {
+      try {
+        this.micAnalyser.disconnect();
+      } catch {}
+      this.micAnalyser = null;
+    }
+
+    if (this.outputAnalyser) {
+      try {
+        this.outputAnalyser.disconnect();
+      } catch {}
+      this.outputAnalyser = null;
+    }
+
+    this.sileroVad.stop();
+
+    for (const s of [this.micStream, this.denoisedStream, this.options.micStream]) {
+      if (!s) continue;
+      try {
+        s.getTracks().forEach((track) => {
+          try {
+            track.enabled = false;
+            track.stop();
+          } catch {}
+        });
+      } catch {}
+    }
+    pauseGlobalMicForSpeech([this.micStream, this.denoisedStream, this.options.micStream]);
+    void stopGlobalMicStream();
+    this.micStream = null;
+    this.options.micStream = undefined;
+    this.denoisedStream = null;
+    this.options.onMicLive?.(false);
+  }
+
+  private teardownBackgroundAudioElement() {
+    if (this.visChangeHandler) {
+      try {
+        document.removeEventListener('visibilitychange', this.visChangeHandler);
+      } catch {}
+      this.visChangeHandler = null;
+    }
+    if (this.audioElement) {
+      try {
+        this.audioElement.pause();
+        this.audioElement.srcObject = null;
+      } catch {}
+      this.audioElement = null;
+    }
+    if (this.destination) {
+      try {
+        this.destination.disconnect();
+      } catch {}
+      this.destination = null;
+    }
+  }
+
+  private async setupSingleAudioOutputRoute() {
+    if (!this.playbackAudioCtx || this.wasStoppedByUser) return;
+    this.teardownBackgroundAudioElement();
+
+    let route: 'direct' | 'background' = 'direct';
+    if (this.options.backgroundCallEnabled) {
+      try {
+        const dest = this.playbackAudioCtx.createMediaStreamDestination();
+        const audioEl = new Audio();
+        audioEl.srcObject = dest.stream;
+        audioEl.autoplay = true;
+        audioEl.setAttribute('playsinline', 'true');
+        await audioEl.play();
+        if (!audioEl.paused && !this.wasStoppedByUser && this.isCurrentSession()) {
+          this.destination = dest;
+          this.audioElement = audioEl;
+          this.setupMediaSession();
+          this.visChangeHandler = () => {
+            if (document.visibilityState === 'visible') {
+              if (this.audioCtx && this.audioCtx.state === 'suspended') this.audioCtx.resume();
+              if (this.playbackAudioCtx && this.playbackAudioCtx.state === 'suspended') this.playbackAudioCtx.resume();
+            } else if (document.visibilityState === 'hidden' && this.options.floatingCallEnabled) {
+              this.enterPiP();
+            }
+          };
+          document.addEventListener('visibilitychange', this.visChangeHandler);
+          route = 'background';
+        } else {
+          try {
+            audioEl.pause();
+            audioEl.srcObject = null;
+            dest.disconnect();
+          } catch {}
+        }
+      } catch (e) {
+        console.warn('[GeminiLive] Background audio element could not play, using direct route:', e);
+        this.teardownBackgroundAudioElement();
+        route = 'direct';
+      }
+    }
+
+    const configured = configureBoostedOutputRoute(
+      this.playbackAudioCtx,
+      route,
+      route === 'background' ? this.destination : null,
+      this.outputAnalyser,
+      this.options.voiceVolume,
+      this.sessionId
+    );
+    this.activeAudioRoute = configured.route;
+    console.log('[GeminiLive] Active audio route configured:', {
+      sessionId: this.sessionId,
+      audioRoute: this.activeAudioRoute,
+      backgroundCallEnabled: Boolean(this.options.backgroundCallEnabled),
+    });
+  }
 
   public setMuted(muted: boolean) {
     this.isMuted = muted;
@@ -637,6 +858,26 @@ export class GeminiLiveSession {
   }
 
   public async start() {
+    if (activeGlobalLiveSession && activeGlobalLiveSession !== this) {
+      console.log('[GeminiLive] Closing previous live session before start:', {
+        closingSessionId: activeGlobalLiveSession.sessionId,
+        newSessionId: this.sessionId,
+      });
+      activeGlobalLiveSession.sessionLifecycleState = 'closing';
+      try {
+        activeGlobalLiveSession.stop();
+      } catch {}
+    }
+    activeGlobalLiveSession = this;
+    this.sessionLifecycleState = 'active';
+    this.interruptPlayback();
+    this.releaseExistingSocketOnly('new_session_start');
+    this.isRoseTurnActive = false;
+    console.log('[GeminiLive] Starting live session:', {
+      sessionId: this.sessionId,
+      backgroundCallEnabled: Boolean(this.options.backgroundCallEnabled),
+    });
+
     this.wasStoppedByUser = false;
     this.isReconnecting = false;
     this.isSetupComplete = false;
@@ -729,48 +970,20 @@ export class GeminiLiveSession {
 
     // 3. Try Path 1 (Live WebSocket) unless Street Mode is enabled (Street Mode requires transcript wake-word verification before speaking)
     if (this.liveModels.length > 0 && !getMicListeningSettings().streetMode) {
-      if (this.options.backgroundCallEnabled) {
-        try {
-          this.destination = this.playbackAudioCtx!.createMediaStreamDestination();
-          this.audioElement = new Audio();
-          this.audioElement.srcObject = this.destination.stream;
-          this.audioElement.autoplay = true;
-          this.audioElement.setAttribute("playsinline", "true");
-          this.audioElement.play().catch(e => console.warn("Background audio play failed:", e));
-          this.setupMediaSession();
-          
-          // Resume AudioContext on visibility change
-          this.visChangeHandler = () => {
-            if (document.visibilityState === 'visible') {
-              if (this.audioCtx && this.audioCtx.state === 'suspended') this.audioCtx.resume();
-              if (this.playbackAudioCtx && this.playbackAudioCtx.state === 'suspended') this.playbackAudioCtx.resume();
-            } else if (document.visibilityState === 'hidden' && this.options.floatingCallEnabled) {
-              this.enterPiP();
-            }
-          };
-          document.addEventListener('visibilitychange', this.visChangeHandler);
-        } catch (e) {
-          console.warn("[GeminiLive] Background audio setup failed, falling back:", e);
-          this.options.backgroundCallEnabled = false;
-        }
-      }
-
       const connectedLive = await this.tryConnectLiveModels(apiKey, this.liveModels.slice(0, 3), 8000);
-      if (connectedLive && !this.wasStoppedByUser) {
-        if (this.options.backgroundCallEnabled && this.destination) {
-           // Redirect output to background stream
-           try {
-              // Disconnect from default destination and connect to background stream
-              // This relies on the output chain structure
-           } catch(e) {}
-        }
+      if (connectedLive && this.isCurrentSession()) {
         this.activeMode = 'live';
         this.socketStatus = 'open';
         this.updateState('listening');
+        console.log('[GeminiLive] Live session active:', {
+          sessionId: this.sessionId,
+          model: this.connectedModelName,
+          audioRoute: this.activeAudioRoute,
+        });
         return;
       }
 
-      if (!this.wasStoppedByUser && this.lastError) {
+      if (!this.wasStoppedByUser && this.isCurrentSession() && this.lastError) {
         this.options.onError?.(this.lastError);
       }
     }
@@ -801,11 +1014,12 @@ export class GeminiLiveSession {
   private startWatchdog() {
     if (this.watchdogTimer) clearInterval(this.watchdogTimer);
     this.watchdogTimer = setInterval(() => {
-      if (this.wasStoppedByUser || this.currentState === 'off') return;
+      if (!this.isCurrentSession() || this.currentState === 'off' || globalReconnectLock) return;
 
       // 10-second reply watchdog: if user's speech was transcribed but no model reply starts within 10s
       if (
         !this.isReconnecting &&
+        !globalReconnectLock &&
         this.awaitingReplySince > 0 &&
         this.currentState !== 'speaking' &&
         this.scheduledAudioSources.length === 0 &&
@@ -1037,9 +1251,14 @@ export class GeminiLiveSession {
       );
       const actualChunkMs = Math.round((targetChunkSamples / sourceSampleRate) * 1000);
 
+      const captureSessionId = this.sessionId;
       // Attach continuous ~40ms PCM16 capture for Live WebSocket AND feed Silero VAD for Path 2 fallback
       const sendPcm40msChunk = (float32Samples: Float32Array) => {
-        if (this.wasStoppedByUser || this.isMuted || this.currentState === 'speaking') {
+        if (
+          !this.isCurrentSession(undefined, undefined, captureSessionId) ||
+          this.isMuted ||
+          this.currentState === 'speaking'
+        ) {
           return;
         }
 
@@ -1185,12 +1404,8 @@ export class GeminiLiveSession {
       this.attachMicStreamToAudioGraph(this.micStream);
       this.startVisualizer();
 
-      if (this.options.backgroundCallEnabled && this.destination) {
-          // Connect output to background destination after chain creation
-          const { compressor } = connectBoostedOutputChain(this.playbackAudioCtx!, this.playbackAudioCtx!.createGain(), this.options.voiceVolume, this.outputAnalyser);
-          compressor.connect(this.destination);
-      }
-      
+      await this.setupSingleAudioOutputRoute();
+
       return true;
     } catch (e: any) {
       const isDenied =
@@ -1216,6 +1431,9 @@ export class GeminiLiveSession {
     candidates: string[],
     totalBudgetMs: number
   ): Promise<boolean> {
+    if (!this.isCurrentSession()) return false;
+    this.stopAllAudioPlayback();
+    this.releaseExistingSocketOnly();
     const deadline = Date.now() + totalBudgetMs;
     const adminActive = isAdmin();
 
@@ -1336,6 +1554,16 @@ export class GeminiLiveSession {
     voiceNameOverride?: string
   ): Promise<boolean> {
     return new Promise((resolve) => {
+      const expectedSessionId = this.sessionId;
+      if (!this.isCurrentSession(undefined, undefined, expectedSessionId)) {
+        resolve(false);
+        return;
+      }
+
+      this.releaseExistingSocketOnly('superseded');
+      const socketSeq = ++this.currentSocketSeq;
+      this.activeSocketSeq = socketSeq;
+
       let settled = false;
       const useAlphaEndpoint =
         includeAffectiveDialog && isAdmin() && this.modelSupportsAffectiveDialog(modelName);
@@ -1358,6 +1586,9 @@ export class GeminiLiveSession {
           if (this.ws === socket) {
             this.ws = null;
           }
+          if (this.activeSocketSeq === socketSeq) {
+            this.activeSocketSeq = 0;
+          }
         }
         resolve(success);
       };
@@ -1375,7 +1606,7 @@ export class GeminiLiveSession {
       }
 
       socket.onopen = () => {
-        if (this.wasStoppedByUser) {
+        if (!this.isCurrentSession(socket, socketSeq, expectedSessionId)) {
           finish(false);
           return;
         }
@@ -1452,9 +1683,21 @@ export class GeminiLiveSession {
       };
 
       socket.onmessage = async (event) => {
+        if (!this.isCurrentSession(socket, socketSeq, expectedSessionId)) {
+          console.warn('[GeminiLive] Ignoring message from closing/stale session/socket:', {
+            messageSessionId: expectedSessionId,
+            activeSessionId: activeGlobalLiveSession?.sessionId || null,
+            lifecycleState: this.sessionLifecycleState,
+          });
+          try {
+            socket?.close();
+          } catch {}
+          return;
+        }
         this.messagesReceived++;
         try {
           const raw = typeof event.data === 'string' ? event.data : await (event.data as Blob).text();
+          if (!this.isCurrentSession(socket, socketSeq, expectedSessionId)) return;
           const msg = JSON.parse(raw);
 
           // Store latest sessionResumption handle if sent by server
@@ -1478,7 +1721,7 @@ export class GeminiLiveSession {
               finish(false);
               return;
             }
-            if (!this.wasStoppedByUser && this.ws === socket) {
+            if (this.isCurrentSession(socket, socketSeq, expectedSessionId)) {
               void this.handleLiveDisconnectAndAutoReconnect(apiKey, `goAway (timeLeft: ${timeLeft})`);
             }
             return;
@@ -1507,7 +1750,7 @@ export class GeminiLiveSession {
                 finish(false);
                 return;
               }
-              if (!this.wasStoppedByUser && this.ws === socket) {
+              if (this.isCurrentSession(socket, socketSeq, expectedSessionId)) {
                 void this.handleLiveDisconnectAndAutoReconnect(apiKey, 'vad_config_rejected', 1);
               }
               return;
@@ -1532,7 +1775,7 @@ export class GeminiLiveSession {
               finish(false);
               return;
             }
-            if (!this.wasStoppedByUser && this.ws === socket) {
+            if (this.isCurrentSession(socket, socketSeq, expectedSessionId)) {
               this.options.onError?.(formattedErr.bengali, formattedErr.original);
               if (isFatalQuotaOrAuth) {
                 this.failAndEndSessionCleanly(formattedErr.bengali);
@@ -1577,10 +1820,14 @@ export class GeminiLiveSession {
       };
 
       socket.onerror = () => {
+        if (!this.isCurrentSession(socket, socketSeq, expectedSessionId)) {
+          finish(false);
+          return;
+        }
         console.log('[GeminiLive] WebSocket error event');
         if (!settled) {
           finish(false);
-        } else if (!this.wasStoppedByUser && this.ws === socket) {
+        } else if (this.isCurrentSession(socket, socketSeq, expectedSessionId)) {
           void this.handleLiveDisconnectAndAutoReconnect(apiKey, 'websocket_error');
         }
       };
@@ -1617,9 +1864,14 @@ export class GeminiLiveSession {
           }
         }
 
+        if (!this.isCurrentSession(socket, socketSeq, expectedSessionId)) {
+          finish(false);
+          return;
+        }
+
         if (!settled) {
           finish(false);
-        } else if (!this.wasStoppedByUser && this.ws === socket) {
+        } else if (this.isCurrentSession(socket, socketSeq, expectedSessionId)) {
           if (isQuotaOrAuthClose && this.lastError) {
             this.failAndEndSessionCleanly(this.lastError);
             return;
@@ -1634,6 +1886,7 @@ export class GeminiLiveSession {
   }
 
   private async handleLiveToolCall(socket: WebSocket, toolCall: any) {
+    if (!this.isCurrentSession(socket)) return;
     const calls = toolCall?.functionCalls || toolCall?.function_calls || [];
     if (!Array.isArray(calls) || calls.length === 0) return;
 
@@ -1774,8 +2027,8 @@ export class GeminiLiveSession {
           }
           this.endCallFallbackTimer = setTimeout(() => {
             if (
+              this.isCurrentSession() &&
               this.pendingEndCallAfterSpeech &&
-              !this.wasStoppedByUser &&
               this.scheduledAudioSources.length === 0 &&
               this.pendingPcmSamplesCount === 0 &&
               !this.isBrowserTtsSpeaking
@@ -1816,7 +2069,7 @@ export class GeminiLiveSession {
       }
     }
 
-    if (socket.readyState === WebSocket.OPEN && functionResponses.length > 0) {
+    if (this.isCurrentSession(socket) && socket.readyState === WebSocket.OPEN && functionResponses.length > 0) {
       try {
         socket.send(
           JSON.stringify({
@@ -1834,17 +2087,9 @@ export class GeminiLiveSession {
   private releaseSessionAudioAndSocketForReconnect() {
     this.isSetupComplete = false;
     this.socketStatus = 'connecting';
+    this.isRoseTurnActive = false;
 
-    if (this.ws) {
-      try {
-        this.ws.onopen = null;
-        this.ws.onmessage = null;
-        this.ws.onerror = null;
-        this.ws.onclose = null;
-        this.ws.close();
-      } catch {}
-      this.ws = null;
-    }
+    this.releaseExistingSocketOnly('reconnect_cleanup');
 
     if (this.vadTimer) {
       clearInterval(this.vadTimer);
@@ -1862,47 +2107,8 @@ export class GeminiLiveSession {
     this.isProcessingClip = false;
 
     this.interruptPlayback();
-
-    if (this.micSourceNode) {
-      try {
-        this.micSourceNode.disconnect();
-      } catch {}
-      this.micSourceNode = null;
-    }
-
-    if (this.rnnoiseNode) {
-      try {
-        this.rnnoiseNode.disconnect();
-      } catch {}
-      this.rnnoiseNode = null;
-    }
-
-    if (this.scriptProcessor) {
-      try {
-        this.scriptProcessor.disconnect();
-      } catch {}
-      this.scriptProcessor = null;
-    }
-
-    if (this.audioWorkletNode) {
-      try {
-        this.audioWorkletNode.disconnect();
-      } catch {}
-      this.audioWorkletNode = null;
-    }
-
-    if (this.cleanDestNode) {
-      try {
-        this.cleanDestNode.disconnect();
-      } catch {}
-      this.cleanDestNode = null;
-    }
-
-    pauseGlobalMicForSpeech([this.micStream, this.options.micStream]);
-    this.micStream = null;
-    this.options.micStream = undefined;
-    this.denoisedStream = null;
-    this.options.onMicLive?.(false);
+    this.teardownBackgroundAudioElement();
+    this.disconnectAllMicAndAudioNodes();
   }
 
   private failAndEndSessionCleanly(message: string) {
@@ -1925,15 +2131,29 @@ export class GeminiLiveSession {
     reason: string = 'disconnect',
     maxAttempts: number = 3
   ): Promise<void> {
-    if (this.wasStoppedByUser || this.isReconnecting) return;
+    if (
+      this.wasStoppedByUser ||
+      this.sessionLifecycleState !== 'active' ||
+      activeGlobalLiveSession !== this ||
+      this.isReconnecting ||
+      globalReconnectLock
+    ) {
+      return;
+    }
+    globalReconnectLock = true;
     this.isReconnecting = true;
+    this.isRoseTurnActive = false;
 
     const cleanKey = (apiKey || this.cachedApiKey || getGeminiKey() || '')
       .replace(/[\r\n\t\s"']+/g, '')
       .trim();
 
-    // Release old WebSocket and old mic/audio nodes cleanly first
+    // Mark old session as "closing", close WebSocket, and disconnect all mic streams & audio nodes BEFORE opening the new one
+    const oldSessionId = this.sessionId;
+    const newSessionId = `live_${++globalLiveSessionCounter}_${Date.now()}`;
+    this.sessionLifecycleState = 'closing';
     this.releaseSessionAudioAndSocketForReconnect();
+    console.log(`RECONNECT old=${oldSessionId} new=${newSessionId}`);
 
     // Notify call banner UI to show "Reconnecting…"
     this.options.onReconnectStatus?.('reconnecting', 'Reconnecting…');
@@ -1942,10 +2162,10 @@ export class GeminiLiveSession {
 
     try {
       for (let attempt = 1; attempt <= maxAttempts; attempt++) {
-        if (this.wasStoppedByUser) return;
+        if (this.wasStoppedByUser || activeGlobalLiveSession !== this) return;
         const delayMs = delays[Math.min(attempt - 1, delays.length - 1)];
         console.log(
-          `[GeminiLive] Reconnect attempt ${attempt}/${maxAttempts} in ${delayMs}ms (reason: ${this.sanitizeLogText(reason)}, resumptionHandle: ${
+          `[GeminiLive] Reconnect attempt ${attempt}/${maxAttempts} in ${delayMs}ms (old=${oldSessionId}, new=${newSessionId}, reason: ${this.sanitizeLogText(reason)}, resumptionHandle: ${
             this.resumptionHandle ? 'present' : 'none'
           })`
         );
@@ -1958,11 +2178,16 @@ export class GeminiLiveSession {
           }, delayMs);
         });
 
-        if (this.wasStoppedByUser) return;
+        if (this.wasStoppedByUser || activeGlobalLiveSession !== this) return;
+
+        // Promote to the new session ID only after previous socket, mic stream, and audio nodes are disconnected
+        this.sessionId = newSessionId;
+        this.sessionLifecycleState = 'active';
 
         // Re-initialize fresh mic stream and audio nodes
         const audioReady = await this.initAudioAndAnalyzers();
-        if (!audioReady || this.wasStoppedByUser) {
+        if (!audioReady || this.wasStoppedByUser || activeGlobalLiveSession !== this) {
+          this.sessionLifecycleState = 'closing';
           this.releaseSessionAudioAndSocketForReconnect();
           continue;
         }
@@ -1988,8 +2213,12 @@ export class GeminiLiveSession {
           reconnected = await this.tryConnectLiveModels(cleanKey, orderedCandidates, 5500);
         }
 
-        if (reconnected && !this.wasStoppedByUser) {
-          console.log(`[GeminiLive] Reconnect attempt ${attempt}/${maxAttempts} succeeded`);
+        if (reconnected && this.isCurrentSession()) {
+          console.log(`[GeminiLive] Reconnect attempt ${attempt}/${maxAttempts} succeeded`, {
+            oldSessionId,
+            sessionId: this.sessionId,
+            audioRoute: this.activeAudioRoute,
+          });
           this.isFallbackMode = false;
           this.activeMode = 'live';
           this.socketStatus = 'open';
@@ -2001,10 +2230,11 @@ export class GeminiLiveSession {
         }
 
         // Release nodes from failed attempt before next attempt
+        this.sessionLifecycleState = 'closing';
         this.releaseSessionAudioAndSocketForReconnect();
       }
 
-      if (!this.wasStoppedByUser) {
+      if (!this.wasStoppedByUser && activeGlobalLiveSession === this) {
         console.log(
           `[GeminiLive] All ${maxAttempts} reconnect attempts failed. Ending call cleanly.`
         );
@@ -2013,6 +2243,10 @@ export class GeminiLiveSession {
       }
     } finally {
       this.isReconnecting = false;
+      globalReconnectLock = false;
+      if (this.wasStoppedByUser) {
+        this.sessionLifecycleState = 'closed';
+      }
     }
   }
 
@@ -2021,6 +2255,8 @@ export class GeminiLiveSession {
   private liveStreetAllowed = true;
 
   private handleLiveServerContent(content: any) {
+    if (!this.isCurrentSession()) return;
+
     if (content.inputTranscription?.text) {
       const cleanedChunk = content.inputTranscription.text.replace(/<[^>]*>|\[[^\]]*\]/g, '');
       if (cleanedChunk.length > 0) {
@@ -2051,6 +2287,14 @@ export class GeminiLiveSession {
         this.stopAllAudioPlayback();
         return;
       }
+      if (!this.isRoseTurnActive) {
+        this.isRoseTurnActive = true;
+        this.interruptPlayback();
+        console.log('[GeminiLive] New Rose turn started (outputTranscription) — stopped previous turn audio:', {
+          sessionId: this.sessionId,
+          audioRoute: this.activeAudioRoute,
+        });
+      }
       this.liveAssistantBuffer += content.outputTranscription.text;
       const cleanedLive = stripStageCues(this.liveAssistantBuffer).trim();
       if (cleanedLive) {
@@ -2071,7 +2315,15 @@ export class GeminiLiveSession {
           continue;
         }
         if (part.inlineData?.data) {
-          if (this.scheduledAudioSources.length === 0 && this.pendingPcmSamplesCount === 0) {
+          if (!this.isRoseTurnActive) {
+            this.isRoseTurnActive = true;
+            this.interruptPlayback();
+            this.needsGainResetForTurn = true;
+            console.log('[GeminiLive] New Rose turn started (audio) — stopped previous turn audio:', {
+              sessionId: this.sessionId,
+              audioRoute: this.activeAudioRoute,
+            });
+          } else if (this.scheduledAudioSources.length === 0 && this.pendingPcmSamplesCount === 0) {
             this.needsGainResetForTurn = true;
           }
           if (this.pendingEndCallAfterSpeech) {
@@ -2093,9 +2345,10 @@ export class GeminiLiveSession {
       this.liveAssistantBuffer = '';
       this.phoneToolHandledForTurn = false;
       this.liveStreetAllowed = true;
+      this.isRoseTurnActive = false;
       this.liveTurnCompleted = true;
       voiceDebugStore.finishTurn();
-      this.stopAllAudioPlayback();
+      this.interruptPlayback();
       this.finishSpeakingAndReturnToListening();
       this.options.onInterrupted?.();
     }
@@ -2130,6 +2383,7 @@ export class GeminiLiveSession {
       this.liveAssistantBuffer = '';
       this.phoneToolHandledForTurn = false;
       this.liveStreetAllowed = true;
+      this.isRoseTurnActive = false;
       this.liveTurnCompleted = true;
       voiceDebugStore.finishTurn();
       this.flushPendingPcmChunks(true);
@@ -2374,7 +2628,7 @@ export class GeminiLiveSession {
     mimeType: string,
     usedPushToTalk = false
   ) {
-    if (this.wasStoppedByUser || this.isProcessingClip) return;
+    if (!this.isCurrentSession() || this.isProcessingClip) return;
     this.isProcessingClip = true;
     this.updateState('thinking');
 
@@ -2934,7 +3188,7 @@ export class GeminiLiveSession {
   ): Promise<void> {
     const filteredText = cleanAssistantReplyText(text, this.options.language);
     const cleanText = filteredText.replace(/[*#_~`]/g, '').trim();
-    if (!cleanText || this.wasStoppedByUser) return;
+    if (!cleanText || !this.isCurrentSession()) return;
 
     const vol = this.options.voiceVolume ?? 80;
     if (vol <= 0) {
@@ -3019,7 +3273,7 @@ export class GeminiLiveSession {
   private playPcmAudioAndWait(base64Pcm: string): Promise<boolean> {
     return new Promise((resolve) => {
       const ctx = this.playbackAudioCtx || this.audioCtx;
-      if (!ctx || this.wasStoppedByUser) {
+      if (!ctx || !this.isCurrentSession()) {
         resolve(false);
         return;
       }
@@ -3124,7 +3378,7 @@ export class GeminiLiveSession {
 
   private speakViaBrowserSpeechSynthesis(text: string): Promise<boolean> {
     return new Promise((resolve) => {
-      if (typeof window === 'undefined' || !('speechSynthesis' in window) || this.wasStoppedByUser) {
+      if (typeof window === 'undefined' || !('speechSynthesis' in window) || !this.isCurrentSession()) {
         resolve(false);
         return;
       }
@@ -3245,6 +3499,7 @@ export class GeminiLiveSession {
   }
 
   private playPcmAudioChunk(base64Pcm: string) {
+    if (!this.isCurrentSession()) return;
     try {
       const binaryStr = atob(base64Pcm);
       const len = binaryStr.length;
@@ -3278,6 +3533,11 @@ export class GeminiLiveSession {
     if (this.pcmFlushTimer) {
       clearTimeout(this.pcmFlushTimer);
       this.pcmFlushTimer = null;
+    }
+    if (!this.isCurrentSession()) {
+      this.pendingPcmChunks = [];
+      this.pendingPcmSamplesCount = 0;
+      return;
     }
     if (this.pendingPcmSamplesCount <= 0 || this.pendingPcmChunks.length === 0) return;
     if (!force && this.pendingPcmSamplesCount < 6000) return;
@@ -3456,7 +3716,13 @@ export class GeminiLiveSession {
     this.pendingPcmSamplesCount = 0;
     this.scheduledAudioSources.forEach((s) => {
       try {
+        s.onended = null;
+      } catch {}
+      try {
         s.stop();
+      } catch {}
+      try {
+        s.disconnect();
       } catch {}
     });
     this.scheduledAudioSources = [];
@@ -3465,7 +3731,7 @@ export class GeminiLiveSession {
 
   private scheduleReturnToListening() {
     setTimeout(() => {
-      if (this.wasStoppedByUser) return;
+      if (!this.isCurrentSession()) return;
       if (
         this.scheduledAudioSources.length === 0 &&
         this.pendingPcmSamplesCount === 0 &&
@@ -3492,6 +3758,7 @@ export class GeminiLiveSession {
 
   public stop() {
     this.exitPiP();
+    this.sessionLifecycleState = 'closed';
     this.wasStoppedByUser = true;
     this.isReconnecting = false;
     this.visualizerRunning = false;
@@ -3538,74 +3805,30 @@ export class GeminiLiveSession {
     }
     this.mediaRecorder = null;
 
+    this.isRoseTurnActive = false;
     this.interruptPlayback();
 
     this.clearMediaSession();
-    if (this.visChangeHandler) {
-        document.removeEventListener('visibilitychange', this.visChangeHandler);
-        this.visChangeHandler = null;
-    }
-    if (this.audioElement) {
-        this.audioElement.pause();
-        this.audioElement.srcObject = null;
-        this.audioElement = null;
-    }
-    if (this.destination) {
-        this.destination.disconnect();
-        this.destination = null;
-    }
+    this.teardownBackgroundAudioElement();
+    this.disconnectAllMicAndAudioNodes();
 
-    if (this.ws) {
+    if (this.playbackAudioCtx && this.playbackAudioCtx.state !== 'closed') {
       try {
-        this.ws.onopen = null;
-        this.ws.onmessage = null;
-        this.ws.onerror = null;
-        this.ws.onclose = null;
-        this.ws.close();
+        configureBoostedOutputRoute(
+          this.playbackAudioCtx,
+          'direct',
+          null,
+          null,
+          this.options.voiceVolume,
+          this.sessionId
+        );
       } catch {}
-      this.ws = null;
     }
+    this.activeAudioRoute = 'direct';
 
-    if (this.micSourceNode) {
-      try {
-        this.micSourceNode.disconnect();
-      } catch {}
-      this.micSourceNode = null;
+    this.releaseExistingSocketOnly('stopped');
+    if (activeGlobalLiveSession === this) {
+      activeGlobalLiveSession = null;
     }
-
-    if (this.rnnoiseNode) {
-      try {
-        this.rnnoiseNode.disconnect();
-      } catch {}
-      this.rnnoiseNode = null;
-    }
-
-    if (this.cleanDestNode) {
-      try {
-        this.cleanDestNode.disconnect();
-      } catch {}
-      this.cleanDestNode = null;
-    }
-
-    this.sileroVad.stop();
-
-    if (this.scriptProcessor) {
-      try {
-        this.scriptProcessor.disconnect();
-      } catch {}
-      this.scriptProcessor = null;
-    }
-    if (this.audioWorkletNode) {
-      try {
-        this.audioWorkletNode.disconnect();
-      } catch {}
-      this.audioWorkletNode = null;
-    }
-
-    pauseGlobalMicForSpeech([this.micStream, this.options.micStream]);
-    this.micStream = null;
-    this.options.micStream = undefined;
-    this.denoisedStream = null;
-    this.options.onMicLive?.(false);
   }
 }

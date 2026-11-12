@@ -671,9 +671,49 @@ interface PersistentOutputChain {
   gainNode: GainNode;
   compressor: DynamicsCompressorNode;
   connectedAnalyser: AnalyserNode | null;
+  route: 'direct' | 'background';
+  backgroundDest: AudioNode | null;
 }
 
 const persistentOutputChains = new WeakMap<AudioContext, PersistentOutputChain>();
+
+const wireExclusiveChainTarget = (
+  ctx: AudioContext,
+  chain: PersistentOutputChain,
+  route: 'direct' | 'background',
+  backgroundDest: AudioNode | null,
+  analyser: AnalyserNode | null
+) => {
+  const validAnalyser = analyser && analyser.context === ctx ? analyser : null;
+  const effectiveRoute: 'direct' | 'background' =
+    route === 'background' && backgroundDest ? 'background' : 'direct';
+  const targetNode: AudioNode = effectiveRoute === 'background' ? backgroundDest! : ctx.destination;
+
+  try {
+    chain.compressor.disconnect();
+  } catch {}
+  if (chain.connectedAnalyser) {
+    try {
+      chain.connectedAnalyser.disconnect();
+    } catch {}
+  }
+  if (validAnalyser && validAnalyser !== chain.connectedAnalyser) {
+    try {
+      validAnalyser.disconnect();
+    } catch {}
+  }
+
+  if (validAnalyser) {
+    chain.compressor.connect(validAnalyser);
+    validAnalyser.connect(targetNode);
+  } else {
+    chain.compressor.connect(targetNode);
+  }
+
+  chain.connectedAnalyser = validAnalyser;
+  chain.route = effectiveRoute;
+  chain.backgroundDest = effectiveRoute === 'background' ? backgroundDest : null;
+};
 
 export const getOrCreateBoostedOutputChain = (
   ctx: AudioContext,
@@ -696,38 +736,40 @@ export const getOrCreateBoostedOutputChain = (
     compressor.release.setValueAtTime(0.1, ctx.currentTime);
 
     gainNode.connect(compressor);
-    if (validAnalyser) {
-      compressor.connect(validAnalyser);
-      validAnalyser.connect(ctx.destination);
-    } else {
-      compressor.connect(ctx.destination);
-    }
 
     chain = {
       gainNode,
       compressor,
-      connectedAnalyser: validAnalyser,
+      connectedAnalyser: null,
+      route: 'direct',
+      backgroundDest: null,
     };
     persistentOutputChains.set(ctx, chain);
+    wireExclusiveChainTarget(ctx, chain, 'direct', null, validAnalyser);
   } else if (chain.connectedAnalyser !== validAnalyser) {
-    try {
-      chain.compressor.disconnect();
-    } catch {}
-    if (chain.connectedAnalyser) {
-      try {
-        chain.connectedAnalyser.disconnect();
-      } catch {}
-    }
-    if (validAnalyser) {
-      chain.compressor.connect(validAnalyser);
-      validAnalyser.connect(ctx.destination);
-    } else {
-      chain.compressor.connect(ctx.destination);
-    }
-    chain.connectedAnalyser = validAnalyser;
+    wireExclusiveChainTarget(ctx, chain, chain.route, chain.backgroundDest, validAnalyser);
   }
 
   return { gainNode: chain.gainNode, compressor: chain.compressor };
+};
+
+export const configureBoostedOutputRoute = (
+  ctx: AudioContext,
+  route: 'direct' | 'background',
+  backgroundDest: AudioNode | null,
+  analyser?: AnalyserNode | null,
+  volumePercent?: number,
+  sessionId?: string
+): { route: 'direct' | 'background'; gainNode: GainNode; compressor: DynamicsCompressorNode } => {
+  const { gainNode, compressor } = getOrCreateBoostedOutputChain(ctx, volumePercent, analyser);
+  const chain = persistentOutputChains.get(ctx)!;
+  wireExclusiveChainTarget(ctx, chain, route, backgroundDest, analyser || null);
+  console.log(
+    `[AudioRoute] session=${sessionId || 'app'} route=${
+      chain.route === 'background' ? 'background(<audio>)' : 'direct(AudioContext.destination)'
+    }`
+  );
+  return { route: chain.route, gainNode, compressor };
 };
 
 export const resetOutputGainForReply = (
@@ -744,7 +786,7 @@ export const resetOutputGainForReply = (
 
 /**
  * Connects an AudioNode (source) through the persistent, non-clipping limiter chain:
- * source -> GainNode (default 1.4, max 1.8) -> DynamicsCompressorNode (threshold -12, knee 6, ratio 12, attack 0.003, release 0.1) -> (AnalyserNode) -> destination
+ * source -> GainNode (default 1.4, max 1.8) -> DynamicsCompressorNode (threshold -12, knee 6, ratio 12, attack 0.003, release 0.1) -> (AnalyserNode) -> single active route
  */
 export const connectBoostedOutputChain = (
   ctx: AudioContext,

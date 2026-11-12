@@ -7,11 +7,36 @@ import {
 } from 'lucide-react';
 import { openExternal } from '../lib/openExternal';
 
+const NATIVE_APP_PACKAGES: Record<string, string> = {
+  app_perm_whatsapp: 'com.whatsapp',
+  app_perm_messenger: 'com.facebook.orca',
+};
+
+const WHATSAPP_MESSENGER_NOTE = 'কল ও মেসেজ Rose-কে বললেই হবে; নিজে Send করার সুবিধা পরের আপডেটে';
+const PERMANENT_DENIED_ANDROID_MSG = 'ফোনের Settings → Apps → ROSE → Permissions থেকে চালু করো।';
+
+function checkIsNativeApp(): boolean {
+  if (typeof window === 'undefined') return false;
+  return (window as any).Capacitor?.isNativePlatform?.() === true;
+}
+
+function getRosePhoneNativePlugin(): any {
+  if (typeof window === 'undefined') return null;
+  return (window as any).Capacitor?.Plugins?.RosePhone || null;
+}
+
+function mapNativePermState(state: unknown): PermissionStatusType {
+  if (state === 'granted') return 'চালু';
+  if (state === 'denied') return 'বন্ধ';
+  return 'জিজ্ঞেস করা হয়নি';
+}
+
 export interface PermissionItemConfig {
   id: string;
   num: number;
   name: string;
   desc: string;
+  appDesc?: string;
   icon: any;
   type: 'browser' | 'apk' | 'api';
   browserSettingName?: string;
@@ -75,6 +100,7 @@ export const PERMISSIONS_CONFIG: PermissionItemConfig[] = [
     num: 6,
     name: 'CONTACTS',
     desc: 'মোবাইলের কন্টাক্ট তালিকা দেখে ভয়েসে সহজে যোগাযোগের জন্য এই সুবিধা আসবে।',
+    appDesc: 'মোবাইলের কন্টাক্ট তালিকা দেখে ভয়েসে সহজে কল ও মেসেজ করার জন্য কন্টাক্ট অনুমতি প্রয়োজন।',
     icon: Users,
     type: 'apk',
     buttonLabel: 'APK-তে আসবে',
@@ -84,6 +110,7 @@ export const PERMISSIONS_CONFIG: PermissionItemConfig[] = [
     num: 7,
     name: 'PHONE CALLS',
     desc: 'সরাসরি ভয়েস নির্দেশে ফোন কল করার সুবিধা APK সংস্করণে যুক্ত হবে।',
+    appDesc: 'সরাসরি ভয়েস নির্দেশে ফোন কল করার জন্য ফোন কল অনুমতি প্রয়োজন।',
     icon: PhoneCall,
     type: 'apk',
     buttonLabel: 'APK-তে আসবে',
@@ -93,6 +120,7 @@ export const PERMISSIONS_CONFIG: PermissionItemConfig[] = [
     num: 8,
     name: 'WHATSAPP',
     desc: 'WhatsApp চ্যাটে বার্তা পাঠানো ও অ্যাপ ওপেন করার সুবিধা যুক্ত হবে।',
+    appDesc: 'WhatsApp অ্যাপ ওপেন ও কল/মেসেজ শুরু করার জন্য ব্যবহৃত হয়।',
     icon: MessageCircle,
     type: 'apk',
     buttonLabel: 'WhatsApp খোলো',
@@ -103,6 +131,7 @@ export const PERMISSIONS_CONFIG: PermissionItemConfig[] = [
     num: 9,
     name: 'MESSENGER',
     desc: 'Facebook Messenger-এ দ্রুত বার্তা আদান-প্রদানের জন্য সংযোগ সুবিধা আসবে।',
+    appDesc: 'Facebook Messenger অ্যাপ ওপেন ও যোগাযোগের জন্য ব্যবহৃত হয়।',
     icon: MessageSquare,
     type: 'apk',
     buttonLabel: 'Messenger খোলো',
@@ -151,6 +180,13 @@ export const PERMISSIONS_CONFIG: PermissionItemConfig[] = [
 ];
 
 export type PermissionStatusType = 'চালু' | 'বন্ধ' | 'জিজ্ঞেস করা হয়নি' | 'APK-তে আসবে' | 'API সংযোগ পরে আসবে';
+
+interface BatchPermSummaryItem {
+  id: string;
+  label: string;
+  granted: boolean;
+  denied: boolean;
+}
 
 export const PhoneControlHome = ({ setCurrentView }: any) => {
   return (
@@ -206,23 +242,35 @@ export const PhoneControlHome = ({ setCurrentView }: any) => {
 };
 
 export const AppPermissionsView = ({ setCurrentView, setToast }: any) => {
+  const isApp = checkIsNativeApp();
   const [selectedSubPerm, setSelectedSubPerm] = useState<string | null>(null);
-  const [statuses, setStatuses] = useState<Record<string, PermissionStatusType>>({
-    app_perm_camera: 'জিজ্ঞেস করা হয়নি',
-    app_perm_microphone: 'জিজ্ঞেস করা হয়নি',
-    app_perm_location: 'জিজ্ঞেস করা হয়নি',
-    app_perm_notifications: 'জিজ্ঞেস করা হয়নি',
-    app_perm_clipboard: 'জিজ্ঞেস করা হয়নি',
-    app_perm_contacts: 'APK-তে আসবে',
-    app_perm_phone_calls: 'APK-তে আসবে',
-    app_perm_whatsapp: 'APK-তে আসবে',
-    app_perm_messenger: 'APK-তে আসবে',
-    app_perm_youtube: 'API সংযোগ পরে আসবে',
-    app_perm_facebook: 'API সংযোগ পরে আসবে',
-    app_perm_tiktok: 'API সংযোগ পরে আসবে',
-    app_perm_instagram: 'API সংযোগ পরে আসবে',
+  const [statuses, setStatuses] = useState<Record<string, PermissionStatusType>>(() => {
+    const rosePhone = getRosePhoneNativePlugin();
+    const hasOpenApp = isApp && typeof rosePhone?.openApp === 'function';
+    return {
+      app_perm_camera: 'জিজ্ঞেস করা হয়নি',
+      app_perm_microphone: 'জিজ্ঞেস করা হয়নি',
+      app_perm_location: 'জিজ্ঞেস করা হয়নি',
+      app_perm_notifications: 'জিজ্ঞেস করা হয়নি',
+      app_perm_clipboard: 'জিজ্ঞেস করা হয়নি',
+      app_perm_contacts: isApp ? 'জিজ্ঞেস করা হয়নি' : 'APK-তে আসবে',
+      app_perm_phone_calls: isApp ? 'জিজ্ঞেস করা হয়নি' : 'APK-তে আসবে',
+      app_perm_whatsapp: isApp ? (hasOpenApp ? 'চালু' : 'বন্ধ') : 'APK-তে আসবে',
+      app_perm_messenger: isApp ? (hasOpenApp ? 'চালু' : 'বন্ধ') : 'APK-তে আসবে',
+      app_perm_youtube: 'API সংযোগ পরে আসবে',
+      app_perm_facebook: 'API সংযোগ পরে আসবে',
+      app_perm_tiktok: 'API সংযোগ পরে আসবে',
+      app_perm_instagram: 'API সংযোগ পরে আসবে',
+    };
   });
   const [isProcessing, setIsProcessing] = useState(false);
+  const [permanentlyDenied, setPermanentlyDenied] = useState<Record<string, boolean>>({});
+  const failedPackagesRef = React.useRef<Record<string, boolean>>({});
+  const [isTestingContacts, setIsTestingContacts] = useState(false);
+  const [contactsTestResult, setContactsTestResult] = useState<{ ok: boolean; text: string } | null>(null);
+  const [isGrantingAll, setIsGrantingAll] = useState(false);
+  const [grantAllStepText, setGrantAllStepText] = useState<string>('');
+  const [grantAllSummary, setGrantAllSummary] = useState<BatchPermSummaryItem[] | null>(null);
 
   // Sync current app view with global window for nav router visibility checks
   useEffect(() => {
@@ -236,18 +284,41 @@ export const AppPermissionsView = ({ setCurrentView, setToast }: any) => {
     };
   }, [selectedSubPerm]);
 
-  // Check browser permissions on mount
+  // Check browser & native permissions on mount
   const refreshStatuses = async () => {
+    const appMode = checkIsNativeApp();
+    const rosePhone = getRosePhoneNativePlugin();
+    const hasOpenApp = appMode && typeof rosePhone?.openApp === 'function';
+
     const updated: Record<string, PermissionStatusType> = {
-      app_perm_contacts: 'APK-তে আসবে',
-      app_perm_phone_calls: 'APK-তে আসবে',
-      app_perm_whatsapp: 'APK-তে আসবে',
-      app_perm_messenger: 'APK-তে আসবে',
+      app_perm_contacts: appMode ? 'জিজ্ঞেস করা হয়নি' : 'APK-তে আসবে',
+      app_perm_phone_calls: appMode ? 'জিজ্ঞেস করা হয়নি' : 'APK-তে আসবে',
+      app_perm_whatsapp: appMode
+        ? (!hasOpenApp || failedPackagesRef.current.app_perm_whatsapp ? 'বন্ধ' : 'চালু')
+        : 'APK-তে আসবে',
+      app_perm_messenger: appMode
+        ? (!hasOpenApp || failedPackagesRef.current.app_perm_messenger ? 'বন্ধ' : 'চালু')
+        : 'APK-তে আসবে',
       app_perm_youtube: 'API সংযোগ পরে আসবে',
       app_perm_facebook: 'API সংযোগ পরে আসবে',
       app_perm_tiktok: 'API সংযোগ পরে আসবে',
       app_perm_instagram: 'API সংযোগ পরে আসবে',
     };
+
+    if (appMode && rosePhone && typeof rosePhone.checkPermissions === 'function') {
+      try {
+        const nativeRes = await rosePhone.checkPermissions();
+        updated.app_perm_contacts = mapNativePermState(nativeRes?.contacts);
+        updated.app_perm_phone_calls = mapNativePermState(nativeRes?.phone);
+        setPermanentlyDenied(prev => ({
+          ...prev,
+          app_perm_contacts: nativeRes?.contacts === 'denied' ? true : nativeRes?.contacts === 'granted' ? false : prev.app_perm_contacts,
+          app_perm_phone_calls: nativeRes?.phone === 'denied' ? true : nativeRes?.phone === 'granted' ? false : prev.app_perm_phone_calls,
+        }));
+      } catch {
+        // Ignore native permission query failure; leave fallback state
+      }
+    }
 
     // 1. Camera
     try {
@@ -321,12 +392,272 @@ export const AppPermissionsView = ({ setCurrentView, setToast }: any) => {
 
   useEffect(() => {
     refreshStatuses();
+    const handleVisibility = () => {
+      if (document.visibilityState === 'visible') {
+        refreshStatuses();
+      }
+    };
     window.addEventListener('focus', refreshStatuses);
-    return () => window.removeEventListener('focus', refreshStatuses);
+    document.addEventListener('visibilitychange', handleVisibility);
+    document.addEventListener('resume', refreshStatuses as EventListener);
+    return () => {
+      window.removeEventListener('focus', refreshStatuses);
+      document.removeEventListener('visibilitychange', handleVisibility);
+      document.removeEventListener('resume', refreshStatuses as EventListener);
+    };
   }, []);
+
+  const requestCameraPermission = async (): Promise<boolean> => {
+    try {
+      if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+        setStatuses(prev => ({ ...prev, app_perm_camera: 'বন্ধ' }));
+        return false;
+      }
+      const stream = await navigator.mediaDevices.getUserMedia({ video: true });
+      stream.getTracks().forEach(t => t.stop());
+      setStatuses(prev => ({ ...prev, app_perm_camera: 'চালু' }));
+      setPermanentlyDenied(prev => ({ ...prev, app_perm_camera: false }));
+      localStorage.setItem('perm_camera_status', 'granted');
+      return true;
+    } catch {
+      setStatuses(prev => ({ ...prev, app_perm_camera: 'বন্ধ' }));
+      setPermanentlyDenied(prev => ({ ...prev, app_perm_camera: true }));
+      localStorage.setItem('perm_camera_status', 'denied');
+      return false;
+    }
+  };
+
+  const requestMicrophonePermission = async (): Promise<boolean> => {
+    try {
+      if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+        setStatuses(prev => ({ ...prev, app_perm_microphone: 'বন্ধ' }));
+        return false;
+      }
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      stream.getTracks().forEach(t => t.stop());
+      setStatuses(prev => ({ ...prev, app_perm_microphone: 'চালু' }));
+      setPermanentlyDenied(prev => ({ ...prev, app_perm_microphone: false }));
+      localStorage.setItem('perm_mic_status', 'granted');
+      return true;
+    } catch {
+      setStatuses(prev => ({ ...prev, app_perm_microphone: 'বন্ধ' }));
+      setPermanentlyDenied(prev => ({ ...prev, app_perm_microphone: true }));
+      localStorage.setItem('perm_mic_status', 'denied');
+      return false;
+    }
+  };
+
+  const requestLocationPermission = (): Promise<boolean> => {
+    return new Promise((resolve) => {
+      if (!navigator.geolocation) {
+        setStatuses(prev => ({ ...prev, app_perm_location: 'বন্ধ' }));
+        resolve(false);
+        return;
+      }
+      let settled = false;
+      const timer = setTimeout(() => {
+        if (!settled) {
+          settled = true;
+          resolve(false);
+        }
+      }, 15000);
+
+      navigator.geolocation.getCurrentPosition(
+        () => {
+          if (settled) return;
+          settled = true;
+          clearTimeout(timer);
+          setStatuses(prev => ({ ...prev, app_perm_location: 'চালু' }));
+          setPermanentlyDenied(prev => ({ ...prev, app_perm_location: false }));
+          localStorage.setItem('perm_location_status', 'granted');
+          resolve(true);
+        },
+        () => {
+          if (settled) return;
+          settled = true;
+          clearTimeout(timer);
+          setStatuses(prev => ({ ...prev, app_perm_location: 'বন্ধ' }));
+          setPermanentlyDenied(prev => ({ ...prev, app_perm_location: true }));
+          localStorage.setItem('perm_location_status', 'denied');
+          resolve(false);
+        },
+        { timeout: 10000 }
+      );
+    });
+  };
+
+  const requestNotificationsPermission = async (): Promise<boolean> => {
+    if (typeof Notification === 'undefined') {
+      setStatuses(prev => ({ ...prev, app_perm_notifications: 'বন্ধ' }));
+      return false;
+    }
+    try {
+      const res = await Notification.requestPermission();
+      if (res === 'granted') {
+        setStatuses(prev => ({ ...prev, app_perm_notifications: 'চালু' }));
+        setPermanentlyDenied(prev => ({ ...prev, app_perm_notifications: false }));
+        return true;
+      }
+      setStatuses(prev => ({ ...prev, app_perm_notifications: 'বন্ধ' }));
+      if (res === 'denied') {
+        setPermanentlyDenied(prev => ({ ...prev, app_perm_notifications: true }));
+      }
+      return false;
+    } catch {
+      setStatuses(prev => ({ ...prev, app_perm_notifications: 'বন্ধ' }));
+      return false;
+    }
+  };
+
+  const requestNativeRosePermission = async (
+    permId: 'app_perm_contacts' | 'app_perm_phone_calls',
+    alias: 'contacts' | 'phone'
+  ): Promise<{ granted: boolean; denied: boolean }> => {
+    const rosePhone = getRosePhoneNativePlugin();
+    if (!rosePhone || typeof rosePhone.requestPermissions !== 'function') {
+      return { granted: false, denied: false };
+    }
+    try {
+      const res = await rosePhone.requestPermissions({ permissions: [alias] });
+      const state = res?.[alias];
+      const mapped = mapNativePermState(state);
+      setStatuses(prev => ({ ...prev, [permId]: mapped }));
+      setPermanentlyDenied(prev => ({ ...prev, [permId]: state === 'denied' }));
+      await refreshStatuses();
+      return { granted: state === 'granted', denied: state === 'denied' };
+    } catch {
+      await refreshStatuses();
+      return { granted: false, denied: false };
+    }
+  };
+
+  const handleTestContacts = async () => {
+    const rosePhone = getRosePhoneNativePlugin();
+    if (!rosePhone || typeof rosePhone.getAllContacts !== 'function') {
+      setContactsTestResult({ ok: false, text: 'কন্টাক্ট প্লাগইন পাওয়া যায়নি' });
+      return;
+    }
+    setIsTestingContacts(true);
+    setContactsTestResult(null);
+    try {
+      const res = await rosePhone.getAllContacts();
+      const count = Array.isArray(res?.contacts) ? res.contacts.length : 0;
+      const msg = `মোট ${count} টা কন্টাক্ট পাওয়া গেছে`;
+      setContactsTestResult({ ok: true, text: msg });
+      setToast?.(msg);
+      await refreshStatuses();
+    } catch (err: any) {
+      await refreshStatuses();
+      const errMsg = String(err?.message || 'কন্টাক্ট আনা যায়নি — আগে অনুমতি দাও');
+      setContactsTestResult({ ok: false, text: errMsg });
+      setToast?.(errMsg);
+    } finally {
+      setIsTestingContacts(false);
+    }
+  };
+
+  const handleRequestAllPermissions = async () => {
+    if (isGrantingAll || isProcessing) return;
+    setIsGrantingAll(true);
+    setGrantAllSummary(null);
+    const summary: BatchPermSummaryItem[] = [];
+
+    try {
+      // 1. Microphone
+      setGrantAllStepText('১/৬: MICROPHONE...');
+      const micOk = await requestMicrophonePermission();
+      summary.push({ id: 'app_perm_microphone', label: 'MICROPHONE', granted: micOk, denied: !micOk });
+
+      // 2. Camera
+      setGrantAllStepText('২/৬: CAMERA...');
+      const camOk = await requestCameraPermission();
+      summary.push({ id: 'app_perm_camera', label: 'CAMERA', granted: camOk, denied: !camOk });
+
+      // 3. Contacts
+      setGrantAllStepText('৩/৬: CONTACTS...');
+      const contactsRes = await requestNativeRosePermission('app_perm_contacts', 'contacts');
+      summary.push({
+        id: 'app_perm_contacts',
+        label: 'CONTACTS',
+        granted: contactsRes.granted,
+        denied: contactsRes.denied,
+      });
+
+      // 4. Phone
+      setGrantAllStepText('৪/৬: PHONE CALLS...');
+      const phoneRes = await requestNativeRosePermission('app_perm_phone_calls', 'phone');
+      summary.push({
+        id: 'app_perm_phone_calls',
+        label: 'PHONE CALLS',
+        granted: phoneRes.granted,
+        denied: phoneRes.denied,
+      });
+
+      // 5. Location
+      setGrantAllStepText('৫/৬: LOCATION...');
+      const locOk = await requestLocationPermission();
+      summary.push({ id: 'app_perm_location', label: 'LOCATION', granted: locOk, denied: !locOk });
+
+      // 6. Notifications
+      setGrantAllStepText('৬/৬: NOTIFICATIONS...');
+      const notifOk = await requestNotificationsPermission();
+      summary.push({ id: 'app_perm_notifications', label: 'NOTIFICATIONS', granted: notifOk, denied: !notifOk });
+
+      await refreshStatuses();
+      setGrantAllSummary(summary);
+      const grantedCount = summary.filter(i => i.granted).length;
+      setToast?.(`${grantedCount}/6টি অনুমতি চালু হয়েছে`);
+    } finally {
+      setGrantAllStepText('');
+      setIsGrantingAll(false);
+    }
+  };
 
   const handleAction = async (perm: PermissionItemConfig) => {
     if (perm.type === 'apk') {
+      if (isApp) {
+        const rosePhone = getRosePhoneNativePlugin();
+        if (perm.id === 'app_perm_contacts') {
+          setIsProcessing(true);
+          try {
+            const { granted } = await requestNativeRosePermission('app_perm_contacts', 'contacts');
+            setToast?.(granted ? 'কন্টাক্ট অনুমতি চালু হয়েছে' : 'কন্টাক্ট অনুমতি দেওয়া হয়নি');
+          } finally {
+            setIsProcessing(false);
+          }
+          return;
+        }
+        if (perm.id === 'app_perm_phone_calls') {
+          setIsProcessing(true);
+          try {
+            const { granted } = await requestNativeRosePermission('app_perm_phone_calls', 'phone');
+            setToast?.(granted ? 'ফোন কল অনুমতি চালু হয়েছে' : 'ফোন কল অনুমতি দেওয়া হয়নি');
+          } finally {
+            setIsProcessing(false);
+          }
+          return;
+        }
+        if (perm.id === 'app_perm_whatsapp' || perm.id === 'app_perm_messenger') {
+          const pkg = NATIVE_APP_PACKAGES[perm.id];
+          if (rosePhone && typeof rosePhone.openApp === 'function' && pkg) {
+            setIsProcessing(true);
+            try {
+              await rosePhone.openApp({ package: pkg });
+              failedPackagesRef.current[perm.id] = false;
+              setStatuses(prev => ({ ...prev, [perm.id]: 'চালু' }));
+              setToast?.(`${perm.name} খোলা হচ্ছে`);
+            } catch {
+              failedPackagesRef.current[perm.id] = true;
+              setStatuses(prev => ({ ...prev, [perm.id]: 'বন্ধ' }));
+              setToast?.(`${perm.name} ফোনে ইনস্টল করা নেই বা খোলা যায়নি`);
+            } finally {
+              setIsProcessing(false);
+            }
+            return;
+          }
+        }
+      }
+
       if (perm.actionUrl) {
         openExternal(perm.actionUrl);
         setToast?.(`${perm.name} খোলা হচ্ছে`);
@@ -350,18 +681,10 @@ export const AppPermissionsView = ({ setCurrentView, setToast }: any) => {
         if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
           setStatuses(prev => ({ ...prev, app_perm_camera: 'বন্ধ' }));
           setToast?.('ক্যামেরা সমর্থিত নয়');
-          setIsProcessing(false);
           return;
         }
-        const stream = await navigator.mediaDevices.getUserMedia({ video: true });
-        stream.getTracks().forEach(t => t.stop());
-        setStatuses(prev => ({ ...prev, app_perm_camera: 'চালু' }));
-        localStorage.setItem('perm_camera_status', 'granted');
-        setToast?.('ক্যামেরা অনুমতি চালু হয়েছে');
-      } catch (err) {
-        setStatuses(prev => ({ ...prev, app_perm_camera: 'বন্ধ' }));
-        localStorage.setItem('perm_camera_status', 'denied');
-        setToast?.('ক্যামেরা অনুমতি দেওয়া হয়নি');
+        const ok = await requestCameraPermission();
+        setToast?.(ok ? 'ক্যামেরা অনুমতি চালু হয়েছে' : 'ক্যামেরা অনুমতি দেওয়া হয়নি');
       } finally {
         setIsProcessing(false);
       }
@@ -370,18 +693,10 @@ export const AppPermissionsView = ({ setCurrentView, setToast }: any) => {
         if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
           setStatuses(prev => ({ ...prev, app_perm_microphone: 'বন্ধ' }));
           setToast?.('মাইক্রোফোন সমর্থিত নয়');
-          setIsProcessing(false);
           return;
         }
-        const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
-        stream.getTracks().forEach(t => t.stop());
-        setStatuses(prev => ({ ...prev, app_perm_microphone: 'চালু' }));
-        localStorage.setItem('perm_mic_status', 'granted');
-        setToast?.('মাইক্রোফোন অনুমতি চালু হয়েছে');
-      } catch (err) {
-        setStatuses(prev => ({ ...prev, app_perm_microphone: 'বন্ধ' }));
-        localStorage.setItem('perm_mic_status', 'denied');
-        setToast?.('মাইক্রোফোন অনুমতি দেওয়া হয়নি');
+        const ok = await requestMicrophonePermission();
+        setToast?.(ok ? 'মাইক্রোফোন অনুমতি চালু হয়েছে' : 'মাইক্রোফোন অনুমতি দেওয়া হয়নি');
       } finally {
         setIsProcessing(false);
       }
@@ -392,21 +707,9 @@ export const AppPermissionsView = ({ setCurrentView, setToast }: any) => {
         setIsProcessing(false);
         return;
       }
-      navigator.geolocation.getCurrentPosition(
-        () => {
-          setStatuses(prev => ({ ...prev, app_perm_location: 'চালু' }));
-          localStorage.setItem('perm_location_status', 'granted');
-          setToast?.('লোকেশন অনুমতি চালু হয়েছে');
-          setIsProcessing(false);
-        },
-        () => {
-          setStatuses(prev => ({ ...prev, app_perm_location: 'বন্ধ' }));
-          localStorage.setItem('perm_location_status', 'denied');
-          setToast?.('লোকেশন অনুমতি দেওয়া হয়নি');
-          setIsProcessing(false);
-        },
-        { timeout: 10000 }
-      );
+      const ok = await requestLocationPermission();
+      setToast?.(ok ? 'লোকেশন অনুমতি চালু হয়েছে' : 'লোকেশন অনুমতি দেওয়া হয়নি');
+      setIsProcessing(false);
     } else if (perm.id === 'app_perm_notifications') {
       if (typeof Notification === 'undefined') {
         setStatuses(prev => ({ ...prev, app_perm_notifications: 'বন্ধ' }));
@@ -415,16 +718,8 @@ export const AppPermissionsView = ({ setCurrentView, setToast }: any) => {
         return;
       }
       try {
-        const res = await Notification.requestPermission();
-        if (res === 'granted') {
-          setStatuses(prev => ({ ...prev, app_perm_notifications: 'চালু' }));
-          setToast?.('নোটিফিকেশন অনুমতি চালু হয়েছে');
-        } else {
-          setStatuses(prev => ({ ...prev, app_perm_notifications: 'বন্ধ' }));
-          setToast?.('নোটিফিকেশন অনুমতি দেওয়া হয়নি');
-        }
-      } catch {
-        setStatuses(prev => ({ ...prev, app_perm_notifications: 'বন্ধ' }));
+        const ok = await requestNotificationsPermission();
+        setToast?.(ok ? 'নোটিফিকেশন অনুমতি চালু হয়েছে' : 'নোটিফিকেশন অনুমতি দেওয়া হয়নি');
       } finally {
         setIsProcessing(false);
       }
@@ -438,10 +733,12 @@ export const AppPermissionsView = ({ setCurrentView, setToast }: any) => {
         }
         await navigator.clipboard.readText();
         setStatuses(prev => ({ ...prev, app_perm_clipboard: 'চালু' }));
+        setPermanentlyDenied(prev => ({ ...prev, app_perm_clipboard: false }));
         localStorage.setItem('perm_clipboard_status', 'granted');
         setToast?.('ক্লিপবোর্ড অনুমতি চালু হয়েছে');
       } catch {
         setStatuses(prev => ({ ...prev, app_perm_clipboard: 'বন্ধ' }));
+        setPermanentlyDenied(prev => ({ ...prev, app_perm_clipboard: true }));
         localStorage.setItem('perm_clipboard_status', 'denied');
         setToast?.('ক্লিপবোর্ড অনুমতি দেওয়া হয়নি');
       } finally {
@@ -477,7 +774,10 @@ export const AppPermissionsView = ({ setCurrentView, setToast }: any) => {
     if (perm) {
       const Icon = perm.icon;
       const status = statuses[perm.id] || 'জিজ্ঞেস করা হয়নি';
-      const isDenied = status === 'বন্ধ';
+      const isDenied = status === 'বন্ধ' || Boolean(permanentlyDenied[perm.id]);
+      const isWhatsAppOrMessenger = perm.id === 'app_perm_whatsapp' || perm.id === 'app_perm_messenger';
+      const isNativePerm = perm.id === 'app_perm_contacts' || perm.id === 'app_perm_phone_calls';
+      const displayDesc = isApp && perm.appDesc ? perm.appDesc : perm.desc;
 
       return (
         <div
@@ -489,7 +789,10 @@ export const AppPermissionsView = ({ setCurrentView, setToast }: any) => {
           <header className="px-5 py-6 flex items-center gap-4 shrink-0 border-b border-purple-500/20 bg-[#0A051C]/90 backdrop-blur-md sticky top-0 z-50">
             <button
               data-nav-id="back"
-              onClick={() => setSelectedSubPerm(null)}
+              onClick={() => {
+                setContactsTestResult(null);
+                setSelectedSubPerm(null);
+              }}
               className="p-2.5 bg-white/5 rounded-2xl active:scale-95 transition-transform border border-white/10 text-slate-300 hover:text-white"
               aria-label="Back to App Permissions"
             >
@@ -526,33 +829,74 @@ export const AppPermissionsView = ({ setCurrentView, setToast }: any) => {
               </div>
 
               {/* Description (Bengali, 1-2 lines) */}
-              <div className="p-4 rounded-2xl bg-black/40 border border-white/5">
+              <div className="p-4 rounded-2xl bg-black/40 border border-white/5 space-y-2">
                 <p className="text-xs text-slate-200 leading-relaxed font-medium">
-                  {perm.desc}
+                  {displayDesc}
                 </p>
+                {isApp && isWhatsAppOrMessenger && (
+                  <p className="text-xs text-purple-300 leading-relaxed font-semibold">
+                    {WHATSAPP_MESSENGER_NOTE}
+                  </p>
+                )}
               </div>
 
               {/* If denied/blocked callout */}
-              {isDenied && perm.browserSettingName && (
+              {isDenied && (isApp ? (!isWhatsAppOrMessenger && perm.type !== 'api') : Boolean(perm.browserSettingName)) && (
                 <div className="p-4 rounded-2xl bg-rose-500/10 border border-rose-500/30 text-rose-300 text-xs flex items-start gap-2.5 shadow-inner">
                   <AlertCircle className="w-4 h-4 shrink-0 text-rose-400 mt-0.5" />
                   <div>
                     <p className="font-semibold leading-relaxed">
-                      ব্রাউজারের সেটিংস থেকে চালু করো: Chrome → Site settings → {perm.browserSettingName}
+                      {isApp
+                        ? PERMANENT_DENIED_ANDROID_MSG
+                        : `ব্রাউজারের সেটিংস থেকে চালু করো: Chrome → Site settings → ${perm.browserSettingName}`}
                     </p>
                   </div>
                 </div>
               )}
 
-              {/* Exactly ONE button */}
-              <div className="pt-2">
-                {perm.type === 'apk' && !perm.actionUrl ? (
+              {/* Action buttons */}
+              <div className="pt-2 space-y-3">
+                {!isApp && perm.type === 'apk' && !perm.actionUrl ? (
                   <button
                     disabled
                     className="w-full py-4 px-5 rounded-2xl bg-white/5 border border-white/10 text-slate-400 font-bold text-xs uppercase tracking-wider cursor-not-allowed flex items-center justify-center gap-2"
                   >
                     APK-তে আসবে
                   </button>
+                ) : isApp && isNativePerm ? (
+                  <>
+                    <button
+                      disabled={isProcessing || isTestingContacts}
+                      onClick={() => handleAction(perm)}
+                      className="w-full py-4 px-5 rounded-2xl bg-gradient-to-r from-purple-600 to-indigo-600 hover:from-purple-500 hover:to-indigo-500 text-white font-black text-xs uppercase tracking-wider active:scale-[0.98] transition-all shadow-lg flex items-center justify-center gap-2"
+                    >
+                      <Check className="w-4 h-4 text-purple-200" />
+                      <span>{isProcessing ? 'অনুরোধ করা হচ্ছে...' : 'অনুমতি দাও'}</span>
+                    </button>
+
+                    {perm.id === 'app_perm_contacts' && (
+                      <button
+                        disabled={isProcessing || isTestingContacts}
+                        onClick={handleTestContacts}
+                        className="w-full py-3.5 px-5 rounded-2xl bg-white/10 hover:bg-white/15 border border-purple-500/30 text-purple-100 font-black text-xs uppercase tracking-wider active:scale-[0.98] transition-all flex items-center justify-center gap-2"
+                      >
+                        <Users className="w-4 h-4 text-purple-300" />
+                        <span>{isTestingContacts ? 'পরীক্ষা করা হচ্ছে...' : 'পরীক্ষা করো'}</span>
+                      </button>
+                    )}
+
+                    {perm.id === 'app_perm_contacts' && contactsTestResult && (
+                      <div
+                        className={`p-3.5 rounded-2xl border text-xs font-semibold text-center ${
+                          contactsTestResult.ok
+                            ? 'bg-emerald-500/10 border-emerald-500/30 text-emerald-300'
+                            : 'bg-rose-500/10 border-rose-500/30 text-rose-300'
+                        }`}
+                      >
+                        {contactsTestResult.text}
+                      </div>
+                    )}
+                  </>
                 ) : (
                   <button
                     disabled={isProcessing}
@@ -561,6 +905,11 @@ export const AppPermissionsView = ({ setCurrentView, setToast }: any) => {
                   >
                     {isProcessing ? (
                       <span>অনুরোধ করা হচ্ছে...</span>
+                    ) : isApp && isWhatsAppOrMessenger ? (
+                      <>
+                        <span>খোলো</span>
+                        <ExternalLink className="w-4 h-4 text-purple-200" />
+                      </>
                     ) : perm.actionUrl ? (
                       <>
                         <span>{perm.buttonLabel}</span>
@@ -609,18 +958,63 @@ export const AppPermissionsView = ({ setCurrentView, setToast }: any) => {
       </header>
 
       <div className="px-5 py-4 space-y-4 pb-36 max-w-lg w-full mx-auto">
-        {/* Top Summary Line */}
-        <div className="p-3.5 rounded-2xl bg-purple-950/40 border border-purple-500/25 text-center shadow-lg">
-          <p className="text-xs font-semibold text-purple-200 leading-relaxed">
-            ৫টা অনুমতি এখন দেওয়া যায়, বাকিগুলো APK/API ধাপে আসবে।
-          </p>
-        </div>
+        {isApp ? (
+          <div className="space-y-3">
+            <button
+              disabled={isGrantingAll || isProcessing}
+              onClick={handleRequestAllPermissions}
+              className="w-full py-4 px-5 rounded-[2rem] bg-gradient-to-r from-purple-600 to-indigo-600 hover:from-purple-500 hover:to-indigo-500 disabled:opacity-60 text-white font-black text-sm tracking-wide active:scale-[0.98] transition-all shadow-xl flex items-center justify-center gap-2.5"
+            >
+              <Shield className="w-5 h-5 text-purple-100 shrink-0" />
+              <span>{isGrantingAll ? (grantAllStepText || 'অনুমতি চাওয়া হচ্ছে...') : 'সব অনুমতি একসাথে দাও'}</span>
+            </button>
+
+            {grantAllSummary && (
+              <div className="p-4 rounded-2xl bg-[#0F172A]/95 border border-purple-500/30 shadow-lg space-y-2.5">
+                <p className="text-[11px] font-black uppercase tracking-wider text-purple-300">
+                  অনুমতির সারসংক্ষেপ
+                </p>
+                <div className="grid grid-cols-2 gap-2">
+                  {grantAllSummary.map((item) => (
+                    <div
+                      key={item.id}
+                      className={`px-3 py-2 rounded-xl border text-xs font-bold flex items-center justify-between ${
+                        item.granted
+                          ? 'bg-emerald-500/10 border-emerald-500/30 text-emerald-300'
+                          : 'bg-rose-500/10 border-rose-500/30 text-rose-300'
+                      }`}
+                    >
+                      <span className="truncate">{item.label}</span>
+                      <span className="shrink-0 font-black">
+                        {item.granted ? '✓' : '✗'}
+                      </span>
+                    </div>
+                  ))}
+                </div>
+                {grantAllSummary.some((item) => item.denied) && (
+                  <p className="text-[11px] text-rose-300 font-semibold leading-relaxed pt-1">
+                    {PERMANENT_DENIED_ANDROID_MSG}
+                  </p>
+                )}
+              </div>
+            )}
+          </div>
+        ) : (
+          /* Top Summary Line (Browser mode) */
+          <div className="p-3.5 rounded-2xl bg-purple-950/40 border border-purple-500/25 text-center shadow-lg">
+            <p className="text-xs font-semibold text-purple-200 leading-relaxed">
+              ৫টা অনুমতি এখন দেওয়া যায়, বাকিগুলো APK/API ধাপে আসবে।
+            </p>
+          </div>
+        )}
 
         {/* 13 Separate Bar-Buttons */}
         <div className="space-y-3">
           {PERMISSIONS_CONFIG.map((perm) => {
             const Icon = perm.icon;
             const status = statuses[perm.id] || 'জিজ্ঞেস করা হয়নি';
+            const isWhatsAppOrMessenger = perm.id === 'app_perm_whatsapp' || perm.id === 'app_perm_messenger';
+            const isPermanentlyDenied = isApp && (status === 'বন্ধ' || Boolean(permanentlyDenied[perm.id])) && !isWhatsAppOrMessenger && perm.type !== 'api';
 
             return (
               <button
@@ -643,6 +1037,16 @@ export const AppPermissionsView = ({ setCurrentView, setToast }: any) => {
                       </span>
                       {renderStatusPill(status)}
                     </div>
+                    {isApp && isWhatsAppOrMessenger && (
+                      <p className="mt-1.5 text-[11px] text-purple-300/90 font-medium leading-snug">
+                        {WHATSAPP_MESSENGER_NOTE}
+                      </p>
+                    )}
+                    {isPermanentlyDenied && (
+                      <p className="mt-1.5 text-[11px] text-rose-300/90 font-medium leading-snug">
+                        {PERMANENT_DENIED_ANDROID_MSG}
+                      </p>
+                    )}
                   </div>
                 </div>
                 <ChevronRight className="w-5 h-5 text-slate-500 shrink-0 group-hover:text-purple-400 transition-colors" />
