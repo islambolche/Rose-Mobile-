@@ -34,45 +34,10 @@ export interface RouteMessageOptions {
   setPendingNavClarifyState?: (state: { active: boolean; timestamp: number; options: PageRegistration[] }) => void;
 }
 
-export const MAIN_SETTINGS_BARS = [
-  { path: 'about', titleBn: 'এবাউট অ্যান্ড গাইড' },
-  { path: 'connections', titleBn: 'কানেকশনস' },
-  { path: 'live-model', titleBn: 'লাইভ ভয়েস মডেল' },
-  { path: 'voice', titleBn: 'ভয়েস অ্যান্ড ল্যাঙ্গুয়েজ' },
-  { path: 'memory', titleBn: 'চ্যাটস অ্যান্ড মেমোরি' },
-  { path: 'look', titleBn: 'লুক অ্যান্ড ফিল' },
-  { path: 'phone', titleBn: 'ফোন কন্ট্রোল' },
-  { path: 'pc-setup', titleBn: 'পিসি সেটআপ' },
-  { path: 'privacy', titleBn: 'প্রাইভেসি' },
-];
-
-export const VOICE_SETTINGS_BARS = [
-  { path: 'tts-model', titleBn: 'টিটিএস মডেল' },
-  { path: 'edit-assistant-name', titleBn: 'অ্যাসিস্ট্যান্ট নাম' },
-  { path: 'edit-user-name', titleBn: 'তোমার নাম' },
-  { path: 'personality', titleBn: 'পার্সোনালিটি' },
-  { path: 'affection', titleBn: 'অ্যাফেকশন' },
-  { path: 'language-list', titleBn: 'ল্যাঙ্গুয়েজ' },
-  { path: 'response-style-list', titleBn: 'রেসপন্স স্টাইল' },
-  { path: 'voice-list', titleBn: 'ভয়েস' },
-  { path: 'voice-model-list', titleBn: 'ভয়েস মডেল লিস্ট' },
-  { path: 'voice-tuning', titleBn: 'ভয়েস টিউনিং' },
-  { path: 'voice-debug', titleBn: 'ভয়েস চেক' },
-  { path: 'mic-listening', titleBn: 'মাইক অ্যান্ড লিসেনিং' },
-];
-
 export const NUMBER_WORDS_MAP: Record<string, number> = {
-  '১': 1, 'এক': 1, 'one': 1, '1': 1,
-  '২': 2, 'দুই': 2, 'two': 2, '2': 2,
-  '৩': 3, 'তিন': 3, 'three': 3, '3': 3,
-  '৪': 4, 'চার': 4, 'four': 4, '4': 4,
-  '৫': 5, 'পাঁচ': 5, 'five': 5, '5': 5,
-  '৬': 6, 'ছয়': 6, 'six': 6, '6': 6,
-  '৭': 7, 'সাত': 7, 'seven': 7, '7': 7,
-  '৮': 8, 'আট': 8, 'eight': 8, '8': 8,
-  '৯': 9, 'নয়': 9, 'nine': 9, '9': 9,
-  '১০': 10, 'দশ': 10, 'ten': 10, '10': 10,
-  '১১': 11, '11': 11, '১২': 12, '12': 12,
+  '১': 1, 'এক': 1, 'একটা': 1, 'প্রথম': 1, 'one': 1, '1': 1,
+  '২': 2, 'দুই': 2, 'দুইটা': 2, 'দ্বিতীয়': 2, 'two': 2, '2': 2,
+  '৩': 3, 'তিন': 3, 'তিনটা': 3, 'তৃতীয়': 3, 'three': 3, '3': 3,
 };
 
 export const TARGET_AGENT_ALIASES: Record<'mira' | 'arin' | 'zayan' | 'naira', string[]> = {
@@ -115,7 +80,52 @@ export async function routeUserMessageForTeamTask(
   if (!rawText) return { matched: false };
   const lower = rawText.toLowerCase();
 
-  // 1. Pending Clear Chat check (15s)
+  // 1. PENDING CHOICE FIRST (30-second expiry)
+  if (options.pendingNavClarifyState?.active && (Date.now() - options.pendingNavClarifyState.timestamp < 30000)) {
+    const candOpts = options.pendingNavClarifyState.options;
+
+    // Check cancel
+    if (/(না|বাদ|cancel)/i.test(rawText)) {
+      if (options.setPendingNavClarifyState) {
+        options.setPendingNavClarifyState({ active: false, timestamp: 0, options: [] });
+      }
+      return { matched: true, type: 'navigation', roseReply: 'ঠিক আছে।' };
+    }
+
+    // Check number 1-3
+    const numKey = rawText.replace(/[^0-9১-৯একদুইতিনএকটাদুইটাতিনটাপ্রথমদ্বিতীয়তৃতীয়one-three]/g, '');
+    let chosenIdx = -1;
+    for (const [k, v] of Object.entries(NUMBER_WORDS_MAP)) {
+      if (numKey.includes(k) || rawText.includes(k)) {
+        chosenIdx = v - 1;
+        break;
+      }
+    }
+    const directNum = parseInt(numKey, 10);
+    if (chosenIdx === -1 && !isNaN(directNum) && directNum >= 1 && directNum <= candOpts.length) {
+      chosenIdx = directNum - 1;
+    }
+
+    if (options.setPendingNavClarifyState) {
+      options.setPendingNavClarifyState({ active: false, timestamp: 0, options: [] });
+    }
+
+    if (chosenIdx >= 0 && chosenIdx < candOpts.length) {
+      const chosenPage = candOpts[chosenIdx];
+      const viewSetter = options.openPage || options.setCurrentView;
+      if (viewSetter) viewSetter(chosenPage.path);
+      return { matched: true, type: 'navigation', roseReply: `${chosenPage.titleBn} খুললাম।` };
+    }
+  }
+
+  // Clear pending choice if expired or non-matching message
+  if (options.pendingNavClarifyState?.active) {
+    if (options.setPendingNavClarifyState) {
+      options.setPendingNavClarifyState({ active: false, timestamp: 0, options: [] });
+    }
+  }
+
+  // 2. Pending Clear Chat check (15s)
   if (options.pendingClearChatState?.active && (Date.now() - options.pendingClearChatState.timestamp < 15000)) {
     if (/^(হ্যাঁ|হ্যা|yes|sure|ok|অবশ্যই|হাঁ)/i.test(rawText)) {
       if (options.clearChatCallback) options.clearChatCallback();
@@ -127,38 +137,7 @@ export async function routeUserMessageForTeamTask(
     }
   }
 
-  // 2. Pending Navigation Clarification check (15s)
-  if (options.pendingNavClarifyState?.active && (Date.now() - options.pendingNavClarifyState.timestamp < 15000)) {
-    const candOpts = options.pendingNavClarifyState.options;
-    let chosenPage: PageRegistration | null = null;
-
-    // Check if reply is number 1, 2, 3
-    const numKey = rawText.replace(/[^0-9১-৯একদুইতিন]/g, '');
-    const num = NUMBER_WORDS_MAP[numKey] || parseInt(numKey, 10);
-    if (!isNaN(num) && num >= 1 && num <= candOpts.length) {
-      chosenPage = candOpts[num - 1];
-    } else {
-      // Check if text matches any option
-      const { page } = findMatchingPage(rawText);
-      if (page && candOpts.some(c => c.id === page.id)) {
-        chosenPage = page;
-      }
-    }
-
-    if (options.setPendingNavClarifyState) {
-      options.setPendingNavClarifyState({ active: false, timestamp: 0, options: [] });
-    }
-
-    if (chosenPage) {
-      const viewSetter = options.openPage || options.setCurrentView;
-      if (viewSetter) viewSetter(chosenPage.path);
-      return { matched: true, type: 'navigation', roseReply: `${chosenPage.titleBn} খুললাম।` };
-    }
-  }
-
-  // 3. INTENT PRIORITY:
-
-  // A) App vs Phone Settings
+  // 3. App vs Phone Settings
   const hasAppWord = /(তোমার|রোজের|অ্যাপের|এই\s*অ্যাপ)/i.test(rawText);
   const hasPhoneWord = /(আমার\s*মোবাইলের|আমার\s*ফোনের|ফোনের\s*নিজের|অ্যান্ড্রয়েড|ওয়াইফাই|ব্লুটুথ|ব্রাইটনেস|android|wifi|bluetooth|brightness)/i.test(lower);
   if (hasPhoneWord && !hasAppWord) {
@@ -169,58 +148,57 @@ export async function routeUserMessageForTeamTask(
     };
   }
 
-  // B) Home
-  if (/^হোম$|^home$/i.test(rawText) || (/(হোম|home)/i.test(rawText) && /(যাও|আসো|এসো|ফিরে|নিয়ে|go)/i.test(rawText))) {
+  // 4. ACTION WORD REQUIREMENT: Navigation runs ONLY if message contains an action word
+  const hasActionWord = /(খোল|খুল|খোলো|যাও|যা|ঢুক|ঢোকো|নিয়ে\s*যাও|দেখাও|open|go|back|পেছনে|ফিরে|(হোম.*(আসো|যাও))|((আসো|যাও).*হোম))/i.test(rawText);
+  const isDirectHome = /^হোম$|^home$/i.test(rawText);
+  const isDirectBack = /^ব্যাক$|^back$|পেছনে\s*যাও/i.test(rawText);
+
+  if (!hasActionWord && !isDirectHome && !isDirectBack) {
+    return { matched: false };
+  }
+
+  // 5. Home
+  if (isDirectHome || (/(হোম|home)/i.test(rawText) && /(যাও|আসো|এসো|ফিরে|নিয়ে|go)/i.test(rawText))) {
     const viewSetter = options.openPage || options.setCurrentView;
     if (viewSetter) viewSetter('home');
     return { matched: true, type: 'navigation', roseReply: 'হোমে এলাম।' };
   }
 
-  // C) Back
-  if (/(পেছনে|পিছনে|ফিরে\s*যাও|ব্যাক|back)/i.test(rawText)) {
+  // 6. Back
+  if (isDirectBack || /(পেছনে|পিছনে|ফিরে\s*যাও|ব্যাক|back)/i.test(rawText)) {
     if (typeof window !== 'undefined') window.history.back();
     return { matched: true, type: 'navigation', roseReply: 'পেছনে গেলাম।' };
   }
 
-  // D) Compound commands: "<settings> এ ঢুকে <bar> এ যাও/ঢুকো"
-  const compoundMatch = rawText.match(/(?:সেটিংস|settings)\s*(?:এ|তে)?\s*(?:ঢুকে|গিয়ে|গয়ে|র\s*ভিতরে|র\s*মাঝে)?\s*(.+)/i);
-  if (compoundMatch && compoundMatch[1]) {
-    const subQuery = compoundMatch[1].replace(/(খোলো|খুলো|খোল|খুল|যাও|এ\s*যাও|নিয়ে\s*যাও|নিয়ে\s*যাও|দেখাও|দেখো|ঢুকো|ঢুক|open|go|এ|তে|এতে)/gi, '').trim();
-    const { page } = findMatchingPage(subQuery || compoundMatch[1]);
-    if (page) {
-      const viewSetter = options.openPage || options.setCurrentView;
-      if (viewSetter) viewSetter(page.path);
-      return { matched: true, type: 'navigation', roseReply: `${page.titleBn} খুললাম।` };
+  // 7. Remove filler words before fuzzy matching:
+  // Filler words: রোজ, রোস, তুমি, তোমার, আমার, আমাকে, এখন, একটু, যে, টা, টি, প্লিজ, please, and action words.
+  const fillerRegex = /\b(রোজ|রোস|তুমি|তোমার|আমার|আমাকে|এখন|একটু|যে|টা|টি|প্লিজ|please|খোলো|খুলো|খোল|খুল|যাও|যা|ঢুক|ঢোকো|নিয়ে\s*যাও|দেখাও|open|go|back|পেছনে|ফিরে)\b/gi;
+  const cleanedQuery = rawText.replace(fillerRegex, '').trim();
+
+  if (!cleanedQuery) {
+    // If nothing remains (e.g. just "খোলো"), ask "কোনটা খুলব?" with the 3 most used pages
+    const top3 = [
+      PAGES_REGISTRY.find(p => p.id === 'settings')!,
+      PAGES_REGISTRY.find(p => p.id === 'connections')!,
+      PAGES_REGISTRY.find(p => p.id === 'voice_language')!,
+    ].filter(Boolean);
+
+    if (options.setPendingNavClarifyState) {
+      options.setPendingNavClarifyState({ active: true, timestamp: Date.now(), options: top3 });
     }
+    return {
+      matched: true,
+      type: 'navigation_clarify',
+      roseReply: `কোনটা খুলব? ১. ${top3[0]?.titleBn || 'সেটিংস'} ২. ${top3[1]?.titleBn || 'কানেকশনস'} ৩. ${top3[2]?.titleBn || 'ভয়েস অ্যান্ড ল্যাঙ্গুয়েজ'}`,
+    };
   }
 
-  // E) Bar Number commands: "সেটিংসের ৩ নম্বর খোলো" or "৩ নম্বরে যাও"
-  const numBarMatch = rawText.match(/(?:নম্বর|নম্বরে|নাম্বার|number)?\s*([০-৯0-9 একদুইতিনচারপাঁচছয়সাতআটনয়দশ]+)\s*(?:নম্বর|নম্বরে|নাম্বার|নম্বরটা|number)?/i);
-  if (numBarMatch && numBarMatch[1]) {
-    const nKey = numBarMatch[1].trim();
-    const barNum = NUMBER_WORDS_MAP[nKey] || parseInt(nKey, 10);
-    if (!isNaN(barNum)) {
-      // Check if main settings or voice bars
-      const targetBar = MAIN_SETTINGS_BARS[barNum - 1];
-      if (targetBar) {
-        const viewSetter = options.openPage || options.setCurrentView;
-        if (viewSetter) viewSetter(targetBar.path);
-        return { matched: true, type: 'navigation', roseReply: `${targetBar.titleBn} খুললাম।` };
-      }
-    }
-  }
+  // 8. Fuzzy matching with score thresholds:
+  // >= 0.75 -> direct match
+  // 0.50 to 0.75 -> low confidence ("কোনটা খুলব? ১. A ২. B ৩. C")
+  // < 0.50 -> do nothing (matched: false)
+  const { page, lowConfidence, top3 } = findMatchingPage(cleanedQuery);
 
-  // F) Open page (with fuzzy matching and low confidence fallback)
-  const hasOpenKeyword = /(খোলো|খুলো|খোল|খুল|যাও|এ\s*যাও|নিয়ে\s*যাও|নিয়ে\s*যাও|দেখাও|দেখো|ঢুকো|ঢুক|open|go)/i.test(rawText);
-  let queryToMatch = rawText;
-  if (hasOpenKeyword) {
-    queryToMatch = rawText
-      .replace(/খোলো|খুলো|খোল|খুল|যাও|এ\s*যাও|নিয়ে\s*যাও|নিয়ে\s*যাও|দেখাও|দেখো|ঢুকো|ঢুক|open|go|to/gi, '')
-      .trim();
-    if (!queryToMatch) queryToMatch = rawText;
-  }
-
-  const { page, lowConfidence, top3 } = findMatchingPage(queryToMatch);
   if (lowConfidence && top3.length > 0) {
     if (options.setPendingNavClarifyState) {
       options.setPendingNavClarifyState({ active: true, timestamp: Date.now(), options: top3 });
@@ -245,7 +223,7 @@ export async function routeUserMessageForTeamTask(
     };
   }
 
-  // G) Clear chat
+  // 9. Clear chat
   const isClearIntent = /(মুছ|মুছে|ডিলিট|delete|clear|ক্লিয়ার)/i.test(rawText) && /(চ্যাট|হিস্টরি|হিস্ট্রি|মেসেজ)/i.test(rawText);
   if (isClearIntent) {
     if (options.setPendingClearChatState) {
@@ -258,92 +236,7 @@ export async function routeUserMessageForTeamTask(
     };
   }
 
-  // Scroll commands
-  if (/নিচে\s*যাও|নিচে\s*নামাও|scroll\s*down/i.test(rawText)) {
-    if (typeof window !== 'undefined') window.scrollBy({ top: window.innerHeight * 0.8, behavior: 'smooth' });
-    return { matched: true, type: 'scroll', roseReply: 'নিচে নামালাম।' };
-  }
-  if (/উপরে\s*যাও|scroll\s*up/i.test(rawText)) {
-    if (typeof window !== 'undefined') window.scrollBy({ top: -window.innerHeight * 0.8, behavior: 'smooth' });
-    return { matched: true, type: 'scroll', roseReply: 'উপরে তুললাম।' };
-  }
-
-  // Team status check
-  if (/(?:টিম|অফিস|team)/i.test(rawText)) {
-    let summary = "আজ কাউকে কোনো কাজ দেওয়া হয়নি, সবাই ফাঁকা।";
-    if (supabase) {
-      try {
-        const { data, error } = await supabase.from('tasks').select('*').order('created_at', { ascending: false }).limit(20);
-        if (!error && data && data.length > 0) {
-          const agents: TeamAgentId[] = ['mira', 'arin', 'zayan', 'naira'];
-          const activeStatuses: string[] = [];
-          for (const id of agents) {
-            const lastTask = data.find((t: any) => t.to_agent === id);
-            if (lastTask) {
-              const name = TEAM_MEMBERS[id].bengaliName;
-              if (lastTask.status === 'working' || lastTask.status === 'assigned') {
-                activeStatuses.push(`${name} "${lastTask.instruction}" নিয়ে কাজ করছে`);
-              } else if (lastTask.status === 'done' && lastTask.result) {
-                activeStatuses.push(`${name} "${lastTask.result}" সম্পন্ন করেছে`);
-              }
-            }
-          }
-          if (activeStatuses.length > 0) {
-            summary = `বর্তমানে ${activeStatuses.join(', ')}।`;
-          }
-        }
-      } catch (err) {}
-    }
-    return { matched: true, type: 'status', roseReply: summary };
-  }
-
-  // Detect target agent
-  const detectedAgent = detectAgentInMessage(rawText);
-  if (!detectedAgent) return { matched: false };
-
-  const member = TEAM_MEMBERS[detectedAgent];
-  const currentSource: 'mobile' | 'pc' = options.source || (typeof window !== 'undefined' && window.innerWidth >= 1024 ? 'pc' : 'mobile');
-  const isStatusQuery = STATUS_WORDS.some((w) => rawText.includes(w) || lower.includes(w.toLowerCase()));
-
-  if (isStatusQuery) {
-    let roseReply = `${member.bengaliName} এখন নিজের ডেস্কে বসে আছে, কোনো কাজ নেই।`;
-    if (supabase) {
-      try {
-        const { data } = await supabase.from('tasks').select('*').eq('to_agent', detectedAgent).order('created_at', { ascending: false }).limit(3);
-        if (data && data.length > 0) {
-          const activeTask = data.find((t: any) => t.status === 'working' || t.status === 'assigned');
-          if (activeTask) roseReply = `${member.bengaliName} এখন "${activeTask.instruction}" নিয়ে কাজ করছে।`;
-        }
-      } catch (err) {}
-    }
-    return { matched: true, type: 'status', agentId: detectedAgent, roseReply };
-  }
-
-  const hasWorkWord = WORK_WORDS.some((w) => rawText.includes(w) || lower.includes(w.toLowerCase()));
-  if (hasWorkWord) {
-    const newTask: AgentTaskRecord = {
-      id: generateTaskId(),
-      created_at: new Date().toISOString(),
-      from_agent: 'rose',
-      to_agent: detectedAgent,
-      instruction: rawText,
-      status: 'assigned',
-      reply: null,
-      result: null,
-      source: currentSource,
-    };
-    if (supabase) {
-      try {
-        await supabase.from('tasks').insert([newTask]).select();
-      } catch (err) {}
-    }
-    officeEvents.assign('rose', detectedAgent, rawText);
-    const roseReply = `ঠিক আছে, ${member.bengaliName}কে বলছি।`;
-    return { matched: true, type: 'assign', agentId: detectedAgent, roseReply, task: newTask };
-  }
-
-  const roseReply = `${member.bengaliName}-কে কি কোনো কাজ দেব, নাকি জানতে চাও সে কী করছে?`;
-  return { matched: true, type: 'clarify', agentId: detectedAgent, roseReply };
+  return { matched: false };
 }
 
 import { sendPcCommand } from './pcCommand';
@@ -387,5 +280,5 @@ export async function routePcCommandMessage(
   }
 
   const res = await sendPcCommand(pcAction, pcArgs, { source: options.source, onToast: options.onToast });
-  return { matched: true, roseReply: res.success ? `ঠিক আছে, ${res.message}।` : res.message };
+  return { matched: true, roseReply: res.success ? `ঠিক আছে, ${res.message}።` : res.message };
 }

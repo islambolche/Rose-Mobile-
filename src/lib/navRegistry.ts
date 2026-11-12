@@ -37,7 +37,7 @@ export function cleanTextForFuzzy(str: string): string {
   return str
     .toLowerCase()
     .replace(/\s+/g, '')
-    .replace(/(এ|তে|के|কে|র|এর)$/g, '');
+    .replace(/(এ|তে|কে|র|এর)$/g, '');
 }
 
 export function calculateSimilarity(s1: string, s2: string): number {
@@ -97,14 +97,11 @@ export function findMatchingPage(query: string): { page: PageRegistration | null
   const bestScore = scored.length > 0 ? scored[0].score : 0;
   const bestPage = scored.length > 0 ? scored[0].page : null;
 
-  if (bestScore < 0.75) {
+  if (bestScore >= 0.75) {
+    return { page: bestPage, matches: top3, lowConfidence: false, top3 };
+  } else if (bestScore >= 0.50 && bestScore < 0.75) {
     return { page: null, matches: top3, lowConfidence: true, top3 };
+  } else {
+    return { page: null, matches: [], lowConfidence: false, top3: [] };
   }
-
-  return {
-    page: bestPage,
-    matches: top3,
-    lowConfidence: false,
-    top3,
-  };
 }
