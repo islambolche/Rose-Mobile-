@@ -139,7 +139,11 @@ TEAM STRUCTURE & ROLES:
 - Rose (You): Chief Business Manager (সবার বস ও সার্বিক সমন্বয়ক)
 
 WORK TASK COMMAND RULE (HIGHEST PRIORITY - OVERRIDES ALL OTHER EMOTION/BREVITY RULES FOR WORK COMMANDS):
-When the user asks you to give a task to, ask, or check on Mira, Arin, Zayan or Naira, do NOT ask clarifying questions and do NOT write long emotional text. Immediately call assign_task with a clear instruction (for example, 'ask what tasks you can do' is a valid instruction), then reply in one short warm sentence like 'ঠিক আছে ইউসুফ, জায়ানকে জিজ্ঞেস করছি।' When the result comes back, tell the user the agent's answer briefly.
+When the user asks you to give a task to, ask, or check on Mira, Arin, Zayan or Naira, do NOT ask clarifying questions and do NOT write long emotional text. Immediately call assign_task with a clear instruction (for example, 'ask what tasks you can do' is a valid instruction). 
+
+When the user asks what the team is doing, how the office is, or asks about "everyone" (সবাই কী করছে), call get_team_status immediately.
+
+After calling a tool, reply in one short warm sentence like 'ঠিক আছে ইউসুফ, জায়ানকে জিজ্ঞেস করছি।' or 'দাঁড়াও দেখছি সবাই কী করছে।' When the result comes back, tell the user the agent's answer or status briefly.
 `.trim();
 
 export const ROSE_TEAM_TOOLS = [
@@ -317,7 +321,7 @@ export async function getTeamStatus(agentNameOrId?: string): Promise<{
         .from('tasks')
         .select('*')
         .order('created_at', { ascending: false })
-        .limit(10);
+        .limit(20);
 
       if (targetId) {
         query = query.eq('to_agent', targetId).limit(5);
@@ -383,22 +387,32 @@ function formatStatusSummary(
   }
 
   // Summary of all agents
-  const lines: string[] = [];
   const validAgentIds: TeamAgentId[] = ['mira', 'arin', 'zayan', 'naira'];
+  const workingAgents: string[] = [];
 
   for (const id of validAgentIds) {
     const member = TEAM_MEMBERS[id];
     const memberTask = tasks.find((t) => t.to_agent === id && (t.status === 'working' || t.status === 'assigned'));
     if (memberTask) {
-      lines.push(`${member.bengaliName}: কর্মরত (${memberTask.instruction})`);
-    } else {
-      lines.push(`${member.bengaliName}: ফাঁকা আছে`);
+      workingAgents.push(`${member.bengaliName} (${memberTask.instruction})`);
     }
   }
 
+  if (workingAgents.length === 0) {
+    return {
+      success: true,
+      summary: "আজ কাউকে কোনো কাজ দেওয়া হয়নি, সবাই নতুন কাজের জন্য প্রস্তুত।",
+      tasks,
+    };
+  }
+
+  const workingText = workingAgents.join(', ');
+  const idleCount = validAgentIds.length - workingAgents.length;
+  const idleText = idleCount > 0 ? `বাকি ${idleCount} জন এখন ফাঁকা আছে।` : 'সবাই এখন কাজে ব্যস্ত।';
+
   return {
     success: true,
-    summary: `টিমের সার্বিক স্ট্যাটাস:\n${lines.join('\n')}`,
+    summary: `বর্তমানে ${workingText} নিয়ে কাজ চলছে। ${idleText}`,
     tasks,
   };
 }

@@ -1563,6 +1563,9 @@ export class GeminiLiveSession {
       }
       const textVal = typeof outTrans === 'string' ? outTrans : outTrans.text || outTrans.parts?.[0]?.text;
       if (textVal) {
+        if (this.liveAssistantBuffer === '...') {
+          this.liveAssistantBuffer = '';
+        }
         this.liveAssistantBuffer += textVal;
         const cleanedLive = stripStageCues(
           cleanAssistantReplyText(this.liveAssistantBuffer.trim(), this.options.language)
@@ -1607,8 +1610,17 @@ export class GeminiLiveSession {
           this.updateState('speaking');
           this.stateEnteredAt = Date.now();
           this.playPcmAudioChunk(part.inlineData.data);
+
+          // Typing indicator: show "..." if audio starts but no text transcript has arrived yet
+          if (!this.liveAssistantBuffer.trim()) {
+            this.options.onTranscription?.('assistant', '...', false);
+          }
         }
         if (part.text && !outTrans) {
+          // If we had a "..." placeholder, clear it before appending real text
+          if (this.liveAssistantBuffer === '...') {
+            this.liveAssistantBuffer = '';
+          }
           this.liveAssistantBuffer += part.text;
           const cleanedLive = stripStageCues(
             cleanAssistantReplyText(this.liveAssistantBuffer.trim(), this.options.language)

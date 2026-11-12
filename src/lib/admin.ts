@@ -153,6 +153,8 @@ export function sanitizeAdminInstructionText(text: string): string {
   return out;
 }
 
+import { APP_STATUS } from "./appStatus";
+
 export function applyAdminSystemInstructionOverride(
   instructionText: string,
   options?: { isLiveVoice?: boolean }
@@ -178,10 +180,18 @@ export function applyAdminSystemInstructionOverride(
         .trim()
     : "";
   base = sanitizeAdminInstructionText(base);
+
+  const developerModeInstruction = `
+[DEVELOPER MODE - ডেভলপার মোড]
+Yousuf is the developer and creator of this app. He builds it in Google AI Studio with Gemini Pro and deploys on Vercel with Supabase. When he asks what to update, improve, add or fix, NEVER send him to Settings or explain how to use the app. Answer like a developer partner: give 3–5 short numbered suggestions, choosing from the APP STATUS below (what is done, what is pending, known bugs), and say which one you recommend first and why in one line. Keep each item one line.
+
+${APP_STATUS}
+`;
+
   if (hadLiveVoiceTail) {
-    return `${base}\n\n${ADMIN_MIN_LENGTH_OVERRIDE} ${ADMIN_LIVE_VOICE_DIRECTION}\n\n${ADMIN_EMOTION_RULE}\n\n${ADMIN_VOICE_DELIVERY_INSTRUCTION}`;
+    return `${base}\n\n${ADMIN_MIN_LENGTH_OVERRIDE} ${ADMIN_LIVE_VOICE_DIRECTION}\n\n${ADMIN_EMOTION_RULE}\n\n${ADMIN_VOICE_DELIVERY_INSTRUCTION}\n\n${developerModeInstruction}`;
   }
-  return `${base}\n\n${ADMIN_MIN_LENGTH_OVERRIDE} ${ADMIN_STAGE_CUE_HINT}\n\n${ADMIN_EMOTION_RULE}`;
+  return `${base}\n\n${ADMIN_MIN_LENGTH_OVERRIDE} ${ADMIN_STAGE_CUE_HINT}\n\n${ADMIN_EMOTION_RULE}\n\n${developerModeInstruction}`;
 }
 
 
