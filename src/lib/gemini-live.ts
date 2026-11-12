@@ -488,6 +488,8 @@ export class GeminiLiveSession {
   }
 
   public sendClientContent(turn: any) {
+    this.liveAssistantBuffer = '';
+    this.liveUserBuffer = '';
     if (this.ws && this.ws.readyState === WebSocket.OPEN && this.isSetupComplete) {
       try {
         this.ws.send(JSON.stringify({ clientContent: turn }));

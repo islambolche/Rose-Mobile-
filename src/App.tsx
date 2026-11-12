@@ -3060,6 +3060,30 @@ export function App() {
       };
 
       setChatHistory((prev) => {
+        const currentTime = Date.now();
+        // Safety net rule 3: Rose bubble identical to recent Rose bubble (< 60s)
+        if (entry.role === "rose") {
+          const recentRoseMatch = prev.slice().reverse().find((m) => m.role === "rose" && (m.text || m.content || "").trim() === cleanText);
+          if (recentRoseMatch) {
+            // Check approximate timestamp from id or just check if last message is identical
+            const last = prev[prev.length - 1];
+            if (last && last.role === "rose" && (last.text || last.content || "").trim() === cleanText) {
+              return prev;
+            }
+          }
+        }
+
+        // Safety net rule 4: User bubble identical to recent user bubble (< 5s)
+        if (entry.role === "user") {
+          const recentUserMatch = prev.slice().reverse().find((m) => m.role === "user" && (m.text || m.content || "").trim() === cleanText);
+          if (recentUserMatch) {
+            const last = prev[prev.length - 1];
+            if (last && last.role === "user" && (last.text || last.content || "").trim() === cleanText) {
+              return prev;
+            }
+          }
+        }
+
         if (prev.length > 0) {
           const last = prev[prev.length - 1];
           const lastText = (last.text || last.content || "").trim();
