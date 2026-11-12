@@ -6263,7 +6263,7 @@ export function App() {
       let roseBubbleCreated = false;
       let anySentenceEnqueued = false;
 
-      const updateSharedRoseBubble = (latestText: string, confirmation?: ActionConfirmationData) => {
+      const updateSharedRoseBubble = (latestText: string, confirmation?: ActionConfirmationData, groundingLinks?: Array<{ title: string; url: string }>) => {
         const cleanDisplay = stripStageCues(latestText.replace(/[*#_~`]/g, "").trim());
         if (!cleanDisplay) return;
         if (!roseBubbleCreated) {
@@ -6280,6 +6280,7 @@ export function App() {
                 time: roseMsgTime,
                 replyMode,
                 actionConfirmation: confirmation,
+                groundingLinks: groundingLinks,
               },
             ];
             chatHistoryRef.current = next;
@@ -6300,6 +6301,7 @@ export function App() {
                     content: cleanDisplay,
                     replyMode,
                     actionConfirmation: confirmation || m.actionConfirmation,
+                    groundingLinks: groundingLinks || m.groundingLinks,
                   }
                 : m
             );
@@ -6515,6 +6517,7 @@ export function App() {
           apiKey: sanitizedKey,
         };
 
+        let groundingLinks: Array<{ title: string; url: string }> = [];
         let generatedText = "";
 
         if (activeChatEngine !== "gemini") {
@@ -6561,9 +6564,22 @@ export function App() {
             geminiRes?.text || extractNonThoughtTextFromParts(nonThoughtParts, prefsRef.current.language) || fullAccumulatedText || "",
             prefsRef.current.language
           );
+          
+          groundingLinks = [];
+          const gMeta = geminiRes?.groundingMetadata || candidates[0]?.groundingMetadata;
+          if (gMeta?.groundingChunks) {
+            groundingLinks = gMeta.groundingChunks
+              .map((chunk: any) => ({
+                title: chunk.web?.title || chunk.web?.uri || "",
+                url: chunk.web?.uri || "",
+              }))
+              .filter((link: any) => link.url)
+              .slice(0, 3);
+          }
+
           if (fullReplyText) {
             fullAccumulatedText = fullReplyText;
-            updateSharedRoseBubble(fullAccumulatedText);
+            updateSharedRoseBubble(fullAccumulatedText, undefined, groundingLinks);
           }
 
           const functionCallPart = nonThoughtParts.find((p: any) => Boolean(p.functionCall));
@@ -6647,7 +6663,7 @@ export function App() {
         }
 
         // Always show the text reply; ONLY speak when replyMode === "voice"
-        updateSharedRoseBubble(finalCleanedReply);
+        updateSharedRoseBubble(finalCleanedReply, undefined, groundingLinks);
         if (replyMode === "voice") {
           extractCompletedSentences();
           const remainingSentence = cleanAssistantReplyText(
@@ -8325,18 +8341,7 @@ export function App() {
                 });
               }
               if (res.matched && res.roseReply) {
-                const nowT = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
-                setChatHistory((prev) => [
-                  ...prev,
-                  {
-                    id: `rose-task-${Date.now()}`,
-                    role: 'rose',
-                    text: res.roseReply!,
-                    content: res.roseReply!,
-                    time: nowT,
-                    replyMode: 'voice',
-                  },
-                ]);
+                session.interruptPlayback();
                 session.injectSystemInstructionToSpeak(res.roseReply);
               }
             })();
@@ -10119,6 +10124,22 @@ export function App() {
                           </div>
                         )}
                         {renderMessageContent(msgText)}
+                        {msg.groundingLinks && msg.groundingLinks.length > 0 && (
+                          <div className="mt-2 pt-2 border-t border-purple-500/20 flex flex-wrap gap-2">
+                            {msg.groundingLinks.map((link: any, lIdx: number) => (
+                              <a
+                                key={lIdx}
+                                href={link.url}
+                                target="_blank"
+                                rel="noopener noreferrer"
+                                className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-purple-500/10 border border-purple-500/20 text-[10px] text-purple-300 hover:bg-purple-500/20 transition-colors max-w-[120px]"
+                              >
+                                <ExternalLink size={10} className="shrink-0" />
+                                <span className="truncate">{link.title || 'Source'}</span>
+                              </a>
+                            ))}
+                          </div>
+                        )}
                         {msg.actionConfirmation && (
                           <div className="mt-3 p-3 bg-purple-950/60 border border-purple-500/30 rounded-xl space-y-2 text-xs">
                             <div className="flex items-center justify-between">

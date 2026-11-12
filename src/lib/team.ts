@@ -147,6 +147,7 @@ After calling a tool, reply in one short warm sentence like 'ঠিক আছে
 `.trim();
 
 export const ROSE_TEAM_TOOLS = [
+  { googleSearch: {} },
   {
     functionDeclarations: [
       {

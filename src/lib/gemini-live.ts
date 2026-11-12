@@ -359,6 +359,7 @@ export class GeminiLiveSession {
   public currentOutputLevel = 0;
   public activeMode: 'live' | 'fallback' = 'fallback';
   private userStartedSpeakingEmitted = false;
+  private skipGrounding = false;
 
   constructor(private options: GeminiLiveOptions) {}
 
@@ -413,7 +414,7 @@ export class GeminiLiveSession {
         this.ws.send(
           JSON.stringify({
             realtimeInput: {
-              text: `[SYSTEM INSTRUCTION: Speak out loud right now in sweet natural Bengali: "${sentence}". Do not add other sentences.]`,
+              text: `[SYSTEM INSTRUCTION: Say exactly this to the user in your sweet natural Bengali voice: "${sentence}". Do not add anything else.]`,
             },
           })
         );
@@ -1099,7 +1100,9 @@ export class GeminiLiveSession {
               },
             ],
           },
-          tools: ROSE_TEAM_TOOLS,
+          tools: this.skipGrounding
+            ? ROSE_TEAM_TOOLS.filter((t: any) => !t.googleSearch)
+            : ROSE_TEAM_TOOLS,
           inputAudioTranscription: {},
           outputAudioTranscription: {},
         };
@@ -1197,7 +1200,13 @@ export class GeminiLiveSession {
               return;
             }
             if (!this.wasStoppedByUser && this.ws === socket) {
-              void this.handleLiveDisconnectAndAutoReconnect(apiKey, `error (${safeErr})`);
+              const reason = String(msg.error?.message || '').toLowerCase();
+              if (reason.includes('google_search') || reason.includes('grounding')) {
+                this.skipGrounding = true;
+                void this.handleLiveDisconnectAndAutoReconnect(apiKey, 'grounding_tool_rejected', 1);
+              } else {
+                void this.handleLiveDisconnectAndAutoReconnect(apiKey, `error (${safeErr})`);
+              }
             }
             return;
           }

@@ -901,7 +901,7 @@ const callGeminiTextEndpoint = async (params: {
     generationConfig,
     startMinimal,
     'full',
-    tools
+    tools || [{ googleSearch: {} }]
   );
 
   const url = `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(cleanModel)}:generateContent?key=${cleanKey}`;
@@ -933,7 +933,7 @@ const callGeminiTextEndpoint = async (params: {
       generationConfig,
       startMinimal,
       'none',
-      tools
+      tools || [{ googleSearch: {} }]
     );
     const remainingMs = Math.max(2000, perReqTimeout - (Date.now() - reqStartTime));
     const retryRes = await fetchWithSignalTimeout(
@@ -961,7 +961,7 @@ const callGeminiTextEndpoint = async (params: {
         generationConfig,
         true,
         'none',
-        tools
+        tools || [{ googleSearch: {} }]
       );
       const remMs2 = Math.max(2000, perReqTimeout - (Date.now() - reqStartTime));
       const retryRes2 = await fetchWithSignalTimeout(
@@ -1056,6 +1056,7 @@ const callGeminiTextEndpoint = async (params: {
   return {
     ...parsed,
     text: replyText,
+    groundingMetadata: parsed?.candidates?.[0]?.groundingMetadata,
     modelUsed: cleanModel,
     elapsedMs,
     elapsedSeconds,
@@ -1330,6 +1331,7 @@ export const directGeminiStream = async (
 
       let accumulatedRawText = '';
       let emittedAnyChunk = false;
+      let lastGroundingMetadata: any = null;
       const functionCallParts: any[] = [];
 
       try {
@@ -1339,7 +1341,7 @@ export const directGeminiStream = async (
           generationConfig,
           startMinimal,
           'full',
-          tools
+          tools || [{ googleSearch: {} }]
         );
 
         let res = await fetchWithSignalTimeout(
@@ -1365,7 +1367,7 @@ export const directGeminiStream = async (
             generationConfig,
             startMinimal,
             'none',
-            tools
+            tools || [{ googleSearch: {} }]
           );
           const remainingMs = Math.max(2000, GEMINI_PER_REQUEST_TIMEOUT_MS - (Date.now() - reqStartTime));
           res = await fetchWithSignalTimeout(
@@ -1397,6 +1399,10 @@ export const directGeminiStream = async (
             if (!jsonStr || jsonStr === '[DONE]') return;
             try {
               const parsed = JSON.parse(jsonStr);
+              const groundingMetadata = parsed?.candidates?.[0]?.groundingMetadata;
+              if (groundingMetadata) {
+                lastGroundingMetadata = groundingMetadata;
+              }
               const parts = parsed?.candidates?.[0]?.content?.parts || [];
               for (const part of parts) {
                 if (!part || part.thought === true) continue;
@@ -1439,9 +1445,6 @@ export const directGeminiStream = async (
             if (finalCleaned) {
               resultParts.push({ text: finalCleaned });
             }
-            for (const fc of functionCallParts) {
-              resultParts.push(fc);
-            }
             return {
               candidates: [
                 {
@@ -1449,9 +1452,11 @@ export const directGeminiStream = async (
                     role: 'model',
                     parts: resultParts,
                   },
+                  groundingMetadata: lastGroundingMetadata,
                 },
               ],
               text: finalCleaned,
+              groundingMetadata: lastGroundingMetadata,
               modelUsed: primaryModel,
               elapsedMs,
               elapsedSeconds: (elapsedMs / 1000).toFixed(1),
