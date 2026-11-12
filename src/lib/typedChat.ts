@@ -2,6 +2,7 @@ import { getGeminiKey } from './geminiKey';
 import { buildRoseSystemInstruction } from './roseConfig';
 import { getDynamicGroqChatModels, getProviderKey } from './chatEngines';
 import { cleanAssistantReplyText } from './ai-service';
+import { ROSE_PHONE_FUNCTION_DECLARATIONS } from './team';
 
 export const NO_GEMINI_KEY_MSG = 'Gemini key সেভ করা নেই। Settings → CONNECTIONS-এ কী বসাও।';
 export const QUOTA_429_MSG = 'আজকের ফ্রি সীমা শেষ। পরে চেষ্টা করো বা নতুন কী দাও।';
@@ -590,6 +591,7 @@ export async function sendTypedChat(
     const geminiBody: any = {
       systemInstruction: { parts: [{ text: sysInstructionText }] },
       contents: geminiContents,
+      tools: [{ functionDeclarations: ROSE_PHONE_FUNCTION_DECLARATIONS }],
       generationConfig: { temperature: 0.8 },
     };
 
@@ -633,6 +635,17 @@ export async function sendTypedChat(
 
         const data = await res.json();
         const parts = data?.candidates?.[0]?.content?.parts || [];
+        const fcPart = parts.find((p: any) => p && p.functionCall);
+        if (fcPart?.functionCall?.name) {
+          const { executePhoneToolActionByName } = await import('./phone');
+          const toolRes = await executePhoneToolActionByName(
+            String(fcPart.functionCall.name),
+            fcPart.functionCall.args || {}
+          );
+          if (toolRes?.message) {
+            return toolRes.message;
+          }
+        }
         const textPart = parts.find((p: any) => p && typeof p.text === 'string')?.text;
         if (typeof textPart !== 'string' || !textPart.trim()) {
           const blockReason = data?.promptFeedback?.blockReason || data?.candidates?.[0]?.finishReason;

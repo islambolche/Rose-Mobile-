@@ -222,13 +222,105 @@ CHAT CLEARING RULE:
 You CAN clear the chat with app_action clear_chat after the user says yes. Never say you cannot.
 
 PHONE & WHATSAPP CALL RULE (CRITICAL):
-1. Honest replies: Never say "call done", "calling", "ringing", "কল দিচ্ছি", "কল চলে গেছে", or "রিং হচ্ছে". The app cannot place calls itself.
-2. When the user asks to call a contact ("<name> কে কল দাও"), call a number, or gives a phone number after being asked "<name>-এর নম্বর কত?", ALWAYS call the "phone" tool.
-3. Speak ONLY the exact single message returned by the "phone" tool ("<name>-এর নম্বর কত?" or "হোয়াটসঅ্যাপে খুলে দিয়েছি, কল বাটন চাপো।"). Never send a second "not found" message after asking for the number.
+1. Tools available:
+   - phone_call(person): Start a normal phone call confirmation flow for a contact name or phone number.
+   - whatsapp_call(person, video?): Start a WhatsApp audio or video call confirmation flow.
+   - whatsapp_message(person, message): Write a short natural message in the user's language, read it back ("<name>-কে এটা পাঠাব: '<text>'। ঠিক আছে?"), and wait for user's yes before opening WhatsApp.
+   - phone_confirm(decision): Execute or cancel the pending call/message ONLY after the user says হ্যাঁ/yes/না/no.
+   - save_contact_alias(spoken_name, saved_name): Save an alias when user teaches one (e.g. "আম্মু মানে Ammu Home").
+   - phone(action): For open_app or search_contacts.
+2. ALWAYS require the user's yes before any call or message. Never claim a call or message was placed until phone_confirm("yes") runs.
+3. Speak ONLY the exact single message/question returned by the tool (e.g. "<name>-কে ফোন কল দেব? হ্যাঁ বললে দেব।", "কোনটা? ১. ... ২. ...", "এই নামে কাউকে পেলাম না। ফোনে নামটা কীভাবে সেভ করা আছে বলো?", "WhatsApp-এ এই মানুষ পাওয়া যায়নি। নরমাল ফোন কল দেব? হ্যাঁ বললে দেব।", "লেখা রেডি, শুধু Send চাপো।").
 
 END CALL RULE (CRITICAL):
 You CAN end the live voice call yourself using the end_call tool. When the user asks to hang up, stop, or end the call (e.g. ফোন কাটো, কল বন্ধ করো, রাখো, bye, end call), call end_call and say one short goodbye (e.g. "ঠিক আছে, রাখছি।"). You must NEVER say "I can't end the call" or "আমি কল কাটতে পারি না".
 `.trim();
+
+export const ROSE_PHONE_FUNCTION_DECLARATIONS = [
+  {
+    name: 'phone_call',
+    description: 'Initiate a normal phone call to a contact name or phone number (always confirms with user first before dialing).',
+    parameters: {
+      type: 'OBJECT',
+      properties: {
+        person: {
+          type: 'STRING',
+          description: 'Contact name or phone number spoken by the user',
+        },
+      },
+      required: ['person'],
+    },
+  },
+  {
+    name: 'whatsapp_call',
+    description: 'Initiate a WhatsApp audio or video call to a contact name or phone number (always confirms with user first).',
+    parameters: {
+      type: 'OBJECT',
+      properties: {
+        person: {
+          type: 'STRING',
+          description: 'Contact name or phone number spoken by the user',
+        },
+        video: {
+          type: 'BOOLEAN',
+          description: 'Set true for a WhatsApp video call, false for voice call',
+        },
+      },
+      required: ['person'],
+    },
+  },
+  {
+    name: 'whatsapp_message',
+    description: 'Prepare a short WhatsApp message in the user language and ask confirmation before opening WhatsApp.',
+    parameters: {
+      type: 'OBJECT',
+      properties: {
+        person: {
+          type: 'STRING',
+          description: 'Recipient contact name or phone number',
+        },
+        message: {
+          type: 'STRING',
+          description: 'Short, natural message text written in the user language',
+        },
+      },
+      required: ['person', 'message'],
+    },
+  },
+  {
+    name: 'phone_confirm',
+    description: 'Confirm or cancel a pending phone call, WhatsApp call, or WhatsApp message ONLY after the user explicitly replies yes/হ্যাঁ or no/না.',
+    parameters: {
+      type: 'OBJECT',
+      properties: {
+        decision: {
+          type: 'STRING',
+          enum: ['yes', 'no'],
+          description: '"yes" if user agreed, "no" if user declined',
+        },
+      },
+      required: ['decision'],
+    },
+  },
+  {
+    name: 'save_contact_alias',
+    description: 'Save a spoken name to phonebook display name alias (e.g. "আম্মু" -> "Ammu Home").',
+    parameters: {
+      type: 'OBJECT',
+      properties: {
+        spoken_name: {
+          type: 'STRING',
+          description: 'Spoken name in Bangla or English',
+        },
+        saved_name: {
+          type: 'STRING',
+          description: 'Exact contact name saved in the phone or phone number',
+        },
+      },
+      required: ['spoken_name', 'saved_name'],
+    },
+  },
+];
 
 export const ROSE_TEAM_TOOLS = [
   { googleSearch: {} },
@@ -247,6 +339,7 @@ export const ROSE_TEAM_TOOLS = [
           },
         },
       },
+      ...ROSE_PHONE_FUNCTION_DECLARATIONS,
       {
         name: 'assign_task',
         description: 'Assign a work task to an AI team member (mira, arin, zayan, or naira).',
@@ -302,27 +395,18 @@ export const ROSE_TEAM_TOOLS = [
       },
       {
         name: 'phone',
-        description: 'Open WhatsApp or phone dialer for a contact or phone number, save a contact number when provided by the user, or open an installed app.',
+        description: 'Open an installed app or search phone contacts.',
         parameters: {
           type: 'OBJECT',
           properties: {
             action: {
               type: 'STRING',
-              enum: ['call_contact', 'call_number', 'open_app'],
-              description: 'Phone action: "call_contact" (look up contact by name or ask for number), "call_number" (save number if pending and open link), or "open_app"',
+              enum: ['search_contacts', 'get_all_contacts', 'open_app'],
+              description: 'Phone action: "search_contacts", "get_all_contacts", or "open_app"',
             },
             name: {
               type: 'STRING',
-              description: 'Contact name (for call_contact / call_number) or app name (for open_app)',
-            },
-            number: {
-              type: 'STRING',
-              description: 'Phone number (for call_number or when user provides the contact number)',
-            },
-            channel: {
-              type: 'STRING',
-              enum: ['whatsapp', 'tel'],
-              description: '"whatsapp" if user asked for WhatsApp, or "tel" for normal phone call',
+              description: 'Contact query (for search_contacts) or app name (for open_app)',
             },
           },
           required: ['action'],

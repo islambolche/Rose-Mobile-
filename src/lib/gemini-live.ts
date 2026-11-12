@@ -51,7 +51,7 @@ import {
 import { openPage, goBack, openNumber, currentPage } from './nav';
 import { isAndroidApp, voiceDebugStore } from './voiceDebugStore';
 import {
-  executePhoneToolAction,
+  executePhoneToolActionByName,
   routePhoneActionFromText,
   getSharedPhoneAndHistoryContextBlock,
 } from './phone';
@@ -1743,17 +1743,26 @@ export class GeminiLiveSession {
               id: callId,
             });
           }
-        } else if (name === 'phone') {
+        } else if (
+          name === 'phone' ||
+          name === 'phone_call' ||
+          name === 'whatsapp_call' ||
+          name === 'whatsapp_message' ||
+          name === 'phone_confirm' ||
+          name === 'save_contact_alias'
+        ) {
           this.phoneToolHandledForTurn = true;
-          const phoneRes = await executePhoneToolAction(args);
+          const phoneRes = await executePhoneToolActionByName(name, args || {});
           functionResponses.push({
+            id: callId,
+            name,
             response: {
               output: {
                 ok: phoneRes.ok,
                 message: phoneRes.message,
+                ...(phoneRes.contacts ? { contacts: phoneRes.contacts } : {}),
               },
             },
-            id: callId,
           });
         } else if (name === 'end_call') {
           this.phoneToolHandledForTurn = true;

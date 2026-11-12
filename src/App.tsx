@@ -196,7 +196,7 @@ import { PcSetupPage, PcSetupPageId } from "./components/PcSetupViews";
 import { buildRoseSystemInstruction } from "./lib/roseConfig";
 import { sendPcCommand } from "./lib/pcCommand";
 import { sendTypedChat, NO_GEMINI_KEY_MSG, formatRealGeminiError, getStoredGroqKey } from "./lib/typedChat";
-import { executePhoneToolAction, routePhoneActionFromText } from "./lib/phone";
+import { executePhoneToolAction, executePhoneToolActionByName, routePhoneActionFromText } from "./lib/phone";
 import { Folder, ShieldCheck } from "lucide-react";
 
 const APP_VERSION = "v1.4.0";
@@ -7141,27 +7141,46 @@ export function App() {
 
                 if (
                   toolName === "phone" ||
+                  toolName === "phone_call" ||
+                  toolName === "phone_confirm" ||
+                  toolName === "save_contact_alias" ||
                   toolName === "call_contact" ||
                   toolName === "call_number" ||
-                  toolName === "send_whatsapp"
+                  toolName === "send_whatsapp" ||
+                  toolName === "whatsapp_call" ||
+                  toolName === "whatsapp_message" ||
+                  toolName === "search_contacts"
                 ) {
-                  const mappedAction =
-                    toolName === "phone"
-                      ? toolArgs?.action
-                      : toolName === "send_whatsapp"
-                      ? "call_number"
-                      : toolName;
-                  const mappedChannel =
-                    toolName === "send_whatsapp"
-                      ? "whatsapp"
-                      : toolName === "call_number" && !toolArgs?.channel
-                      ? "tel"
-                      : toolArgs?.channel;
-                  const phoneRes = await executePhoneToolAction({
-                    ...(toolArgs || {}),
-                    action: mappedAction,
-                    channel: mappedChannel,
-                  });
+                  let phoneRes;
+                  if (
+                    toolName === "phone_call" ||
+                    toolName === "whatsapp_call" ||
+                    toolName === "whatsapp_message" ||
+                    toolName === "phone_confirm" ||
+                    toolName === "save_contact_alias"
+                  ) {
+                    phoneRes = await executePhoneToolActionByName(toolName, toolArgs || {});
+                  } else {
+                    const mappedAction =
+                      toolName === "phone"
+                        ? toolArgs?.action
+                        : toolName === "send_whatsapp"
+                        ? toolArgs?.text || toolArgs?.message
+                          ? "whatsapp_message"
+                          : "call_number"
+                        : toolName;
+                    const mappedChannel =
+                      toolName === "send_whatsapp" || toolName === "whatsapp_call"
+                        ? "whatsapp"
+                        : toolName === "call_number" && !toolArgs?.channel
+                        ? "tel"
+                        : toolArgs?.channel;
+                    phoneRes = await executePhoneToolAction({
+                      ...(toolArgs || {}),
+                      action: mappedAction,
+                      channel: mappedChannel,
+                    });
+                  }
                   fullAccumulatedText = phoneRes.message;
                   updateSharedRoseBubble(phoneRes.message);
                   if (replyMode === "voice") {
