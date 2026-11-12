@@ -5,6 +5,7 @@ import {
   Shield, Zap, Check, AlertCircle, Copy, MessageCircle, MessageSquare, Youtube, Facebook, Instagram,
   ExternalLink
 } from 'lucide-react';
+import { openExternal } from '../lib/openExternal';
 
 export interface PermissionItemConfig {
   id: string;
@@ -327,7 +328,7 @@ export const AppPermissionsView = ({ setCurrentView, setToast }: any) => {
   const handleAction = async (perm: PermissionItemConfig) => {
     if (perm.type === 'apk') {
       if (perm.actionUrl) {
-        window.open(perm.actionUrl, '_blank', 'noopener,noreferrer');
+        openExternal(perm.actionUrl);
         setToast?.(`${perm.name} খোলা হচ্ছে`);
       }
       return;
@@ -335,7 +336,7 @@ export const AppPermissionsView = ({ setCurrentView, setToast }: any) => {
 
     if (perm.type === 'api') {
       if (perm.actionUrl) {
-        window.open(perm.actionUrl, '_blank', 'noopener,noreferrer');
+        openExternal(perm.actionUrl);
         setToast?.(`${perm.name} খোলা হচ্ছে`);
       }
       return;

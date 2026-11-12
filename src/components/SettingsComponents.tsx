@@ -1,8 +1,9 @@
-import React, { useState } from "react";
+import React, { useState, useRef } from "react";
 import { motion } from "framer-motion";
 import { ArrowLeft, Facebook, Instagram, Youtube, Mail, Check, Loader2, ExternalLink, Cpu, PenTool, Zap, ChevronRight, RotateCw, MessageSquare } from "lucide-react";
 import { getGeminiKey } from "../lib/geminiKey";
 import { DEVELOPER_INFO } from "../lib/creator-profile";
+import { openExternal } from "../lib/openExternal";
 import {
   getChatModelOverride,
   setChatModelOverride,
@@ -138,11 +139,13 @@ export const Developer = ({
               <a
                 key={item.id}
                 href={hasLink ? item.link : undefined}
-                target={hasLink && !isMailto ? "_blank" : undefined}
-                rel={hasLink && !isMailto ? "noopener noreferrer" : undefined}
                 onClick={(e) => {
-                  if (!hasLink) {
-                    e.preventDefault();
+                  e.preventDefault();
+                  if (!hasLink) return;
+                  if (isMailto) {
+                    window.location.href = item.link;
+                  } else {
+                    openExternal(item.link);
                   }
                 }}
                 className="w-full p-5 bg-[#0F172A]/80 rounded-[2.5rem] border border-purple-500/30 shadow-2xl flex items-center justify-between active:scale-[0.98] transition-all text-left"
@@ -329,13 +332,22 @@ export const LiveModelSettings = ({
     localStorage.setItem("voice_model_auto_fallback", String(next));
   };
 
+  const customInputRef = useRef<HTMLInputElement>(null);
+
   const handlePasteCustom = async () => {
     try {
-      const text = await navigator.clipboard.readText();
-      if (text) {
-        setCustomInput(text.trim());
+      if (typeof navigator !== "undefined" && navigator.clipboard && typeof navigator.clipboard.readText === "function") {
+        const text = await navigator.clipboard.readText();
+        if (text && text.trim()) {
+          setCustomInput(text.trim());
+          return;
+        }
       }
-    } catch (e) {}
+      throw new Error("Clipboard blocked or empty");
+    } catch (e) {
+      customInputRef.current?.focus();
+      notifyToast("লম্বা চেপে Paste করো");
+    }
   };
 
   const handleSaveCustom = () => {
@@ -511,6 +523,7 @@ export const LiveModelSettings = ({
               Model Name
             </label>
             <input
+              ref={customInputRef}
               type="text"
               value={customInput}
               onChange={(e) => setCustomInput(e.target.value)}

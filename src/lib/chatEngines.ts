@@ -10,7 +10,7 @@ import {
 import { storage } from './storage';
 
 export type ChatEngineId = 'gemini' | 'groq' | 'openrouter' | 'cerebras' | 'mistral';
-export type KeyStatus = 'READY' | 'INVALID' | 'NOT SET';
+export type KeyStatus = 'READY' | 'CONNECTED' | 'LIMIT REACHED' | 'INVALID' | 'SAVED – NOT TESTED' | 'NOT SET';
 
 export interface ChatProviderConfig {
   id: ChatEngineId;
@@ -161,11 +161,23 @@ export const setProviderKey = async (id: ChatEngineId, rawKey: string): Promise<
   if (id === 'gemini') {
     await setGeminiKey(clean);
     writeLocalKey('gemini_api_key', clean);
+    try {
+      const existing = JSON.parse(readLocalKey('iyabd_api_keys') || '{}');
+      existing.gemini = clean;
+      writeLocalKey('iyabd_api_keys', JSON.stringify(existing));
+    } catch {}
     return;
   }
   const config = FREE_CHAT_PROVIDERS.find((p) => p.id === id);
   if (!config) return;
   writeLocalKey(config.storageKey, clean);
+  if (id === 'groq') {
+    try {
+      const existing = JSON.parse(readLocalKey('iyabd_api_keys') || '{}');
+      existing.groq = clean;
+      writeLocalKey('iyabd_api_keys', JSON.stringify(existing));
+    } catch {}
+  }
   try {
     await storage.set(config.storageKey, clean);
   } catch {}
@@ -177,8 +189,11 @@ export const getProviderStatus = (id: ChatEngineId): KeyStatus => {
   const key = getProviderKey(id);
   if (!key) return 'NOT SET';
   const saved = readLocalKey(config.statusStorageKey);
-  if (saved === 'READY' || saved === 'INVALID') return saved;
-  return 'READY';
+  if (saved === 'READY' || saved === 'CONNECTED') return 'READY';
+  if (saved === 'LIMIT REACHED') return 'LIMIT REACHED';
+  if (saved === 'INVALID') return 'INVALID';
+  if (saved === 'SAVED – NOT TESTED') return 'SAVED – NOT TESTED';
+  return 'SAVED – NOT TESTED';
 };
 
 export const setProviderStatus = async (id: ChatEngineId, status: KeyStatus): Promise<void> => {
@@ -859,9 +874,10 @@ export const callOpenAiCompatibleChat = async (params: {
 export const verifyProviderKey = async (
   providerId: ChatEngineId,
   rawKey: string
-): Promise<{ ok: boolean; status: KeyStatus; errorText?: string; model?: string }> => {
+): Promise<{ ok: boolean; status: KeyStatus; httpStatus?: number; errorText?: string; model?: string }> => {
   const cleanKey = String(rawKey || '')
-    .replace(/[\r\n\t\s\u200B\u200C\u200D\uFEFF]+/g, '')
+    .replace(/^Bearer\s+/i, '')
+    .replace(/[\r\n\t\s"'`\u200B\u200C\u200D\uFEFF]+/g, '')
     .trim();
 
   if (!cleanKey) {
@@ -869,69 +885,119 @@ export const verifyProviderKey = async (
     return { ok: false, status: 'NOT SET', errorText: 'Key দেওয়া হয়নি' };
   }
 
+  const testKey =
+    cleanKey
+      .split(',')
+      .map((k) => k.trim())
+      .find(Boolean) || cleanKey;
+
+  const sanitizeReason = (rawMsg: string): string => {
+    let text = String(rawMsg || '');
+    if (testKey) text = text.split(testKey).join('[REDACTED]');
+    if (cleanKey) text = text.split(cleanKey).join('[REDACTED]');
+    return text.replace(/\s+/g, ' ').trim().slice(0, 120);
+  };
+
   const provider = FREE_CHAT_PROVIDERS.find((p) => p.id === providerId);
   if (!provider) {
-    return { ok: false, status: 'INVALID', errorText: 'অজানা সেবা' };
+    await setProviderStatus(providerId, 'SAVED – NOT TESTED');
+    return { ok: false, status: 'SAVED – NOT TESTED', errorText: 'Unknown provider' };
   }
 
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), 12000);
 
   try {
+    let res: Response;
     if (providerId === 'gemini') {
-      const url = `https://generativelanguage.googleapis.com/v1beta/models?key=${encodeURIComponent(cleanKey)}`;
-      const res = await fetch(url, {
+      const url = `https://generativelanguage.googleapis.com/v1beta/models?key=${encodeURIComponent(testKey)}`;
+      res = await fetch(url, {
         method: 'GET',
         signal: controller.signal,
       });
-
-      const raw = await res.text().catch(() => '');
-      let errJson: any = null;
-      try { errJson = JSON.parse(raw); } catch {}
-      const msg = errJson?.error?.message || errJson?.message || raw || '';
-
-      if (res.ok) {
-        await setProviderStatus('gemini', 'READY');
-        return { ok: true, status: 'READY', errorText: 'Gemini ঠিক আছে' };
+    } else {
+      const headers: Record<string, string> = {
+        Authorization: `Bearer ${testKey}`,
+      };
+      if (providerId === 'openrouter') {
+        const origin =
+          typeof window !== 'undefined' && /^https?:\/\//i.test(window.location.origin)
+            ? window.location.origin
+            : 'https://rose-mobile.vercel.app';
+        headers['HTTP-Referer'] = origin;
+        headers['X-Title'] = 'Rose AI Assistant';
       }
 
-      await setProviderStatus('gemini', 'INVALID');
-      return { ok: false, status: 'INVALID', errorText: `Gemini ${res.status}: ${msg}` };
+      const testUrl = `${provider.baseURL}/models`;
+      res = await fetch(testUrl, {
+        method: 'GET',
+        headers,
+        signal: controller.signal,
+      });
     }
-
-    const headers: Record<string, string> = {
-      Authorization: `Bearer ${cleanKey}`,
-      'Content-Type': 'application/json',
-    };
-    if (providerId === 'openrouter') {
-      headers['HTTP-Referer'] = typeof window !== 'undefined' ? window.location.origin : 'https://aistudio.google.com';
-      headers['X-Title'] = 'Rose AI Assistant';
-    }
-
-    const testUrl = `${provider.baseURL}/models`;
-    const res = await fetch(testUrl, {
-      method: 'GET',
-      headers,
-      signal: controller.signal,
-    });
 
     const raw = await res.text().catch(() => '');
     let errJson: any = null;
-    try { errJson = JSON.parse(raw); } catch {}
-    const msg = errJson?.error?.message || errJson?.message || errJson?.detail || raw || '';
+    try {
+      errJson = raw ? JSON.parse(raw) : null;
+    } catch {}
+    const extractedMsg =
+      errJson?.error?.message ||
+      (typeof errJson?.error === 'string' ? errJson.error : '') ||
+      errJson?.message ||
+      (typeof errJson?.detail === 'string' ? errJson.detail : errJson?.detail?.message) ||
+      raw ||
+      res.statusText ||
+      '';
+    const shortReason = sanitizeReason(extractedMsg);
 
     if (res.ok) {
       await setProviderStatus(providerId, 'READY');
-      return { ok: true, status: 'READY', errorText: `${provider.name} ঠিক আছে` };
+      return {
+        ok: true,
+        status: 'READY',
+        httpStatus: res.status,
+        errorText: `HTTP ${res.status} OK`,
+      };
     }
 
-    await setProviderStatus(providerId, 'INVALID');
-    return { ok: false, status: 'INVALID', errorText: `${provider.name} ${res.status}: ${msg}` };
+    if (res.status === 429) {
+      await setProviderStatus(providerId, 'LIMIT REACHED');
+      return {
+        ok: false,
+        status: 'LIMIT REACHED',
+        httpStatus: 429,
+        errorText: `HTTP 429${shortReason ? ': ' + shortReason : ' (Rate limit reached)'}`,
+      };
+    }
+
+    if (res.status === 400 || res.status === 401 || res.status === 403) {
+      await setProviderStatus(providerId, 'INVALID');
+      return {
+        ok: false,
+        status: 'INVALID',
+        httpStatus: res.status,
+        errorText: `HTTP ${res.status}${shortReason ? ': ' + shortReason : ' (Invalid key)'}`,
+      };
+    }
+
+    await setProviderStatus(providerId, 'SAVED – NOT TESTED');
+    return {
+      ok: false,
+      status: 'SAVED – NOT TESTED',
+      httpStatus: res.status,
+      errorText: `HTTP ${res.status}${shortReason ? ': ' + shortReason : ''}`,
+    };
   } catch (netErr: any) {
     const isAbort = netErr?.name === 'AbortError';
-    const text = isAbort ? 'সময় শেষ (Timeout)' : `নেটওয়ার্ক সমস্যা: ${netErr.message || netErr}`;
-    const current = getProviderStatus(providerId);
-    return { ok: false, status: current, errorText: text };
+    const rawNet = isAbort ? 'Timeout (12s)' : netErr?.message || String(netErr || 'Network error');
+    const shortNet = sanitizeReason(rawNet);
+    await setProviderStatus(providerId, 'SAVED – NOT TESTED');
+    return {
+      ok: false,
+      status: 'SAVED – NOT TESTED',
+      errorText: `Network error: ${shortNet}`,
+    };
   } finally {
     clearTimeout(timer);
   }

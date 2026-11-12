@@ -1,6 +1,7 @@
 import React from "react";
 import { Phone, MessageCircle, Copy, Lock, Award, Instagram, Youtube, Smartphone, Facebook, ExternalLink } from "lucide-react";
 import { CREATOR_PROFILE } from "../lib/creator-profile";
+import { openExternal } from "../lib/openExternal";
 
 export const CreatorProfileContent: React.FC = () => {
   const copyToClipboard = (text: string) => {
@@ -10,11 +11,11 @@ export const CreatorProfileContent: React.FC = () => {
 
   const contactItems = [
     { label: "Phone", value: CREATOR_PROFILE.phone, icon: Phone, action: () => window.location.href = `tel:${CREATOR_PROFILE.phone}` },
-    { label: "WhatsApp", value: CREATOR_PROFILE.whatsapp, icon: MessageCircle, action: () => window.open(`https://wa.me/88${CREATOR_PROFILE.whatsapp}`, "_blank") },
-    { label: "Facebook", value: "Facebook", icon: Facebook, action: () => window.open(CREATOR_PROFILE.facebook, "_blank") },
-    { label: "Instagram", value: "Instagram", icon: Instagram, action: () => window.open(CREATOR_PROFILE.instagram, "_blank") },
-    { label: "YouTube", value: "YouTube", icon: Youtube, action: () => window.open(CREATOR_PROFILE.youtube, "_blank") },
-    { label: "TikTok", value: "TikTok", icon: Smartphone, action: () => window.open(CREATOR_PROFILE.tiktok, "_blank") },
+    { label: "WhatsApp", value: CREATOR_PROFILE.whatsapp, icon: MessageCircle, action: () => openExternal(`https://wa.me/88${CREATOR_PROFILE.whatsapp}`) },
+    { label: "Facebook", value: "Facebook", icon: Facebook, action: () => openExternal(CREATOR_PROFILE.facebook) },
+    { label: "Instagram", value: "Instagram", icon: Instagram, action: () => openExternal(CREATOR_PROFILE.instagram) },
+    { label: "YouTube", value: "YouTube", icon: Youtube, action: () => openExternal(CREATOR_PROFILE.youtube) },
+    { label: "TikTok", value: "TikTok", icon: Smartphone, action: () => openExternal(CREATOR_PROFILE.tiktok) },
   ];
 
   return (

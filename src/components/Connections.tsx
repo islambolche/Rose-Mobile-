@@ -23,8 +23,7 @@ import {
 import { motion, AnimatePresence } from 'framer-motion';
 import { getGeminiKey, setGeminiKey, initGeminiKey } from '../lib/geminiKey';
 import { storage } from '../lib/storage';
-import { openInExternalBrowser } from '../lib/phoneActions';
-import { PhoneControl } from '../lib/phoneControl';
+import { openExternal } from '../lib/openExternal';
 import {
   ChatEngineId,
   KeyStatus,
@@ -153,10 +152,13 @@ export const ConnectionsView = ({
 
   const [statusMap, setStatusMap] = useState<Record<AllProviderId, KeyStatus>>(() => {
     const resolveStatus = (id: AllProviderId, keyVal: string, statusKey: string): KeyStatus => {
-      if (!keyVal.trim()) return 'NOT SET';
+      if (!keyVal || !keyVal.trim()) return 'NOT SET';
       const saved = readLocalKey(statusKey);
-      if (saved === 'READY' || saved === 'INVALID') return saved;
-      return 'READY';
+      if (saved === 'READY' || saved === 'CONNECTED') return 'READY';
+      if (saved === 'LIMIT REACHED') return 'LIMIT REACHED';
+      if (saved === 'INVALID') return 'INVALID';
+      if (saved === 'SAVED – NOT TESTED') return 'SAVED – NOT TESTED';
+      return 'SAVED – NOT TESTED';
     };
     return {
       gemini: resolveStatus('gemini', getGeminiKey() || readLocalKey('gemini_api_key'), 'connection_status_gemini'),
@@ -199,46 +201,7 @@ export const ConnectionsView = ({
   const [localToast, setLocalToast] = useState<string | null>(null);
 
   const handleTestKey = async (id: AllProviderId) => {
-    const provider = ALL_PROVIDERS.find((p) => p.id === id);
-    if (!provider) return;
-
-    const cleanKey = String(typedKeys[id] || '').replace(/[\r\n\t\s\u200B\u200C\u200D\uFEFF]+/g, '').trim();
-    if (!cleanKey) {
-      const msg = `${provider.displayName} key নেই। Settings → Connections-এ key দিন।`;
-      setTestResults((prev) => ({ ...prev, [id]: msg }));
-      notifyToast(msg);
-      return;
-    }
-
-    setVerifyingMap((prev) => ({ ...prev, [id]: true }));
-    setTestResults((prev) => ({ ...prev, [id]: 'পরীক্ষা করা হচ্ছে...' }));
-
-    try {
-      let result: { ok: boolean; status: KeyStatus; errorText?: string };
-      if (id === 'elevenlabs') {
-        result = await verifyElevenLabs(cleanKey);
-      } else {
-        result = await verifyProviderKey(id as ChatEngineId, cleanKey);
-      }
-
-      if (result.ok) {
-        const okText = `${provider.displayName} ঠিক আছে`;
-        setTestResults((prev) => ({ ...prev, [id]: okText }));
-        setStatusMap((prev) => ({ ...prev, [id]: 'READY' }));
-        notifyToast(okText);
-      } else {
-        const errText = result.errorText || `${provider.displayName} পরীক্ষা ব্যর্থ`;
-        setTestResults((prev) => ({ ...prev, [id]: errText }));
-        setStatusMap((prev) => ({ ...prev, [id]: 'INVALID' }));
-        notifyToast(errText);
-      }
-    } catch (e: any) {
-      const errText = `নেটওয়ার্ক সমস্যা: ${e.message || e}`;
-      setTestResults((prev) => ({ ...prev, [id]: errText }));
-      notifyToast(errText);
-    } finally {
-      setVerifyingMap((prev) => ({ ...prev, [id]: false }));
-    }
+    await handleSave(id);
   };
 
   const notifyToast = (msg: string) => {
@@ -248,7 +211,7 @@ export const ConnectionsView = ({
     setLocalToast(msg);
     setTimeout(() => {
       setLocalToast((prev) => (prev === msg ? null : prev));
-    }, 3000);
+    }, 4500);
   };
 
   useEffect(() => {
@@ -281,9 +244,12 @@ export const ConnectionsView = ({
         const elStat = (await storage.get('connection_status_elevenlabs')) || readLocalKey('connection_status_elevenlabs');
 
         const mapVal = (k: string, s: string): KeyStatus => {
-          if (!k) return 'NOT SET';
-          if (s === 'READY' || s === 'INVALID') return s;
-          return 'READY';
+          if (!k || !k.trim()) return 'NOT SET';
+          if (s === 'READY' || s === 'CONNECTED') return 'READY';
+          if (s === 'LIMIT REACHED') return 'LIMIT REACHED';
+          if (s === 'INVALID') return 'INVALID';
+          if (s === 'SAVED – NOT TESTED') return 'SAVED – NOT TESTED';
+          return 'SAVED – NOT TESTED';
         };
 
         setStatusMap({
@@ -323,27 +289,33 @@ export const ConnectionsView = ({
       if (inputEl) {
         inputEl.focus();
       }
-      notifyToast('হাতে পেস্ট করুন');
+      notifyToast('লম্বা চেপে Paste করো');
     }
   };
 
-  const handleGetKey = async (url: string) => {
-    // Try native intent via PhoneControl first
-    const result = await PhoneControl.openUrl({ url });
-    if (result && result.opened) {
-      return;
-    }
-    // Fallback
-    openInExternalBrowser(url);
+  const handleGetKey = (url: string) => {
+    openExternal(url);
   };
 
-  const verifyElevenLabs = async (rawKey: string): Promise<{ ok: boolean; status: KeyStatus; errorText?: string }> => {
-    // Requirement 2: Clean invisible characters
-    const cleanKey = String(rawKey || '').replace(/[\r\n\t\s\u200B\u200C\u200D\uFEFF]+/g, '').trim();
+  const verifyElevenLabs = async (
+    rawKey: string
+  ): Promise<{ ok: boolean; status: KeyStatus; httpStatus?: number; errorText?: string }> => {
+    const cleanKey = String(rawKey || '')
+      .replace(/^Bearer\s+/i, '')
+      .replace(/[\r\n\t\s"'`\u200B\u200C\u200D\uFEFF]+/g, '')
+      .trim();
     if (!cleanKey) {
       writeLocalKey('connection_status_elevenlabs', 'NOT SET');
+      try { await storage.set('connection_status_elevenlabs', 'NOT SET'); } catch {}
       return { ok: false, status: 'NOT SET', errorText: 'Key দেওয়া হয়নি' };
     }
+
+    const sanitizeReason = (rawMsg: string): string => {
+      let text = String(rawMsg || '');
+      if (cleanKey) text = text.split(cleanKey).join('[REDACTED]');
+      return text.replace(/\s+/g, ' ').trim().slice(0, 120);
+    };
+
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), 12000);
     try {
@@ -352,60 +324,98 @@ export const ConnectionsView = ({
         headers: { 'xi-api-key': cleanKey },
         signal: controller.signal,
       });
-      if (res.ok) {
-        writeLocalKey('connection_status_elevenlabs', 'READY');
-        return { ok: true, status: 'READY' };
-      }
-      
+
       const raw = await res.text().catch(() => '');
       let errJson: any = null;
-      try { errJson = JSON.parse(raw); } catch {}
-      const msg = errJson?.error?.message || errJson?.message || errJson?.detail || '';
-      const status = res.status;
+      try { errJson = raw ? JSON.parse(raw) : null; } catch {}
+      const extractedMsg =
+        errJson?.detail?.message ||
+        (typeof errJson?.detail === 'string' ? errJson.detail : '') ||
+        errJson?.error?.message ||
+        errJson?.message ||
+        raw ||
+        res.statusText ||
+        '';
+      const shortReason = sanitizeReason(extractedMsg);
 
-      if (status === 401 || status === 403) {
-        writeLocalKey('connection_status_elevenlabs', 'INVALID');
-        return { ok: false, status: 'INVALID', errorText: `ভুল API Key (${status}): ${msg.slice(0, 50)}` };
-      }
-      if (status === 429) {
+      if (res.ok) {
         writeLocalKey('connection_status_elevenlabs', 'READY');
-        return { ok: true, status: 'READY', errorText: 'সীমা শেষ (429), পরে চেষ্টা করুন' };
+        try { await storage.set('connection_status_elevenlabs', 'READY'); } catch {}
+        return { ok: true, status: 'READY', httpStatus: res.status, errorText: `HTTP ${res.status} OK` };
       }
 
-      const current = getProviderStatus('elevenlabs' as any);
-      return { ok: false, status: current, errorText: `ত্রুটি (${status}): ${msg.slice(0, 50)}` };
+      if (res.status === 429) {
+        writeLocalKey('connection_status_elevenlabs', 'LIMIT REACHED');
+        try { await storage.set('connection_status_elevenlabs', 'LIMIT REACHED'); } catch {}
+        return {
+          ok: false,
+          status: 'LIMIT REACHED',
+          httpStatus: 429,
+          errorText: `HTTP 429${shortReason ? ': ' + shortReason : ' (Rate limit reached)'}`,
+        };
+      }
+
+      if (res.status === 400 || res.status === 401 || res.status === 403) {
+        writeLocalKey('connection_status_elevenlabs', 'INVALID');
+        try { await storage.set('connection_status_elevenlabs', 'INVALID'); } catch {}
+        return {
+          ok: false,
+          status: 'INVALID',
+          httpStatus: res.status,
+          errorText: `HTTP ${res.status}${shortReason ? ': ' + shortReason : ' (Invalid key)'}`,
+        };
+      }
+
+      writeLocalKey('connection_status_elevenlabs', 'SAVED – NOT TESTED');
+      try { await storage.set('connection_status_elevenlabs', 'SAVED – NOT TESTED'); } catch {}
+      return {
+        ok: false,
+        status: 'SAVED – NOT TESTED',
+        httpStatus: res.status,
+        errorText: `HTTP ${res.status}${shortReason ? ': ' + shortReason : ''}`,
+      };
     } catch (err: any) {
       const isAbort = err?.name === 'AbortError';
-      const text = isAbort ? 'সময় শেষ (Timeout)' : 'যাচাই করা যায়নি, ইন্টারনেট দেখুন';
-      const current = getProviderStatus('elevenlabs' as any);
-      return { ok: false, status: current, errorText: text };
+      const rawNet = isAbort ? 'Timeout (12s)' : err?.message || String(err || 'Network error');
+      const shortNet = sanitizeReason(rawNet);
+      writeLocalKey('connection_status_elevenlabs', 'SAVED – NOT TESTED');
+      try { await storage.set('connection_status_elevenlabs', 'SAVED – NOT TESTED'); } catch {}
+      return {
+        ok: false,
+        status: 'SAVED – NOT TESTED',
+        errorText: `Network error: ${shortNet}`,
+      };
     } finally {
       clearTimeout(timer);
     }
   };
 
-  const handleSave = async (id: AllProviderId) => {
+  const handleSave = async (id: AllProviderId, passedKey?: string) => {
     const provider = ALL_PROVIDERS.find((p) => p.id === id);
     if (!provider) return;
 
-    // Requirement 2: Clean invisible characters
-    const cleanKey = String(typedKeys[id] || '').replace(/[\r\n\t\s\u200B\u200C\u200D\uFEFF]+/g, '').trim();
+    const rawVal = passedKey !== undefined ? passedKey : typedKeys[id];
+    const cleanKey = String(rawVal || '')
+      .replace(/^Bearer\s+/i, '')
+      .replace(/[\r\n\t\s"'`\u200B\u200C\u200D\uFEFF]+/g, '')
+      .trim();
     setTypedKeys((prev) => ({ ...prev, [id]: cleanKey }));
 
     if (!cleanKey) {
       setStatusMap((prev) => ({ ...prev, [id]: 'NOT SET' }));
       writeLocalKey(provider.statusStorageKey, 'NOT SET');
+      try { await storage.set(provider.statusStorageKey, 'NOT SET'); } catch {}
       notifyToast('আগে API Key বসান');
       return;
     }
 
-    setVerifyingMap((prev) => ({ ...prev, [id]: true }));
-    setErrorDetails((prev) => ({ ...prev, [id]: '' }));
-
+    // 1) ALWAYS store the key first (same storage the app reads keys from), even if the test fails
     try {
+      writeLocalKey(provider.storageKey, cleanKey);
+      await storage.set(provider.storageKey, cleanKey);
+
       if (id === 'gemini') {
         await setGeminiKey(cleanKey);
-        writeLocalKey('gemini_api_key', cleanKey);
         try {
           const existing = JSON.parse(readLocalKey('iyabd_api_keys') || '{}');
           existing.gemini = cleanKey;
@@ -415,8 +425,6 @@ export const ConnectionsView = ({
           setApiKeys((prev: any) => ({ ...prev, gemini: cleanKey }));
         }
       } else if (id === 'groq') {
-        await storage.set('groq_api_keys', cleanKey);
-        writeLocalKey('groq_api_keys', cleanKey);
         try {
           const existing = JSON.parse(readLocalKey('iyabd_api_keys') || '{}');
           existing.groq = cleanKey;
@@ -425,39 +433,94 @@ export const ConnectionsView = ({
         if (setApiKeys) {
           setApiKeys((prev: any) => ({ ...prev, groq: cleanKey }));
         }
-      } else if (id === 'elevenlabs') {
-        await storage.set('elevenlabs_api_key', cleanKey);
-        writeLocalKey('elevenlabs_api_key', cleanKey);
-      } else {
+      } else if (id !== 'elevenlabs') {
         await setProviderKey(id as ChatEngineId, cleanKey);
       }
 
-      let checkResult: { ok: boolean; status: KeyStatus; errorText?: string };
+      // Immediately mark as SAVED – NOT TESTED so it is never NOT SET when a key is stored
+      setStatusMap((prev) => ({ ...prev, [id]: 'SAVED – NOT TESTED' }));
+      writeLocalKey(provider.statusStorageKey, 'SAVED – NOT TESTED');
+      await storage.set(provider.statusStorageKey, 'SAVED – NOT TESTED');
+
+      console.log('[Connections] SAVE:', {
+        provider: id,
+        displayName: provider.displayName,
+        saved: true,
+        storageKey: provider.storageKey,
+      });
+    } catch (saveErr: any) {
+      console.log('[Connections] SAVE ERROR:', {
+        provider: id,
+        error: String(saveErr?.message || saveErr),
+      });
+    }
+
+    setVerifyingMap((prev) => ({ ...prev, [id]: true }));
+    setErrorDetails((prev) => ({ ...prev, [id]: '' }));
+    setTestResults((prev) => ({ ...prev, [id]: '' }));
+
+    // 2) Then test it and set status pill + toast with REAL reason
+    try {
+      let checkResult: { ok: boolean; status: KeyStatus; httpStatus?: number; errorText?: string };
       if (id === 'elevenlabs') {
         checkResult = await verifyElevenLabs(cleanKey);
       } else {
         checkResult = await verifyProviderKey(id as ChatEngineId, cleanKey);
       }
 
-      setStatusMap((prev) => ({ ...prev, [id]: checkResult.status }));
-      if (checkResult.ok && checkResult.status === 'READY') {
-        const warning = checkResult.errorText;
-        setErrorDetails((prev) => ({ ...prev, [id]: warning || '' }));
-        if (warning) {
-          notifyToast(`${provider.displayName} Key সেভ হয়েছে কিন্তু: ${warning}`);
-        } else {
-          notifyToast(`${provider.displayName} Key যাচাই সম্পন্ন: CONNECTED`);
-        }
-      } else {
-        const reason = checkResult.errorText || 'যাচাই ব্যর্থ';
-        setErrorDetails((prev) => ({ ...prev, [id]: reason }));
-        notifyToast(`${provider.displayName} Key সঠিক নয়: ${reason}`);
-      }
+      const finalStatus: KeyStatus =
+        checkResult.status === 'NOT SET' ? 'SAVED – NOT TESTED' : checkResult.status;
+      const pillLabel =
+        finalStatus === 'READY' || finalStatus === 'CONNECTED' ? 'CONNECTED' : finalStatus;
+
+      setStatusMap((prev) => ({ ...prev, [id]: finalStatus }));
+      writeLocalKey(provider.statusStorageKey, finalStatus);
+      try {
+        await storage.set(provider.statusStorageKey, finalStatus);
+      } catch {}
+
+      const reason = checkResult.errorText || (checkResult.httpStatus ? `HTTP ${checkResult.httpStatus}` : '');
+      const fullMsg = reason
+        ? `${provider.displayName}: ${pillLabel} (${reason})`
+        : `${provider.displayName}: ${pillLabel}`;
+
+      console.log('[Connections] TEST RESULT:', {
+        provider: id,
+        displayName: provider.displayName,
+        status: pillLabel,
+        httpStatus: checkResult.httpStatus ?? null,
+        reason,
+      });
+
+      setErrorDetails((prev) => ({ ...prev, [id]: fullMsg }));
+      setTestResults((prev) => ({ ...prev, [id]: fullMsg }));
+      notifyToast(fullMsg);
     } catch (err: any) {
-      setStatusMap((prev) => ({ ...prev, [id]: 'INVALID' }));
-      const reason = err?.message || 'যাচাই ব্যর্থ';
-      setErrorDetails((prev) => ({ ...prev, [id]: reason }));
-      notifyToast(`${provider.displayName} Key যাচাই ব্যর্থ: INVALID`);
+      const rawReason = String(err?.message || err || 'Network error')
+        .split(cleanKey)
+        .join('[REDACTED]')
+        .replace(/\s+/g, ' ')
+        .trim()
+        .slice(0, 120);
+
+      setStatusMap((prev) => ({ ...prev, [id]: 'SAVED – NOT TESTED' }));
+      writeLocalKey(provider.statusStorageKey, 'SAVED – NOT TESTED');
+      try {
+        await storage.set(provider.statusStorageKey, 'SAVED – NOT TESTED');
+      } catch {}
+
+      const fullMsg = `${provider.displayName}: SAVED – NOT TESTED (${rawReason})`;
+      console.log('[Connections] TEST RESULT:', {
+        provider: id,
+        displayName: provider.displayName,
+        status: 'SAVED – NOT TESTED',
+        httpStatus: null,
+        reason: rawReason,
+      });
+
+      setErrorDetails((prev) => ({ ...prev, [id]: fullMsg }));
+      setTestResults((prev) => ({ ...prev, [id]: fullMsg }));
+      notifyToast(fullMsg);
     } finally {
       setVerifyingMap((prev) => ({ ...prev, [id]: false }));
     }
@@ -466,7 +529,7 @@ export const ConnectionsView = ({
   const handleSelectEngine = (engineId: ChatEngineId) => {
     const stat = statusMap[engineId];
     const key = typedKeys[engineId];
-    if (!key || stat !== 'READY') {
+    if (!key || stat === 'INVALID' || stat === 'NOT SET') {
       notifyToast(`আগে Connections-এ ${engineId.toUpperCase()}-এর Key যোগ করে SAVE করুন`);
       return;
     }
@@ -479,7 +542,9 @@ export const ConnectionsView = ({
 
   const renderStatusBadge = (id: AllProviderId) => {
     const isChecking = verifyingMap[id];
-    const currentStatus = statusMap[id] || 'NOT SET';
+    const hasKey = Boolean(typedKeys[id] && typedKeys[id].trim());
+    const rawStatus = statusMap[id] || (hasKey ? 'SAVED – NOT TESTED' : 'NOT SET');
+    const currentStatus: KeyStatus = hasKey && rawStatus === 'NOT SET' ? 'SAVED – NOT TESTED' : rawStatus;
 
     if (isChecking) {
       return (
@@ -492,12 +557,22 @@ export const ConnectionsView = ({
       );
     }
 
-    if (currentStatus === 'READY') {
+    if (currentStatus === 'READY' || currentStatus === 'CONNECTED') {
       return (
         <div className="flex items-center gap-1.5 px-3 py-1 bg-emerald-500/15 border border-emerald-500/40 rounded-full shrink-0">
           <Check className="w-3 h-3 text-emerald-400" />
           <span className="text-[10px] font-black uppercase tracking-widest text-emerald-400">
             CONNECTED
+          </span>
+        </div>
+      );
+    }
+
+    if (currentStatus === 'LIMIT REACHED') {
+      return (
+        <div className="flex items-center gap-1.5 px-3 py-1 bg-amber-500/15 border border-amber-500/40 rounded-full shrink-0">
+          <span className="text-[10px] font-black uppercase tracking-widest text-amber-400">
+            LIMIT REACHED
           </span>
         </div>
       );
@@ -509,6 +584,16 @@ export const ConnectionsView = ({
           <XCircle className="w-3 h-3 text-red-400" />
           <span className="text-[10px] font-black uppercase tracking-widest text-red-400">
             INVALID
+          </span>
+        </div>
+      );
+    }
+
+    if (currentStatus === 'SAVED – NOT TESTED' || hasKey) {
+      return (
+        <div className="flex items-center gap-1.5 px-3 py-1 bg-amber-500/15 border border-amber-500/40 rounded-full shrink-0">
+          <span className="text-[10px] font-black uppercase tracking-widest text-amber-300">
+            SAVED – NOT TESTED
           </span>
         </div>
       );
@@ -600,8 +685,8 @@ export const ConnectionsView = ({
           })}
         </div>
 
-        {!setToast && localToast && (
-          <div className="fixed bottom-24 left-1/2 -translate-x-1/2 z-[150] bg-[#0F172A]/95 border border-purple-500/40 text-white px-5 py-2.5 rounded-2xl text-xs font-bold shadow-2xl backdrop-blur-md">
+        {localToast && (
+          <div className="fixed bottom-24 left-1/2 -translate-x-1/2 z-[150] max-w-[92vw] bg-[#0F172A]/95 border border-purple-500/40 text-white px-5 py-2.5 rounded-2xl text-xs font-bold shadow-2xl backdrop-blur-md text-center break-words">
             {localToast}
           </div>
         )}
@@ -684,8 +769,8 @@ export const ConnectionsView = ({
           })}
         </div>
 
-        {!setToast && localToast && (
-          <div className="fixed bottom-24 left-1/2 -translate-x-1/2 z-[150] bg-[#0F172A]/95 border border-purple-500/40 text-white px-5 py-2.5 rounded-2xl text-xs font-bold shadow-2xl backdrop-blur-md">
+        {localToast && (
+          <div className="fixed bottom-24 left-1/2 -translate-x-1/2 z-[150] max-w-[92vw] bg-[#0F172A]/95 border border-purple-500/40 text-white px-5 py-2.5 rounded-2xl text-xs font-bold shadow-2xl backdrop-blur-md text-center break-words">
             {localToast}
           </div>
         )}
@@ -701,7 +786,6 @@ export const ConnectionsView = ({
   const selectedItem =
     ALL_PROVIDERS.find((item) => item.id === selectedProviderId) || ALL_PROVIDERS[0];
   const SelectedIconComp = selectedItem.icon;
-  const isSelectedInvalid = statusMap[selectedItem.id] === 'INVALID';
   const selectedErrorMsg = errorDetails[selectedItem.id];
 
   return (
@@ -763,13 +847,15 @@ export const ConnectionsView = ({
         {/* Single Selected Service Configuration Section (Requirement 3) */}
         <div key={selectedItem.id} className="space-y-3 pt-1">
           <ApiKeyCard
+            inputId={`key-input-${selectedItem.id}`}
             displayName={selectedItem.displayName}
             icon={SelectedIconComp}
             status={statusMap[selectedItem.id]}
             apiKey={typedKeys[selectedItem.id]}
             placeholder={selectedItem.placeholder}
             link={selectedItem.link}
-            onSave={(key: string) => handleSave(selectedItem.id)}
+            onChange={(val: string) => setTypedKeys((prev) => ({ ...prev, [selectedItem.id]: val }))}
+            onSave={(key: string) => handleSave(selectedItem.id, key)}
             onPaste={() => handlePaste(selectedItem.id)}
             onGet={() => handleGetKey(selectedItem.link)}
             isVerifying={verifyingMap[selectedItem.id]}
@@ -777,9 +863,11 @@ export const ConnectionsView = ({
 
           {/* Result / Error Box */}
           {(testResults[selectedItem.id] || selectedErrorMsg) && (
-            <div className={`p-3.5 border rounded-2xl text-xs font-medium text-center shadow-lg transition-all ${
-              (testResults[selectedItem.id] || '').includes('ঠিক আছে') || statusMap[selectedItem.id] === 'READY'
+            <div className={`p-3.5 border rounded-2xl text-xs font-medium text-center shadow-lg transition-all break-words ${
+              statusMap[selectedItem.id] === 'READY' || statusMap[selectedItem.id] === 'CONNECTED'
                 ? 'bg-emerald-950/80 border-emerald-500/50 text-emerald-300'
+                : statusMap[selectedItem.id] === 'LIMIT REACHED' || statusMap[selectedItem.id] === 'SAVED – NOT TESTED'
+                ? 'bg-amber-950/80 border-amber-500/50 text-amber-300'
                 : 'bg-red-950/80 border-red-500/50 text-red-300'
             }`}>
               {testResults[selectedItem.id] || selectedErrorMsg}
@@ -788,9 +876,9 @@ export const ConnectionsView = ({
         </div>
       </div>
 
-      {/* Fallback Toast if parent setToast is not provided */}
-      {!setToast && localToast && (
-        <div className="fixed bottom-24 left-1/2 -translate-x-1/2 z-[150] bg-[#0F172A]/95 border border-purple-500/40 text-white px-5 py-2.5 rounded-2xl text-xs font-bold shadow-2xl backdrop-blur-md">
+      {/* Toast visible inside ConnectionsView */}
+      {localToast && (
+        <div className="fixed bottom-24 left-1/2 -translate-x-1/2 z-[150] max-w-[92vw] bg-[#0F172A]/95 border border-purple-500/40 text-white px-5 py-2.5 rounded-2xl text-xs font-bold shadow-2xl backdrop-blur-md text-center break-words">
           {localToast}
         </div>
       )}

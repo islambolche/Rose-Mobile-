@@ -25,6 +25,7 @@ import { OrbSphere } from "../OrbSphere";
 import { VirtualOffice } from "./office/VirtualOffice";
 import { OFFICE_AGENT_LIST } from "./office/officeConfig";
 import { DEVELOPER_INFO } from "../../lib/creator-profile";
+import { openExternal } from "../../lib/openExternal";
 
 export type PcNavItem = "home" | "chat" | "agents" | "tasks" | "history" | "settings";
 
@@ -374,9 +375,8 @@ export const PcLayout: React.FC<PcLayoutProps> = ({
                       <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
                         <a
                           href={DEVELOPER_INFO.whatsappLink}
-                          target="_blank"
-                          rel="noopener noreferrer"
-                          className="p-3.5 rounded-2xl bg-black/40 border border-emerald-500/30 hover:border-emerald-500/60 flex items-center gap-3 transition-all hover:scale-[1.02]"
+                          onClick={(e) => { e.preventDefault(); openExternal(DEVELOPER_INFO.whatsappLink); }}
+                          className="p-3.5 rounded-2xl bg-black/40 border border-emerald-500/30 hover:border-emerald-500/60 flex items-center gap-3 transition-all hover:scale-[1.02] cursor-pointer"
                         >
                           <div className="w-10 h-10 rounded-full bg-emerald-600/20 border border-emerald-500/40 flex items-center justify-center text-emerald-400 shrink-0">
                             <MessageCircle className="w-5 h-5" />
@@ -402,9 +402,8 @@ export const PcLayout: React.FC<PcLayoutProps> = ({
 
                         <a
                           href={DEVELOPER_INFO.facebook}
-                          target="_blank"
-                          rel="noopener noreferrer"
-                          className="p-3.5 rounded-2xl bg-black/40 border border-blue-500/30 hover:border-blue-500/60 flex items-center gap-3 transition-all hover:scale-[1.02]"
+                          onClick={(e) => { e.preventDefault(); openExternal(DEVELOPER_INFO.facebook); }}
+                          className="p-3.5 rounded-2xl bg-black/40 border border-blue-500/30 hover:border-blue-500/60 flex items-center gap-3 transition-all hover:scale-[1.02] cursor-pointer"
                         >
                           <div className="w-10 h-10 rounded-full bg-blue-600/20 border border-blue-500/40 flex items-center justify-center text-blue-400 shrink-0">
                             <Facebook className="w-5 h-5" />
@@ -417,9 +416,8 @@ export const PcLayout: React.FC<PcLayoutProps> = ({
 
                         <a
                           href={DEVELOPER_INFO.youtube}
-                          target="_blank"
-                          rel="noopener noreferrer"
-                          className="p-3.5 rounded-2xl bg-black/40 border border-red-500/30 hover:border-red-500/60 flex items-center gap-3 transition-all hover:scale-[1.02]"
+                          onClick={(e) => { e.preventDefault(); openExternal(DEVELOPER_INFO.youtube); }}
+                          className="p-3.5 rounded-2xl bg-black/40 border border-red-500/30 hover:border-red-500/60 flex items-center gap-3 transition-all hover:scale-[1.02] cursor-pointer"
                         >
                           <div className="w-10 h-10 rounded-full bg-red-600/20 border border-red-500/40 flex items-center justify-center text-red-400 shrink-0">
                             <Youtube className="w-5 h-5" />

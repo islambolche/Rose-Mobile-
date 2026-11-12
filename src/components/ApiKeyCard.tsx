@@ -1,15 +1,17 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { Eye, EyeOff, Lock, ClipboardPaste, ExternalLink, Save, Check, Loader2, XCircle } from 'lucide-react';
 import { motion } from 'framer-motion';
 import { KeyStatus } from '../lib/chatEngines';
 
 interface ApiKeyCardProps {
+  inputId?: string;
   displayName: string;
   icon: React.ElementType;
   status: KeyStatus;
   apiKey: string;
   placeholder: string;
   link: string;
+  onChange?: (key: string) => void;
   onSave: (key: string) => Promise<void>;
   onPaste: () => Promise<void>;
   onGet: () => void;
@@ -17,12 +19,14 @@ interface ApiKeyCardProps {
 }
 
 export const ApiKeyCard: React.FC<ApiKeyCardProps> = ({
+  inputId,
   displayName,
   icon: Icon,
   status,
   apiKey,
   placeholder,
   link,
+  onChange,
   onSave,
   onPaste,
   onGet,
@@ -30,6 +34,11 @@ export const ApiKeyCard: React.FC<ApiKeyCardProps> = ({
 }) => {
   const [localKey, setLocalKey] = useState(apiKey);
   const [showKey, setShowKey] = useState(false);
+  const inputRef = useRef<HTMLInputElement>(null);
+
+  useEffect(() => {
+    setLocalKey(apiKey);
+  }, [apiKey]);
 
   const renderStatusBadge = () => {
     if (isVerifying) {
@@ -40,7 +49,11 @@ export const ApiKeyCard: React.FC<ApiKeyCardProps> = ({
         </div>
       );
     }
-    if (status === 'READY') {
+    const hasStoredKey = Boolean(apiKey && apiKey.trim());
+    const effectiveStatus: KeyStatus =
+      hasStoredKey && status === 'NOT SET' ? 'SAVED – NOT TESTED' : status;
+
+    if (effectiveStatus === 'READY' || effectiveStatus === 'CONNECTED') {
       return (
         <div className="flex items-center gap-1.5 px-3 py-1 bg-emerald-500/15 border border-emerald-500/40 rounded-full shrink-0">
           <Check className="w-3 h-3 text-emerald-400" />
@@ -48,11 +61,25 @@ export const ApiKeyCard: React.FC<ApiKeyCardProps> = ({
         </div>
       );
     }
-    if (status === 'INVALID') {
+    if (effectiveStatus === 'LIMIT REACHED') {
+      return (
+        <div className="flex items-center gap-1.5 px-3 py-1 bg-amber-500/15 border border-amber-500/40 rounded-full shrink-0">
+          <span className="text-[10px] font-black uppercase tracking-widest text-amber-400">LIMIT REACHED</span>
+        </div>
+      );
+    }
+    if (effectiveStatus === 'INVALID') {
       return (
         <div className="flex items-center gap-1.5 px-3 py-1 bg-red-500/15 border border-red-500/40 rounded-full shrink-0">
           <XCircle className="w-3 h-3 text-red-400" />
           <span className="text-[10px] font-black uppercase tracking-widest text-red-400">INVALID</span>
+        </div>
+      );
+    }
+    if (effectiveStatus === 'SAVED – NOT TESTED' || hasStoredKey) {
+      return (
+        <div className="flex items-center gap-1.5 px-3 py-1 bg-amber-500/15 border border-amber-500/40 rounded-full shrink-0">
+          <span className="text-[10px] font-black uppercase tracking-widest text-amber-300">SAVED – NOT TESTED</span>
         </div>
       );
     }
@@ -82,14 +109,25 @@ export const ApiKeyCard: React.FC<ApiKeyCardProps> = ({
           <Lock className="w-4 h-4" />
         </div>
         <input
+          id={inputId}
+          ref={inputRef}
           type={showKey ? 'text' : 'password'}
           value={localKey}
-          onChange={(e) => setLocalKey(e.target.value)}
+          onChange={(e) => {
+            setLocalKey(e.target.value);
+            onChange?.(e.target.value);
+          }}
           placeholder={placeholder}
           className="w-full p-4 pl-11 pr-24 bg-[#0F172A]/90 rounded-2xl border border-purple-500/30 focus:border-purple-400 text-sm text-white font-mono outline-none shadow-lg transition-colors"
         />
         <div className="absolute right-3 top-1/2 -translate-y-1/2 flex items-center gap-1">
-          <button type="button" onClick={onPaste} className="p-2 text-slate-400 hover:text-white">
+          <button
+            type="button"
+            onClick={async () => {
+              await onPaste();
+            }}
+            className="p-2 text-slate-400 hover:text-white"
+          >
             <ClipboardPaste className="w-4 h-4" />
           </button>
           <button type="button" onClick={() => setShowKey(!showKey)} className="p-2 text-slate-400 hover:text-white">

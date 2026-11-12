@@ -4,6 +4,7 @@ import { DiagnosticsView } from "./DiagnosticsView";
 import { UnifiedSettings, saveUnifiedSettings, loadUnifiedSettings } from "../types/settings";
 import { SharedBusinessDatabase } from "../types/business";
 import { saveLocalBusinessDb, validateGeminiApiKey } from "../lib/businessSync";
+import { openExternal } from "../lib/openExternal";
 
 interface SettingsViewProps {
   db: SharedBusinessDatabase;
@@ -67,7 +68,7 @@ export const SettingsView: React.FC<SettingsViewProps> = ({ db, onUpdateDb, unif
               {showKey ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
             </button>
           </div>
-          <a href="https://aistudio.google.com/apikey" target="_blank" rel="noopener noreferrer" className="text-[10px] font-bold text-green-500 hover:text-green-400 uppercase tracking-widest block">Get a free key</a>
+          <a href="https://aistudio.google.com/apikey" onClick={(e) => { e.preventDefault(); openExternal("https://aistudio.google.com/apikey"); }} className="text-[10px] font-bold text-green-500 hover:text-green-400 uppercase tracking-widest block cursor-pointer">Get a free key</a>
           <button onClick={handleSave} className="w-full py-3 bg-green-600 rounded-2xl text-xs font-black uppercase text-white shadow-lg">{savedStatus || "Save"}</button>
         </section>
 

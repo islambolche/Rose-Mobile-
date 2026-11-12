@@ -107,6 +107,7 @@ import { PublicLegalPages } from "./components/PublicLegalPages";
 import { PrivacyPolicyView, TermsView } from "./components/SettingsLegalViews";
 import { navStore } from "./lib/nav";
 import { logDevError } from "./lib/devLog";
+import { openExternal } from "./lib/openExternal";
 import {
   ROSE_BRAND,
   DEFAULT_ROSE_ALIVE_SETTINGS,
@@ -9036,19 +9037,18 @@ export function App() {
       switch (app) {
         case "whatsapp":
         case "imo":
-          window.open('https://wa.me/?text=' + encodeURIComponent(payload?.text || ""), "_blank");
+          openExternal('https://wa.me/?text=' + encodeURIComponent(payload?.text || ""));
           break;
         case "youtube":
-          window.open(
-            'https://www.youtube.com/results?search_query=' + encodeURIComponent(payload?.query || ""),
-            "_blank",
+          openExternal(
+            'https://www.youtube.com/results?search_query=' + encodeURIComponent(payload?.query || "")
           );
           break;
         case "facebook":
-          window.open('https://www.facebook.com/search/top/?q=' + encodeURIComponent(payload?.query || ""), "_blank");
+          openExternal('https://www.facebook.com/search/top/?q=' + encodeURIComponent(payload?.query || ""));
           break;
         case "email":
-          window.open('mailto:' + (payload?.recipient || "") + '?body=' + encodeURIComponent(payload?.text || ""), "_blank");
+          openExternal('mailto:' + (payload?.recipient || "") + '?body=' + encodeURIComponent(payload?.text || ""));
           break;
       }
       speak("Task completed.");
@@ -10345,10 +10345,12 @@ export function App() {
           <a
             key={index}
             href={part}
-            target="_blank"
-            rel="noopener noreferrer"
-            className="text-purple-400 hover:text-purple-300 underline break-all font-semibold"
-            onClick={(e) => e.stopPropagation()}
+            className="text-purple-400 hover:text-purple-300 underline break-all font-semibold cursor-pointer"
+            onClick={(e) => {
+              e.preventDefault();
+              e.stopPropagation();
+              openExternal(part);
+            }}
           >
             {part}
           </a>
@@ -10765,9 +10767,12 @@ export function App() {
                               <a
                                 key={lIdx}
                                 href={link.url}
-                                target="_blank"
-                                rel="noopener noreferrer"
-                                className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-purple-500/10 border border-purple-500/20 text-[10px] text-purple-300 hover:bg-purple-500/20 transition-colors max-w-[120px]"
+                                onClick={(e) => {
+                                  e.preventDefault();
+                                  e.stopPropagation();
+                                  openExternal(link.url);
+                                }}
+                                className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-purple-500/10 border border-purple-500/20 text-[10px] text-purple-300 hover:bg-purple-500/20 transition-colors max-w-[120px] cursor-pointer"
                               >
                                 <ExternalLink size={10} className="shrink-0" />
                                 <span className="truncate">{link.title || 'Source'}</span>
@@ -11285,9 +11290,8 @@ export function App() {
           </button>
           <a
             href="https://aistudio.google.com/apikey"
-            target="_blank"
-            rel="noopener noreferrer"
-            className="flex items-center justify-center gap-2 text-[10px] font-black uppercase text-indigo-400 hover:text-indigo-300 transition-colors"
+            onClick={(e) => { e.preventDefault(); openExternal("https://aistudio.google.com/apikey"); }}
+            className="flex items-center justify-center gap-2 text-[10px] font-black uppercase text-indigo-400 hover:text-indigo-300 transition-colors cursor-pointer"
           >
             Get a free key at Google AI Studio <ExternalLink className="w-3 h-3" />
           </a>
@@ -11324,9 +11328,8 @@ export function App() {
           </button>
           <a
             href="https://console.groq.com/keys"
-            target="_blank"
-            rel="noopener noreferrer"
-            className="flex items-center justify-center gap-2 text-[10px] font-black uppercase text-indigo-400 hover:text-indigo-300 transition-colors"
+            onClick={(e) => { e.preventDefault(); openExternal("https://console.groq.com/keys"); }}
+            className="flex items-center justify-center gap-2 text-[10px] font-black uppercase text-indigo-400 hover:text-indigo-300 transition-colors cursor-pointer"
           >
             Get a free key at Groq <ExternalLink className="w-3 h-3" />
           </a>
@@ -11363,9 +11366,8 @@ export function App() {
           </button>
           <a
             href="https://platform.openai.com/api-keys"
-            target="_blank"
-            rel="noopener noreferrer"
-            className="flex items-center justify-center gap-2 text-[10px] font-black uppercase text-indigo-400 hover:text-indigo-300 transition-colors"
+            onClick={(e) => { e.preventDefault(); openExternal("https://platform.openai.com/api-keys"); }}
+            className="flex items-center justify-center gap-2 text-[10px] font-black uppercase text-indigo-400 hover:text-indigo-300 transition-colors cursor-pointer"
           >
             Get a key at OpenAI <ExternalLink className="w-3 h-3" />
           </a>
@@ -13713,9 +13715,8 @@ export function App() {
                         </div>
                         <a
                           href={DEVELOPER_INFO.contacts.whatsapp.link}
-                          target="_blank"
-                          rel="noopener noreferrer"
-                          className="px-3.5 py-2 rounded-xl bg-purple-600 text-white text-xs font-black uppercase tracking-wider flex items-center gap-1.5 shrink-0"
+                          onClick={(e) => { e.preventDefault(); openExternal(DEVELOPER_INFO.contacts.whatsapp.link); }}
+                          className="px-3.5 py-2 rounded-xl bg-purple-600 text-white text-xs font-black uppercase tracking-wider flex items-center gap-1.5 shrink-0 cursor-pointer"
                         >
                           <span>WhatsApp</span>
                           <ExternalLink className="w-3.5 h-3.5" />
@@ -13744,9 +13745,8 @@ export function App() {
                         <li key={key}>
                           <a
                             href={info.link}
-                            target="_blank"
-                            rel="noopener noreferrer"
-                            className="w-full p-3.5 rounded-2xl bg-white/5 hover:bg-white/10 border border-white/10 flex items-center justify-between transition-colors"
+                            onClick={(e) => { e.preventDefault(); openExternal(info.link); }}
+                            className="w-full p-3.5 rounded-2xl bg-white/5 hover:bg-white/10 border border-white/10 flex items-center justify-between transition-colors cursor-pointer"
                           >
                             <span className="text-sm font-black text-white">{info.label}</span>
                             <span className="text-xs font-bold text-purple-300 flex items-center gap-1">
@@ -13967,9 +13967,8 @@ export function App() {
                       </div>
                       <a
                         href={DEVELOPER_INFO.contacts.whatsapp.link}
-                        target="_blank"
-                        rel="noopener noreferrer"
-                        className="px-4 py-2.5 rounded-xl bg-purple-600 hover:bg-purple-500 text-white text-xs font-black uppercase tracking-wider flex items-center gap-1.5 shrink-0"
+                        onClick={(e) => { e.preventDefault(); openExternal(DEVELOPER_INFO.contacts.whatsapp.link); }}
+                        className="px-4 py-2.5 rounded-xl bg-purple-600 hover:bg-purple-500 text-white text-xs font-black uppercase tracking-wider flex items-center gap-1.5 shrink-0 cursor-pointer"
                       >
                         <span>মেসেজ দিন</span>
                         <ExternalLink className="w-3.5 h-3.5" />

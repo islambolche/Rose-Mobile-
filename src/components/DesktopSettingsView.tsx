@@ -1,4 +1,5 @@
 import React, { useState } from "react";
+import { openExternal } from "../lib/openExternal";
 import {
   X,
   Key,
@@ -398,7 +399,7 @@ export const DesktopSettingsView: React.FC<DesktopSettingsViewProps> = ({
                       {isSaving === "free" ? <Loader2 className="w-3 h-3 animate-spin" /> : <Key className="w-3 h-3" />}
                       Save Gemini Key
                     </button>
-                    <a href="https://aistudio.google.com/apikey" target="_blank" rel="noopener noreferrer" className="px-4 py-2.5 bg-white/5 border border-white/10 rounded-xl text-[10px] font-black uppercase tracking-widest text-emerald-400 flex items-center gap-1.5">
+                    <a href="https://aistudio.google.com/apikey" onClick={(e) => { e.preventDefault(); openExternal("https://aistudio.google.com/apikey"); }} className="px-4 py-2.5 bg-white/5 border border-white/10 rounded-xl text-[10px] font-black uppercase tracking-widest text-emerald-400 flex items-center gap-1.5 cursor-pointer">
                       Get Key <ExternalLink className="w-3 h-3" />
                     </a>
                   </div>
@@ -472,7 +473,7 @@ export const DesktopSettingsView: React.FC<DesktopSettingsViewProps> = ({
                       {isSaving === "free" ? <Loader2 className="w-3 h-3 animate-spin" /> : <Key className="w-3 h-3" />}
                       Save Groq Keys
                     </button>
-                    <a href="https://console.groq.com/keys" target="_blank" rel="noopener noreferrer" className="px-4 py-2.5 bg-white/5 border border-white/10 rounded-xl text-[10px] font-black uppercase tracking-widest text-purple-400 flex items-center gap-1.5">
+                    <a href="https://console.groq.com/keys" onClick={(e) => { e.preventDefault(); openExternal("https://console.groq.com/keys"); }} className="px-4 py-2.5 bg-white/5 border border-white/10 rounded-xl text-[10px] font-black uppercase tracking-widest text-purple-400 flex items-center gap-1.5 cursor-pointer">
                       Get Keys <ExternalLink className="w-3 h-3" />
                     </a>
                   </div>

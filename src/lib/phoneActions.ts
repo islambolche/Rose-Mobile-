@@ -267,54 +267,21 @@ export function getPhoneActionHistory(): PhoneActionLogItem[] {
   }
 }
 
+import { openExternal } from './openExternal';
+
 /**
  * Helper to safely launch external URLs.
- * On Android, attempts to force opening in an external browser using the intent: scheme
- * to prevent the WebView from intercepting the URL or login process.
  */
 export function openInExternalBrowser(url: string) {
   if (!url) return;
-  
-  // 1. Try Android Intent scheme to force external browser (Chrome)
-  // This is the most reliable way to escape a WebView on Android
-  const isAndroid = /Android/i.test(navigator.userAgent);
-  if (isAndroid) {
-    const cleanUrl = url.replace(/^https?:\/\//, '');
-    const intentUrl = `intent://${cleanUrl}#Intent;scheme=https;action=android.intent.action.VIEW;category=android.intent.category.BROWSABLE;package=com.android.chrome;end`;
-    try {
-      window.location.href = intentUrl;
-      return;
-    } catch (e) {
-      // Fallback if Chrome intent fails
-    }
-  }
-
-  // 2. Standard web fallback
-  safelyOpenUrl(url);
+  openExternal(url);
 }
 
 /**
  * Helper to safely launch external URLs without blocking popup filters
  */
 export function safelyOpenUrl(url: string) {
-  try {
-    // Try window.open first with specific features
-    const win = window.open(url, '_blank', 'noopener,noreferrer');
-    if (win) return;
-
-    // Fallback to anchor click
-    const a = document.createElement('a');
-    a.href = url;
-    a.target = '_blank';
-    a.rel = 'noopener noreferrer';
-    document.body.appendChild(a);
-    a.click();
-    setTimeout(() => {
-      if (document.body.contains(a)) document.body.removeChild(a);
-    }, 200);
-  } catch (e) {
-    try { window.location.href = url; } catch (err) {}
-  }
+  openExternal(url);
 }
 
 /**

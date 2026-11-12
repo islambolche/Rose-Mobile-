@@ -27,6 +27,7 @@ import {
   Smartphone,
 } from "lucide-react";
 import { DevicePermissionsSettings } from "./DevicePermissionsSettings";
+import { openExternal } from "../lib/openExternal";
 import {
   UnifiedSettings,
   FirebaseConfig,
@@ -881,9 +882,8 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({ isOpen, onClose, o
                     <div>
                       <a
                         href="https://aistudio.google.com/apikey"
-                        target="_blank"
-                        rel="noopener noreferrer"
-                        className="inline-flex items-center gap-1.5 px-3.5 py-2 bg-cyan-500/20 hover:bg-cyan-500/30 border border-cyan-400/50 rounded-xl text-xs font-black uppercase tracking-wider text-cyan-300 active:scale-95 transition-all shadow-[0_0_12px_rgba(6,182,212,0.2)]"
+                        onClick={(e) => { e.preventDefault(); openExternal("https://aistudio.google.com/apikey"); }}
+                        className="inline-flex items-center gap-1.5 px-3.5 py-2 bg-cyan-500/20 hover:bg-cyan-500/30 border border-cyan-400/50 rounded-xl text-xs font-black uppercase tracking-wider text-cyan-300 active:scale-95 transition-all shadow-[0_0_12px_rgba(6,182,212,0.2)] cursor-pointer"
                       >
                         Get Gemini API Key <ExternalLink className="w-3.5 h-3.5" />
                       </a>
@@ -971,9 +971,8 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({ isOpen, onClose, o
                     <div>
                       <a
                         href="https://console.firebase.google.com"
-                        target="_blank"
-                        rel="noopener noreferrer"
-                        className="inline-flex items-center gap-1.5 px-3.5 py-2 bg-cyan-500/20 hover:bg-cyan-500/30 border border-cyan-400/50 rounded-xl text-xs font-black uppercase tracking-wider text-cyan-300 active:scale-95 transition-all shadow-[0_0_12px_rgba(6,182,212,0.2)]"
+                        onClick={(e) => { e.preventDefault(); openExternal("https://console.firebase.google.com"); }}
+                        className="inline-flex items-center gap-1.5 px-3.5 py-2 bg-cyan-500/20 hover:bg-cyan-500/30 border border-cyan-400/50 rounded-xl text-xs font-black uppercase tracking-wider text-cyan-300 active:scale-95 transition-all shadow-[0_0_12px_rgba(6,182,212,0.2)] cursor-pointer"
                       >
                         Open Firebase Console <ExternalLink className="w-3.5 h-3.5" />
                       </a>
@@ -1257,9 +1256,8 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({ isOpen, onClose, o
                         <a 
                           key={social.label}
                           href={social.url}
-                          target="_blank"
-                          rel="noopener noreferrer"
-                          className="px-3 py-1.5 bg-white/5 hover:bg-white/10 border border-white/10 rounded-lg text-[10px] font-bold text-slate-300 transition-colors"
+                          onClick={(e) => { e.preventDefault(); openExternal(social.url); }}
+                          className="px-3 py-1.5 bg-white/5 hover:bg-white/10 border border-white/10 rounded-lg text-[10px] font-bold text-slate-300 transition-colors cursor-pointer"
                         >
                           {social.label}
                         </a>

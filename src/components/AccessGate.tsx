@@ -5,6 +5,7 @@ import {
   LogOut, ShieldAlert, MessageCircle, Crown 
 } from "lucide-react";
 import { supabase } from "../lib/supabase";
+import { openExternal } from "../lib/openExternal";
 
 interface AccessGateProps {
   type: "blocked" | "subscribe";
@@ -19,7 +20,7 @@ export const AccessGate: React.FC<AccessGateProps> = ({ type, plan, onLogout }) 
   };
 
   const handleContactAdmin = () => {
-    window.open("https://wa.me/8801671060679", "_blank");
+    openExternal("https://wa.me/8801671060679");
   };
 
   if (type === "blocked") {

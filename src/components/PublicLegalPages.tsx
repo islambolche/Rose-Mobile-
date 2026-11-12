@@ -4,6 +4,7 @@ import {
   CheckCircle2, Sparkles, Phone, Mail, Globe, MessageCircle, Heart, User, ChevronRight
 } from "lucide-react";
 import { DEVELOPER_INFO } from "../lib/creator-profile";
+import { openExternal } from "../lib/openExternal";
 
 interface PublicLegalPagesProps {
   initialPage?: "privacy" | "terms";
@@ -144,9 +145,8 @@ export const PublicLegalPages: React.FC<PublicLegalPagesProps> = ({
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 pt-2">
             <a
               href={`https://wa.me/88${DEVELOPER_INFO.whatsapp}`}
-              target="_blank"
-              rel="noopener noreferrer"
-              className="p-4 rounded-2xl bg-white/5 hover:bg-white/10 border border-purple-500/20 flex items-center justify-between transition-colors"
+              onClick={(e) => { e.preventDefault(); openExternal(`https://wa.me/88${DEVELOPER_INFO.whatsapp}`); }}
+              className="p-4 rounded-2xl bg-white/5 hover:bg-white/10 border border-purple-500/20 flex items-center justify-between transition-colors cursor-pointer"
             >
               <div className="flex items-center gap-3">
                 <div className="w-8 h-8 rounded-xl bg-emerald-500/10 flex items-center justify-center text-emerald-400">
@@ -182,9 +182,8 @@ export const PublicLegalPages: React.FC<PublicLegalPagesProps> = ({
               <a
                 key={key}
                 href={info.link}
-                target="_blank"
-                rel="noopener noreferrer"
-                className="px-3.5 py-2 rounded-xl bg-white/5 hover:bg-purple-600/20 border border-white/10 text-xs font-semibold text-slate-300 hover:text-white flex items-center gap-1.5 transition-colors"
+                onClick={(e) => { e.preventDefault(); openExternal(info.link); }}
+                className="px-3.5 py-2 rounded-xl bg-white/5 hover:bg-purple-600/20 border border-white/10 text-xs font-semibold text-slate-300 hover:text-white flex items-center gap-1.5 transition-colors cursor-pointer"
               >
                 <span>{info.label}</span>
                 <ExternalLink className="w-3 h-3 text-slate-400" />
