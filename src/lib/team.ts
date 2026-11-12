@@ -220,6 +220,9 @@ When the user asks you to give a task to, ask, or check on Mira, Arin, Zayan or 
 
 CHAT CLEARING RULE:
 You CAN clear the chat with app_action clear_chat after the user says yes. Never say you cannot.
+
+PHONE ACTIONS RULE:
+When the user asks to call a contact by name, call a phone number, or open an installed Android app (whatsapp, facebook, messenger, youtube, instagram, tiktok, chrome, gmail, maps), call the "phone" tool with action "call_contact", "call_number", or "open_app". Speak the exact message returned by the tool. Never claim a call was placed until the user confirms with হ্যাঁ/yes.
 `.trim();
 
 export const ROSE_TEAM_TOOLS = [
@@ -274,6 +277,29 @@ export const ROSE_TEAM_TOOLS = [
             number: {
               type: 'INTEGER',
               description: 'Item number (for open_number)',
+            },
+          },
+          required: ['action'],
+        },
+      },
+      {
+        name: 'phone',
+        description: 'Execute phone actions in the ROSE Android app: call_contact(name), call_number(number), or open_app(name).',
+        parameters: {
+          type: 'OBJECT',
+          properties: {
+            action: {
+              type: 'STRING',
+              enum: ['call_contact', 'call_number', 'open_app'],
+              description: 'Phone action: "call_contact", "call_number", or "open_app"',
+            },
+            name: {
+              type: 'STRING',
+              description: 'Contact name (for call_contact) or app name (for open_app: whatsapp, facebook, messenger, youtube, instagram, tiktok, chrome, gmail, maps)',
+            },
+            number: {
+              type: 'STRING',
+              description: 'Phone number to call (for call_number)',
             },
           },
           required: ['action'],

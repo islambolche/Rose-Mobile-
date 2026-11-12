@@ -9,10 +9,11 @@ import {
 import { officeEvents } from '../components/pc/office/officeEngine';
 import { isAdmin } from './admin';
 import { openPage } from './nav';
+import { routePhoneActionFromText } from './phone';
 
 export interface RouteTaskResult {
   matched: boolean;
-  type?: 'assign' | 'status' | 'clarify' | 'navigation' | 'scroll' | 'clear_chat_prompt' | 'clear_chat_execute';
+  type?: 'assign' | 'status' | 'clarify' | 'navigation' | 'scroll' | 'clear_chat_prompt' | 'clear_chat_execute' | 'phone';
   agentId?: TeamAgentId;
   roseReply?: string;
   task?: AgentTaskRecord;
@@ -82,6 +83,16 @@ export async function routeUserMessageForTeamTask(
       if (options.setPendingClearChatState) options.setPendingClearChatState({ active: false, timestamp: 0 });
       return { matched: true, type: 'clear_chat_execute', roseReply: 'ঠিক আছে, চ্যাট মুছলাম না।' };
     }
+  }
+
+  // 1b. Phone actions ("phone": call_contact, call_number, open_app, and 15s confirmation / contact choice)
+  const phoneRoute = await routePhoneActionFromText(rawText);
+  if (phoneRoute.matched && phoneRoute.reply) {
+    return {
+      matched: true,
+      type: 'phone',
+      roseReply: phoneRoute.reply,
+    };
   }
 
   // 2. App vs Phone Settings
@@ -202,7 +213,9 @@ export async function routePcCommandMessage(
   let pcArgs: Record<string, any> = {};
   let confirmNeeded = false;
 
-  if (lower.includes('ক্রোম খোলো') || lower.includes('open chrome')) {
+  const hasExplicitPc = /(পিসি|পিসিতে|ল্যাপটপ|কম্পিউটার|\bpc\b|\blaptop\b)/i.test(text);
+
+  if ((lower.includes('ক্রোম খোলো') || lower.includes('open chrome')) && hasExplicitPc) {
     pcAction = 'open_app';
     pcArgs = { name: 'chrome' };
   } else if (lower.includes('লক করো') || lower.includes('lock pc')) {

@@ -49,6 +49,7 @@ import {
 } from './team';
 import { openPage, goBack, openNumber, currentPage } from './nav';
 import { isAndroidApp, voiceDebugStore } from './voiceDebugStore';
+import { executePhoneToolAction } from './phone';
 
 export interface GeminiLiveOptions {
   assistantName?: string;
@@ -84,12 +85,49 @@ export interface GeminiLiveOptions {
 }
 
 export function parseAndFormatGeminiError(status: number | string, rawMsg: string): { bengali: string; original: string } {
-  const code = Number(status) || 0;
-  const cleanRaw = String(rawMsg || '').trim();
+  let code = Number(status) || 0;
+  let cleanRaw = String(rawMsg || '').trim();
+
+  if (cleanRaw.startsWith('{') || cleanRaw.includes('"error"')) {
+    try {
+      const jsonMatch = cleanRaw.match(/\{[\s\S]*\}/);
+      if (jsonMatch) {
+        const parsed = JSON.parse(jsonMatch[0]);
+        const apiErr = parsed?.error || parsed;
+        if (!code && Number(apiErr?.code) >= 100) {
+          code = Number(apiErr.code);
+        }
+        if (typeof apiErr?.message === 'string' && apiErr.message.trim()) {
+          cleanRaw = apiErr.message.trim();
+        }
+      }
+    } catch {}
+  }
+
+  const httpMatch = cleanRaw.match(/\bHTTP\s+(\d{3})\b/i);
+  if (!code && httpMatch) {
+    code = parseInt(httpMatch[1], 10) || 0;
+  }
+  cleanRaw = cleanRaw.replace(/^HTTP\s+\d{3}\s*:\s*/i, '').trim().slice(0, 240);
   const lowerMsg = cleanRaw.toLowerCase();
 
   let bengali = cleanRaw || 'সমস্যা হয়েছে';
   if (
+    lowerMsg.includes('gemini key সেভ করা নেই') ||
+    lowerMsg.includes('gemini key নেই')
+  ) {
+    bengali = 'Gemini key সেভ করা নেই। Settings → CONNECTIONS-এ কী বসাও।';
+  } else if (
+    code === 429 ||
+    lowerMsg.includes('429') ||
+    lowerMsg.includes('quota') ||
+    lowerMsg.includes('resource_exhausted') ||
+    lowerMsg.includes('rate limit')
+  ) {
+    bengali = cleanRaw
+      ? `আজকের ফ্রি সীমা শেষ। পরে চেষ্টা করো বা নতুন কী দাও। (HTTP 429: ${cleanRaw})`
+      : 'আজকের ফ্রি সীমা শেষ। পরে চেষ্টা করো বা নতুন কী দাও। (HTTP 429)';
+  } else if (
     code === 400 ||
     code === 401 ||
     code === 403 ||
@@ -98,16 +136,14 @@ export function parseAndFormatGeminiError(status: number | string, rawMsg: strin
     lowerMsg.includes('permission_denied') ||
     lowerMsg.includes('unauthenticated')
   ) {
-    bengali = `Key ভুল (${code || 400}): ${cleanRaw}`;
-  } else if (code === 429 || lowerMsg.includes('quota') || lowerMsg.includes('resource_exhausted')) {
-    bengali = `ফ্রি সীমা শেষ (429): ${cleanRaw}`;
-  } else if (code === 0 || lowerMsg.includes('fetch') || lowerMsg.includes('network') || lowerMsg.includes('failed to fetch')) {
-    bengali = `নেটওয়ার্ক সমস্যা: ${cleanRaw}`;
+    bengali = `HTTP ${code || 400}: ${cleanRaw || 'Invalid API key'}`;
   } else if (code > 0) {
-    bengali = `Gemini ${code}: ${cleanRaw}`;
+    bengali = `HTTP ${code}: ${cleanRaw || 'Request failed'}`;
+  } else if (lowerMsg.includes('fetch') || lowerMsg.includes('network') || lowerMsg.includes('failed to fetch')) {
+    bengali = `Network Error: ${cleanRaw}`;
   }
 
-  const original = status ? `[HTTP ${status}] ${cleanRaw}` : cleanRaw;
+  const original = code ? `HTTP ${code}: ${cleanRaw}` : cleanRaw;
   return { bengali, original };
 }
 
@@ -584,8 +620,10 @@ export class GeminiLiveSession {
     const apiKey = (this.options.apiKey || getGeminiKey() || '').replace(/[\r\n\t\s"']+/g, '').trim();
     this.cachedApiKey = apiKey;
     if (!apiKey) {
-      this.lastError = 'Gemini key নেই';
-      this.options.onError?.('Gemini key নেই');
+      const noKeyMsg = 'Gemini key সেভ করা নেই। Settings → CONNECTIONS-এ কী বসাও।';
+      this.lastError = noKeyMsg;
+      voiceDebugStore.recordError(noKeyMsg);
+      this.options.onError?.(noKeyMsg);
       this.updateState('off');
       this.socketStatus = 'closed';
       return;
@@ -666,10 +704,22 @@ export class GeminiLiveSession {
         this.updateState('listening');
         return;
       }
+
+      if (!this.wasStoppedByUser && this.lastError) {
+        this.options.onError?.(this.lastError);
+      }
     }
 
     // 4. Activate Path 2 (Reliable Voice via MediaRecorder + generateContent + TTS/speechSynthesis)
     if (!this.wasStoppedByUser) {
+      if (this.flashModels.length === 0) {
+        const failMsg = this.lastError || 'HTTP 503: Live voice session failed to connect';
+        this.lastError = failMsg;
+        voiceDebugStore.recordError(failMsg);
+        this.options.onError?.(failMsg);
+        this.updateState('off');
+        return;
+      }
       this.activateFallbackPath(apiKey);
     }
   }
@@ -1372,10 +1422,14 @@ export class GeminiLiveSession {
           }
 
           if (msg.error) {
+            const rawErrCode = msg.error?.code || msg.error?.status || 0;
             const safeErr = this.sanitizeLogText(
               String(msg.error?.message || msg.error?.status || 'server_error')
             );
             console.log('[GeminiLive] Server error message — reason:', safeErr);
+            const formattedErr = parseAndFormatGeminiError(rawErrCode, safeErr);
+            this.lastError = formattedErr.bengali;
+            voiceDebugStore.recordError(formattedErr.bengali);
             
             // Check if VAD config was rejected
             if (safeErr.toLowerCase().includes('automatic_activity_detection') || safeErr.toLowerCase().includes('realtime_input_config')) {
@@ -1396,22 +1450,41 @@ export class GeminiLiveSession {
               return;
             }
 
+            const lowerReason = safeErr.toLowerCase();
+            const isFatalQuotaOrAuth =
+              Number(rawErrCode) === 429 ||
+              Number(rawErrCode) === 401 ||
+              Number(rawErrCode) === 403 ||
+              lowerReason.includes('quota') ||
+              lowerReason.includes('resource_exhausted') ||
+              lowerReason.includes('429') ||
+              lowerReason.includes('api key') ||
+              lowerReason.includes('permission_denied') ||
+              lowerReason.includes('unauthenticated');
+
             if (!settled) {
+              if (isFatalQuotaOrAuth) {
+                this.options.onError?.(formattedErr.bengali, formattedErr.original);
+              }
               finish(false);
               return;
             }
             if (!this.wasStoppedByUser && this.ws === socket) {
-              const reason = String(msg.error?.message || '').toLowerCase();
-              if (reason.includes('video') || reason.includes('media_chunk') || reason.includes('mediachunk') || reason.includes('image')) {
+              this.options.onError?.(formattedErr.bengali, formattedErr.original);
+              if (isFatalQuotaOrAuth) {
+                this.failAndEndSessionCleanly(formattedErr.bengali);
+                return;
+              }
+              if (lowerReason.includes('video') || lowerReason.includes('media_chunk') || lowerReason.includes('mediachunk') || lowerReason.includes('image')) {
                 if (typeof window !== 'undefined') {
                   window.dispatchEvent(new CustomEvent('live-camera-unsupported'));
                 }
               }
-              if (reason.includes('google_search') || reason.includes('grounding')) {
+              if (lowerReason.includes('google_search') || lowerReason.includes('grounding')) {
                 this.skipGrounding = true;
                 void this.handleLiveDisconnectAndAutoReconnect(apiKey, 'grounding_tool_rejected', 1);
               } else {
-                void this.handleLiveDisconnectAndAutoReconnect(apiKey, `error (${safeErr})`);
+                void this.handleLiveDisconnectAndAutoReconnect(apiKey, formattedErr.bengali);
               }
             }
             return;
@@ -1457,12 +1530,40 @@ export class GeminiLiveSession {
           'reason:',
           safeReason
         );
+        const lowerClose = safeReason.toLowerCase();
+        const isQuotaOrAuthClose =
+          lowerClose.includes('quota') ||
+          lowerClose.includes('resource_exhausted') ||
+          lowerClose.includes('429') ||
+          lowerClose.includes('api key') ||
+          lowerClose.includes('permission_denied') ||
+          lowerClose.includes('unauthenticated');
+
+        if (event?.reason && event.reason !== 'no reason') {
+          const inferredStatus =
+            lowerClose.includes('quota') || lowerClose.includes('resource_exhausted') || lowerClose.includes('429')
+              ? 429
+              : lowerClose.includes('api key') || lowerClose.includes('permission_denied')
+              ? 403
+              : event.code || 0;
+          const formattedClose = parseAndFormatGeminiError(inferredStatus, safeReason);
+          this.lastError = formattedClose.bengali;
+          voiceDebugStore.recordError(formattedClose.bengali);
+          if (isQuotaOrAuthClose) {
+            this.options.onError?.(formattedClose.bengali, formattedClose.original);
+          }
+        }
+
         if (!settled) {
           finish(false);
         } else if (!this.wasStoppedByUser && this.ws === socket) {
+          if (isQuotaOrAuthClose && this.lastError) {
+            this.failAndEndSessionCleanly(this.lastError);
+            return;
+          }
           void this.handleLiveDisconnectAndAutoReconnect(
             apiKey,
-            `close (code: ${event?.code ?? 'unknown'}, reason: ${safeReason})`
+            this.lastError || `close (code: ${event?.code ?? 'unknown'}, reason: ${safeReason})`
           );
         }
       };
@@ -1579,6 +1680,17 @@ export class GeminiLiveSession {
               id: callId,
             });
           }
+        } else if (name === 'phone') {
+          const phoneRes = await executePhoneToolAction(args);
+          functionResponses.push({
+            response: {
+              output: {
+                ok: phoneRes.ok,
+                message: phoneRes.message,
+              },
+            },
+            id: callId,
+          });
         } else {
           functionResponses.push({
             response: {
@@ -2361,130 +2473,159 @@ export class GeminiLiveSession {
         }
       };
 
-      for (const flashModel of candidates) {
-        if (this.wasStoppedByUser) return;
-        const streamUrl = `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(flashModel)}:streamGenerateContent?alt=sse&key=${encodeURIComponent(apiKey)}`;
-        const fallbackUrl = `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(flashModel)}:generateContent?key=${encodeURIComponent(apiKey)}`;
+      const clipController = new AbortController();
+      const clipTimeoutId = setTimeout(() => {
+        clipController.abort();
+      }, 20000);
 
-        try {
-          let res = await fetch(streamUrl, {
-            method: 'POST',
-            headers: {
-              'Content-Type': 'application/json',
-              'x-goog-api-key': apiKey,
-            },
-            body: JSON.stringify(buildClipBody(true)),
-          });
+      try {
+        for (const flashModel of candidates) {
+          if (this.wasStoppedByUser) return;
+          const streamUrl = `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(flashModel)}:streamGenerateContent?alt=sse&key=${encodeURIComponent(apiKey)}`;
+          const fallbackUrl = `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(flashModel)}:generateContent?key=${encodeURIComponent(apiKey)}`;
 
-          if (res.status === 400 && !this.wasStoppedByUser) {
-            res = await fetch(streamUrl, {
+          try {
+            let res = await fetch(streamUrl, {
               method: 'POST',
               headers: {
                 'Content-Type': 'application/json',
                 'x-goog-api-key': apiKey,
               },
-              body: JSON.stringify(buildClipBody(false)),
+              body: JSON.stringify(buildClipBody(true)),
+              signal: clipController.signal,
             });
-          }
 
-          if (res.ok && res.body && typeof res.body.getReader === 'function') {
-            const reader = res.body.getReader();
-            const decoder = new TextDecoder('utf-8');
-            let lineBuf = '';
-            let accStreamText = '';
-
-            const handleSseLine = (line: string) => {
-              const trimmed = line.trim();
-              if (!trimmed.startsWith('data:')) return;
-              const jsonStr = trimmed.slice(5).trim();
-              if (!jsonStr || jsonStr === '[DONE]') return;
-              try {
-                const parsed = JSON.parse(jsonStr);
-                const rawParts = parsed?.candidates?.[0]?.content?.parts || [];
-                const chunkText = extractNonThoughtTextFromParts(rawParts, this.options.language);
-                if (chunkText) {
-                  accStreamText += chunkText;
-                  tryProcessStreamingJson(accStreamText);
-                }
-              } catch {}
-            };
-
-            while (true) {
-              if (this.wasStoppedByUser || transcriptValidated === false) {
-                try {
-                  await reader.cancel();
-                } catch {}
-                break;
-              }
-              const { value, done } = await reader.read();
-              if (done) break;
-              lineBuf += decoder.decode(value, { stream: true });
-              const lines = lineBuf.split(/\r?\n/);
-              lineBuf = lines.pop() || '';
-              for (const line of lines) {
-                handleSseLine(line);
-              }
-            }
-            lineBuf += decoder.decode();
-            if (lineBuf.trim()) {
-              for (const line of lineBuf.split(/\r?\n/)) {
-                handleSseLine(line);
-              }
+            if (res.status === 400 && !this.wasStoppedByUser) {
+              res = await fetch(streamUrl, {
+                method: 'POST',
+                headers: {
+                  'Content-Type': 'application/json',
+                  'x-goog-api-key': apiKey,
+                },
+                body: JSON.stringify(buildClipBody(false)),
+                signal: clipController.signal,
+              });
             }
 
-            if (transcriptValidated === false) {
-              return;
-            }
-
-            if (accStreamText.trim()) {
-              this.messagesReceived++;
-              rawResponseText = accStreamText;
-              lastErr = null;
-              break;
-            }
-          }
-
-          if (!rawResponseText && !this.wasStoppedByUser) {
-            const genRes = await fetch(fallbackUrl, {
-              method: 'POST',
-              headers: {
-                'Content-Type': 'application/json',
-                'x-goog-api-key': apiKey,
-              },
-              body: JSON.stringify(buildClipBody(false)),
-            });
-            const rawText = await genRes.text().catch(() => '');
-            let data: any = null;
-            try {
-              data = rawText ? JSON.parse(rawText) : null;
-            } catch {}
-
-            if (!genRes.ok) {
-              const googleMsg = data?.error?.message || rawText || `HTTP ${genRes.status}`;
-              const err: any = new Error(googleMsg);
-              err.status = genRes.status;
+            if (!res.ok) {
+              const errRaw = await res.text().catch(() => '');
+              const err: any = new Error(errRaw || `HTTP ${res.status}`);
+              err.status = res.status;
               lastErr = err;
-              if (genRes.status === 404 || genRes.status === 503) {
+              if (res.status === 404 || res.status === 503) {
                 continue;
               }
               throw err;
             }
 
-            this.messagesReceived++;
-            const rawParts = data?.candidates?.[0]?.content?.parts || [];
-            rawResponseText = extractNonThoughtTextFromParts(rawParts, this.options.language);
+            if (res.ok && res.body && typeof res.body.getReader === 'function') {
+              const reader = res.body.getReader();
+              const decoder = new TextDecoder('utf-8');
+              let lineBuf = '';
+              let accStreamText = '';
 
-            if (rawResponseText) {
-              lastErr = null;
+              const handleSseLine = (line: string) => {
+                const trimmed = line.trim();
+                if (!trimmed.startsWith('data:')) return;
+                const jsonStr = trimmed.slice(5).trim();
+                if (!jsonStr || jsonStr === '[DONE]') return;
+                try {
+                  const parsed = JSON.parse(jsonStr);
+                  const rawParts = parsed?.candidates?.[0]?.content?.parts || [];
+                  const chunkText = extractNonThoughtTextFromParts(rawParts, this.options.language);
+                  if (chunkText) {
+                    accStreamText += chunkText;
+                    tryProcessStreamingJson(accStreamText);
+                  }
+                } catch {}
+              };
+
+              while (true) {
+                if (this.wasStoppedByUser || transcriptValidated === false) {
+                  try {
+                    await reader.cancel();
+                  } catch {}
+                  break;
+                }
+                const { value, done } = await reader.read();
+                if (done) break;
+                lineBuf += decoder.decode(value, { stream: true });
+                const lines = lineBuf.split(/\r?\n/);
+                lineBuf = lines.pop() || '';
+                for (const line of lines) {
+                  handleSseLine(line);
+                }
+              }
+              lineBuf += decoder.decode();
+              if (lineBuf.trim()) {
+                for (const line of lineBuf.split(/\r?\n/)) {
+                  handleSseLine(line);
+                }
+              }
+
+              if (transcriptValidated === false) {
+                return;
+              }
+
+              if (accStreamText.trim()) {
+                this.messagesReceived++;
+                rawResponseText = accStreamText;
+                lastErr = null;
+                break;
+              }
+            }
+
+            if (!rawResponseText && !this.wasStoppedByUser) {
+              const genRes = await fetch(fallbackUrl, {
+                method: 'POST',
+                headers: {
+                  'Content-Type': 'application/json',
+                  'x-goog-api-key': apiKey,
+                },
+                body: JSON.stringify(buildClipBody(false)),
+                signal: clipController.signal,
+              });
+              const rawText = await genRes.text().catch(() => '');
+              let data: any = null;
+              try {
+                data = rawText ? JSON.parse(rawText) : null;
+              } catch {}
+
+              if (!genRes.ok) {
+                const googleMsg = data?.error?.message || rawText || `HTTP ${genRes.status}`;
+                const err: any = new Error(googleMsg);
+                err.status = genRes.status;
+                lastErr = err;
+                if (genRes.status === 404 || genRes.status === 503) {
+                  continue;
+                }
+                throw err;
+              }
+
+              this.messagesReceived++;
+              const rawParts = data?.candidates?.[0]?.content?.parts || [];
+              rawResponseText = extractNonThoughtTextFromParts(rawParts, this.options.language);
+
+              if (rawResponseText) {
+                lastErr = null;
+                break;
+              }
+            }
+          } catch (err: any) {
+            if (err?.name === 'AbortError') {
+              const timeoutErr: any = new Error('HTTP 408: Request timed out after 20s');
+              timeoutErr.status = 408;
+              lastErr = timeoutErr;
+              break;
+            }
+            lastErr = err;
+            if (err?.status && err.status !== 404 && err.status !== 503) {
               break;
             }
           }
-        } catch (err: any) {
-          lastErr = err;
-          if (err?.status && err.status !== 404 && err.status !== 503) {
-            break;
-          }
         }
+      } finally {
+        clearTimeout(clipTimeoutId);
       }
 
       if (lastErr && !rawResponseText) {

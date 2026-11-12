@@ -195,7 +195,8 @@ import { routeUserMessageForTeamTask, routePcCommandMessage } from "./lib/teamRo
 import { PcSetupPage, PcSetupPageId } from "./components/PcSetupViews";
 import { buildRoseSystemInstruction } from "./lib/roseConfig";
 import { sendPcCommand } from "./lib/pcCommand";
-import { sendTypedChat } from "./lib/typedChat";
+import { sendTypedChat, NO_GEMINI_KEY_MSG, formatRealGeminiError, getStoredGroqKey } from "./lib/typedChat";
+import { executePhoneToolAction } from "./lib/phone";
 import { Folder, ShieldCheck } from "lucide-react";
 
 const APP_VERSION = "v1.4.0";
@@ -3869,6 +3870,7 @@ export function App() {
   const typedAbortControllerRef = useRef<AbortController | null>(null);
   const [liveErrorMsg, setLiveErrorMsg] = useState<string | null>(null);
   const [typedChatLastErrorModel, setTypedChatLastErrorModel] = useState<string | null>(null);
+  const [expandedErrorIds, setExpandedErrorIds] = useState<Record<string, boolean>>({});
 
   useEffect(() => {
     const handleRoseToast = (e: any) => {
@@ -3886,12 +3888,29 @@ export function App() {
   const pendingClearChatStateRef = useRef<{ active: boolean; timestamp: number }>({ active: false, timestamp: 0 });
   const pendingNavClarifyStateRef = useRef<{ active: boolean; timestamp: number; options: any[] }>({ active: false, timestamp: 0, options: [] });
 
+  type VoiceSessionState = "IDLE" | "GREETING" | "CONNECTING" | "LISTENING" | "RECORDING" | "THINKING" | "SPEAKING";
+
+  const [sessionState, setSessionState] = useState<VoiceSessionState>("IDLE");
+  const sessionStateRef = useRef<VoiceSessionState>("IDLE");
+
   const triggerLiveBottomError = useCallback((msg: string) => {
     setLiveBottomError(msg);
+    setLiveErrorMsg(msg);
+    isProcessingGeminiRef.current = false;
+    isBusyRef.current = false;
+    setStatus("idle");
+    setThinkingStatusText("Rose is thinking...");
+    if (speakingStateRef.current === "thinking") {
+      setSpeakingState("idle");
+    }
+    if (sessionStateRef.current === "THINKING") {
+      sessionStateRef.current = "IDLE";
+      setSessionState("IDLE");
+    }
     if (liveBottomErrorTimerRef.current) clearTimeout(liveBottomErrorTimerRef.current);
     liveBottomErrorTimerRef.current = setTimeout(() => {
       setLiveBottomError(null);
-    }, 4000);
+    }, 15000);
   }, []);
 
   const updateLiveCaption = useCallback((speaker: 'user' | 'rose', text: string) => {
@@ -3945,10 +3964,6 @@ export function App() {
     { step: "TTS active", status: "pending" },
     { step: "Audio playing", status: "pending" },
   ]);
-  type VoiceSessionState = "IDLE" | "GREETING" | "CONNECTING" | "LISTENING" | "RECORDING" | "THINKING" | "SPEAKING";
-
-  const [sessionState, setSessionState] = useState<VoiceSessionState>("IDLE");
-  const sessionStateRef = useRef<VoiceSessionState>("IDLE");
   const [workingModel, setWorkingModel] = useState<string | null>(null);
   const [ttsModel, setTtsModel] = useState<string | null>(null);
   const [isFallbackMode, setIsFallbackMode] = useState(false);
@@ -6622,6 +6637,43 @@ export function App() {
 
       const replyMode: "text" | "voice" = isTypedChat ? "text" : "voice";
 
+      if (!userAlreadyPushed) {
+        pushSharedMessage({
+          role: "user",
+          text: userText,
+          replyMode,
+        });
+      }
+
+      // Requirement 1: Before any chat or live request, if no Gemini key is stored, immediately show message (no spinner)
+      const initialGeminiKey = (getGeminiKey() || apiKeysRef.current.gemini || "")
+        .replace(/["'\r\n\t\s]+/g, "")
+        .trim();
+      const initialGroqKey = getStoredGroqKey();
+      const currentEngine = getSelectedChatEngine();
+      if (!initialGeminiKey && (isTypedChat ? !initialGroqKey : currentEngine === "gemini")) {
+        isProcessingGeminiRef.current = false;
+        isBusyRef.current = false;
+        setStatus("idle");
+        setSpeakingState("idle");
+        setThinkingStatusText("Rose is thinking...");
+        if (sessionStateRef.current === "THINKING") {
+          transitionToState("IDLE");
+        }
+        setLiveErrorMsg(NO_GEMINI_KEY_MSG);
+        if (replyMode === "voice") {
+          triggerLiveBottomError(NO_GEMINI_KEY_MSG);
+        }
+        setToast(NO_GEMINI_KEY_MSG);
+        pushSharedMessage({
+          role: "system",
+          text: NO_GEMINI_KEY_MSG,
+          isError: true,
+          retryText: userText,
+        } as any);
+        return;
+      }
+
       // Create ONE speech controller session with a unique token per reply only when speaking (voice mode)
       const turnToken =
         replyMode === "voice" ? cancelAllSpeechAndAudio(true) : speechTokenRef.current;
@@ -6636,14 +6688,6 @@ export function App() {
       isProcessingGeminiRef.current = true;
       setStatus("processing");
 
-      if (!userAlreadyPushed) {
-        pushSharedMessage({
-          role: "user",
-          text: userText,
-          replyMode,
-        });
-      }
-
       const roseMessageId = "msg_rose_" + Date.now() + "_" + Math.random().toString(36).slice(2, 7);
       const roseMsgTime = new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
       let fullAccumulatedText = "";
@@ -6651,7 +6695,12 @@ export function App() {
       let roseBubbleCreated = false;
       let anySentenceEnqueued = false;
 
-      const updateSharedRoseBubble = (latestText: string, confirmation?: ActionConfirmationData, groundingLinks?: Array<{ title: string; url: string }>) => {
+      const updateSharedRoseBubble = (
+        latestText: string,
+        confirmation?: ActionConfirmationData,
+        groundingLinks?: Array<{ title: string; url: string }>,
+        providerLabel?: string
+      ) => {
         const cleanDisplay = stripStageCues(latestText.replace(/[*#_~`]/g, "").trim());
         if (!cleanDisplay) return;
         if (!roseBubbleCreated) {
@@ -6669,6 +6718,7 @@ export function App() {
                 replyMode,
                 actionConfirmation: confirmation,
                 groundingLinks: groundingLinks,
+                ...(providerLabel ? { providerLabel } : {}),
               },
             ];
             chatHistoryRef.current = next;
@@ -6690,6 +6740,7 @@ export function App() {
                     replyMode,
                     actionConfirmation: confirmation || m.actionConfirmation,
                     groundingLinks: groundingLinks || m.groundingLinks,
+                    ...(providerLabel ? { providerLabel } : {}),
                   }
                 : m
             );
@@ -6758,26 +6809,36 @@ export function App() {
         try {
           const result = await sendTypedChat(chatHistoryRef.current, userText);
           const replyText = typeof result === 'string' ? result : result.text;
-          updateSharedRoseBubble(replyText);
-          isProcessingGeminiRef.current = false;
-          setStatus("idle");
+          const providerLabel = typeof result === 'object' ? result.providerLabel : undefined;
+          updateSharedRoseBubble(replyText, undefined, undefined, providerLabel);
+          setLiveErrorMsg(null);
           return;
         } catch (err: any) {
-          const exactMsg = err?.message || String(err);
+          const shortMsg = err?.shortBengaliMsg || formatRealGeminiError(err);
+          const rawJson = err?.rawJson || '';
           const modelUsed = err?.modelUsed || '';
-          setLiveErrorMsg(exactMsg);
+          setLiveErrorMsg(shortMsg);
           setTypedChatLastErrorModel(modelUsed);
-          setToast(exactMsg);
+          setToast(shortMsg);
           pushSharedMessage({
             role: "system",
-            text: exactMsg,
+            text: shortMsg,
             isError: true,
-            debugLine: exactMsg,
+            ...(rawJson ? { debugLine: rawJson } : {}),
             retryText: userText,
           } as any);
-          isProcessingGeminiRef.current = false;
-          setStatus("idle");
           return;
+        } finally {
+          isProcessingGeminiRef.current = false;
+          isBusyRef.current = false;
+          setStatus("idle");
+          setThinkingStatusText("Rose is thinking...");
+          if (speakingStateRef.current === "thinking") {
+            setSpeakingState("idle");
+          }
+          if (sessionStateRef.current === "THINKING") {
+            transitionToState("IDLE");
+          }
         }
       }
 
@@ -7078,6 +7139,18 @@ export function App() {
                   return;
                 }
 
+                if (toolName === "phone") {
+                  const phoneRes = await executePhoneToolAction(toolArgs || {});
+                  fullAccumulatedText = phoneRes.message;
+                  updateSharedRoseBubble(phoneRes.message);
+                  if (replyMode === "voice") {
+                    anySentenceEnqueued = true;
+                    enqueueSentenceForToken(phoneRes.message, turnToken, lockedEngineMode);
+                  }
+                  reqSuccess = true;
+                  return;
+                }
+
                 const actionRes = await executePhoneAction(toolName, toolArgs || {});
                 setActionHistory(getPhoneActionHistory());
 
@@ -7188,33 +7261,34 @@ export function App() {
             }
           }
         } else {
-          const errName = err?.name || "Error";
-          const errMsg = String(err?.googleMessage || err?.message || err || "Unknown error").trim();
-          const httpStatus = err?.status || err?.statusCode || (err?.response ? err.response.status : undefined);
-          const realErrorDetail = `${errName}: ${errMsg}${httpStatus ? ` (HTTP ${httpStatus})` : ""}`;
+          const realFormatted = !sanitizedKey ? NO_GEMINI_KEY_MSG : formatRealGeminiError(err);
 
-          let bengaliMessage = "Cannot reach Gemini";
-          if (!sanitizedKey) {
-            bengaliMessage = "CONNECTIONS-এ Gemini key সেভ করো";
-          } else if (errMsg.includes("CONNECTIONS-এ")) {
-            bengaliMessage = errMsg;
+          setLiveErrorMsg(realFormatted);
+          if (replyMode === "voice") {
+            triggerLiveBottomError(realFormatted);
           }
-
-          setLiveErrorMsg(bengaliMessage);
-          setToast(bengaliMessage);
+          setToast(realFormatted);
           
           pushSharedMessage({
             role: "system",
-            text: bengaliMessage,
+            text: realFormatted,
             isError: true,
-            debugLine: realErrorDetail,
+            debugLine: realFormatted,
             retryText: userText
           } as any);
         }
       } finally {
         // Always reset thinking/processing status in finally block so Rose is NEVER stuck on thinking
         isProcessingGeminiRef.current = false;
+        isBusyRef.current = false;
         setStatus("idle");
+        setThinkingStatusText("Rose is thinking...");
+        if (speakingStateRef.current === "thinking") {
+          setSpeakingState("idle");
+        }
+        if (sessionStateRef.current === "THINKING") {
+          transitionToState("IDLE");
+        }
         if (replyMode === "voice" && speechTokenRef.current === turnToken) {
           streamFinishedForTokenRef.current = { token: turnToken, done: true };
           if (!isQueueSpeakingRef.current && sentenceQueueRef.current.length === 0) {
@@ -8606,13 +8680,19 @@ export function App() {
   const startLiveCall = useCallback(async () => {
     if (!settingsRef.current.masterAccess) return;
 
-    // Requirement 1: If Gemini key is missing, do NOT start the call: close call screen and open Settings > Connections with message
-    const geminiKey = (getGeminiKey() || "").trim();
+    // Requirement 1: Before any chat or live request, if no Gemini key is stored, immediately show message (no spinner)
+    const geminiKey = (getGeminiKey() || apiKeysRef.current.gemini || "").replace(/["'\r\n\t\s]+/g, "").trim();
     if (!geminiKey) {
+      isProcessingGeminiRef.current = false;
+      isBusyRef.current = false;
+      setStatus("idle");
+      setSpeakingState("idle");
+      transitionToState("IDLE");
       setIsCallScreenOpen(false);
       isCallScreenOpenRef.current = false;
-      setCurrentView("connections");
-      setToast("প্রথমে আপনার Gemini API key বসান।");
+      setLiveErrorMsg(NO_GEMINI_KEY_MSG);
+      triggerLiveBottomError(NO_GEMINI_KEY_MSG);
+      setToast(NO_GEMINI_KEY_MSG);
       return;
     }
 
@@ -8909,7 +8989,9 @@ export function App() {
       },
       onError: (msg) => {
         setDiagLastError(msg);
+        setLiveErrorMsg(msg);
         triggerLiveBottomError(msg);
+        setToast(msg);
       },
       onReconnectStatus: (status, message) => {
         if (status === 'reconnecting') {
@@ -9009,6 +9091,19 @@ export function App() {
       sessionStateRef.current !== "IDLE"
     ) {
       endLiveCall();
+      return;
+    }
+
+    const geminiKey = (getGeminiKey() || apiKeysRef.current.gemini || "").replace(/["'\r\n\t\s]+/g, "").trim();
+    if (!geminiKey) {
+      isProcessingGeminiRef.current = false;
+      isBusyRef.current = false;
+      setStatus("idle");
+      setSpeakingState("idle");
+      transitionToState("IDLE");
+      setLiveErrorMsg(NO_GEMINI_KEY_MSG);
+      triggerLiveBottomError(NO_GEMINI_KEY_MSG);
+      setToast(NO_GEMINI_KEY_MSG);
       return;
     }
 
@@ -10577,6 +10672,35 @@ export function App() {
     if (!text) return;
     setInputText("");
 
+    const geminiKey = (getGeminiKey() || apiKeysRef.current.gemini || "")
+      .replace(/["'\r\n\t\s]+/g, "")
+      .trim();
+    const groqKey = getStoredGroqKey();
+    if (!geminiKey && !groqKey) {
+      isProcessingGeminiRef.current = false;
+      isBusyRef.current = false;
+      setStatus("idle");
+      setSpeakingState("idle");
+      setThinkingStatusText("Rose is thinking...");
+      if (sessionStateRef.current === "THINKING") {
+        transitionToState("IDLE");
+      }
+      pushSharedMessage({
+        role: "user",
+        text,
+        replyMode: "text",
+      });
+      setLiveErrorMsg(NO_GEMINI_KEY_MSG);
+      setToast(NO_GEMINI_KEY_MSG);
+      pushSharedMessage({
+        role: "system",
+        text: NO_GEMINI_KEY_MSG,
+        isError: true,
+        retryText: text,
+      } as any);
+      return;
+    }
+
     if (liveSessionRef.current) {
       pushSharedMessage({
         role: "user",
@@ -10749,6 +10873,13 @@ export function App() {
                       ""
                   ).trim();
 
+                  const errKey = String(msg.id || `err-${idx}`);
+                  const rawDetailJson =
+                    (msg as any).debugLine && (msg as any).debugLine !== msgText
+                      ? String((msg as any).debugLine)
+                      : "";
+                  const isDetailsExpanded = Boolean(expandedErrorIds[errKey]);
+
                   return (
                     <div
                       key={msg.id || idx}
@@ -10756,31 +10887,47 @@ export function App() {
                     >
                       <div className="max-w-[90%] px-4 py-2.5 rounded-2xl bg-rose-950/90 border border-rose-500/50 text-rose-200 text-xs font-semibold text-center shadow-lg break-words flex flex-col items-center gap-1.5">
                         <span>{msgText}</span>
-                        {retryTargetText && (
-                          <button
-                            type="button"
-                            onClick={() => {
-                              setChatHistory((prev) => {
-                                const next = prev.filter((item, i) =>
-                                  msg.id ? item.id !== msg.id : i !== idx
-                                );
-                                chatHistoryRef.current = next;
-                                return next;
-                              });
-                              processVoiceInputWithGemini(retryTargetText, true, true);
-                            }}
-                            className="inline-flex items-center gap-1 px-2.5 py-1 rounded-lg bg-rose-500/20 hover:bg-rose-500/35 border border-rose-400/40 text-rose-100 text-[10px] font-bold uppercase tracking-wider active:scale-95 transition-all"
-                          >
-                            <RotateCcw className="w-3 h-3" />
-                            Retry
-                          </button>
+                        <div className="flex items-center gap-2 flex-wrap justify-center">
+                          {retryTargetText && (
+                            <button
+                              type="button"
+                              onClick={() => {
+                                setChatHistory((prev) => {
+                                  const next = prev.filter((item, i) =>
+                                    msg.id ? item.id !== msg.id : i !== idx
+                                  );
+                                  chatHistoryRef.current = next;
+                                  return next;
+                                });
+                                processVoiceInputWithGemini(retryTargetText, true, true);
+                              }}
+                              className="inline-flex items-center gap-1 px-2.5 py-1 rounded-lg bg-rose-500/20 hover:bg-rose-500/35 border border-rose-400/40 text-rose-100 text-[10px] font-bold uppercase tracking-wider active:scale-95 transition-all"
+                            >
+                              <RotateCcw className="w-3 h-3" />
+                              Retry
+                            </button>
+                          )}
+                          {rawDetailJson && (
+                            <button
+                              type="button"
+                              onClick={() =>
+                                setExpandedErrorIds((prev) => ({
+                                  ...prev,
+                                  [errKey]: !prev[errKey],
+                                }))
+                              }
+                              className="inline-flex items-center gap-1 px-2.5 py-1 rounded-lg bg-white/10 hover:bg-white/20 border border-white/20 text-rose-200 text-[10px] font-semibold active:scale-95 transition-all"
+                            >
+                              {isDetailsExpanded ? "বিস্তারিত ▴" : "বিস্তারিত ▾"}
+                            </button>
+                          )}
+                        </div>
+                        {rawDetailJson && isDetailsExpanded && (
+                          <pre className="w-full max-h-48 overflow-auto text-[10px] text-slate-300 bg-black/50 border border-rose-500/30 rounded-lg p-2 font-mono text-left mt-1 whitespace-pre-wrap break-all">
+                            {rawDetailJson}
+                          </pre>
                         )}
                       </div>
-                      {(msg as any).debugLine && (
-                        <div className="max-w-[92%] text-[10px] text-slate-400 font-mono text-center mt-1 break-words px-2 whitespace-pre-line">
-                          {(msg as any).debugLine}
-                        </div>
-                      )}
                       {timeStr && (
                         <span className="text-[10px] text-slate-400 font-medium mt-1">
                           {timeStr}
@@ -10889,8 +11036,13 @@ export function App() {
                         )}
                       </div>
                     </div>
+                    {!isUser && (msg as any).providerLabel && (
+                      <span className="text-[10px] text-slate-400 font-normal mt-1 px-1 text-left pl-9">
+                        {(msg as any).providerLabel}
+                      </span>
+                    )}
                     {timeStr && (
-                      <span className={"text-[10px] text-slate-400 font-medium mt-1 px-1 " + (isUser ? "text-right pr-1" : "text-left pl-9")}>
+                      <span className={"text-[10px] text-slate-400 font-medium mt-0.5 px-1 " + (isUser ? "text-right pr-1" : "text-left pl-9")}>
                         {timeStr}
                       </span>
                     )}
