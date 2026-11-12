@@ -85,11 +85,13 @@ export const formatGeminiErrorForUI = (
         ? '25.0'
         : '0.0';
 
-  let rawMsg = String(
-    err?.googleMessage || err?.message || err?.bodyText || err || ''
-  ).trim();
+  const errName = String(err?.name || 'Error');
+  const errMessage = String(err?.googleMessage || err?.message || err || 'Unknown error');
+  const httpStatus = err?.status || err?.statusCode || '';
+  const bodySnippet = String(err?.bodyText || err?.responseBody || '').slice(0, 200);
 
-  const sanitizedFullText = sanitizeOutApiKey(rawMsg, apiKey).trim();
+  const originalDetail = `${errName}: ${errMessage}${httpStatus ? ` (HTTP ${httpStatus})` : ''}${bodySnippet ? ` | Body: ${bodySnippet}` : ''}`;
+  const sanitizedFullText = sanitizeOutApiKey(originalDetail, apiKey).trim();
 
   const attempts: GeminiAttemptLog[] = Array.isArray(err?.attempts) ? err.attempts : [];
   const baseDebug =

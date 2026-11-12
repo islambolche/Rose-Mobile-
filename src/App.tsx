@@ -6553,6 +6553,7 @@ export function App() {
               ? 400
               : 250;
 
+        const needsSearch = isTypedChat && /আজ|আজকের|এখন|বর্তমান|খবর|নিউজ|আপডেট|নতুন|latest|news|today|price|দাম|weather|আবহাওয়া/i.test(userText);
         const payload = {
           contents: historyWithoutSystem,
           systemInstruction: systemInst,
@@ -6564,7 +6565,7 @@ export function App() {
               thinkingBudget: 0,
             },
           },
-          tools: isTypedChat ? [{ googleSearch: {} }] : ROSE_TEAM_TOOLS,
+          tools: isTypedChat ? (needsSearch ? [{ googleSearch: {} }] : undefined) : ROSE_TEAM_TOOLS,
           apiKey: sanitizedKey,
         };
 
@@ -6588,7 +6589,7 @@ export function App() {
         while (attempt < 2 && !reqSuccess) {
           attempt++;
           try {
-            const currentTools = (attempt === 2 && lastError) ? undefined : (isTypedChat ? [{ googleSearch: {} }] : ROSE_TEAM_TOOLS);
+            const currentTools = (attempt === 2 && lastError) ? undefined : (isTypedChat ? (needsSearch ? [{ googleSearch: {} }] : undefined) : ROSE_TEAM_TOOLS);
             const currentPayload = {
               ...payload,
               tools: currentTools,
