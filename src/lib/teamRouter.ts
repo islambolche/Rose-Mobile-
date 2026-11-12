@@ -132,8 +132,13 @@ export async function routeUserMessageForTeamTask(
     }
   }
 
-  // 1. Clear chat command: "চ্যাট মুছে দাও / clear chat"
-  if (/চ্যাট\s*মুছে\s*দাও|clear\s*chat|সব\s*চ্যাট\s*মুছে/i.test(rawText)) {
+  // 1. Clear chat command (flexible: muvh/delete/clear + chat/history/message/all OR short follow-up)
+  const isClearIntent = (
+    (/(মুছ|মুছে|ডিলিট|delete|clear|ক্লিয়ার)/i.test(rawText) && /(চ্যাট|হিস্টরি|হিস্ট্রি|মেসেজ|সব)/i.test(rawText)) ||
+    (/(তুমি|পারবে|কি|কী)/i.test(rawText) && /(মুছ|মুছে|ডিলিট|delete|clear)/i.test(rawText))
+  );
+
+  if (isClearIntent) {
     if (options.setPendingClearChatState) {
       options.setPendingClearChatState({ active: true, timestamp: Date.now() });
     }
@@ -190,20 +195,18 @@ export async function routeUserMessageForTeamTask(
     };
   }
 
-  // 5. Open / Navigate command: "<page> খোলো / খুলো / যাও / এ যাও / নিয়ে যাও / দেখাও / open / go to"
-  const openRegex = /(?:(.+?)\s+)?(?:খোলো|খুলো|যাও|এ\s*যাও|নিয়ে\s*যাও|নিয়ে\s*যাও|দেখাও|open|go\s*to)/i;
-  const matchOpen = rawText.match(openRegex);
-  if (matchOpen || /(?:খোলো|খুলো|যাও|এ\s*যাও|নিয়ে\s*যাও|নিয়ে\s*যাও|দেখাও|open|go\s*to)/i.test(rawText)) {
-    // Extract target page keyword
+  // 5. Open / Navigate command (flexible: khol/jao/niye/dekh/open/go + page alias anywhere in text)
+  const hasOpenKeyword = /(খোলো|খুলো|খোল|খুল|যাও|এ\s*যাও|নিয়ে\s*যাও|নিয়ে\s*যাও|দেখাও|দেখো|ঢুকো|ঢুক|open|go)/i.test(rawText);
+  if (hasOpenKeyword || rawText.length < 30) {
     let query = rawText
-      .replace(/খোলো|খুলো|যাও|এ\s*যাও|নিয়ে\s*যাও|নিয়ে\s*যাও|দেখাও|open|go\s*to/gi, '')
+      .replace(/খোলো|খুলো|খোল|খুল|যাও|এ\s*যাও|নিয়ে\s*যাও|নিয়ে\s*যাও|দেখাও|দেখো|ঢুকো|ঢুক|open|go|to/gi, '')
       .trim();
 
     if (!query) {
       query = rawText;
     }
 
-    const { page, matches } = findMatchingPage(query);
+    const { page, matches } = findMatchingPage(query || rawText);
     if (page && options.setCurrentView) {
       options.setCurrentView(page.path);
       return {
@@ -211,17 +214,21 @@ export async function routeUserMessageForTeamTask(
         type: 'navigation',
         roseReply: `${page.titleBn} খুললাম।`,
       };
-    } else {
-      // Not found or ambiguous
-      let reply = 'এই নামে কোনো পাতা পেলাম না।';
-      if (matches.length > 0) {
-        const top3 = matches.slice(0, 3).map(m => m.titleBn).join(', ');
-        reply = `এই নামে কোনো পাতা পেলাম না। আপনি কি এগুলো খুঁজছেন: ${top3}?`;
+    } else if (hasOpenKeyword && matches.length > 0) {
+      const topMatch = matches[0];
+      if (options.setCurrentView) {
+        options.setCurrentView(topMatch.path);
       }
       return {
         matched: true,
         type: 'navigation',
-        roseReply: reply,
+        roseReply: `${topMatch.titleBn} খুললাম।`,
+      };
+    } else if (hasOpenKeyword) {
+      return {
+        matched: true,
+        type: 'navigation',
+        roseReply: 'এই নামে কোনো পাতা পেলাম না।',
       };
     }
   }

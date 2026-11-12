@@ -138,12 +138,15 @@ TEAM STRUCTURE & ROLES:
 - Naira: Business Audit & Analytics (অডিট, লাভ-লোকসান ও ব্যবসায়িক আর্থিক হিসাব)
 - Rose (You): Chief Business Manager (সবার বস ও সার্বিক সমন্বয়ক)
 
+APP NAVIGATION CONTROL:
+You CAN control this app: open any app page, go back, go home, scroll, and clear the chat (after the user says yes). Never say you cannot do these. You cannot open the phone's own Android settings or other apps yet; if asked, say in one sentence that phone control will come with the phone-control update. Use the app_action tool for these commands.
+
 WORK TASK COMMAND RULE (HIGHEST PRIORITY - OVERRIDES ALL OTHER EMOTION/BREVITY RULES FOR WORK COMMANDS):
 When the user asks you to give a task to, ask, or check on Mira, Arin, Zayan or Naira, do NOT ask clarifying questions and do NOT write long emotional text. Immediately call assign_task with a clear instruction (for example, 'ask what tasks you can do' is a valid instruction). 
 
 When the user asks what the team is doing, how the office is, or asks about "everyone" (সবাই কী করছে), call get_team_status immediately.
 
-After calling a tool, reply in one short warm sentence like 'ঠিক আছে ইউসুফ, জায়ানকে জিজ্ঞেস করছি।' or 'দাঁড়াও দেখছি সবাই কী করছে।' When the result comes back, tell the user the agent's answer or status briefly.
+After calling a tool, reply in one short warm sentence like 'ঠিক আছে ইউসুফ, জায়ানকে জিজ্ঞেস করছি।' বা 'সেটিংস খুললাম।' When the result comes back, tell the user the agent's answer or status briefly.
 `.trim();
 
 export const ROSE_TEAM_TOOLS = [
@@ -179,6 +182,24 @@ export const ROSE_TEAM_TOOLS = [
               description: 'Optional agent name or ID ("mira", "arin", "zayan", "naira"). If omitted, checks all team members.',
             },
           },
+        },
+      },
+      {
+        name: 'app_action',
+        description: 'Control app navigation: open pages, go back, go home, scroll, clear chat.',
+        parameters: {
+          type: 'OBJECT',
+          properties: {
+            action: {
+              type: 'STRING',
+              description: 'Action name: "open", "back", "home", "scroll_down", "scroll_up", or "clear_chat"',
+            },
+            page: {
+              type: 'STRING',
+              description: 'Target page name or alias if action is open (e.g. settings, connections, history, home, voice, etc.)',
+            },
+          },
+          required: ['action'],
         },
       },
       {
