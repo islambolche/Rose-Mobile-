@@ -50,7 +50,11 @@ import {
 } from './team';
 import { openPage, goBack, openNumber, currentPage } from './nav';
 import { isAndroidApp, voiceDebugStore } from './voiceDebugStore';
-import { executePhoneToolAction } from './phone';
+import {
+  executePhoneToolAction,
+  routePhoneActionFromText,
+  getSharedPhoneAndHistoryContextBlock,
+} from './phone';
 
 export interface GeminiLiveOptions {
   assistantName?: string;
@@ -590,13 +594,29 @@ export class GeminiLiveSession {
     this.options.systemInstruction = systemInstruction;
   }
 
+  private phoneToolHandledForTurn = false;
+
+  public wasPhoneToolHandledInTurn(): boolean {
+    return this.phoneToolHandledForTurn;
+  }
+
+  public didAssistantReplyInTurn(): boolean {
+    return (
+      Boolean(this.liveAssistantBuffer.trim()) ||
+      this.scheduledAudioSources.length > 0 ||
+      this.pendingPcmSamplesCount > 0 ||
+      this.isFallbackMode
+    );
+  }
+
   private getEffectiveSystemInstruction(): string {
     const adminMode = isAdmin();
     if (adminMode) {
       this.options.ownerName = ADMIN_DISPLAY_NAME;
     }
     const base = this.options.systemInstruction || 'You are Rose, a helpful assistant.';
-    const withTeam = `${base}\n\n${TEAM_SYSTEM_INSTRUCTION}`;
+    const sharedCtx = getSharedPhoneAndHistoryContextBlock();
+    const withTeam = `${base}\n\n${TEAM_SYSTEM_INSTRUCTION}${sharedCtx ? `\n\n${sharedCtx}` : ''}`;
     return applyAdminSystemInstructionOverride(withTeam);
   }
 
@@ -614,7 +634,29 @@ export class GeminiLiveSession {
     this.watchdogReconnectedForTurn = false;
     this.liveUserBuffer = '';
     this.liveAssistantBuffer = '';
+    this.phoneToolHandledForTurn = false;
     this.conversationHistory = [];
+    try {
+      if (typeof window !== 'undefined' && window.localStorage) {
+        const rawHist =
+          localStorage.getItem('iyabd_chat_history') || localStorage.getItem('rose_messages');
+        if (rawHist) {
+          const parsedHist = JSON.parse(rawHist);
+          if (Array.isArray(parsedHist)) {
+            this.conversationHistory = parsedHist
+              .filter((m: any) => m && m.role !== 'system' && !m.isError && (m.text || m.content))
+              .slice(-12)
+              .map((m: any) => ({
+                role:
+                  m.role === 'rose' || m.role === 'assistant' || m.role === 'model'
+                    ? 'model'
+                    : 'user',
+                parts: [{ text: String(m.text || m.content || '').trim() }],
+              }));
+          }
+        }
+      }
+    } catch {}
     this.updateState('connecting');
     this.socketStatus = 'connecting';
 
@@ -1680,6 +1722,7 @@ export class GeminiLiveSession {
             });
           }
         } else if (name === 'phone') {
+          this.phoneToolHandledForTurn = true;
           const phoneRes = await executePhoneToolAction(args);
           functionResponses.push({
             response: {
@@ -1984,6 +2027,7 @@ export class GeminiLiveSession {
       this.awaitingReplySince = 0;
       this.liveUserBuffer = '';
       this.liveAssistantBuffer = '';
+      this.phoneToolHandledForTurn = false;
       this.liveStreetAllowed = true;
       this.liveTurnCompleted = true;
       voiceDebugStore.finishTurn();
@@ -2019,6 +2063,7 @@ export class GeminiLiveSession {
       }
       this.liveUserBuffer = '';
       this.liveAssistantBuffer = '';
+      this.phoneToolHandledForTurn = false;
       this.liveStreetAllowed = true;
       this.liveTurnCompleted = true;
       voiceDebugStore.finishTurn();
@@ -2606,6 +2651,11 @@ export class GeminiLiveSession {
         this.conversationHistory.push({ role: 'user', parts: [{ text: transcript }] });
         if (!emittedUserTranscript) {
           this.options.onTranscription?.('user', transcript, true);
+        }
+        const phoneMatch = await routePhoneActionFromText(transcript);
+        if (phoneMatch.matched && phoneMatch.reply) {
+          reply = phoneMatch.reply;
+          prestartedTtsMap.clear();
         }
       }
 

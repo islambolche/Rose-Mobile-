@@ -196,7 +196,7 @@ import { PcSetupPage, PcSetupPageId } from "./components/PcSetupViews";
 import { buildRoseSystemInstruction } from "./lib/roseConfig";
 import { sendPcCommand } from "./lib/pcCommand";
 import { sendTypedChat, NO_GEMINI_KEY_MSG, formatRealGeminiError, getStoredGroqKey } from "./lib/typedChat";
-import { executePhoneToolAction } from "./lib/phone";
+import { executePhoneToolAction, routePhoneActionFromText } from "./lib/phone";
 import { Folder, ShieldCheck } from "lucide-react";
 
 const APP_VERSION = "v1.4.0";
@@ -7139,8 +7139,29 @@ export function App() {
                   return;
                 }
 
-                if (toolName === "phone") {
-                  const phoneRes = await executePhoneToolAction(toolArgs || {});
+                if (
+                  toolName === "phone" ||
+                  toolName === "call_contact" ||
+                  toolName === "call_number" ||
+                  toolName === "send_whatsapp"
+                ) {
+                  const mappedAction =
+                    toolName === "phone"
+                      ? toolArgs?.action
+                      : toolName === "send_whatsapp"
+                      ? "call_number"
+                      : toolName;
+                  const mappedChannel =
+                    toolName === "send_whatsapp"
+                      ? "whatsapp"
+                      : toolName === "call_number" && !toolArgs?.channel
+                      ? "tel"
+                      : toolArgs?.channel;
+                  const phoneRes = await executePhoneToolAction({
+                    ...(toolArgs || {}),
+                    action: mappedAction,
+                    channel: mappedChannel,
+                  });
                   fullAccumulatedText = phoneRes.message;
                   updateSharedRoseBubble(phoneRes.message);
                   if (replyMode === "voice") {
@@ -8939,6 +8960,11 @@ export function App() {
           setDiagHeardText(cleanText);
 
           if (isFinal) {
+            const toolAlreadyHandled = session.wasPhoneToolHandledInTurn?.() || false;
+            const assistantAlreadyReplied = session.didAssistantReplyInTurn?.() || false;
+            if (toolAlreadyHandled) {
+              return;
+            }
             const liveOwnerName = adminModeForCall
               ? ADMIN_DISPLAY_NAME
               : getEffectiveUserName(settingsRef.current.ownerName, OWNER_NAME);
@@ -8971,7 +8997,7 @@ export function App() {
                   setPendingNavClarifyState: (st) => { pendingNavClarifyStateRef.current = st; },
                 });
               }
-              if (res.matched && res.roseReply) {
+              if (res.matched && res.roseReply && !assistantAlreadyReplied) {
                 session.interruptPlayback();
                 session.injectSystemInstructionToSpeak(res.roseReply);
               }
@@ -10706,19 +10732,30 @@ export function App() {
         text,
         replyMode: "text",
       });
-      try {
-        liveSessionRef.current.sendClientContent({
-          turns: [
-            {
-              role: "user",
-              parts: [{ text }],
-            },
-          ],
-          turnComplete: true,
-        });
-      } catch (err) {
-        console.error("[LiveSession] sendClientContent error:", err);
-      }
+      void (async () => {
+        const phoneRouted = await routePhoneActionFromText(text);
+        if (phoneRouted.matched && phoneRouted.reply) {
+          pushSharedMessage({
+            role: "rose",
+            text: phoneRouted.reply,
+            replyMode: "text",
+          });
+          return;
+        }
+        try {
+          liveSessionRef.current?.sendClientContent({
+            turns: [
+              {
+                role: "user",
+                parts: [{ text }],
+              },
+            ],
+            turnComplete: true,
+          });
+        } catch (err) {
+          console.error("[LiveSession] sendClientContent error:", err);
+        }
+      })();
       return;
     }
 

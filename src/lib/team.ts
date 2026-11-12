@@ -221,8 +221,10 @@ When the user asks you to give a task to, ask, or check on Mira, Arin, Zayan or 
 CHAT CLEARING RULE:
 You CAN clear the chat with app_action clear_chat after the user says yes. Never say you cannot.
 
-PHONE ACTIONS RULE:
-When the user asks to call a contact by name, call a phone number, or open an installed Android app (whatsapp, facebook, messenger, youtube, instagram, tiktok, chrome, gmail, maps), call the "phone" tool with action "call_contact", "call_number", or "open_app". Speak the exact message returned by the tool. Never claim a call was placed until the user confirms with হ্যাঁ/yes.
+PHONE & WHATSAPP CALL RULE (CRITICAL):
+1. Honest replies: Never say "call done", "calling", "ringing", "কল দিচ্ছি", "কল চলে গেছে", or "রিং হচ্ছে". The app cannot place calls itself.
+2. When the user asks to call a contact ("<name> কে কল দাও"), call a number, or gives a phone number after being asked "<name>-এর নম্বর কত?", ALWAYS call the "phone" tool.
+3. Speak ONLY the exact single message returned by the "phone" tool ("<name>-এর নম্বর কত?" or "হোয়াটসঅ্যাপে খুলে দিয়েছি, কল বাটন চাপো।"). Never send a second "not found" message after asking for the number.
 `.trim();
 
 export const ROSE_TEAM_TOOLS = [
@@ -284,22 +286,27 @@ export const ROSE_TEAM_TOOLS = [
       },
       {
         name: 'phone',
-        description: 'Execute phone actions in the ROSE Android app: call_contact(name), call_number(number), or open_app(name).',
+        description: 'Open WhatsApp or phone dialer for a contact or phone number, save a contact number when provided by the user, or open an installed app.',
         parameters: {
           type: 'OBJECT',
           properties: {
             action: {
               type: 'STRING',
               enum: ['call_contact', 'call_number', 'open_app'],
-              description: 'Phone action: "call_contact", "call_number", or "open_app"',
+              description: 'Phone action: "call_contact" (look up contact by name or ask for number), "call_number" (save number if pending and open link), or "open_app"',
             },
             name: {
               type: 'STRING',
-              description: 'Contact name (for call_contact) or app name (for open_app: whatsapp, facebook, messenger, youtube, instagram, tiktok, chrome, gmail, maps)',
+              description: 'Contact name (for call_contact / call_number) or app name (for open_app)',
             },
             number: {
               type: 'STRING',
-              description: 'Phone number to call (for call_number)',
+              description: 'Phone number (for call_number or when user provides the contact number)',
+            },
+            channel: {
+              type: 'STRING',
+              enum: ['whatsapp', 'tel'],
+              description: '"whatsapp" if user asked for WhatsApp, or "tel" for normal phone call',
             },
           },
           required: ['action'],

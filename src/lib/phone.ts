@@ -1,34 +1,28 @@
 import { logDevError } from './devLog';
+import { openExternal } from './openExternal';
 
 export const ONLY_IN_ROSE_APP_MSG = 'এটা শুধু ROSE অ্যাপে কাজ করে';
-const CALL_CONFIRM_TIMEOUT_MS = 15000;
-const CONTACT_SELECT_TIMEOUT_MS = 30000;
-const DEDUPE_WINDOW_MS = 2500;
-const CONFIRMED_CALL_COOLDOWN_MS = 6000;
+export const HONEST_CALL_REPLY = 'হোয়াটসঅ্যাপে খুলে দিয়েছি, কল বাটন চাপো।';
+
+const CONTACTS_STORAGE_KEY = 'rose_contacts';
+const LEGACY_CONTACTS_STORAGE_KEY = 'iyabd_saved_contacts';
+const PENDING_CONTACT_CALL_KEY = 'rose_pending_contact_call';
+const PENDING_TIMEOUT_MS = 5 * 60 * 1000; // 5 minutes
+const DEDUPE_WINDOW_MS = 2000;
 
 export interface RoseContact {
   name: string;
   number: string;
 }
 
-interface PendingConfirmCallState {
-  mode: 'confirm_call';
+interface PendingContactNumberState {
   name: string;
-  number: string;
+  channel: 'whatsapp' | 'tel';
   timestamp: number;
 }
 
-interface PendingSelectContactState {
-  mode: 'select_contact';
-  contacts: RoseContact[];
-  timestamp: number;
-}
-
-type PendingPhoneState = PendingConfirmCallState | PendingSelectContactState | null;
-
-let pendingPhoneState: PendingPhoneState = null;
+let memoryPendingContact: PendingContactNumberState | null = null;
 let lastActionCache: { signature: string; reply: string; timestamp: number } | null = null;
-let lastConfirmedCall: { number: string; name: string; reply: string; timestamp: number } | null = null;
 
 export const APP_PACKAGE_MAP: Record<string, { pkg: string; label: string }> = {
   whatsapp: { pkg: 'com.whatsapp', label: 'WhatsApp' },
@@ -64,7 +58,10 @@ function getRosePhonePlugin(): any {
   return (window as any).Capacitor?.Plugins?.RosePhone || null;
 }
 
-function normalizeBengaliDigits(input: string): string {
+/**
+ * Convert Bangla digits (০-৯) to English digits (0-9) first.
+ */
+export function normalizeBengaliDigits(input: string): string {
   const map: Record<string, string> = {
     '০': '0',
     '১': '1',
@@ -80,9 +77,338 @@ function normalizeBengaliDigits(input: string): string {
   return String(input || '').replace(/[০-৯]/g, (d) => map[d] || d);
 }
 
-function sanitizePhoneNumber(raw: string): string {
-  const ascii = normalizeBengaliDigits(raw);
-  return ascii.replace(/[^\d+]/g, '').trim();
+function replaceSpokenDigitWords(input: string): string {
+  const wordPairs: Array<[RegExp, string]> = [
+    [/(?:শূন্য|জিরো|zero)/gi, '0'],
+    [/(?:এক|ওয়ান|ওয়ান|one)/gi, '1'],
+    [/(?:দুই|টু|two)/gi, '2'],
+    [/(?:তিন|থ্রি|three)/gi, '3'],
+    [/(?:চার|ফোর|four)/gi, '4'],
+    [/(?:পাঁচ|পাচ|ফাইভ|five)/gi, '5'],
+    [/(?:ছয়|ছয়|সিক্স|six)/gi, '6'],
+    [/(?:সাত|সেভেন|seven)/gi, '7'],
+    [/(?:আট|এইট|eight)/gi, '8'],
+    [/(?:নয়|নয়|নাইন|nine)/gi, '9'],
+  ];
+  let out = String(input || '');
+  for (const [re, digit] of wordPairs) {
+    out = out.replace(re, digit);
+  }
+  return out;
+}
+
+/**
+ * Convert Bangla digits (০-৯) to English digits first, then convert Bangladeshi numbers:
+ * 01XXXXXXXXX -> 8801XXXXXXXXX
+ */
+export function formatBangladeshiNumber(raw: string): string {
+  const en = normalizeBengaliDigits(raw);
+  const digits = en.replace(/[^\d]/g, '');
+  if (!digits) return '';
+  if (/^01\d{9}$/.test(digits)) {
+    return `88${digits}`;
+  }
+  if (digits.startsWith('01') && digits.length >= 10) {
+    return `88${digits}`;
+  }
+  return digits;
+}
+
+/**
+ * Extract a phone number from user text (supporting Bangla digits ০-৯, English digits, and spoken digit words).
+ */
+export function extractPhoneNumberFromText(raw: string): string | null {
+  if (!raw) return null;
+  const en = normalizeBengaliDigits(raw);
+  const directMatches = en.match(/(?:\+?88)?01[\d\s\-]{8,13}|\+?\d[\d\s\-()]{6,16}\d/g);
+  if (directMatches) {
+    for (const m of directMatches) {
+      const digits = m.replace(/[^\d]/g, '');
+      if (digits.length >= 7 && digits.length <= 15) {
+        return formatBangladeshiNumber(digits);
+      }
+    }
+  }
+
+  // Fallback for spoken number words in voice transcripts
+  const spokenConverted = normalizeBengaliDigits(replaceSpokenDigitWords(raw));
+  const spokenMatches = spokenConverted.match(/(?:\+?88)?01[\d\s\-]{8,13}|\d[\d\s\-]{7,15}\d/g);
+  if (spokenMatches) {
+    for (const m of spokenMatches) {
+      const digits = m.replace(/[^\d]/g, '');
+      if (digits.length >= 8 && digits.length <= 15) {
+        return formatBangladeshiNumber(digits);
+      }
+    }
+  }
+
+  return null;
+}
+
+export function isWhatsAppRequest(text: string): boolean {
+  return /(?:whatsapp|হোয়াটসঅ্যাপ|হোয়াটসঅ্যাপ|\bwa\b)/i.test(String(text || ''));
+}
+
+/**
+ * Opens https://wa.me/<number> for WhatsApp or tel:<number> for a normal call,
+ * after converting Bangla digits and 01XXXXXXXXX -> 8801XXXXXXXXX.
+ * Always returns the honest reply: "হোয়াটসঅ্যাপে খুলে দিয়েছি, কল বাটন চাপো।"
+ */
+export function openCallOrWhatsAppLink(rawNumber: string, channel: 'whatsapp' | 'tel' = 'whatsapp'): string {
+  const formatted = formatBangladeshiNumber(rawNumber);
+  if (!formatted) {
+    return 'সঠিক ফোন নম্বর বলো।';
+  }
+  const url = channel === 'whatsapp' ? `https://wa.me/${formatted}` : `tel:${formatted}`;
+  console.log(`[RosePhone] Opening ${channel} URL:`, url);
+  openExternal(url);
+  return HONEST_CALL_REPLY;
+}
+
+/**
+ * Read saved in-app contacts from localStorage.
+ */
+export function getSavedInAppContacts(): RoseContact[] {
+  if (typeof window === 'undefined' || !window.localStorage) return [];
+  const map = new Map<string, RoseContact>();
+
+  const readKey = (key: string) => {
+    try {
+      const raw = localStorage.getItem(key);
+      if (!raw) return;
+      const parsed = JSON.parse(raw);
+      if (!Array.isArray(parsed)) return;
+      for (const item of parsed) {
+        const name = String(item?.name || '').trim();
+        const rawNum = String(item?.number || item?.tel || '').trim();
+        const number = formatBangladeshiNumber(rawNum);
+        if (name && number) {
+          map.set(name.toLowerCase(), { name, number });
+        }
+      }
+    } catch {}
+  };
+
+  readKey(LEGACY_CONTACTS_STORAGE_KEY);
+  readKey(CONTACTS_STORAGE_KEY);
+
+  return Array.from(map.values());
+}
+
+/**
+ * Save a contact (name + number) to localStorage in-app contact list.
+ */
+export function saveInAppContact(name: string, rawNumber: string): RoseContact | null {
+  const cleanName = cleanContactQueryName(name) || String(name || '').trim();
+  const formattedNumber = formatBangladeshiNumber(rawNumber);
+  if (!cleanName || !formattedNumber) return null;
+
+  const current = getSavedInAppContacts();
+  const existingIdx = current.findIndex((c) => c.name.toLowerCase() === cleanName.toLowerCase());
+  const entry: RoseContact = { name: cleanName, number: formattedNumber };
+
+  if (existingIdx >= 0) {
+    current[existingIdx] = entry;
+  } else {
+    current.push(entry);
+  }
+
+  try {
+    if (typeof window !== 'undefined' && window.localStorage) {
+      localStorage.setItem(CONTACTS_STORAGE_KEY, JSON.stringify(current));
+      localStorage.setItem(
+        LEGACY_CONTACTS_STORAGE_KEY,
+        JSON.stringify(current.map((c) => ({ name: c.name, number: c.number, tel: c.number })))
+      );
+    }
+  } catch {}
+
+  console.log('[RosePhone] Saved contact in localStorage:', entry);
+  return entry;
+}
+
+export function cleanContactQueryName(raw: string): string {
+  let s = String(raw || '').trim();
+  if (!s) return '';
+
+  s = s.replace(/^(?:হ্যালো\s+|হাই\s+|এই\s+|শোনো\s+)?(?:রোজ|rose)\s*[,।:!-]?\s*/i, '');
+  s = s.replace(/\b(?:please|প্লিজ|একটু|এখনই|এখন|তাড়াতাড়ি)\b/gi, ' ');
+  s = s.replace(
+    /(?:হোয়াটসঅ্যাপে|হোয়াটসঅ্যাপে|হোয়াটসঅ্যাপ|হোয়াটসঅ্যাপ|whatsapp[-\s]*এ|on\s+whatsapp|in\s+whatsapp|via\s+whatsapp|whatsapp|নরমাল|সিমে|সিম|ফোনে|ডায়ালে)/gi,
+    ' '
+  );
+  s = s.replace(
+    /(?:এর\s+নম্বরে\s+|নম্বরে\s+)?(?:একটা\s+|একটি\s+)?(?:কল|ফোন|ডায়াল|call|dial|phone)\s*(?:দাও|দেও|দে|দেন|দিন|করো|কর|করুন|করে\s*দাও|করে\s*দে|দেব|দিব|করব|করো\s*তো|দাও\s*তো)?.*/i,
+    ''
+  );
+  s = s.replace(/\b(?:call|dial|phone|ring)\b/gi, ' ');
+  s = s.replace(/[-–—,:।.?!"'()[\]]/g, ' ').replace(/\s+/g, ' ').trim();
+  s = s.replace(/\s+(?:কে|রে|এর|তে|এ)$/i, '').trim();
+  if (s.endsWith('কে') && s.length > 2) {
+    s = s.slice(0, -2).trim();
+  } else if (s.endsWith('রে') && s.length > 3) {
+    s = s.slice(0, -2).trim();
+  }
+  return s.trim();
+}
+
+function getSharedRecentMessages(): Array<{ role: string; text: string }> {
+  if (typeof window === 'undefined' || !window.localStorage) return [];
+  try {
+    const raw = localStorage.getItem('iyabd_chat_history') || localStorage.getItem('rose_messages');
+    if (!raw) return [];
+    const parsed = JSON.parse(raw);
+    if (!Array.isArray(parsed)) return [];
+    return parsed
+      .filter((m: any) => m && m.role !== 'system' && !m.isError && (m.text || m.content))
+      .slice(-20)
+      .map((m: any) => ({
+        role: m.role === 'rose' || m.role === 'assistant' || m.role === 'model' ? 'assistant' : 'user',
+        text: String(m.text || m.content || '').trim(),
+      }));
+  } catch {
+    return [];
+  }
+}
+
+/**
+ * Look up a contact by name in localStorage contacts AND in recent shared chat/voice history.
+ */
+export function lookupContactByName(rawName: string): RoseContact | null {
+  const clean = cleanContactQueryName(rawName);
+  const rawTrimmed = String(rawName || '').trim().replace(/[-–—,:।.?!"']/g, '').trim();
+  if (!clean && !rawTrimmed) return null;
+
+  const qClean = (clean || rawTrimmed).toLowerCase();
+  const qRaw = rawTrimmed.toLowerCase();
+
+  const saved = getSavedInAppContacts();
+  const exact = saved.find((c) => {
+    const cn = c.name.toLowerCase();
+    return cn === qClean || cn === qRaw || `${cn}কে` === qRaw || `${cn} কে` === qRaw;
+  });
+  if (exact) return exact;
+
+  const partial = saved.find((c) => {
+    const cn = c.name.toLowerCase();
+    return cn.includes(qClean) || qClean.includes(cn);
+  });
+  if (partial) return partial;
+
+  // Check shared chat/voice message history (Requirement 4: number given in chat is known in voice and vice versa)
+  const history = getSharedRecentMessages();
+  for (let i = history.length - 1; i >= 0; i--) {
+    const msg = history[i];
+    const lowerText = msg.text.toLowerCase();
+    if (lowerText.includes(qClean)) {
+      const extracted = extractPhoneNumberFromText(msg.text);
+      if (extracted) {
+        const savedEntry = saveInAppContact(clean || rawTrimmed, extracted);
+        if (savedEntry) return savedEntry;
+      }
+      // Also check if this message was Rose asking "<name>-এর নম্বর কত?" and the next user message had the number
+      if (msg.role === 'assistant' && /(?:নম্বর|নাম্বার)\s*কত/.test(msg.text)) {
+        for (let j = i + 1; j < history.length; j++) {
+          if (history[j].role === 'user') {
+            const nextNum = extractPhoneNumberFromText(history[j].text);
+            if (nextNum) {
+              const savedEntry = saveInAppContact(clean || rawTrimmed, nextNum);
+              if (savedEntry) return savedEntry;
+            }
+          }
+        }
+      }
+    }
+  }
+
+  return null;
+}
+
+function getPendingContactCall(): PendingContactNumberState | null {
+  const now = Date.now();
+  if (memoryPendingContact && now - memoryPendingContact.timestamp < PENDING_TIMEOUT_MS) {
+    return memoryPendingContact;
+  }
+  memoryPendingContact = null;
+
+  if (typeof window !== 'undefined' && window.localStorage) {
+    try {
+      const raw = localStorage.getItem(PENDING_CONTACT_CALL_KEY);
+      if (raw) {
+        const parsed = JSON.parse(raw);
+        if (
+          parsed &&
+          typeof parsed.name === 'string' &&
+          parsed.name.trim() &&
+          now - Number(parsed.timestamp || 0) < PENDING_TIMEOUT_MS
+        ) {
+          memoryPendingContact = {
+            name: parsed.name.trim(),
+            channel: parsed.channel === 'tel' ? 'tel' : 'whatsapp',
+            timestamp: Number(parsed.timestamp),
+          };
+          return memoryPendingContact;
+        } else {
+          localStorage.removeItem(PENDING_CONTACT_CALL_KEY);
+        }
+      }
+    } catch {}
+  }
+
+  // Also check if the last assistant message in shared chat/voice history asked "<name>-এর নম্বর কত?"
+  const history = getSharedRecentMessages();
+  for (let i = history.length - 1; i >= Math.max(0, history.length - 3); i--) {
+    const m = history[i];
+    if (m.role === 'assistant') {
+      const match = m.text.match(/^(.+?)(?:-এর|\s+এর|ের)\s+(?:ফোন\s+|মোবাইল\s+)?(?:নম্বর|নাম্বার)\s+কত\??/);
+      if (match && match[1]) {
+        const askedName = cleanContactQueryName(match[1]);
+        if (askedName) {
+          const prevUser = i > 0 ? history[i - 1]?.text || '' : '';
+          return {
+            name: askedName,
+            channel: isWhatsAppRequest(prevUser) ? 'whatsapp' : 'tel',
+            timestamp: now,
+          };
+        }
+      }
+      break;
+    }
+  }
+
+  return null;
+}
+
+function setPendingContactCall(state: PendingContactNumberState | null): void {
+  memoryPendingContact = state;
+  if (typeof window === 'undefined' || !window.localStorage) return;
+  try {
+    if (state) {
+      localStorage.setItem(PENDING_CONTACT_CALL_KEY, JSON.stringify(state));
+    } else {
+      localStorage.removeItem(PENDING_CONTACT_CALL_KEY);
+    }
+  } catch {}
+}
+
+export function hasPendingPhoneInteraction(): boolean {
+  return Boolean(getPendingContactCall());
+}
+
+function getRecentDedupeReply(signature: string): string | null {
+  if (!lastActionCache) return null;
+  if (lastActionCache.signature === signature && Date.now() - lastActionCache.timestamp < DEDUPE_WINDOW_MS) {
+    return lastActionCache.reply;
+  }
+  return null;
+}
+
+function saveDedupeReply(signature: string, reply: string): void {
+  lastActionCache = {
+    signature,
+    reply,
+    timestamp: Date.now(),
+  };
 }
 
 export function resolveAppKey(rawName: string): { key: string; pkg: string; label: string } | null {
@@ -102,246 +428,117 @@ export function resolveAppKey(rawName: string): { key: string; pkg: string; labe
   return null;
 }
 
-export function hasPendingPhoneInteraction(): boolean {
-  if (!pendingPhoneState) return false;
-  const now = Date.now();
-  const maxAge =
-    pendingPhoneState.mode === 'confirm_call' ? CALL_CONFIRM_TIMEOUT_MS : CONTACT_SELECT_TIMEOUT_MS;
-  if (now - pendingPhoneState.timestamp > maxAge) {
-    pendingPhoneState = null;
-    return false;
-  }
-  return true;
-}
-
-function getRecentDedupeReply(signature: string): string | null {
-  if (!lastActionCache) return null;
-  if (lastActionCache.signature === signature && Date.now() - lastActionCache.timestamp < DEDUPE_WINDOW_MS) {
-    return lastActionCache.reply;
-  }
-  return null;
-}
-
-function saveDedupeReply(signature: string, reply: string): void {
-  lastActionCache = {
-    signature,
-    reply,
-    timestamp: Date.now(),
-  };
-}
-
-/**
- * Raw plugin wrapper: searchContacts({ query })
- */
 export async function searchContacts(
   query: string
 ): Promise<{ ok: boolean; contacts: RoseContact[]; message: string }> {
-  if (!isNativeRoseApp()) {
-    console.log('[RosePhone] searchContacts blocked: not inside native app');
-    return { ok: false, contacts: [], message: ONLY_IN_ROSE_APP_MSG };
+  const localMatch = lookupContactByName(query);
+  if (localMatch) {
+    return { ok: true, contacts: [localMatch], message: '' };
   }
-
-  const plugin = getRosePhonePlugin();
-  if (!plugin || typeof plugin.searchContacts !== 'function') {
-    const errMsg = 'RosePhone.searchContacts প্লাগইন পাওয়া যায়নি।';
-    console.error('[RosePhone] searchContacts error:', errMsg);
-    logDevError({ area: 'other', message: errMsg });
-    return { ok: false, contacts: [], message: errMsg };
-  }
-
-  try {
-    const res = await plugin.searchContacts({ query: String(query || '').trim() });
-    const rawList = Array.isArray(res?.contacts) ? res.contacts : [];
-    const contacts: RoseContact[] = rawList
-      .map((c: any) => ({
-        name: String(c?.name || '').trim(),
-        number: String(c?.number || '').trim(),
-      }))
-      .filter((c: RoseContact) => Boolean(c.name || c.number));
-
-    console.log('[RosePhone] searchContacts result:', { query, count: contacts.length, contacts });
-    return { ok: true, contacts, message: '' };
-  } catch (err: any) {
-    const realErr = String(err?.message || err || 'searchContacts failed').trim();
-    console.error('[RosePhone] searchContacts failed:', realErr);
-    logDevError({ area: 'other', message: `RosePhone.searchContacts error: ${realErr}` });
-    return { ok: false, contacts: [], message: realErr };
-  }
+  const all = getSavedInAppContacts();
+  const q = cleanContactQueryName(query).toLowerCase();
+  const filtered = q ? all.filter((c) => c.name.toLowerCase().includes(q)) : all;
+  return { ok: true, contacts: filtered, message: '' };
 }
 
 /**
- * Internal helper that executes window.Capacitor.Plugins.RosePhone.call({ number })
- * ONLY after user confirmation ("হ্যাঁ" / "yes") within 15s.
+ * Call a contact by name:
+ * - Look up in saved contacts (localStorage) + shared message history.
+ * - If found: open https://wa.me/<number> (for WhatsApp) or tel:<number> (for normal call) and say:
+ *   "হোয়াটসঅ্যাপে খুলে দিয়েছি, কল বাটন চাপো।"
+ * - If not found: ask once: "<name>-এর নম্বর কত?"
  */
-async function executeConfirmedNativeCall(number: string, displayName?: string): Promise<string> {
-  if (!isNativeRoseApp()) {
-    console.log('[RosePhone] call blocked: not inside native app');
-    return ONLY_IN_ROSE_APP_MSG;
-  }
-
-  const plugin = getRosePhonePlugin();
-  if (!plugin || typeof plugin.call !== 'function') {
-    const errMsg = 'RosePhone.call প্লাগইন পাওয়া যায়নি।';
-    console.error('[RosePhone] call error:', errMsg);
-    logDevError({ area: 'other', message: errMsg });
-    return errMsg;
-  }
-
-  const cleanNumber = sanitizePhoneNumber(number) || String(number || '').trim();
-  try {
-    const res = await plugin.call({ number: cleanNumber });
-    console.log('[RosePhone] call result:', { number: cleanNumber, displayName, res });
-    const targetLabel = displayName && displayName !== cleanNumber ? `${displayName} (${cleanNumber})` : cleanNumber;
-    const reply = `${targetLabel}-কে কল দিচ্ছি।`;
-    lastConfirmedCall = {
-      number: cleanNumber,
-      name: displayName || cleanNumber,
-      reply,
-      timestamp: Date.now(),
-    };
-    return reply;
-  } catch (err: any) {
-    const realErr = String(err?.message || err || 'Call failed').trim();
-    console.error('[RosePhone] call error:', realErr);
-    logDevError({ area: 'other', message: `RosePhone.call error: ${realErr}` });
-    return `কল ব্যর্থ: ${realErr}`;
-  }
-}
-
-/**
- * 2a) call_contact(name):
- * - 0 results -> "এই নামে কাউকে পেলাম না।"
- * - 1 result -> ask "<name>-কে (<number>) কল দেব? হ্যাঁ বললে দেব।" and call only after হ্যাঁ/yes within 15 s.
- * - Several results -> list up to 3 with numbers, user says a number.
- */
-export async function call_contact(name: string): Promise<string> {
-  if (!isNativeRoseApp()) {
-    console.log('[RosePhone] call_contact blocked: not inside native app');
-    return ONLY_IN_ROSE_APP_MSG;
-  }
-
-  const cleanName = String(name || '').trim();
+export async function call_contact(
+  name: string,
+  channel: 'whatsapp' | 'tel' = 'tel'
+): Promise<string> {
+  const cleanName = cleanContactQueryName(name) || String(name || '').trim();
   if (!cleanName) {
     return 'কার নম্বরে কল দেব নামটা বলো।';
   }
 
-  if (
-    lastConfirmedCall &&
-    Date.now() - lastConfirmedCall.timestamp < CONFIRMED_CALL_COOLDOWN_MS &&
-    lastConfirmedCall.name.toLowerCase().includes(cleanName.toLowerCase())
-  ) {
-    return lastConfirmedCall.reply;
-  }
-
-  const sig = `call_contact:${cleanName.toLowerCase()}`;
+  const sig = `call_contact:${cleanName.toLowerCase()}:${channel}`;
   const deduped = getRecentDedupeReply(sig);
   if (deduped) return deduped;
 
-  const searchRes = await searchContacts(cleanName);
-  if (!searchRes.ok) {
-    return searchRes.message || ONLY_IN_ROSE_APP_MSG;
+  // If the "name" passed in actually contains a phone number, call that number directly
+  const directNum = extractPhoneNumberFromText(cleanName);
+  if (directNum) {
+    const reply = openCallOrWhatsAppLink(directNum, channel);
+    saveDedupeReply(sig, reply);
+    return reply;
   }
 
-  const contacts = searchRes.contacts;
-  if (contacts.length === 0) {
-    pendingPhoneState = null;
-    const msg = 'এই নামে কাউকে পেলাম না।';
-    saveDedupeReply(sig, msg);
-    return msg;
+  const found = lookupContactByName(cleanName);
+  if (found && found.number) {
+    setPendingContactCall(null);
+    const reply = openCallOrWhatsAppLink(found.number, channel);
+    saveDedupeReply(sig, reply);
+    return reply;
   }
 
-  if (contacts.length === 1) {
-    const c = contacts[0];
-    pendingPhoneState = {
-      mode: 'confirm_call',
-      name: c.name || cleanName,
-      number: c.number,
-      timestamp: Date.now(),
-    };
-    console.log('[RosePhone] Staged 15s call confirmation for contact:', pendingPhoneState);
-    const msg = `${c.name || cleanName}-কে (${c.number}) কল দেব? হ্যাঁ বললে দেব।`;
-    saveDedupeReply(sig, msg);
-    return msg;
-  }
-
-  const top3 = contacts.slice(0, 3);
-  pendingPhoneState = {
-    mode: 'select_contact',
-    contacts: top3,
+  setPendingContactCall({
+    name: cleanName,
+    channel,
     timestamp: Date.now(),
-  };
-  const bengaliNums = ['১', '২', '৩'];
-  const listText = top3
-    .map((c, i) => `${bengaliNums[i] || i + 1}) ${c.name} (${c.number})`)
-    .join(', ');
-  console.log('[RosePhone] Multiple contacts found, waiting for user selection:', top3);
-  const msg = `একাধিক নম্বর পাওয়া গেছে: ${listText}। কোন নম্বরটা বলো।`;
-  saveDedupeReply(sig, msg);
-  return msg;
+  });
+  const askMsg = `${cleanName}-এর নম্বর কত?`;
+  saveDedupeReply(sig, askMsg);
+  return askMsg;
 }
 
 /**
- * 2b) call_number(number):
- * Same confirmation ("<number>-কে (<number>) কল দেব? হ্যাঁ বললে দেব।") and call only after হ্যাঁ/yes within 15 s.
+ * Call a phone number directly:
+ * - If there was a pending contact waiting for a number, save it under that name too.
+ * - Convert Bangla digits (০-৯) -> English digits and 01XXXXXXXXX -> 8801XXXXXXXXX.
+ * - Open https://wa.me/<number> (for WhatsApp) or tel:<number> (for normal call).
+ * - Say: "হোয়াটসঅ্যাপে খুলে দিয়েছি, কল বাটন চাপো।"
  */
-export async function call_number(number: string): Promise<string> {
-  if (!isNativeRoseApp()) {
-    console.log('[RosePhone] call_number blocked: not inside native app');
-    return ONLY_IN_ROSE_APP_MSG;
-  }
-
-  const cleanNumber = sanitizePhoneNumber(number);
-  if (!cleanNumber) {
+export async function call_number(
+  number: string,
+  channel?: 'whatsapp' | 'tel',
+  contactName?: string
+): Promise<string> {
+  const extracted = extractPhoneNumberFromText(number) || formatBangladeshiNumber(number);
+  if (!extracted) {
     return 'সঠিক ফোন নম্বর বলো।';
   }
 
-  if (
-    lastConfirmedCall &&
-    Date.now() - lastConfirmedCall.timestamp < CONFIRMED_CALL_COOLDOWN_MS &&
-    lastConfirmedCall.number === cleanNumber
-  ) {
-    return lastConfirmedCall.reply;
+  const pending = getPendingContactCall();
+  const effectiveChannel: 'whatsapp' | 'tel' = channel || pending?.channel || 'tel';
+  const nameToSave = contactName || pending?.name;
+
+  if (nameToSave) {
+    saveInAppContact(nameToSave, extracted);
+    setPendingContactCall(null);
   }
 
-  const sig = `call_number:${cleanNumber}`;
+  const sig = `call_number:${extracted}:${effectiveChannel}`;
   const deduped = getRecentDedupeReply(sig);
   if (deduped) return deduped;
 
-  pendingPhoneState = {
-    mode: 'confirm_call',
-    name: cleanNumber,
-    number: cleanNumber,
-    timestamp: Date.now(),
-  };
-  console.log('[RosePhone] Staged 15s call confirmation for number:', pendingPhoneState);
-  const msg = `${cleanNumber}-কে (${cleanNumber}) কল দেব? হ্যাঁ বললে দেব।`;
-  saveDedupeReply(sig, msg);
-  return msg;
+  const reply = openCallOrWhatsAppLink(extracted, effectiveChannel);
+  saveDedupeReply(sig, reply);
+  return reply;
 }
 
-/**
- * Direct call({ number }) export: stages confirmation unless already confirmed via user's yes
- */
-export async function call(params: { number: string } | string): Promise<string> {
-  if (!isNativeRoseApp()) {
-    console.log('[RosePhone] call blocked: not inside native app');
-    return ONLY_IN_ROSE_APP_MSG;
-  }
+export async function call(params: { number: string; channel?: 'whatsapp' | 'tel' } | string): Promise<string> {
   const rawNum = typeof params === 'string' ? params : params?.number;
-  return call_number(String(rawNum || ''));
+  const channel = typeof params === 'object' ? params?.channel : undefined;
+  return call_number(String(rawNum || ''), channel);
 }
 
-/**
- * 2c) open_app(name):
- * Map names to packages and say "<app> খুললাম।"
- */
 export async function open_app(name: string): Promise<string> {
+  const resolved = resolveAppKey(name);
+  if (resolved?.key === 'whatsapp') {
+    openExternal('https://wa.me/');
+    return 'whatsapp খুললাম।';
+  }
+
   if (!isNativeRoseApp()) {
-    console.log('[RosePhone] open_app blocked: not inside native app');
     return ONLY_IN_ROSE_APP_MSG;
   }
 
-  const resolved = resolveAppKey(name);
   if (!resolved) {
     return `এই অ্যাপটি তালিকায় নেই (${name})।`;
   }
@@ -353,20 +550,17 @@ export async function open_app(name: string): Promise<string> {
   const plugin = getRosePhonePlugin();
   if (!plugin || typeof plugin.openApp !== 'function') {
     const errMsg = 'RosePhone.openApp প্লাগইন পাওয়া যায়নি।';
-    console.error('[RosePhone] open_app error:', errMsg);
     logDevError({ area: 'other', message: errMsg });
     return errMsg;
   }
 
   try {
-    const res = await plugin.openApp({ package: resolved.pkg });
-    console.log('[RosePhone] openApp result:', { app: resolved.key, package: resolved.pkg, res });
+    await plugin.openApp({ package: resolved.pkg });
     const msg = `${resolved.key} খুললাম।`;
     saveDedupeReply(sig, msg);
     return msg;
   } catch (err: any) {
     const realErr = String(err?.message || err || 'openApp failed').trim();
-    console.error('[RosePhone] openApp error:', realErr);
     logDevError({ area: 'other', message: `RosePhone.openApp error (${resolved.pkg}): ${realErr}` });
     return `${resolved.key} খোলা যায়নি: ${realErr}`;
   }
@@ -377,133 +571,81 @@ export const callContact = call_contact;
 export const callNumber = call_number;
 
 /**
- * Handles user reply when a call confirmation (15s) or multi-contact selection is pending.
+ * Handles user reply when Rose asked "<name>-এর নম্বর কত?" and the user gives the number.
  */
 export async function handlePendingPhoneUserReply(
   userText: string
 ): Promise<{ handled: boolean; reply?: string }> {
-  if (!pendingPhoneState) return { handled: false };
-
-  const now = Date.now();
   const raw = String(userText || '').trim();
   if (!raw) return { handled: false };
-  const ascii = normalizeBengaliDigits(raw).toLowerCase();
 
-  if (pendingPhoneState.mode === 'confirm_call') {
-    if (now - pendingPhoneState.timestamp > CALL_CONFIRM_TIMEOUT_MS) {
-      console.log('[RosePhone] 15s call confirmation expired');
-      pendingPhoneState = null;
-      return { handled: false };
-    }
+  const pending = getPendingContactCall();
+  if (!pending) return { handled: false };
 
-    const isNo =
-      /(?:^|[\s,।.!?])(না|নাহ|নো|থাক|দরকার\s*নেই|বাদ\s*দাও|করো\s*না|দিও\s*না)(?:$|[\s,।.!?])/i.test(raw) ||
-      /\b(no|nope|cancel|don'?t|stop)\b/i.test(ascii);
-
-    const isYes =
-      !isNo &&
-      (/(?:^|[\s,।.!?])(হ্যাঁ|হ্যা|হাঁ|হুম|জি|জী|দাও|করো|কল\s*দাও|কল\s*করো|ফোন\s*দাও)(?:$|[\s,।.!?])/i.test(raw) ||
-        /\b(yes|yep|yeah|ok|okay|sure|call)\b/i.test(ascii));
-
-    if (isYes) {
-      const target = pendingPhoneState;
-      pendingPhoneState = null;
-      const reply = await executeConfirmedNativeCall(target.number, target.name);
-      return { handled: true, reply };
-    }
-
-    if (isNo) {
-      console.log('[RosePhone] User cancelled pending call');
-      pendingPhoneState = null;
-      return { handled: true, reply: 'ঠিক আছে, কল দিলাম না।' };
-    }
-
-    return { handled: false };
-  }
-
-  if (pendingPhoneState.mode === 'select_contact') {
-    if (now - pendingPhoneState.timestamp > CONTACT_SELECT_TIMEOUT_MS) {
-      pendingPhoneState = null;
-      return { handled: false };
-    }
-
-    const candidates = pendingPhoneState.contacts;
-    let chosen: RoseContact | null = null;
-
-    if (/(?:^|\s)(1|এক|প্রথম|প্রথমটা|এক\s*নম্বর)(?:$|[\s,।.!?])/i.test(ascii) && candidates[0]) {
-      chosen = candidates[0];
-    } else if (/(?:^|\s)(2|দুই|দ্বিতীয়|দ্বিতীয়|দ্বিতীয়টা|দুই\s*নম্বর)(?:$|[\s,।.!?])/i.test(ascii) && candidates[1]) {
-      chosen = candidates[1];
-    } else if (/(?:^|\s)(3|তিন|তৃতীয়|তৃতীয়|তৃতীয়টা|তিন\s*নম্বর)(?:$|[\s,।.!?])/i.test(ascii) && candidates[2]) {
-      chosen = candidates[2];
-    } else {
-      const spokenDigits = sanitizePhoneNumber(ascii);
-      if (spokenDigits.length >= 3) {
-        chosen =
-          candidates.find((c) => {
-            const cDigits = sanitizePhoneNumber(c.number);
-            return cDigits === spokenDigits || cDigits.endsWith(spokenDigits) || spokenDigits.endsWith(cDigits);
-          }) || null;
-      }
-    }
-
-    if (chosen) {
-      pendingPhoneState = {
-        mode: 'confirm_call',
-        name: chosen.name,
-        number: chosen.number,
-        timestamp: Date.now(),
-      };
-      console.log('[RosePhone] Contact selected from list, staged 15s confirmation:', pendingPhoneState);
-      return {
-        handled: true,
-        reply: `${chosen.name}-কে (${chosen.number}) কল দেব? হ্যাঁ বললে দেব।`,
-      };
-    }
+  const extractedNumber = extractPhoneNumberFromText(raw);
+  if (extractedNumber) {
+    const channel: 'whatsapp' | 'tel' = isWhatsAppRequest(raw) ? 'whatsapp' : pending.channel;
+    saveInAppContact(pending.name, extractedNumber);
+    setPendingContactCall(null);
+    const reply = openCallOrWhatsAppLink(extractedNumber, channel);
+    return { handled: true, reply };
   }
 
   return { handled: false };
 }
 
 /**
- * Executes a "phone" tool call from Gemini Live or typed router.
+ * Executes a "phone" / "call_contact" / "send_whatsapp" tool call from Gemini Live or typed chat.
  */
 export async function executePhoneToolAction(args: {
   action?: string;
   name?: string;
   number?: string;
+  phone_number?: string;
+  name_or_number?: string;
   query?: string;
   app?: string;
+  app_name?: string;
+  channel?: string;
+  via?: string;
 }): Promise<{ ok: boolean; message: string }> {
-  if (!isNativeRoseApp()) {
-    console.log('[RosePhone] executePhoneToolAction blocked: not inside native app');
-    return { ok: false, message: ONLY_IN_ROSE_APP_MSG };
-  }
-
   const action = String(args?.action || '').trim().toLowerCase();
-  if (action === 'call_contact') {
-    const contactName = String(args?.name || args?.query || '').trim();
-    const msg = await call_contact(contactName);
-    return { ok: !msg.startsWith('কল ব্যর্থ'), message: msg };
-  }
+  const rawChannel = String(args?.channel || args?.via || '').trim().toLowerCase();
+  const pending = getPendingContactCall();
 
-  if (action === 'call_number') {
-    const num = String(args?.number || args?.name || '').trim();
-    const msg = await call_number(num);
-    return { ok: !msg.startsWith('কল ব্যর্থ'), message: msg };
-  }
+  const rawNum = String(args?.number || args?.phone_number || '').trim();
+  const rawName = String(args?.name || args?.name_or_number || args?.query || '').trim();
+  const isWa =
+    rawChannel === 'whatsapp' ||
+    action.includes('whatsapp') ||
+    isWhatsAppRequest(rawName) ||
+    Boolean(pending?.channel === 'whatsapp' && rawNum);
+  const channel: 'whatsapp' | 'tel' = isWa ? 'whatsapp' : 'tel';
 
-  if (action === 'open_app') {
-    const appName = String(args?.name || args?.app || '').trim();
+  if (action === 'open_app' || (!action && (args?.app || args?.app_name))) {
+    const appName = String(args?.name || args?.app || args?.app_name || '').trim();
     const msg = await open_app(appName);
     return { ok: msg.endsWith('খুললাম।'), message: msg };
   }
 
-  return { ok: false, message: `অজানা ফোন অ্যাকশন: ${action}` };
+  // If a phone number was provided (either in call_number, save_contact, or call_contact with a number)
+  const extractedNum = extractPhoneNumberFromText(rawNum) || extractPhoneNumberFromText(rawName);
+  if (extractedNum) {
+    const contactName = rawNum && rawName ? cleanContactQueryName(rawName) : pending?.name;
+    const msg = await call_number(extractedNum, channel, contactName);
+    return { ok: true, message: msg };
+  }
+
+  if (rawName) {
+    const msg = await call_contact(rawName, channel);
+    return { ok: true, message: msg };
+  }
+
+  return { ok: false, message: 'কার নম্বরে কল দেব নামটা বলো।' };
 }
 
 /**
- * Typed/Voice message router for "phone" actions (call_contact, call_number, open_app)
+ * Typed/Voice message router for call / WhatsApp / saved contacts.
  */
 export async function routePhoneActionFromText(
   rawMessage: string
@@ -511,18 +653,74 @@ export async function routePhoneActionFromText(
   const text = String(rawMessage || '').trim();
   if (!text) return { matched: false };
 
-  // 1. Check pending confirmation / contact selection first
+  // 1. Check if we were waiting for "<name>-এর নম্বর কত?" and the user just gave the number
   const pendingRes = await handlePendingPhoneUserReply(text);
   if (pendingRes.handled && pendingRes.reply) {
     return { matched: true, reply: pendingRes.reply };
   }
 
+  // 2. Check if user is stating "<name>-এর নম্বর <number>" (save to contacts; if also asking to call, open link)
+  const extractedNumber = extractPhoneNumberFromText(text);
+  const hasCallVerb =
+    /(কল\s*(দাও|দেও|দে|দেন|দিন|করো|কর|করুন|করে\s*দাও|দেব|দিব)|ফোন\s*(দাও|দেও|দে|দেন|দিন|করো|কর|করুন|করে\s*দাও)|ডায়াল\s*করো|হোয়াটসঅ্যাপ\s*করো|হোয়াটসঅ্যাপ\s*করো|\bcall\b|\bdial\b)/i.test(
+      text
+    );
+
+  if (extractedNumber && !hasCallVerb) {
+    const nameAssignMatch = text.match(
+      /^(.+?)(?:-এর|\s+এর|ের)?\s+(?:ফোন\s+|মোবাইল\s+|হোয়াটসঅ্যাপ\s+|হোয়াটসঅ্যাপ\s+)?(?:নম্বর|নাম্বার|number|num)\s*(?:হলো|হচ্ছে|হল|:|-)?\s*[+০-৯0-9]/i
+    );
+    if (nameAssignMatch && nameAssignMatch[1]) {
+      const assignedName = cleanContactQueryName(nameAssignMatch[1]);
+      if (assignedName && assignedName.length >= 2) {
+        saveInAppContact(assignedName, extractedNumber);
+      }
+    }
+  }
+
   const isPcExplicit = /(পিসিতে|পিসির|ল্যাপটপে|কম্পিউটারে|\bon\s+pc\b|\bpc\b)/i.test(text);
   if (isPcExplicit) return { matched: false };
 
-  // 2. Check open_app(name) intent
+  // 3. Check call / WhatsApp call intent
+  if (hasCallVerb) {
+    const channel: 'whatsapp' | 'tel' = isWhatsAppRequest(text) ? 'whatsapp' : 'tel';
+
+    // 3a. Direct number in the command
+    if (extractedNumber) {
+      const nameCandidate = cleanContactQueryName(
+        text.replace(/[+০-৯0-9\s\-()]{6,}/g, ' ').replace(/(?:নম্বরে|নাম্বারে|নম্বর|নাম্বার)/g, ' ')
+      );
+      const reply = await call_number(
+        extractedNumber,
+        channel,
+        nameCandidate && nameCandidate.length >= 2 ? nameCandidate : undefined
+      );
+      return { matched: true, reply };
+    }
+
+    // 3b. Pronoun reference to a number recently given in chat or voice ("এই নম্বরে কল দাও", "ওই নম্বরে কল দাও", "ওকে কল দাও")
+    if (/(?:এই\s*নম্বরে|ওই\s*নম্বরে|নম্বরটাতে|নাম্বারটাতে|এই\s*নাম্বারে|ওকে|তাকে|উনাকে)/i.test(text)) {
+      const history = getSharedRecentMessages();
+      for (let i = history.length - 1; i >= 0; i--) {
+        const recentNum = extractPhoneNumberFromText(history[i].text);
+        if (recentNum) {
+          const reply = openCallOrWhatsAppLink(recentNum, channel);
+          return { matched: true, reply };
+        }
+      }
+    }
+
+    // 3c. Call by contact name: "<name> কে কল দাও"
+    const contactName = cleanContactQueryName(text);
+    if (contactName) {
+      const reply = await call_contact(contactName, channel);
+      return { matched: true, reply };
+    }
+  }
+
+  // 4. Check open_app(name) intent
   const hasOpenVerb = /(খোলো|খোল|খুলো|খুলে\s*দাও|চালু\s*করো|চালাও|ওপেন\s*করো|ওপেন|\bopen\b|\blaunch\b)/i.test(text);
-  if (hasOpenVerb) {
+  if (hasOpenVerb && !hasCallVerb) {
     const resolvedApp = resolveAppKey(text);
     if (resolvedApp) {
       const reply = await open_app(resolvedApp.key);
@@ -530,33 +728,30 @@ export async function routePhoneActionFromText(
     }
   }
 
-  // 3. Check call_number / call_contact intent
-  const hasCallVerb =
-    /(কল\s*(দাও|দেও|দে|দেন|দিন|করো|কর|করুন|করে\s*দাও|দেব)|ফোন\s*(দাও|দেও|দে|দেন|দিন|করো|কর|করুন|করে\s*দাও)|\bcall\b|\bdial\b)/i.test(text);
-  if (hasCallVerb) {
-    const ascii = normalizeBengaliDigits(text);
-    const numMatch = ascii.match(/(?:\+?88)?01\d{3}[-\s]?\d{6}|\+?\d[\d\s-]{5,14}\d/);
-    if (numMatch) {
-      const reply = await call_number(numMatch[0]);
-      return { matched: true, reply };
-    }
+  return { matched: false };
+}
 
-    // Extract contact name from Bengali or English call command
-    const contactName = text
-      .replace(/^(রোজ|rose)\s*[,:-]?\s*/i, '')
-      .replace(/\b(please|প্লিজ|একটু)\b/gi, '')
-      .replace(/\b(call|dial)\b/gi, '')
-      .replace(/(কে\s+|রে\s+|এর\s+নম্বরে\s+|নম্বরে\s+)?(একটা\s+)?(কল|ফোন)\s*(দাও|দেও|দে|দেন|দিন|করো|কর|করুন|করে\s*দাও|দেব).*/i, '')
-      .replace(/(কল|ফোন)\s*(দাও|দেও|দে|দেন|দিন|করো|কর|করুন|করে\s*দাও|দেব)/gi, '')
-      .replace(/[-–—,:।.?!"']/g, ' ')
-      .replace(/(কে|রে)$/i, '')
-      .trim();
+/**
+ * Builds a shared context block containing saved contacts and recent chat/voice messages
+ * so that both Chat and Live Voice always know the same recent history and contacts.
+ */
+export function getSharedPhoneAndHistoryContextBlock(): string {
+  const contacts = getSavedInAppContacts();
+  const history = getSharedRecentMessages().slice(-12);
+  const lines: string[] = [];
 
-    if (contactName) {
-      const reply = await call_contact(contactName);
-      return { matched: true, reply };
-    }
+  if (contacts.length > 0) {
+    lines.push(
+      `SAVED CONTACTS (localStorage): ${contacts.map((c) => `${c.name}: ${c.number}`).join(', ')}`
+    );
   }
 
-  return { matched: false };
+  if (history.length > 0) {
+    lines.push(
+      `RECENT SHARED MESSAGE HISTORY (Chat & Voice):\n` +
+        history.map((m) => `${m.role === 'assistant' ? 'Rose' : 'User'}: ${m.text}`).join('\n')
+    );
+  }
+
+  return lines.join('\n\n');
 }

@@ -19,6 +19,7 @@ import { officeEngine } from "../components/pc/office/officeEngine";
 import { getStoredDeviceId, getStoredPcSecret } from "./pcCommand";
 import { supabase } from "./supabase";
 import { APP_MANUAL } from "./appManual";
+import { getSharedPhoneAndHistoryContextBlock } from "./phone";
 
 /**
  * Builds Rose's system instruction centrally.
@@ -225,7 +226,9 @@ ${pcStatusBlock}
 
 ${appManualBlock}
 
-${navSystemRule}`;
+${navSystemRule}
+
+${getSharedPhoneAndHistoryContextBlock()}`;
 
   return applyAdminSystemInstructionOverride(rawFullInstruction);
 }
