@@ -46,6 +46,7 @@ import {
   getTeamStatus,
   TEAM_SYSTEM_INSTRUCTION,
 } from './team';
+import { findMatchingPage } from './navRegistry';
 
 export interface GeminiLiveOptions {
   assistantName?: string;
@@ -1423,17 +1424,43 @@ export class GeminiLiveSession {
             },
             id: callId,
           });
-        } else if (name === 'get_team_status') {
-          const res = await getTeamStatus(args.agent ? String(args.agent) : undefined);
-          functionResponses.push({
-            response: {
-              output: {
-                success: res.success,
-                summary: res.summary,
+        } else if (name === 'app_action') {
+          try {
+            const pageName = String(args.page || args.action || '');
+            const { page } = findMatchingPage(pageName);
+            if (page) {
+              functionResponses.push({
+                response: {
+                  output: {
+                    ok: true,
+                    page: page.titleBn,
+                  },
+                },
+                id: callId,
+              });
+            } else {
+              functionResponses.push({
+                response: {
+                  output: {
+                    ok: false,
+                    reason: 'Page not found',
+                  },
+                },
+                id: callId,
+              });
+            }
+          } catch (err: any) {
+            console.warn('[GeminiLive] app_action error:', err);
+            functionResponses.push({
+              response: {
+                output: {
+                  ok: false,
+                  reason: err?.message || 'Action failed',
+                },
               },
-            },
-            id: callId,
-          });
+              id: callId,
+            });
+          }
         } else {
           functionResponses.push({
             response: {

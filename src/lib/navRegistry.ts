@@ -27,42 +27,84 @@ export const PAGES_REGISTRY: PageRegistration[] = [
   { id: 'language_page', path: 'language-list', titleBn: 'ল্যাঙ্গুয়েজ', aliases: ['language', 'language-list', 'ল্যাঙ্গুয়েজ', 'ভাষা নির্বাচন'] },
   { id: 'response_style', path: 'response-style-list', titleBn: 'রেসপন্স স্টাইল', aliases: ['response_style', 'response-style-list', 'রেসপন্স স্টাইল', 'উত্তর দেওয়ার ধরন', 'response style'] },
   { id: 'voice_page', path: 'voice-list', titleBn: 'ভয়েস', aliases: ['voice_page', 'voice-list', 'ভয়েস তালিকা', 'voice voices'] },
-  { id: 'voice_model_list', path: 'voice-model-list', titleBn: 'ভয়েস মডেল', aliases: ['voice_model_list', 'voice-model-list', 'ভয়েস মডেল', 'voice model mode'] },
+  { id: 'voice_model_list', path: 'voice-model-list', titleBn: 'ভয়েস মডেল লিস্ট', aliases: ['voice_model_list', 'voice-model-list', 'ভয়েস মডেল লিস্ট', 'voice model mode'] },
   { id: 'voice_tuning', path: 'voice-tuning', titleBn: 'ভয়েস টিউনিং', aliases: ['voice_tuning', 'voice-tuning', 'ভয়েস টিউনিং', 'গতি ও পিচ', 'voice tuning'] },
   { id: 'voice_check', path: 'voice-debug', titleBn: 'ভয়েস চেক', aliases: ['voice_check', 'voice-debug', 'ভয়েস চেক', 'voice check', 'voice debug'] },
   { id: 'mic_listening', path: 'mic-listening', titleBn: 'মাইক অ্যান্ড লিসেনিং', aliases: ['mic_listening', 'mic-listening', 'মাইক অ্যান্ড লিসেনিং', 'মাইক', 'লিসেনিং', 'always listening', 'mic & listening'] },
 ];
 
-export function findMatchingPage(query: string): { page: PageRegistration | null; matches: PageRegistration[] } {
-  const q = query.toLowerCase().trim();
-  if (!q) return { page: null, matches: [] };
+export function cleanTextForFuzzy(str: string): string {
+  return str
+    .toLowerCase()
+    .replace(/\s+/g, '')
+    .replace(/(এ|তে|के|কে|র|এর)$/g, '');
+}
 
-  let bestMatch: PageRegistration | null = null;
-  let maxAliasLength = -1;
-  const matchedPagesSet = new Set<PageRegistration>();
+export function calculateSimilarity(s1: string, s2: string): number {
+  const clean1 = cleanTextForFuzzy(s1);
+  const clean2 = cleanTextForFuzzy(s2);
+  if (clean1 === clean2) return 1.0;
+  if (!clean1 || !clean2) return 0.0;
 
-  for (const p of PAGES_REGISTRY) {
-    for (const alias of p.aliases) {
-      const aliasLower = alias.toLowerCase();
-      if (q.includes(aliasLower) || aliasLower.includes(q)) {
-        matchedPagesSet.add(p);
-        if (aliasLower.length > maxAliasLength) {
-          maxAliasLength = aliasLower.length;
-          bestMatch = p;
-        }
+  const longer = clean1.length > clean2.length ? clean1 : clean2;
+  const shorter = clean1.length > clean2.length ? clean2 : clean1;
+  const longerLength = longer.length;
+  if (longerLength === 0) return 1.0;
+
+  const editDistance = levenshtein(longer, shorter);
+  return (longerLength - editDistance) / longerLength;
+}
+
+function levenshtein(a: string, b: string): number {
+  const matrix = Array.from({ length: b.length + 1 }, (_, i) => [i]);
+  for (let j = 0; j <= a.length; j++) matrix[0][j] = j;
+
+  for (let i = 1; i <= b.length; i++) {
+    for (let j = 1; j <= a.length; j++) {
+      if (b.charAt(i - 1) === a.charAt(j - 1)) {
+        matrix[i][j] = matrix[i - 1][j - 1];
+      } else {
+        matrix[i][j] = Math.min(
+          matrix[i - 1][j - 1] + 1,
+          Math.min(
+            matrix[i][j - 1] + 1,
+            matrix[i - 1][j] + 1
+          )
+        );
       }
     }
   }
+  return matrix[b.length][a.length];
+}
 
-  const matches = Array.from(matchedPagesSet);
-  matches.sort((a, b) => {
-    const maxA = Math.max(...a.aliases.map(al => al.length));
-    const maxB = Math.max(...b.aliases.map(al => al.length));
-    return maxB - maxA;
+export function findMatchingPage(query: string): { page: PageRegistration | null; matches: PageRegistration[]; lowConfidence: boolean; top3: PageRegistration[] } {
+  const q = query.trim();
+  if (!q) return { page: null, matches: [], lowConfidence: false, top3: [] };
+
+  const scored = PAGES_REGISTRY.map((p) => {
+    let maxSim = 0;
+    for (const alias of p.aliases) {
+      const sim = calculateSimilarity(q, alias);
+      if (sim > maxSim) maxSim = sim;
+    }
+    const titleSim = calculateSimilarity(q, p.titleBn);
+    if (titleSim > maxSim) maxSim = titleSim;
+    return { page: p, score: maxSim };
   });
 
+  scored.sort((a, b) => b.score - a.score);
+  const top3 = scored.slice(0, 3).map(s => s.page);
+  const bestScore = scored.length > 0 ? scored[0].score : 0;
+  const bestPage = scored.length > 0 ? scored[0].page : null;
+
+  if (bestScore < 0.75) {
+    return { page: null, matches: top3, lowConfidence: true, top3 };
+  }
+
   return {
-    page: bestMatch || (matches.length > 0 ? matches[0] : null),
-    matches,
+    page: bestPage,
+    matches: top3,
+    lowConfidence: false,
+    top3,
   };
 }

@@ -3819,6 +3819,7 @@ export function App() {
   const liveBottomErrorTimerRef = useRef<any>(null);
   const titlePressTimerRef = useRef<any>(null);
   const pendingClearChatStateRef = useRef<{ active: boolean; timestamp: number }>({ active: false, timestamp: 0 });
+  const pendingNavClarifyStateRef = useRef<{ active: boolean; timestamp: number; options: any[] }>({ active: false, timestamp: 0, options: [] });
 
   const triggerLiveBottomError = useCallback((msg: string) => {
     setLiveBottomError(msg);
@@ -6417,6 +6418,8 @@ export function App() {
             },
             pendingClearChatState: pendingClearChatStateRef.current,
             setPendingClearChatState: (st) => { pendingClearChatStateRef.current = st; },
+            pendingNavClarifyState: pendingNavClarifyStateRef.current,
+            setPendingNavClarifyState: (st) => { pendingNavClarifyStateRef.current = st; },
           });
         }
 
@@ -8473,6 +8476,8 @@ export function App() {
                   },
                   pendingClearChatState: pendingClearChatStateRef.current,
                   setPendingClearChatState: (st) => { pendingClearChatStateRef.current = st; },
+                  pendingNavClarifyState: pendingNavClarifyStateRef.current,
+                  setPendingNavClarifyState: (st) => { pendingNavClarifyStateRef.current = st; },
                 });
               }
               if (res.matched && res.roseReply) {
