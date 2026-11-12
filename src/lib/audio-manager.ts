@@ -82,19 +82,38 @@ export async function getGlobalMicStream(
     }
 
     const { cleanVoice } = getMicListeningSettings();
-    const audioConstraints: MediaTrackConstraints = {
-      ...(typeof options?.audio === 'object' ? options.audio : {}),
-      echoCancellation: false,
-      noiseSuppression: cleanVoice,
-      autoGainControl: false,
-      sampleRate: { ideal: 48000 },
-      channelCount: { ideal: 1 },
-    };
+    let audioConstraints: boolean | MediaTrackConstraints;
 
-    const stream = await navigator.mediaDevices.getUserMedia({
-      ...options,
-      audio: audioConstraints,
-    });
+    if (cleanVoice) {
+      audioConstraints = {
+        ...(typeof options?.audio === 'object' ? options.audio : {}),
+        echoCancellation: true,
+        noiseSuppression: true,
+        autoGainControl: true,
+        channelCount: { ideal: 1 },
+      };
+    } else {
+      audioConstraints = true;
+    }
+
+    let stream: MediaStream;
+    try {
+      stream = await navigator.mediaDevices.getUserMedia({
+        ...options,
+        audio: audioConstraints,
+      });
+    } catch (webrtcErr: any) {
+      if (cleanVoice) {
+        console.warn('[AudioManager] WebRTC noise suppression stream failed, falling back to default mic:', webrtcErr);
+        stream = await navigator.mediaDevices.getUserMedia({
+          ...options,
+          audio: true,
+        });
+      } else {
+        throw webrtcErr;
+      }
+    }
+
     globalStream = stream;
     return stream;
   } catch (err: any) {

@@ -86,8 +86,14 @@ class AgentWorkerManager {
             const newRecord = payload.new as AgentTaskRecord;
             const oldRecord = payload.old as AgentTaskRecord;
 
+            console.log('[Realtime Event] public.tasks:', payload.eventType, {
+              id: newRecord?.id || oldRecord?.id,
+              to_agent: newRecord?.to_agent || oldRecord?.to_agent,
+              status: newRecord?.status,
+            });
+
             if (payload.eventType === 'INSERT') {
-              // Trigger PC office assign animation
+              // Trigger PC office assign animation (Rose stands, walks to desk, bubble)
               officeEvents.assign(
                 newRecord.from_agent || 'rose',
                 newRecord.to_agent,
@@ -101,11 +107,8 @@ class AgentWorkerManager {
                 oldRecord?.status !== 'working' &&
                 newRecord.reply
               ) {
-                officeEvents.reply(
-                  newRecord.to_agent,
-                  newRecord.from_agent || 'rose',
-                  newRecord.reply
-                );
+                // working → agent replies in a bubble, Rose walks back and sits
+                officeEvents.working(newRecord.to_agent, newRecord.reply);
                 this.notify(
                   newRecord.to_agent as TeamAgentId,
                   'reply',
@@ -117,6 +120,7 @@ class AgentWorkerManager {
                 oldRecord?.status !== 'done' &&
                 newRecord.result
               ) {
+                // done → agent stands, walks to Rose, bubble with result, walks back and sits
                 officeEvents.done(newRecord.to_agent, newRecord.result);
                 this.notify(
                   newRecord.to_agent as TeamAgentId,
@@ -130,7 +134,7 @@ class AgentWorkerManager {
         )
         .subscribe((status: string) => {
           if (status === 'SUBSCRIBED') {
-            console.log('[AgentWorker] Supabase Realtime subscribed to public.tasks');
+            console.log('[Realtime Event] Supabase Realtime channel subscribed to public.tasks');
           }
         });
     } catch (err) {
@@ -184,6 +188,9 @@ class AgentWorkerManager {
 
         if (!error && data && data.length > 0) {
           acquiredLock = true;
+          console.log('[Task Locked] Device locked task for processing:', task.id, task.to_agent);
+        } else {
+          console.log('[Task Lock Skipped] Task was already locked by another device:', task.id);
         }
       } catch (err) {
         console.warn('[AgentWorker] Supabase atomic lock query failed:', err);
@@ -194,6 +201,7 @@ class AgentWorkerManager {
         task.status = 'working';
         updateLocalTaskState(task);
         acquiredLock = true;
+        console.log('[Task Locked] In-memory task locked:', task.id, task.to_agent);
       }
     }
 
@@ -214,7 +222,7 @@ class AgentWorkerManager {
     const agentId = (task.to_agent as TeamAgentId) || 'mira';
     const member = TEAM_MEMBERS[agentId] || TEAM_MEMBERS.mira;
 
-    // Step 1: Generate agent's quick acknowledgment reply (in natural Bengali)
+    // Step 1: Generate agent's quick acknowledgment reply (in natural Bengali, 1-2 sentences, honest)
     const replyText = await this.generateAgentReply(member.id, task.instruction);
 
     task.reply = replyText;
@@ -231,14 +239,15 @@ class AgentWorkerManager {
       updateLocalTaskState(task);
     }
 
-    officeEvents.reply(agentId, task.from_agent || 'rose', replyText);
+    // Agent replies in a bubble, Rose walks back and sits down
+    officeEvents.working(agentId, replyText);
     this.notify(agentId, 'reply', replyText, task);
 
-    // Step 2: Simulate realistic working duration (2.5 to 4.0 seconds)
-    const workDurationMs = 2800 + Math.random() * 1200;
+    // Step 2: Realistic working duration (2.5 to 3.8 seconds)
+    const workDurationMs = 2500 + Math.random() * 1200;
     await new Promise((resolve) => setTimeout(resolve, workDurationMs));
 
-    // Step 3: Generate realistic result
+    // Step 3: Generate realistic result (Bengali, 1-2 sentences, honest, no fake physical actions)
     const resultText = await this.generateAgentResult(member.id, task.instruction);
 
     task.result = resultText;
@@ -255,6 +264,9 @@ class AgentWorkerManager {
       updateLocalTaskState(task);
     }
 
+    console.log('[Task Completed] Task marked done:', task.id, { reply: replyText, result: resultText });
+
+    // Agent stands, walks to Rose, bubble with result, Rose thanks, agent walks back and sits
     officeEvents.done(agentId, resultText);
     this.notify(agentId, 'done', resultText, task);
   }

@@ -1,5 +1,5 @@
 import React, { useState } from "react";
-import { X, RotateCcw, Save, Sliders, Move, Armchair, Footprints } from "lucide-react";
+import { X, RotateCcw, Save, Sliders, Move, Armchair, Footprints, Tag, Route } from "lucide-react";
 import { VirtualOffice } from "./VirtualOffice";
 import {
   OFFICE_AGENT_LIST,
@@ -10,6 +10,14 @@ import {
   loadOfficeSeatPositions,
   saveOfficeSeatPositions,
   resetOfficeSeatPositions,
+  loadOfficeLabelPositions,
+  saveOfficeLabelPositions,
+  resetOfficeLabelPositions,
+  loadOfficeRoutes,
+  saveOfficeRoutes,
+  resetOfficeRoutes,
+  DESK_BENGALI_NAMES,
+  AgentRouteConfig,
 } from "./officeConfig";
 import { officeEngine } from "./officeEngine";
 
@@ -24,24 +32,33 @@ export const OfficeLayoutEditorModal: React.FC<OfficeLayoutEditorModalProps> = (
   onClose,
   onSaved,
 }) => {
-  const [editTarget, setEditTarget] = useState<"seat" | "stand">("seat");
+  const [editTarget, setEditTarget] = useState<"seat" | "stand" | "label" | "route">("seat");
   const [standPositions, setStandPositions] = useState<Record<string, AgentPosition>>(() =>
     loadOfficePositions()
   );
   const [seatPositions, setSeatPositions] = useState<Record<string, AgentPosition>>(() =>
     loadOfficeSeatPositions()
   );
+  const [labelPositions, setLabelPositions] = useState<Record<string, AgentPosition>>(() =>
+    loadOfficeLabelPositions()
+  );
+  const [routes, setRoutes] = useState<Record<string, AgentRouteConfig>>(() =>
+    loadOfficeRoutes()
+  );
   const [selectedAgentId, setSelectedAgentId] = useState<string>("rose");
 
   if (!isOpen) return null;
 
   const selectedAgent = OFFICE_AGENT_LIST.find((a) => a.id === selectedAgentId) || OFFICE_AGENT_LIST[0];
-  const currentPositions = editTarget === "seat" ? seatPositions : standPositions;
+  const currentPositions =
+    editTarget === "seat" ? seatPositions : editTarget === "label" ? labelPositions : standPositions;
   const currentPos = currentPositions[selectedAgentId] || { x: 50, y: 66, scale: 1.0 };
 
-  const handlePositionChange = (agentId: string, updated: AgentPosition, target: "stand" | "seat") => {
+  const handlePositionChange = (agentId: string, updated: AgentPosition, target: "stand" | "seat" | "label") => {
     if (target === "seat") {
       setSeatPositions((prev) => ({ ...prev, [agentId]: updated }));
+    } else if (target === "label") {
+      setLabelPositions((prev) => ({ ...prev, [agentId]: updated }));
     } else {
       setStandPositions((prev) => ({ ...prev, [agentId]: updated }));
     }
@@ -51,6 +68,14 @@ export const OfficeLayoutEditorModal: React.FC<OfficeLayoutEditorModalProps> = (
     const rounded = Math.round(scaleValue * 100) / 100;
     if (editTarget === "seat") {
       setSeatPositions((prev) => ({
+        ...prev,
+        [selectedAgentId]: {
+          ...currentPos,
+          scale: rounded,
+        },
+      }));
+    } else if (editTarget === "label") {
+      setLabelPositions((prev) => ({
         ...prev,
         [selectedAgentId]: {
           ...currentPos,
@@ -71,21 +96,27 @@ export const OfficeLayoutEditorModal: React.FC<OfficeLayoutEditorModalProps> = (
   const handleReset = () => {
     const defStand = resetOfficePositions();
     const defSeat = resetOfficeSeatPositions();
+    const defLabel = resetOfficeLabelPositions();
+    const defRoutes = resetOfficeRoutes();
     setStandPositions(defStand);
     setSeatPositions(defSeat);
+    setLabelPositions(defLabel);
+    setRoutes(defRoutes);
     officeEngine.reloadPositions();
   };
 
   const handleSave = () => {
     saveOfficePositions(standPositions);
     saveOfficeSeatPositions(seatPositions);
+    saveOfficeLabelPositions(labelPositions);
+    saveOfficeRoutes(routes);
     officeEngine.reloadPositions();
     if (onSaved) onSaved();
     onClose();
   };
 
   return (
-    <div className="fixed inset-0 z-[120] bg-black/85 backdrop-blur-md flex items-center justify-center p-3 sm:p-5 select-none">
+    <div className="fixed inset-0 z-[1200] bg-black/85 backdrop-blur-md flex items-center justify-center p-3 sm:p-5 select-none">
       <div className="w-full max-w-5xl bg-[#090518] border border-purple-500/30 rounded-3xl shadow-2xl flex flex-col overflow-hidden max-h-[95vh]">
         {/* Header */}
         <div className="px-5 py-3.5 border-b border-purple-500/20 bg-[#0F0826]/90 flex items-center justify-between shrink-0">
@@ -101,7 +132,7 @@ export const OfficeLayoutEditorModal: React.FC<OfficeLayoutEditorModalProps> = (
                 </span>
               </h3>
               <p className="text-[10px] text-slate-400 font-medium">
-                Drag agents to position their seated desk points or standing walk points.
+                Drag agents to position their seated desk points, standing walk points, floor routes, or labels.
               </p>
             </div>
           </div>
@@ -117,7 +148,7 @@ export const OfficeLayoutEditorModal: React.FC<OfficeLayoutEditorModalProps> = (
 
         {/* Mode & Agent Selector Tabs */}
         <div className="px-5 py-2.5 bg-[#0B0620] border-b border-white/5 flex flex-wrap items-center justify-between gap-3 shrink-0">
-          {/* Mode Toggle: Seat vs Stand */}
+          {/* Mode Toggle: Seat vs Stand vs Route vs Label */}
           <div className="flex items-center gap-1 bg-black/40 p-1 rounded-2xl border border-white/10">
             <button
               type="button"
@@ -129,7 +160,7 @@ export const OfficeLayoutEditorModal: React.FC<OfficeLayoutEditorModalProps> = (
               }`}
             >
               <Armchair className="w-3.5 h-3.5" />
-              <span>Seated Position</span>
+              <span>Seated</span>
             </button>
             <button
               type="button"
@@ -141,7 +172,31 @@ export const OfficeLayoutEditorModal: React.FC<OfficeLayoutEditorModalProps> = (
               }`}
             >
               <Footprints className="w-3.5 h-3.5" />
-              <span>Standing Position</span>
+              <span>Standing</span>
+            </button>
+            <button
+              type="button"
+              onClick={() => setEditTarget("route")}
+              className={`px-3 py-1 rounded-xl text-xs font-bold transition-all flex items-center gap-1.5 ${
+                editTarget === "route"
+                  ? "bg-emerald-600 text-white shadow-md"
+                  : "text-slate-400 hover:text-white"
+              }`}
+            >
+              <Route className="w-3.5 h-3.5" />
+              <span>Routes</span>
+            </button>
+            <button
+              type="button"
+              onClick={() => setEditTarget("label")}
+              className={`px-3 py-1 rounded-xl text-xs font-bold transition-all flex items-center gap-1.5 ${
+                editTarget === "label"
+                  ? "bg-indigo-600 text-white shadow-md shadow-indigo-900/50"
+                  : "text-slate-400 hover:text-white"
+              }`}
+            >
+              <Tag className="w-3.5 h-3.5" />
+              <span>Desk Name</span>
             </button>
           </div>
 
@@ -149,7 +204,14 @@ export const OfficeLayoutEditorModal: React.FC<OfficeLayoutEditorModalProps> = (
           <div className="flex items-center gap-2 overflow-x-auto no-scrollbar">
             {OFFICE_AGENT_LIST.map((agent) => {
               const isSelected = agent.id === selectedAgentId;
-              const pos = (editTarget === "seat" ? seatPositions : standPositions)[agent.id] || { x: 50, y: 60 };
+              const pos = (
+                editTarget === "seat"
+                  ? seatPositions
+                  : editTarget === "label"
+                  ? labelPositions
+                  : standPositions
+              )[agent.id] || { x: 50, y: 60 };
+              const tabName = editTarget === "label" ? (DESK_BENGALI_NAMES[agent.id] || agent.name) : agent.name;
               return (
                 <button
                   key={agent.id}
@@ -165,7 +227,7 @@ export const OfficeLayoutEditorModal: React.FC<OfficeLayoutEditorModalProps> = (
                     className="w-2 h-2 rounded-full"
                     style={{ backgroundColor: agent.color }}
                   />
-                  <span>{agent.name}</span>
+                  <span>{tabName}</span>
                   <span className="text-[9px] font-mono opacity-70">
                     ({Math.round(pos.x)},{Math.round(pos.y)})
                   </span>
@@ -185,6 +247,7 @@ export const OfficeLayoutEditorModal: React.FC<OfficeLayoutEditorModalProps> = (
               onSelectAgent={(id: string) => setSelectedAgentId(id)}
               customPositions={standPositions}
               customSeatPositions={seatPositions}
+              customLabelPositions={labelPositions}
               onPositionChange={handlePositionChange}
               className="w-full h-full"
             />
@@ -200,7 +263,8 @@ export const OfficeLayoutEditorModal: React.FC<OfficeLayoutEditorModalProps> = (
                   className="w-2.5 h-2.5 rounded-full inline-block"
                   style={{ backgroundColor: selectedAgent.color }}
                 />
-                {selectedAgent.name} ({editTarget === "seat" ? "Desk Seat" : "Standing Walk"})
+                {editTarget === "label" ? (DESK_BENGALI_NAMES[selectedAgent.id] || selectedAgent.name) : selectedAgent.name} (
+                {editTarget === "seat" ? "Desk Seat" : editTarget === "label" ? "Desk Front Label" : editTarget === "route" ? "Floor Route" : "Standing Walk"})
               </span>
               <span className="text-[11px] font-mono text-purple-300 bg-black/40 px-2 py-0.5 rounded-lg border border-purple-500/20">
                 X: {Math.round(currentPos.x)}% | Y: {Math.round(currentPos.y)}%
@@ -257,3 +321,4 @@ export const OfficeLayoutEditorModal: React.FC<OfficeLayoutEditorModalProps> = (
     </div>
   );
 };
+

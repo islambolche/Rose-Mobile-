@@ -22,7 +22,7 @@ export const TEAM_MEMBERS: Record<TeamAgentId, TeamMemberConfig> = {
     role: 'Chief Business Manager',
     bengaliRole: 'চিফ বিজনেস ম্যানেজার ও টিম লিডার',
     color: '#EC4899',
-    avatar: '/office/avatars/rose.jpg',
+    avatar: '/office/avatars/rose.png',
     aliases: ['Rose', 'রোজ', 'রোজ আপু', 'আপু', 'ম্যানেজার'],
     systemPrompt: 'You are Rose, Chief Business Manager and team leader of this 5-member AI company.',
   },
@@ -33,8 +33,11 @@ export const TEAM_MEMBERS: Record<TeamAgentId, TeamMemberConfig> = {
     role: 'Customer Communication',
     bengaliRole: 'কাস্টমার কমিউনিকেশন ও ইনবক্স সাপোর্ট',
     color: '#10B981',
-    avatar: '/office/avatars/mira.jpg',
-    aliases: ['Mira', 'মিরা', 'মীরা', 'Meera', 'Miraa', 'মিরু'],
+    avatar: '/office/avatars/mira.png',
+    aliases: [
+      'Mira', 'মিরা', 'মীরা', 'মিরাকে', 'মিরার', 'মিরারে', 'মীরাকে', 'মীরার', 'মীরারে',
+      'Meera', 'Miraa', 'মিরু',
+    ],
     systemPrompt:
       'You are Mira (Customer Communication). You handle customer inquiries, order confirmations, polite client messages, WhatsApp/Facebook message replies, and customer satisfaction in fluent, polite Bengali.',
   },
@@ -45,8 +48,11 @@ export const TEAM_MEMBERS: Record<TeamAgentId, TeamMemberConfig> = {
     role: 'Sales & Order',
     bengaliRole: 'সেলস, ইনভেন্টরি ও অর্ডার ম্যানেজমেন্ট',
     color: '#3B82F6',
-    avatar: '/office/avatars/arin.jpg',
-    aliases: ['Arin', 'আরিন', 'Arian', 'Erin', 'আরিফ', 'আরিয়ান', 'Arif'],
+    avatar: '/office/avatars/arin.png',
+    aliases: [
+      'Arin', 'আরিন', 'আরিনকে', 'আরিনের', 'আরিনরে', 'Arian', 'Erin', 'আরিফ', 'আরিয়ান',
+      'আরিয়ানকে', 'আরিফকে', 'Arif',
+    ],
     systemPrompt:
       'You are Arin (Sales & Order). You manage customer sales, product stock checks, inventory updates, daily revenue calculations, and discount approvals in concise, business-smart Bengali.',
   },
@@ -57,8 +63,11 @@ export const TEAM_MEMBERS: Record<TeamAgentId, TeamMemberConfig> = {
     role: 'Parcel & Delivery',
     bengaliRole: 'পার্সেল, কুরিয়ার ও ডেলিভারি ট্র্যাকিং',
     color: '#F97316',
-    avatar: '/office/avatars/zayan.jpg',
-    aliases: ['Zayan', 'জায়ান', 'যায়ান', 'Jayan', 'Zain', 'জায়ন', 'জায়া', 'জায়ন', 'জেয়ান'],
+    avatar: '/office/avatars/zayan.png',
+    aliases: [
+      'Zayan', 'জায়ান', 'জায়ানকে', 'জায়ানের', 'জায়ানরে', 'যায়ান', 'যায়ানকে', 'যায়ানের',
+      'যায়ানরে', 'Jayan', 'Zain', 'জায়ন', 'জায়া', 'জায়ন', 'জেয়ান',
+    ],
     systemPrompt:
       'You are Zayan (Parcel & Delivery). You manage logistics, courier dispatches (Pathao, Steadfast, RedX), package tracking codes, delivery confirmations, and returns in crisp, efficient Bengali.',
   },
@@ -69,8 +78,11 @@ export const TEAM_MEMBERS: Record<TeamAgentId, TeamMemberConfig> = {
     role: 'Business Audit & Analytics',
     bengaliRole: 'বিজনেস অডিট, লাভ-লোকসান ও অ্যানালিটিক্স',
     color: '#A855F7',
-    avatar: '/office/avatars/naira.jpg',
-    aliases: ['Naira', 'নাইরা', 'নায়রা', 'Nyra', 'Nira', 'নায়রা', 'নায়েরা'],
+    avatar: '/office/avatars/naira.png',
+    aliases: [
+      'Naira', 'নাইরা', 'নাইরাকে', 'নাইরার', 'নাইরারে', 'নায়রা', 'নায়রাকে', 'নায়রার',
+      'নায়রারে', 'Nyra', 'Nira', 'নায়রা', 'নায়েরা',
+    ],
     systemPrompt:
       'You are Naira (Business Audit & Analytics). You inspect company finances, audit expenses, calculate net profit margins, detect financial discrepancies, and generate executive summaries in analytical, clear Bengali.',
   },
@@ -162,6 +174,24 @@ export const ROSE_TEAM_TOOLS = [
               description: 'Optional agent name or ID ("mira", "arin", "zayan", "naira"). If omitted, checks all team members.',
             },
           },
+        },
+      },
+      {
+        name: 'pc_command',
+        description: "Send a remote control command to the user's connected PC (apps, volume, lock, files, power, etc.).",
+        parameters: {
+          type: 'OBJECT',
+          properties: {
+            action: {
+              type: 'STRING',
+              description: 'Action name e.g. ping, open_app, open_url, open_path, list_dir, search_files, screenshot, type_text, hotkey, click, media, lock, shutdown, restart, cancel_shutdown, run_shell, ask_local_ai',
+            },
+            args: {
+              type: 'OBJECT',
+              description: 'Arguments e.g. { name: "chrome" }, { url: "https://..." }, { key: "volume_up" }, { path: "C:/..." }',
+            },
+          },
+          required: ['action'],
         },
       },
     ],

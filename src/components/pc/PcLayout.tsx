@@ -13,10 +13,18 @@ import {
   CameraOff,
   RefreshCw,
   X,
+  Code,
+  ChevronRight,
+  ArrowLeft,
+  MessageCircle,
+  Mail,
+  Facebook,
+  Youtube,
 } from "lucide-react";
 import { OrbSphere } from "../OrbSphere";
 import { VirtualOffice } from "./office/VirtualOffice";
 import { OFFICE_AGENT_LIST } from "./office/officeConfig";
+import { DEVELOPER_INFO } from "../../lib/creator-profile";
 
 export type PcNavItem = "home" | "chat" | "agents" | "tasks" | "history" | "settings";
 
@@ -244,10 +252,10 @@ export const PcLayout: React.FC<PcLayoutProps> = ({
           <div className="absolute inset-0 bg-gradient-to-b from-[#090417]/80 via-[#020617]/90 to-[#020617]" />
         </div>
 
-        {/* 2) NEW SLIM TOP BAR (height ~56px, full width of center, glass dark purple, soft bottom glow) */}
-        <header className="relative z-30 h-14 px-4 sm:px-6 bg-[#0B061C]/90 border-b border-purple-500/20 backdrop-blur-md shadow-[0_4px_25px_rgba(139,92,246,0.14)] flex items-center justify-between shrink-0">
-          {/* Left: Pill-style navigation buttons */}
-          <nav className="flex items-center gap-1.5 sm:gap-2 overflow-x-auto no-scrollbar">
+        {/* 2) SLIM TOP BAR (height ~56px, fits without scrollbar, icons only below 1400px with tooltips) */}
+        <header className="relative z-30 h-14 px-3 sm:px-5 bg-[#0B061C]/90 border-b border-purple-500/20 backdrop-blur-md shadow-[0_4px_25px_rgba(139,92,246,0.14)] flex items-center justify-between shrink-0 overflow-x-hidden">
+          {/* Left: Navigation buttons (Icons only below 1400px, icon+label above 1400px) */}
+          <nav className="flex items-center gap-1 sm:gap-1.5 shrink-0 overflow-x-hidden">
             {navItems.map((item) => {
               const Icon = item.icon;
               const isActive =
@@ -261,21 +269,22 @@ export const PcLayout: React.FC<PcLayoutProps> = ({
                   key={item.id}
                   type="button"
                   onClick={() => onSelectNav(item.id)}
-                  className={`flex items-center gap-2 px-3.5 py-1.5 rounded-full text-xs font-black uppercase tracking-wider transition-all active:scale-95 shrink-0 ${
+                  title={item.label}
+                  className={`flex items-center gap-1.5 px-2.5 py-1.5 [@media(min-width:1400px)]:px-3.5 rounded-full text-xs font-black uppercase tracking-wider transition-all active:scale-95 shrink-0 ${
                     isActive
                       ? "bg-purple-600 text-white border border-purple-400/60 shadow-[0_0_16px_rgba(168,85,247,0.55)] font-black"
                       : "text-slate-300 hover:text-white bg-white/5 hover:bg-white/10 border border-white/10"
                   }`}
                 >
-                  <Icon className={"w-3.5 h-3.5 " + (isActive ? "text-purple-200" : "text-slate-400")} />
-                  <span>{item.label}</span>
+                  <Icon className={"w-4 h-4 [@media(min-width:1400px)]:w-3.5 [@media(min-width:1400px)]:h-3.5 " + (isActive ? "text-purple-200" : "text-slate-400")} />
+                  <span className="hidden [@media(min-width:1400px)]:inline">{item.label}</span>
                 </button>
               );
             })}
           </nav>
 
-          {/* Right: Mic, Camera, User display name, Hide chat/Show chat toggle */}
-          <div className="flex items-center gap-2 sm:gap-2.5 shrink-0 ml-2">
+          {/* Right: Mic, Camera, User display name */}
+          <div className="flex items-center gap-2 sm:gap-2.5 shrink-0 ml-2 overflow-x-hidden">
             {/* Mic Toggle Button */}
             <button
               type="button"
@@ -312,25 +321,137 @@ export const PcLayout: React.FC<PcLayoutProps> = ({
             >
               {userName}
             </span>
-
-            <button
-              type="button"
-              onClick={toggleChatPanel}
-              className="px-3 py-1.5 rounded-full bg-white/5 hover:bg-white/10 border border-white/10 text-slate-300 hover:text-white text-xs font-bold transition-all flex items-center gap-1.5 active:scale-95 shadow-sm"
-              title={isChatPanelOpen ? "Hide chat panel" : "Show chat panel"}
-            >
-              <MessageSquare className="w-3.5 h-3.5 text-purple-400" />
-              <span className="text-[11px] font-black uppercase tracking-wider">
-                {isChatPanelOpen ? "Hide chat" : "Show chat"}
-              </span>
-            </button>
           </div>
         </header>
 
         {/* 3) MAIN CONTENT AREA (Below Top Bar) */}
         <div className="relative z-10 flex-1 min-h-0 w-full h-full flex flex-col overflow-hidden">
-          {/* Sub-views (Settings, Profile, etc.) */}
-          {isSettingsOrSubViewOpen ? (
+          {/* Sub-views (Settings, Profile, Developer, etc.) */}
+          {activeNav === ("developer" as any) || currentView === "developer" ? (
+            /* DESKTOP DEVELOPER PAGE */
+            <div className="flex-1 min-h-0 w-full h-full overflow-y-auto no-scrollbar p-6 bg-[#020617]">
+              <div className="max-w-5xl mx-auto space-y-6 pb-8">
+                {/* Back button */}
+                <div className="flex items-center justify-between pb-3 border-b border-white/10">
+                  <button
+                    type="button"
+                    onClick={() => onSelectNav("home")}
+                    className="flex items-center gap-2 px-3.5 py-1.5 rounded-xl bg-white/5 hover:bg-white/10 text-slate-300 hover:text-white text-xs font-bold transition-all border border-white/10 active:scale-95"
+                  >
+                    <ArrowLeft className="w-4 h-4 text-purple-400" />
+                    Back to Home
+                  </button>
+                  <span className="px-3 py-1 rounded-full bg-purple-600/20 border border-purple-500/30 text-purple-300 text-xs font-black uppercase tracking-wider">
+                    Official Creator Profile
+                  </span>
+                </div>
+
+                <div className="grid grid-cols-1 lg:grid-cols-12 gap-6 items-start">
+                  {/* Left Card (Large Photo, Name, Title, Bio) */}
+                  <div className="lg:col-span-5 bg-[#0F172A]/90 border border-purple-500/30 rounded-3xl p-6 shadow-2xl flex flex-col items-center text-center relative overflow-hidden">
+                    <div className="relative w-44 h-44 rounded-2xl overflow-hidden border-2 border-purple-500/50 shadow-[0_0_30px_rgba(168,85,247,0.35)] mb-4">
+                      <img
+                        src="/developer.jpg"
+                        alt={DEVELOPER_INFO.name}
+                        className="w-full h-full object-cover object-top"
+                      />
+                    </div>
+                    <h2 className="text-2xl font-black text-white tracking-wide">{DEVELOPER_INFO.name}</h2>
+                    <p className="text-sm font-bold text-purple-400 mt-1 uppercase tracking-wider">{DEVELOPER_INFO.role}</p>
+                    <div className="mt-4 pt-4 border-t border-white/10 w-full text-xs text-slate-300 leading-relaxed font-medium">
+                      Full-stack web developer and lead creator of Rose AI. Specializing in modern web applications, AI studio applets, responsive UI/UX, and real-time systems.
+                    </div>
+                  </div>
+
+                  {/* Right Card Grid (Contacts, Socials, Skills & Projects) */}
+                  <div className="lg:col-span-7 space-y-4">
+                    <div className="bg-[#0F172A]/90 border border-purple-500/30 rounded-3xl p-6 shadow-2xl space-y-4">
+                      <h3 className="text-sm font-black uppercase tracking-wider text-purple-300 flex items-center gap-2">
+                        <Sparkles className="w-4 h-4 text-purple-400" />
+                        Official Contacts & Connections
+                      </h3>
+
+                      <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                        <a
+                          href={DEVELOPER_INFO.whatsappLink}
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          className="p-3.5 rounded-2xl bg-black/40 border border-emerald-500/30 hover:border-emerald-500/60 flex items-center gap-3 transition-all hover:scale-[1.02]"
+                        >
+                          <div className="w-10 h-10 rounded-full bg-emerald-600/20 border border-emerald-500/40 flex items-center justify-center text-emerald-400 shrink-0">
+                            <MessageCircle className="w-5 h-5" />
+                          </div>
+                          <div className="min-w-0">
+                            <p className="text-[10px] font-bold text-slate-400 uppercase">WhatsApp</p>
+                            <p className="text-xs font-black text-white truncate">{DEVELOPER_INFO.whatsapp}</p>
+                          </div>
+                        </a>
+
+                        <a
+                          href={DEVELOPER_INFO.gmailLink}
+                          className="p-3.5 rounded-2xl bg-black/40 border border-purple-500/30 hover:border-purple-500/60 flex items-center gap-3 transition-all hover:scale-[1.02]"
+                        >
+                          <div className="w-10 h-10 rounded-full bg-purple-600/20 border border-purple-500/40 flex items-center justify-center text-purple-400 shrink-0">
+                            <Mail className="w-5 h-5" />
+                          </div>
+                          <div className="min-w-0">
+                            <p className="text-[10px] font-bold text-slate-400 uppercase">Gmail</p>
+                            <p className="text-xs font-black text-white truncate">{DEVELOPER_INFO.gmail}</p>
+                          </div>
+                        </a>
+
+                        <a
+                          href={DEVELOPER_INFO.facebook}
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          className="p-3.5 rounded-2xl bg-black/40 border border-blue-500/30 hover:border-blue-500/60 flex items-center gap-3 transition-all hover:scale-[1.02]"
+                        >
+                          <div className="w-10 h-10 rounded-full bg-blue-600/20 border border-blue-500/40 flex items-center justify-center text-blue-400 shrink-0">
+                            <Facebook className="w-5 h-5" />
+                          </div>
+                          <div className="min-w-0">
+                            <p className="text-[10px] font-bold text-slate-400 uppercase">Facebook</p>
+                            <p className="text-xs font-black text-white truncate">Open Profile</p>
+                          </div>
+                        </a>
+
+                        <a
+                          href={DEVELOPER_INFO.youtube}
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          className="p-3.5 rounded-2xl bg-black/40 border border-red-500/30 hover:border-red-500/60 flex items-center gap-3 transition-all hover:scale-[1.02]"
+                        >
+                          <div className="w-10 h-10 rounded-full bg-red-600/20 border border-red-500/40 flex items-center justify-center text-red-400 shrink-0">
+                            <Youtube className="w-5 h-5" />
+                          </div>
+                          <div className="min-w-0">
+                            <p className="text-[10px] font-bold text-slate-400 uppercase">YouTube</p>
+                            <p className="text-xs font-black text-white truncate">@Islamicalo060</p>
+                          </div>
+                        </a>
+                      </div>
+                    </div>
+
+                    <div className="bg-[#0F172A]/90 border border-purple-500/30 rounded-3xl p-6 shadow-2xl space-y-3">
+                      <h3 className="text-sm font-black uppercase tracking-wider text-purple-300">
+                        Specialized Skills & Capabilities
+                      </h3>
+                      <div className="flex flex-wrap gap-2">
+                        {["Full-Stack Web Dev", "React & TypeScript", "Tailwind CSS", "Gemini Live API", "Realtime WebSockets", "Node.js & Express", "Supabase & Postgres"].map((skill) => (
+                          <span
+                            key={skill}
+                            className="px-3 py-1 rounded-xl bg-purple-600/20 border border-purple-500/30 text-purple-200 text-xs font-bold"
+                          >
+                            {skill}
+                          </span>
+                        ))}
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              </div>
+            </div>
+          ) : isSettingsOrSubViewOpen ? (
             renderCenterOverlayViews()
           ) : activeNav === "chat" ? (
             /* Standalone Chat view when Chat nav pill is clicked */
@@ -358,21 +479,16 @@ export const PcLayout: React.FC<PcLayoutProps> = ({
                       className="p-4 rounded-2xl bg-[#0F172A]/80 border border-purple-500/25 shadow-xl flex items-start gap-4 hover:border-purple-500/50 transition-all"
                     >
                       <div
-                        className="w-12 h-12 rounded-full overflow-hidden flex items-center justify-center font-black text-white text-lg shrink-0 shadow-lg border-2"
+                        className="w-12 h-12 rounded-full overflow-hidden flex items-center justify-center shrink-0 shadow-lg border-2"
                         style={{
                           borderColor: agent.color,
-                          backgroundColor: `${agent.color}25`,
                         }}
                       >
                         <img
-                          src={agent.avatar}
+                          src={`/office/avatars/${agent.id}.png`}
                           alt={agent.name}
-                          onError={(e) => {
-                            (e.target as HTMLElement).style.display = "none";
-                          }}
                           className="w-full h-full object-cover"
                         />
-                        <span className="fallback-initial">{agent.name.charAt(0)}</span>
                       </div>
                       <div className="flex-1 min-w-0">
                         <div className="flex items-center justify-between">

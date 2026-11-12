@@ -18,6 +18,7 @@ import {
   getGlobalMicStream,
   setBrowserAudioSessionType,
 } from './audio-manager';
+import { NoiseGateEngine } from './noiseGate';
 import {
   getMicListeningSettings,
   getSensitivityThresholds,
@@ -297,6 +298,7 @@ export class GeminiLiveSession {
   private micAnalyser: AnalyserNode | null = null;
   private outputAnalyser: AnalyserNode | null = null;
   private sileroVad = new SileroVadEngine();
+  private noiseGateEngine = new NoiseGateEngine();
   private clipUsedPushToTalk = false;
   private lastLiveVadVoiceAt = 0;
   private nextStartTime = 0;
@@ -398,6 +400,20 @@ export class GeminiLiveSession {
     if (this.ws && this.ws.readyState === WebSocket.OPEN && this.isSetupComplete) {
       try {
         this.ws.send(JSON.stringify({ realtimeInput: { text } }));
+      } catch {}
+    }
+  }
+
+  public injectSystemInstructionToSpeak(sentence: string) {
+    if (this.ws && this.ws.readyState === WebSocket.OPEN && this.isSetupComplete) {
+      try {
+        this.ws.send(
+          JSON.stringify({
+            realtimeInput: {
+              text: `[SYSTEM INSTRUCTION: Speak out loud right now in sweet natural Bengali: "${sentence}". Do not add other sentences.]`,
+            },
+          })
+        );
       } catch {}
     }
   }
@@ -754,6 +770,9 @@ export class GeminiLiveSession {
         }
 
         const micCfg = getMicListeningSettings();
+        // Apply Noise Gate filtering to mic audio
+        this.noiseGateEngine.processFrame(float32Samples, micCfg.noiseGate, micCfg.noiseGateSensitivity);
+
         if (micCfg.smartListen && this.currentState === 'listening') {
           if (!this.sileroVad.isAvailable()) {
             void this.sileroVad.initInBackground();
@@ -1061,6 +1080,8 @@ export class GeminiLiveSession {
           generationConfig.enableAffectiveDialog = true;
         }
 
+        const micSettings = getMicListeningSettings();
+
         const setupPayload: any = {
           model: `models/${modelName}`,
           generationConfig,
@@ -1075,6 +1096,17 @@ export class GeminiLiveSession {
           inputAudioTranscription: {},
           outputAudioTranscription: {},
         };
+
+        if (micSettings.fastReply) {
+          setupPayload.realtimeInputConfig = {
+            automaticActivityDetection: {
+              startOfSpeechSensitivity: 'LOW',
+              endOfSpeechSensitivity: 'HIGH',
+              prefixPaddingMs: 200,
+              silenceDurationMs: micSettings.streetMode ? 400 : 500,
+            },
+          };
+        }
 
         if (includeResumptionAndCompression) {
           setupPayload.sessionResumption = this.resumptionHandle

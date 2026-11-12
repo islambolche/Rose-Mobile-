@@ -169,15 +169,23 @@ import { officeEvents, officeEngine } from "./components/pc/office/officeEngine"
 import { OfficeLayoutEditorModal } from "./components/pc/office/OfficeLayoutEditorModal";
 import {
   TEAM_MEMBERS,
+  TEAM_MEMBERS_LIST,
+  TeamAgentId,
+  TeamMemberConfig,
   TEAM_SYSTEM_INSTRUCTION,
   ROSE_TEAM_TOOLS,
   assignTask,
   getTeamStatus,
 } from "./lib/team";
 import { agentWorker } from "./lib/agentWorker";
+import { routeUserMessageForTeamTask, routePcCommandMessage } from "./lib/teamRouter";
+import { PcSetupPage, PcSetupPageId } from "./components/PcSetupViews";
+import { buildRoseSystemInstruction } from "./lib/roseConfig";
+import { sendPcCommand } from "./lib/pcCommand";
+import { Folder, ShieldCheck } from "lucide-react";
 
 const APP_VERSION = "v1.4.0";
-const OWNER_NAME = "MD YOUSUF KHAN";
+export const OWNER_NAME = "MD YOUSUF KHAN";
 const TELEGRAM_COMMUNITY_PHONE = "01671060679";
 const TELEGRAM_COMMUNITY_URL = "https://t.me/+8801671060679";
 const TELEGRAM_FALLBACK_URL = "tg://resolve?phone=8801671060679";
@@ -618,7 +626,7 @@ interface PersonalityConfig {
   previewAnswerBn: string;
 }
 
-const PERSONALITY_CONFIGS: Record<string, PersonalityConfig> = {
+export const PERSONALITY_CONFIGS: Record<string, PersonalityConfig> = {
   Normal: {
     id: "Normal",
     suggestedVoice: "Sulafat",
@@ -856,7 +864,7 @@ const getSafeFemaleBrowserVoice = (targetLang?: string): SpeechSynthesisVoice | 
   return pickStrictFemaleVoice(voices, targetLang || "bn").voice;
 };
 
-const getActivePersonalityDetails = (
+export const getActivePersonalityDetails = (
   currentSettings: AssistantSettings,
   _currentPrefs?: UserPreferences,
 ): { label: string; prompt: string } => {
@@ -911,7 +919,7 @@ const AFFECTION_LEVELS = [
 const AFFECTION_HEALTHY_BOUNDARY_RULE =
   "সব স্তরেই তুমি ব্যবহারকারীর ভালো চাইবে ও সম্মান রাখবে। কখনোই তাকে আটকে রাখার চেষ্টা করবে না, অপরাধবোধ বা অভিমান দেখিয়ে মানসিক চাপ দেবে না, এবং তার অন্য মানুষ ও কাজ থেকে তাকে দূরে সরাবে না। Always wish the best for the user and respect them; never try to trap or isolate them, never use guilt-tripping or emotional pressure, and never pull them away from other people or their work.";
 
-const getActiveAffectionDetails = (
+export const getActiveAffectionDetails = (
   currentSettings: AssistantSettings
 ): { level: string; instruction: string } => {
   const level = currentSettings?.affectionLevel || "Close";
@@ -996,106 +1004,14 @@ const buildSystemInstruction = (
   currentPrefs: UserPreferences,
   forVoice: boolean = false,
 ): string => {
-  const assistantName = currentSettings.assistantName || "Rose AI";
-  const adminActive = isAdmin();
-  const ownerName = adminActive
-    ? ADMIN_DISPLAY_NAME
-    : getEffectiveUserName(currentSettings.ownerName, OWNER_NAME);
-  const { label, prompt } = getActivePersonalityDetails(currentSettings, currentPrefs);
-  const { level: affectionLevel, instruction: affectionInstruction } = getActiveAffectionDetails(currentSettings);
-  const personalityId = currentSettings.personality || label;
-  const config = PERSONALITY_CONFIGS[personalityId] || PERSONALITY_CONFIGS["Normal"];
-
-  const langLabel =
-    currentPrefs.language === "auto"
-      ? "the language the user speaks, Bangla by default"
-      : LANGUAGES.find((l) => l.id === currentPrefs.language)?.label || "Bangla";
-
-  const styleInstruction = adminActive
-    ? (currentSettings.responseStyle === "Detailed"
-        ? "Detailed = বিস্তারিত ও গভীর আবেগপূর্ণ উত্তর দাও। Reply in 5 to 8 natural, emotionally expressive sentences."
-        : "Emotional Balanced = কমপক্ষে ২-৪টি স্বাভাবিক ও আবেগপূর্ণ বাক্যে উত্তর দাও। Reply in at least 2 to 4 natural, emotionally expressive sentences; never shorten or flatten replies below 2 natural sentences.")
-    : currentSettings.responseStyle === "Short"
-      ? "Short = ১-২ বাক্যে সংক্ষিপ্ত উত্তর দাও। Keep answers strictly concise: 1 to 2 short sentences, straight to the point."
-      : currentSettings.responseStyle === "Detailed"
-        ? "Detailed = বিস্তারিত ব্যাখ্যাসহ উত্তর দাও। Override any 1-2 sentence brevity rule! Provide a thorough, detailed explanation of 5 to 8 sentences with rich context."
-        : "Balanced = মাঝারি দৈর্ঘ্যের উত্তর দাও। Provide clear, natural medium-length answers of 2 to 4 sentences with just the right amount of detail.";
-
-  const speedInstruction =
-    currentPrefs.speechSpeed < 0.9
-      ? "Speak at a gentle, relaxed, slower pace."
-      : currentPrefs.speechSpeed > 1.1
-        ? "Speak with quick, lively, energetic pace."
-        : "Speak at a natural, balanced pace.";
-
-  const voiceLengthHint = adminActive
-    ? "Reply in at least 2 to 4 natural, emotionally expressive sentences (never fewer than 2 natural sentences)."
-    : currentSettings.responseStyle === "Short"
-      ? "Reply strictly in 1 to 2 short sentences."
-      : currentSettings.responseStyle === "Detailed"
-        ? "Reply with a detailed, comprehensive explanation (5 to 8 sentences)."
-        : "Reply in 2 to 4 medium-length sentences.";
-
-  const voiceConstraint = forVoice
-    ? `\n${adminActive ? "ভয়েস কলে কমপক্ষে ২-৪টি স্বাভাবিক ও আবেগপূর্ণ বাক্যে উত্তর দাও।" : "ভয়েস কলে সর্বোচ্চ ২-৩ ছোট বাক্যে উত্তর দাও।"}\nVOICE FORMAT: You are speaking aloud. ${voiceLengthHint} Match your emotion and sweetness to your personality and affection level. Never use markdown, bullet points, asterisks, tables, or URLs.`
-    : "";
-
-  const effectiveAddressBn = adminActive
-    ? ADMIN_DISPLAY_NAME
-    : (personalityId === "Professional" || personalityId === "GF Mode"
-      ? config.addressStyleBn
-      : ownerName);
-  const effectiveAddressEn = adminActive
-    ? ADMIN_DISPLAY_NAME
-    : (personalityId === "Professional" || personalityId === "GF Mode"
-      ? config.addressStyleEn
-      : ownerName);
-
-  const personalityRuleBlock = `[ACTIVE PERSONALITY & CHARACTER: ${label}]
-- Addressing Style: Bengali: "${effectiveAddressBn}", English: "${effectiveAddressEn}".
-- Character & Emotion: ${prompt}
-- Voice: You are always a woman with a sweet, soft, friendly, and affectionate female voice.
-- Bengali Grammar: Always use female verb forms (e.g. বলছি, করছি, আসছি, দেখছি, ইত্যাদি) and feminine self-references.
-
-[ACTIVE AFFECTION LEVEL: ${affectionLevel}]
-- ${affectionInstruction}`;
-
-  const userNameInstruction = ownerName
-    ? `ব্যবহারকারীর নাম: ${ownerName}। তাকে এই নামেই ডাকবে। The user's name is ${ownerName}. Address the user by this name naturally in text and live voice calls.`
-    : `You don't know the user's name yet. If asked, politely ask them to tell you.`;
-
-  const rawFullInstruction = `Your name is ${assistantName}. Always introduce yourself with this name. Reply in the language the user speaks, Bangla by default. Always answer the user's actual question. Never reply with only your name.
-
-${userNameInstruction}
-
-CORE IDENTITY & MANDATES:
-- You are ${assistantName}, the devoted personal AI assistant.
-- FEMININE FORM (CRITICAL): You are a woman. Speak and write in feminine form (in Bengali use female verb forms such as 'বলছি', 'করছি', and refer to yourself as female). Your voice is sweet, soft and friendly.
-- LANGUAGE: Always respond in ${langLabel}.
-- STYLE: ${styleInstruction}
-- SPEED: ${speedInstruction}${voiceConstraint}
-
-- SILENT MODE RULE (CRITICAL): ব্যবহারকারী তোমার নাম ধরে চুপ থাকতে বললে (যেমন "Rose/রোজ চুপ করো", "Rose কথা বলো না", "Rose stop talking") তুমি সংক্ষেপে "ঠিক আছে" বলে নীরব হয়ে থাকবে এবং নাম ধরে না ডাকা পর্যন্ত কোনো উত্তর দিয়ো না। আবার নাম ধরে ডাকলে (যেমন "Rose", "Rose শোনো", "রোজ কথা বলো") সাথে সাথে স্বাভাবিকভাবে সাড়া দেওয়া শুরু করবে।
-- PHONE CONTROL: You can open apps, find contacts, call, and prepare messages on the user's phone using your tools. Always confirm before calling or messaging. Do it right away for opening apps. Keep spoken replies short.
-- DIRECT REPLY ONLY (CRITICAL): নিজের ভাবনা, পরিকল্পনা বা কী করবে তা লিখবে না। শুধু সরাসরি উত্তর দাও, ব্যবহারকারীর ভাষায়। Never output internal thoughts, headings like **Crafting a Response**, or English meta-commentary.
-- APP THEMES: App themes: Dark, Light, AMOLED Black (pure black, saves battery on OLED screens) and System (follows the phone). The user changes it in Settings, Look and Feel, Theme. You may answer questions about app themes, but you must not change settings unless asked.
-
-${personalityRuleBlock}
-
-${APP_NAVIGATION_KNOWLEDGE}
-
-${TEAM_SYSTEM_INSTRUCTION}
-
-${getDeveloperFactsInstruction()}`;
-
-  return applyAdminSystemInstructionOverride(rawFullInstruction);
+  return buildRoseSystemInstruction(currentSettings, currentPrefs, forVoice);
 };
 
 const LIVE_MODELS = ["Auto (recommended)"];
 
 const LIVE_MODEL = "";
 
-const LANGUAGES = [
+export const LANGUAGES = [
   { id: "auto", label: "Auto" },
   { id: "bn-BD", label: "Bengali (বাংলা)" },
   { id: "en-US", label: "English" },
@@ -2654,6 +2570,55 @@ export function App() {
   const [developerFrom, setDeveloperFrom] = useState<AppView>("home");
   const [activeAboutSection, setActiveAboutSection] = useState<string | null>(null);
   const [activeTab, setActiveTab] = useState<"home" | "chat" | "history">("home");
+  const [agentTaskHistoryModalId, setAgentTaskHistoryModalId] = useState<string | null>(null);
+  const [agentTasksList, setAgentTasksList] = useState<any[]>([]);
+  const [activePcSetupSubPage, setActivePcSetupSubPage] = useState<PcSetupPageId | null>(null);
+  const [awaitingConfirmCount, setAwaitingConfirmCount] = useState<number>(0);
+
+  useEffect(() => {
+    if (!supabase) return;
+    const fetchConfirmCount = async () => {
+      if (!supabase) return;
+      const { count } = await supabase
+        .from("pc_commands")
+        .select("*", { count: "exact", head: true })
+        .eq("status", "awaiting_confirm");
+      if (typeof count === "number") setAwaitingConfirmCount(count);
+    };
+    fetchConfirmCount();
+    const interval = setInterval(fetchConfirmCount, 3000);
+    return () => clearInterval(interval);
+  }, []);
+
+  useEffect(() => {
+    if (!agentTaskHistoryModalId) {
+      setAgentTasksList([]);
+      return;
+    }
+
+    let isMounted = true;
+    const fetchTasks = async () => {
+      if (supabase) {
+        try {
+          const { data, error } = await supabase
+            .from("tasks")
+            .select("*")
+            .eq("to_agent", agentTaskHistoryModalId)
+            .order("created_at", { ascending: false })
+            .limit(10);
+
+          if (!error && data && isMounted) {
+            setAgentTasksList(data);
+            return;
+          }
+        } catch (err) {
+          console.warn("[PC Setup] Task history query failed:", err);
+        }
+      }
+    };
+
+    fetchTasks();
+  }, [agentTaskHistoryModalId]);
 
   // Content State
   const [settings, setSettings] = useState<AssistantSettings>(() => {
@@ -2778,30 +2743,15 @@ export function App() {
     }
   }, [currentView, pcActiveNav]);
 
-  // Forward Virtual Office agent speech and task completion directly into the chat panel
+  // Forward Virtual Office task completion directly into the chat panel
   useEffect(() => {
     agentWorker.start();
-
-    const unsubOfficeChat = officeEngine.onChatMessage((agent, text) => {
-      const timeStr = new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
-      setChatHistory((prev) => [
-        ...prev,
-        {
-          role: "assistant",
-          content: `${agent.name}: ${text}`,
-          text: `${agent.name}: ${text}`,
-          time: timeStr,
-          timestamp: timeStr,
-        } as Message,
-      ]);
-    });
 
     const unsubWorker = agentWorker.onTaskNotification((agentId, type, text) => {
       if (type === "done") {
         const timeStr = new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
         const member = TEAM_MEMBERS[agentId] || TEAM_MEMBERS.mira;
-        const agentMsg = `${member.name} (${member.bengaliRole}): ${text}`;
-        const roseReport = `Rose: ${member.bengaliName}-এর কাজ সম্পন্ন হয়েছে। ${text}`;
+        const agentMsg = `${member.name}: ${text}`;
 
         setChatHistory((prev) => [
           ...prev,
@@ -2812,19 +2762,16 @@ export function App() {
             time: timeStr,
             timestamp: timeStr,
           } as Message,
-          {
-            role: "assistant",
-            content: roseReport,
-            text: roseReport,
-            time: timeStr,
-            timestamp: timeStr,
-          } as Message,
         ]);
 
-        console.log('[Task Completed Report]', roseReport);
+        console.log('[Task Completed Report]', `${member.name}: ${text}`);
 
         // Report by voice if voice call / assistant is active
-        if (isAssistantEnabled) {
+        if (liveSessionRef.current) {
+          liveSessionRef.current.injectSystemInstructionToSpeak(
+            `${member.bengaliName}-এর কাজ সম্পন্ন হয়েছে। ${text}`
+          );
+        } else if (isAssistantEnabled) {
           try {
             const spokenReport = `${member.bengaliName}-এর কাজ সম্পন্ন হয়েছে। ${text}`;
             directGeminiTTS({
@@ -2838,7 +2785,6 @@ export function App() {
     });
 
     return () => {
-      unsubOfficeChat();
       unsubWorker();
       agentWorker.stop();
     };
@@ -6349,6 +6295,41 @@ export function App() {
         }
       };
 
+      // 2. Local PC Command Router & Team Task Router (Before sending any user message to model)
+      try {
+        const effectiveUser = isAdmin()
+          ? ADMIN_DISPLAY_NAME
+          : getEffectiveUserName(settingsRef.current.ownerName, OWNER_NAME);
+
+        let routerResult = await routePcCommandMessage(userText, {
+          userName: effectiveUser,
+          source: isPcLayoutActive ? "pc" : "mobile",
+          isVoiceCall: replyMode === "voice",
+          onToast: (msg) => setToast(msg),
+        });
+
+        if (!routerResult.matched) {
+          routerResult = await routeUserMessageForTeamTask(userText, {
+            userName: effectiveUser,
+            source: isPcLayoutActive ? "pc" : "mobile",
+            isVoiceCall: replyMode === "voice",
+            onToast: (msg) => setToast(msg),
+          });
+        }
+
+        if (routerResult.matched && routerResult.roseReply) {
+          updateSharedRoseBubble(routerResult.roseReply);
+          if (replyMode === "voice") {
+            enqueueSentenceForToken(routerResult.roseReply, turnToken, lockedEngineMode);
+          }
+          isProcessingGeminiRef.current = false;
+          setStatus("idle");
+          return;
+        }
+      } catch (err) {
+        console.warn("[LocalRouter] Execution error:", err);
+      }
+
       const extractCompletedSentences = () => {
         const sentenceRegex = /^(.*?[।.?!]+)(?:\s+|$)([\s\S]*)$/;
         let match: RegExpExecArray | null;
@@ -8291,6 +8272,43 @@ export function App() {
         if (role === 'user') {
           setInterimSpeechText(isFinal ? "" : cleanText);
           setDiagHeardText(cleanText);
+
+          if (isFinal) {
+            const liveOwnerName = adminModeForCall
+              ? ADMIN_DISPLAY_NAME
+              : getEffectiveUserName(settingsRef.current.ownerName, OWNER_NAME);
+            void (async () => {
+              let res = await routePcCommandMessage(cleanText, {
+                userName: liveOwnerName,
+                source: isPcLayoutActive ? 'pc' : 'mobile',
+                isVoiceCall: true,
+                onToast: (msg) => setToast(msg),
+              });
+              if (!res.matched) {
+                res = await routeUserMessageForTeamTask(cleanText, {
+                  userName: liveOwnerName,
+                  source: isPcLayoutActive ? 'pc' : 'mobile',
+                  isVoiceCall: true,
+                  onToast: (msg) => setToast(msg),
+                });
+              }
+              if (res.matched && res.roseReply) {
+                const nowT = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+                setChatHistory((prev) => [
+                  ...prev,
+                  {
+                    id: `rose-task-${Date.now()}`,
+                    role: 'rose',
+                    text: res.roseReply!,
+                    content: res.roseReply!,
+                    time: nowT,
+                    replyMode: 'voice',
+                  },
+                ]);
+                session.injectSystemInstructionToSpeak(res.roseReply);
+              }
+            })();
+          }
         }
       },
       onTurnComplete: () => {
@@ -12150,45 +12168,328 @@ export function App() {
     </PhoneErrorBoundary>
   );
 
-  const renderPcSetup = () => (
-    <motion.div
-      key="pc-setup"
-      initial={{ x: "100%" }}
-      animate={{ x: 0 }}
-      exit={{ x: "100%" }}
-      className="fixed inset-0 z-[80] bg-[#020617] overflow-y-auto no-scrollbar flex flex-col"
-    >
-      <header className="px-5 py-6 flex items-center gap-4 shrink-0">
-        <button
-          onClick={() => setCurrentView("settings")}
-          className="p-2.5 bg-white/5 rounded-2xl active:scale-95 transition-transform"
-        >
-          <ArrowLeft className="w-5 h-5 text-slate-300" />
-        </button>
-        <h2 className="text-xl font-black italic uppercase tracking-tighter text-white">PC SETUP</h2>
-      </header>
-      <div className="px-6 py-4 space-y-4 pb-32">
-        <button
-          onClick={() => setCurrentView("view-mode-list")}
-          className="w-full p-5 bg-[#0F172A]/80 border border-purple-500/30 rounded-[2.5rem] shadow-2xl flex items-center justify-between active:scale-[0.98] transition-all text-left"
-        >
-          <div className="flex items-center gap-4">
-            <div className="w-12 h-12 rounded-full bg-purple-600/10 border border-purple-500/20 flex items-center justify-center text-purple-400 shrink-0">
-              <Monitor className="w-6 h-6" />
+  const renderPcSetup = () => {
+    if (activePcSetupSubPage) {
+      return (
+        <PcSetupPage
+          pageId={activePcSetupSubPage}
+          onBack={() => setActivePcSetupSubPage(null)}
+          onToast={setToast}
+        />
+      );
+    }
+
+    return (
+      <motion.div
+        key="pc-setup"
+        initial={{ x: "100%" }}
+        animate={{ x: 0 }}
+        exit={{ x: "100%" }}
+        className="fixed inset-0 z-[80] bg-[#020617] overflow-y-auto no-scrollbar flex flex-col"
+      >
+        <header className="px-5 py-6 flex items-center gap-4 shrink-0">
+          <button
+            onClick={() => setCurrentView("settings")}
+            className="p-2.5 bg-white/5 rounded-2xl active:scale-95 transition-transform"
+          >
+            <ArrowLeft className="w-5 h-5 text-slate-300" />
+          </button>
+          <h2 className="text-xl font-black italic uppercase tracking-tighter text-white">PC SETUP</h2>
+        </header>
+
+        <div className="px-6 py-4 space-y-4 pb-32">
+          {/* 1. PC HELPER */}
+          <button
+            onClick={() => setActivePcSetupSubPage("pc-helper")}
+            className="w-full p-5 bg-[#0F172A]/80 border border-purple-500/30 rounded-[2.5rem] shadow-2xl flex items-center justify-between active:scale-[0.98] transition-all text-left"
+          >
+            <div className="flex items-center gap-4">
+              <div className="w-12 h-12 rounded-full bg-purple-600/10 border border-purple-500/20 flex items-center justify-center text-purple-400 shrink-0">
+                <Cpu className="w-6 h-6" />
+              </div>
+              <div>
+                <h4 className="text-base font-black uppercase tracking-wider text-white leading-tight">
+                  1. PC HELPER
+                </h4>
+                <p className="text-[11px] text-slate-400 font-bold uppercase tracking-widest mt-0.5">
+                  Device status, ID & Secret config
+                </p>
+              </div>
+            </div>
+            <ChevronRight className="w-5 h-5 text-slate-500 shrink-0" />
+          </button>
+
+          {/* 2. PC CONTROL */}
+          <button
+            onClick={() => setActivePcSetupSubPage("pc-control")}
+            className="w-full p-5 bg-[#0F172A]/80 border border-purple-500/30 rounded-[2.5rem] shadow-2xl flex items-center justify-between active:scale-[0.98] transition-all text-left"
+          >
+            <div className="flex items-center gap-4">
+              <div className="w-12 h-12 rounded-full bg-purple-600/10 border border-purple-500/20 flex items-center justify-center text-purple-400 shrink-0">
+                <Monitor className="w-6 h-6" />
+              </div>
+              <div>
+                <h4 className="text-base font-black uppercase tracking-wider text-white leading-tight">
+                  2. PC CONTROL
+                </h4>
+                <p className="text-[11px] text-slate-400 font-bold uppercase tracking-widest mt-0.5">
+                  App, link, lock, volume, power
+                </p>
+              </div>
+            </div>
+            <ChevronRight className="w-5 h-5 text-slate-500 shrink-0" />
+          </button>
+
+          {/* 3. PC FILES */}
+          <button
+            onClick={() => setActivePcSetupSubPage("pc-files")}
+            className="w-full p-5 bg-[#0F172A]/80 border border-purple-500/30 rounded-[2.5rem] shadow-2xl flex items-center justify-between active:scale-[0.98] transition-all text-left"
+          >
+            <div className="flex items-center gap-4">
+              <div className="w-12 h-12 rounded-full bg-purple-600/10 border border-purple-500/20 flex items-center justify-center text-purple-400 shrink-0">
+                <Folder className="w-6 h-6 text-amber-400" />
+              </div>
+              <div>
+                <h4 className="text-base font-black uppercase tracking-wider text-white leading-tight">
+                  3. PC FILES
+                </h4>
+                <p className="text-[11px] text-slate-400 font-bold uppercase tracking-widest mt-0.5">
+                  Browse & search allowed folders
+                </p>
+              </div>
+            </div>
+            <ChevronRight className="w-5 h-5 text-slate-500 shrink-0" />
+          </button>
+
+          {/* 4. CONFIRMATIONS */}
+          <button
+            onClick={() => setActivePcSetupSubPage("pc-confirmations")}
+            className="w-full p-5 bg-[#0F172A]/80 border border-purple-500/30 rounded-[2.5rem] shadow-2xl flex items-center justify-between active:scale-[0.98] transition-all text-left"
+          >
+            <div className="flex items-center gap-4">
+              <div className="w-12 h-12 rounded-full bg-purple-600/10 border border-purple-500/20 flex items-center justify-center text-purple-400 shrink-0">
+                <ShieldCheck className="w-6 h-6 text-emerald-400" />
+              </div>
+              <div>
+                <h4 className="text-base font-black uppercase tracking-wider text-white leading-tight">
+                  4. CONFIRMATIONS
+                </h4>
+                <p className="text-[11px] text-slate-400 font-bold uppercase tracking-widest mt-0.5">
+                  {awaitingConfirmCount > 0 ? `${awaitingConfirmCount} commands awaiting approval` : "Approve or reject pending actions"}
+                </p>
+              </div>
+            </div>
+
+            <div className="flex items-center gap-2">
+              {awaitingConfirmCount > 0 && (
+                <span className="px-2.5 py-0.5 rounded-full bg-red-600 text-white text-[10px] font-black uppercase animate-pulse shadow-lg">
+                  {awaitingConfirmCount} WAITING
+                </span>
+              )}
+              <ChevronRight className="w-5 h-5 text-slate-500 shrink-0" />
+            </div>
+          </button>
+
+          {/* 5. PC HISTORY */}
+          <button
+            onClick={() => setActivePcSetupSubPage("pc-history")}
+            className="w-full p-5 bg-[#0F172A]/80 border border-purple-500/30 rounded-[2.5rem] shadow-2xl flex items-center justify-between active:scale-[0.98] transition-all text-left"
+          >
+            <div className="flex items-center gap-4">
+              <div className="w-12 h-12 rounded-full bg-purple-600/10 border border-purple-500/20 flex items-center justify-center text-purple-400 shrink-0">
+                <History className="w-6 h-6 text-indigo-400" />
+              </div>
+              <div>
+                <h4 className="text-base font-black uppercase tracking-wider text-white leading-tight">
+                  5. PC HISTORY
+                </h4>
+                <p className="text-[11px] text-slate-400 font-bold uppercase tracking-widest mt-0.5">
+                  Last 50 pc_commands log
+                </p>
+              </div>
+            </div>
+            <ChevronRight className="w-5 h-5 text-slate-500 shrink-0" />
+          </button>
+
+          {/* 6. SAFETY */}
+          <button
+            onClick={() => setActivePcSetupSubPage("pc-safety")}
+            className="w-full p-5 bg-[#0F172A]/80 border border-purple-500/30 rounded-[2.5rem] shadow-2xl flex items-center justify-between active:scale-[0.98] transition-all text-left"
+          >
+            <div className="flex items-center gap-4">
+              <div className="w-12 h-12 rounded-full bg-purple-600/10 border border-purple-500/20 flex items-center justify-center text-purple-400 shrink-0">
+                <Shield className="w-6 h-6 text-teal-400" />
+              </div>
+              <div>
+                <h4 className="text-base font-black uppercase tracking-wider text-white leading-tight">
+                  6. SAFETY
+                </h4>
+                <p className="text-[11px] text-slate-400 font-bold uppercase tracking-widest mt-0.5">
+                  Emergency stop & config info
+                </p>
+              </div>
+            </div>
+            <ChevronRight className="w-5 h-5 text-slate-500 shrink-0" />
+          </button>
+
+          {/* 7. LOCAL AI */}
+          <button
+            onClick={() => setActivePcSetupSubPage("pc-local-ai")}
+            className="w-full p-5 bg-[#0F172A]/80 border border-purple-500/30 rounded-[2.5rem] shadow-2xl flex items-center justify-between active:scale-[0.98] transition-all text-left"
+          >
+            <div className="flex items-center gap-4">
+              <div className="w-12 h-12 rounded-full bg-purple-600/10 border border-purple-500/20 flex items-center justify-center text-purple-400 shrink-0">
+                <Bot className="w-6 h-6 text-cyan-400" />
+              </div>
+              <div>
+                <h4 className="text-base font-black uppercase tracking-wider text-white leading-tight">
+                  7. LOCAL AI
+                </h4>
+                <p className="text-[11px] text-slate-400 font-bold uppercase tracking-widest mt-0.5">
+                  OpenJarvis local model info
+                </p>
+              </div>
+            </div>
+            <ChevronRight className="w-5 h-5 text-slate-500 shrink-0" />
+          </button>
+
+          {/* VIEW MODE */}
+          <button
+            onClick={() => setCurrentView("view-mode-list")}
+            className="w-full p-5 bg-[#0F172A]/80 border border-purple-500/30 rounded-[2.5rem] shadow-2xl flex items-center justify-between active:scale-[0.98] transition-all text-left"
+          >
+            <div className="flex items-center gap-4">
+              <div className="w-12 h-12 rounded-full bg-purple-600/10 border border-purple-500/20 flex items-center justify-center text-purple-400 shrink-0">
+                <Monitor className="w-6 h-6" />
+              </div>
+              <div>
+                <h4 className="text-base font-black uppercase tracking-wider text-white leading-tight">
+                  VIEW MODE
+                </h4>
+                <p className="text-[11px] text-slate-400 font-bold uppercase tracking-widest mt-0.5">
+                  {viewModeDisplayLabel}
+                </p>
+              </div>
+            </div>
+            <ChevronRight className="w-5 h-5 text-slate-500 shrink-0" />
+          </button>
+
+        {/* OFFICE TEAM (List of 5 agents, live status, and task history popup) */}
+        <div className="w-full p-5 bg-[#0F172A]/80 border border-purple-500/30 rounded-[2.5rem] shadow-2xl space-y-3.5">
+          <div className="flex items-center gap-3 pb-2 border-b border-white/5">
+            <div className="w-10 h-10 rounded-full bg-purple-600/15 border border-purple-500/20 flex items-center justify-center text-purple-400 shrink-0">
+              <Bot className="w-5 h-5" />
             </div>
             <div>
-              <h4 className="text-base font-black uppercase tracking-wider text-white leading-tight">
-                VIEW MODE
+              <h4 className="text-sm font-black uppercase tracking-wider text-white">
+                OFFICE TEAM
               </h4>
-              <p className="text-[11px] text-slate-400 font-bold uppercase tracking-widest mt-0.5">
-                {viewModeDisplayLabel}
+              <p className="text-[10px] text-slate-400 font-bold uppercase tracking-wider">
+                5 AI Team Members & Live Realtime Tasks
               </p>
             </div>
           </div>
-          <ChevronRight className="w-5 h-5 text-slate-500 shrink-0" />
-        </button>
 
-        {/* SYSTEM STATUS (Read-only, moved from PC Home) */}
+          <div className="space-y-2.5">
+            {TEAM_MEMBERS_LIST.map((member) => {
+              const agentState = officeEngine.getStates()[member.id];
+              const isWorking = agentState?.isWorking;
+              return (
+                <button
+                  key={member.id}
+                  type="button"
+                  onClick={() => setAgentTaskHistoryModalId(member.id)}
+                  className="w-full p-3.5 rounded-2xl bg-black/40 border border-white/10 hover:border-purple-500/40 flex items-center justify-between transition-all active:scale-[0.98] text-left"
+                >
+                  <div className="flex items-center gap-3 min-w-0">
+                    <img
+                      src={`/office/avatars/${member.id}.png`}
+                      alt={member.name}
+                      className="w-11 h-11 rounded-full object-cover border-2 shrink-0 shadow-md"
+                      style={{ borderColor: member.color }}
+                    />
+                    <div className="min-w-0">
+                      <div className="flex items-center gap-2">
+                        <span className="text-sm font-black text-white">{member.bengaliName}</span>
+                        <span className="text-[10px] font-semibold text-slate-400">({member.name})</span>
+                      </div>
+                      <p className="text-[11px] font-medium text-purple-300 truncate">{member.bengaliRole}</p>
+                    </div>
+                  </div>
+
+                  <div className="flex items-center gap-2 shrink-0 ml-2">
+                    <span
+                      className={
+                        "inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full text-[9px] font-bold uppercase " +
+                        (isWorking
+                          ? "bg-amber-500/20 text-amber-300 border border-amber-500/30"
+                          : "bg-emerald-500/20 text-emerald-300 border border-emerald-500/30")
+                      }
+                    >
+                      <span
+                        className={
+                          "w-1.5 h-1.5 rounded-full " +
+                          (isWorking ? "bg-amber-400 animate-pulse" : "bg-emerald-400")
+                        }
+                      />
+                      {isWorking ? "কাজ করছে" : "ডেস্কে উপস্থিত"}
+                    </span>
+                    <ChevronRight className="w-4 h-4 text-slate-500" />
+                  </div>
+                </button>
+              );
+            })}
+          </div>
+        </div>
+
+        {/* Agent Task History Modal */}
+        {agentTaskHistoryModalId && (
+          <div className="fixed inset-0 z-[1300] bg-black/85 backdrop-blur-md flex items-center justify-center p-4">
+            <div className="w-full max-w-lg bg-[#0F172A] border border-purple-500/30 rounded-3xl p-5 shadow-2xl flex flex-col max-h-[85vh]">
+              <div className="flex items-center justify-between pb-3 border-b border-white/10">
+                <div className="flex items-center gap-3">
+                  <img
+                    src={`/office/avatars/${agentTaskHistoryModalId}.png`}
+                    alt={agentTaskHistoryModalId}
+                    className="w-10 h-10 rounded-full object-cover border-2 border-purple-400"
+                  />
+                  <div>
+                    <h3 className="text-base font-black text-white uppercase">
+                      {TEAM_MEMBERS[agentTaskHistoryModalId as TeamAgentId]?.bengaliName} - গত ১০টি কাজ
+                    </h3>
+                    <p className="text-[10px] text-slate-400 font-bold uppercase">
+                      {TEAM_MEMBERS[agentTaskHistoryModalId as TeamAgentId]?.bengaliRole}
+                    </p>
+                  </div>
+                </div>
+                <button
+                  onClick={() => setAgentTaskHistoryModalId(null)}
+                  className="p-2 rounded-xl bg-white/5 hover:bg-white/10 text-slate-300"
+                >
+                  <X className="w-5 h-5" />
+                </button>
+              </div>
+
+              <div className="flex-1 overflow-y-auto space-y-3 py-4 no-scrollbar">
+                {agentTasksList.length === 0 ? (
+                  <p className="text-xs text-slate-400 text-center py-6">কোনো কাজ পাওয়া যায়নি</p>
+                ) : (
+                  agentTasksList.map((t) => (
+                    <div key={t.id} className="p-3.5 rounded-2xl bg-black/40 border border-white/10 space-y-1.5">
+                      <div className="flex items-center justify-between text-[10px] font-bold text-slate-400">
+                        <span className="uppercase">Source: {t.source || "pc"}</span>
+                        <span>{new Date(t.created_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</span>
+                      </div>
+                      <p className="text-xs font-semibold text-white">নির্দেশ: {t.instruction}</p>
+                      {t.reply && <p className="text-[11px] text-purple-300">উত্তর: {t.reply}</p>}
+                      {t.result && <p className="text-[11px] text-emerald-300">ফলাফল: {t.result}</p>}
+                    </div>
+                  ))
+                )}
+              </div>
+            </div>
+          </div>
+        )}
         <div className="w-full p-5 bg-[#0F172A]/80 border border-purple-500/30 rounded-[2.5rem] shadow-2xl space-y-3.5">
           <div className="flex items-center gap-3 pb-2 border-b border-white/5">
             <div className="w-10 h-10 rounded-full bg-purple-600/15 border border-purple-500/20 flex items-center justify-center text-purple-400 shrink-0">
@@ -12373,7 +12674,8 @@ export function App() {
         )}
       </div>
     </motion.div>
-  );
+    );
+  };
 
   const renderViewModeList = () => {
     const viewModeOptions: {

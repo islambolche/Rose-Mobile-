@@ -1,15 +1,22 @@
 import * as ort from 'onnxruntime-web/wasm';
 
 export type MicSensitivityLevel = 'low' | 'medium' | 'high';
+export type NoiseGateSensitivity = 'Low' | 'Medium' | 'High';
 
 export interface MicListeningSettings {
   cleanVoice: boolean;
+  noiseGate: boolean;
+  noiseGateSensitivity: NoiseGateSensitivity;
+  fastReply: boolean;
   smartListen: boolean;
   streetMode: boolean;
   micSensitivity: MicSensitivityLevel;
 }
 
 const STORAGE_KEY_CLEAN_VOICE = 'rose_clean_voice';
+const STORAGE_KEY_NOISE_GATE = 'rose_noise_gate';
+const STORAGE_KEY_NOISE_GATE_SENS = 'rose_noise_gate_sens';
+const STORAGE_KEY_FAST_REPLY = 'rose_fast_reply';
 const STORAGE_KEY_SMART_LISTEN = 'rose_smart_listen';
 const STORAGE_KEY_STREET_MODE = 'rose_street_mode';
 const STORAGE_KEY_MIC_SENSITIVITY = 'rose_mic_sensitivity';
@@ -19,26 +26,44 @@ export function getMicListeningSettings(): MicListeningSettings {
     if (typeof window === 'undefined' || !window.localStorage) {
       return {
         cleanVoice: true,
+        noiseGate: true,
+        noiseGateSensitivity: 'Medium',
+        fastReply: true,
         smartListen: true,
         streetMode: false,
         micSensitivity: 'medium',
       };
     }
     const rawClean = localStorage.getItem(STORAGE_KEY_CLEAN_VOICE);
+    const rawGate = localStorage.getItem(STORAGE_KEY_NOISE_GATE);
+    const rawGateSens = localStorage.getItem(STORAGE_KEY_NOISE_GATE_SENS);
+    const rawFast = localStorage.getItem(STORAGE_KEY_FAST_REPLY);
     const rawSmart = localStorage.getItem(STORAGE_KEY_SMART_LISTEN);
     const rawStreet = localStorage.getItem(STORAGE_KEY_STREET_MODE);
     const rawSens = localStorage.getItem(STORAGE_KEY_MIC_SENSITIVITY);
 
-    const cleanVoice = rawClean === null ? true : rawClean === 'true';
+    const streetMode = rawStreet === 'true';
+
+    // When streetMode is active: automatically Noise Filter ON, Noise Gate ON (High sensitivity)
+    const cleanVoice = streetMode ? true : rawClean === null ? true : rawClean === 'true';
+    const noiseGate = streetMode ? true : rawGate === null ? true : rawGate === 'true';
+    const noiseGateSensitivity: NoiseGateSensitivity = streetMode
+      ? 'High'
+      : rawGateSens === 'Low' || rawGateSens === 'Medium' || rawGateSens === 'High'
+      ? rawGateSens
+      : 'Medium';
+    const fastReply = rawFast === null ? true : rawFast === 'true';
     const smartListen = rawSmart === null ? true : rawSmart === 'true';
-    const streetMode = rawStreet === null ? false : rawStreet === 'true';
     const micSensitivity: MicSensitivityLevel =
       rawSens === 'low' || rawSens === 'medium' || rawSens === 'high' ? rawSens : 'medium';
 
-    return { cleanVoice, smartListen, streetMode, micSensitivity };
+    return { cleanVoice, noiseGate, noiseGateSensitivity, fastReply, smartListen, streetMode, micSensitivity };
   } catch {
     return {
       cleanVoice: true,
+      noiseGate: true,
+      noiseGateSensitivity: 'Medium',
+      fastReply: true,
       smartListen: true,
       streetMode: false,
       micSensitivity: 'medium',
@@ -48,19 +73,55 @@ export function getMicListeningSettings(): MicListeningSettings {
 
 export function saveMicListeningSettings(partial: Partial<MicListeningSettings>): MicListeningSettings {
   const current = getMicListeningSettings();
-  const next: MicListeningSettings = {
+  let next: MicListeningSettings = {
     ...current,
     ...partial,
   };
+
+  // Preset behavior for Street Mode
+  if (partial.streetMode === true) {
+    next.cleanVoice = true;
+    next.noiseGate = true;
+    next.noiseGateSensitivity = 'High';
+    next.fastReply = true;
+  }
+
   try {
     if (typeof window !== 'undefined' && window.localStorage) {
       localStorage.setItem(STORAGE_KEY_CLEAN_VOICE, String(next.cleanVoice));
+      localStorage.setItem(STORAGE_KEY_NOISE_GATE, String(next.noiseGate));
+      localStorage.setItem(STORAGE_KEY_NOISE_GATE_SENS, next.noiseGateSensitivity);
+      localStorage.setItem(STORAGE_KEY_FAST_REPLY, String(next.fastReply));
       localStorage.setItem(STORAGE_KEY_SMART_LISTEN, String(next.smartListen));
       localStorage.setItem(STORAGE_KEY_STREET_MODE, String(next.streetMode));
       localStorage.setItem(STORAGE_KEY_MIC_SENSITIVITY, next.micSensitivity);
     }
   } catch {}
   return next;
+}
+
+export function resetAudioSettings(): MicListeningSettings {
+  const defaults: MicListeningSettings = {
+    cleanVoice: true,
+    noiseGate: true,
+    noiseGateSensitivity: 'Medium',
+    fastReply: true,
+    smartListen: true,
+    streetMode: false,
+    micSensitivity: 'medium',
+  };
+  try {
+    if (typeof window !== 'undefined' && window.localStorage) {
+      localStorage.setItem(STORAGE_KEY_CLEAN_VOICE, 'true');
+      localStorage.setItem(STORAGE_KEY_NOISE_GATE, 'true');
+      localStorage.setItem(STORAGE_KEY_NOISE_GATE_SENS, 'Medium');
+      localStorage.setItem(STORAGE_KEY_FAST_REPLY, 'true');
+      localStorage.setItem(STORAGE_KEY_SMART_LISTEN, 'true');
+      localStorage.setItem(STORAGE_KEY_STREET_MODE, 'false');
+      localStorage.setItem(STORAGE_KEY_MIC_SENSITIVITY, 'medium');
+    }
+  } catch {}
+  return defaults;
 }
 
 export function getSensitivityThresholds(level: MicSensitivityLevel = 'medium') {

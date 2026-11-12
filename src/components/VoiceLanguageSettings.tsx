@@ -27,10 +27,23 @@ import {
   Shield,
   Volume,
   Loader2,
+  Filter,
+  Activity,
+  RotateCcw,
+  ShieldAlert,
+  SlidersHorizontal,
 } from "lucide-react";
 import { UnifiedSettings, saveUnifiedSettings, AssistantPersonality, ReplyLength } from "../types/settings";
 import { directGeminiTTS } from "../lib/ai-service";
 import { getElevenLabsKey } from "../lib/voiceEngine";
+import {
+  getMicListeningSettings,
+  saveMicListeningSettings,
+  resetAudioSettings,
+  MicListeningSettings,
+  NoiseGateSensitivity,
+} from "../lib/cleanVoiceAndVad";
+import { NoiseGateEngine } from "../lib/noiseGate";
 
 interface VoiceLanguageSettingsProps {
   settings: UnifiedSettings;
@@ -102,12 +115,108 @@ export const PERSONALITY_SUGGESTED_VOICE: Record<string, string> = {
   "Calm": "Vindemiatrix",
 };
 
+const LiveNoiseGateMeter: React.FC<{
+  isEnabled: boolean;
+  sensitivity: NoiseGateSensitivity;
+}> = ({ isEnabled, sensitivity }) => {
+  const [level, setLevel] = useState(0);
+  const [isOpen, setIsOpen] = useState(true);
+  const [noiseFloor, setNoiseFloor] = useState(-60);
+
+  useEffect(() => {
+    let animId: number;
+    let stream: MediaStream | null = null;
+    let audioCtx: AudioContext | null = null;
+    let analyser: AnalyserNode | null = null;
+    const gateEngine = new NoiseGateEngine();
+
+    const startMeter = async () => {
+      try {
+        stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+        const AudioCtx = window.AudioContext || (window as any).webkitAudioContext;
+        audioCtx = new AudioCtx();
+        const source = audioCtx.createMediaStreamSource(stream);
+        analyser = audioCtx.createAnalyser();
+        analyser.fftSize = 256;
+        source.connect(analyser);
+
+        const pcmData = new Float32Array(analyser.frequencyBinCount);
+        const tick = () => {
+          if (!analyser) return;
+          analyser.getFloatTimeDomainData(pcmData);
+          const res = gateEngine.processFrame(pcmData, isEnabled, sensitivity);
+
+          let sum = 0;
+          for (let i = 0; i < pcmData.length; i++) sum += Math.abs(pcmData[i]);
+          const avg = sum / pcmData.length;
+          const pct = Math.min(100, Math.max(0, Math.round(avg * 450)));
+
+          setLevel(pct);
+          setIsOpen(res.isOpen);
+          setNoiseFloor(Math.round(res.noiseFloorDb));
+          animId = requestAnimationFrame(tick);
+        };
+        tick();
+      } catch (err) {
+        // Microphone access or fallback
+      }
+    };
+
+    startMeter();
+
+    return () => {
+      if (animId) cancelAnimationFrame(animId);
+      if (stream) stream.getTracks().forEach((t) => t.stop());
+      if (audioCtx) try { audioCtx.close(); } catch {}
+    };
+  }, [isEnabled, sensitivity]);
+
+  return (
+    <div className="bg-[#0f0f23] border border-purple-500/20 rounded-2xl p-4 space-y-3">
+      <div className="flex items-center justify-between text-xs font-bold">
+        <span className="text-slate-300">Live Input Level</span>
+        <span
+          className={`px-2 py-0.5 rounded-full text-[10px] uppercase font-extrabold ${
+            isOpen
+              ? "bg-emerald-500/20 text-emerald-400 border border-emerald-500/30"
+              : "bg-red-500/20 text-red-400 border border-red-500/30"
+          }`}
+        >
+          {isOpen ? "GATE OPEN" : "GATE CLOSED"}
+        </span>
+      </div>
+      <div className="h-4 w-full bg-slate-900 rounded-lg overflow-hidden relative border border-white/10 p-0.5">
+        <div
+          className={`h-full rounded transition-all duration-75 ${
+            isOpen
+              ? "bg-gradient-to-r from-purple-500 via-indigo-500 to-emerald-400"
+              : "bg-slate-700 opacity-40"
+          }`}
+          style={{ width: `${level}%` }}
+        />
+      </div>
+      <div className="flex items-center justify-between text-[10px] text-slate-400 font-mono">
+        <span>Noise Floor: {noiseFloor} dB</span>
+        <span>Margin: {sensitivity === "Low" ? "+6dB" : sensitivity === "High" ? "+14dB" : "+10dB"}</span>
+      </div>
+    </div>
+  );
+};
+
 export const VoiceLanguageSettings: React.FC<VoiceLanguageSettingsProps> = ({
   settings,
   onUpdate,
   onBack,
 }) => {
   const [activeSheet, setActiveSheet] = useState<string | null>(null);
+  const [micSettingsState, setMicSettingsState] = useState<MicListeningSettings>(() =>
+    getMicListeningSettings()
+  );
+
+  const updateMicConfig = (partial: Partial<MicListeningSettings>) => {
+    const updated = saveMicListeningSettings(partial);
+    setMicSettingsState(updated);
+  };
   const [vibrateEnabled, setVibrateEnabled] = useState(() => {
     try {
       return localStorage.getItem("vs_vibrate") !== "false";
@@ -644,12 +753,64 @@ export const VoiceLanguageSettings: React.FC<VoiceLanguageSettingsProps> = ({
           </div>
         </section>
         
-        {/* LISTENING Section */}
+        {/* LISTENING & MIC Section */}
         <section className="space-y-3">
-          <div className="flex items-center gap-2 ml-2">
-            <Sparkles className="w-3.5 h-3.5 text-purple-400" />
-            <h2 className="text-[10px] font-black uppercase tracking-[3px] text-slate-500">LISTENING</h2>
+          <div className="flex items-center justify-between ml-2">
+            <div className="flex items-center gap-2">
+              <Sparkles className="w-3.5 h-3.5 text-purple-400" />
+              <h2 className="text-[10px] font-black uppercase tracking-[3px] text-slate-500">MIC & LISTENING</h2>
+            </div>
+            {micSettingsState.streetMode && (
+              <span className="px-2 py-0.5 rounded-full bg-amber-500/20 text-amber-400 border border-amber-500/30 text-[9px] font-black uppercase tracking-wider flex items-center gap-1">
+                <ShieldAlert className="w-3 h-3" /> Street Mode Active
+              </span>
+            )}
           </div>
+
+          <div className="bg-[#0f0f23] border-[1.5px] border-[#2e2160] rounded-[16px] overflow-hidden">
+            <SettingRow
+              icon={Filter}
+              title="Noise Filter"
+              value={micSettingsState.cleanVoice ? "ON (WebRTC)" : "OFF (Standard Mic)"}
+              onClick={() => setActiveSheet("noise_filter")}
+              isFirst
+            />
+            <SettingRow
+              icon={Activity}
+              title="Noise Gate"
+              value={micSettingsState.noiseGate ? `ON (${micSettingsState.noiseGateSensitivity})` : "OFF"}
+              onClick={() => setActiveSheet("noise_gate")}
+            />
+            <SettingRow
+              icon={Zap}
+              title="Fast Reply (VAD)"
+              value={micSettingsState.fastReply ? "ON (Gemini VAD)" : "OFF"}
+              onClick={() => setActiveSheet("fast_reply")}
+            />
+            <SettingRow
+              icon={ShieldAlert}
+              title="Street Mode"
+              value={micSettingsState.streetMode ? "ACTIVE (Noisy Preset)" : "OFF"}
+              onClick={() => setActiveSheet("street_mode")}
+            />
+
+            <div className="p-4 bg-[#0A1628]/40 border-t border-white/5 flex items-center justify-between">
+              <button
+                type="button"
+                onClick={() => {
+                  const resetState = resetAudioSettings();
+                  setMicSettingsState(resetState);
+                  showToast("Audio settings restored to default");
+                }}
+                className="w-full py-2 bg-slate-800 hover:bg-slate-700 active:scale-95 rounded-xl text-xs font-bold text-slate-200 border border-white/10 flex items-center justify-center gap-2 transition-all"
+              >
+                <RotateCcw className="w-3.5 h-3.5 text-purple-400" />
+                <span>Reset Audio Settings</span>
+              </button>
+            </div>
+          </div>
+
+          {/* APP OPEN & VIBRATION */}
           <div className="bg-[#0A1628]/80 border border-purple-500/20 rounded-[2rem] p-5 shadow-2xl space-y-4">
             <div className="flex items-center justify-between">
               <div className="flex-1">
@@ -1147,6 +1308,218 @@ export const VoiceLanguageSettings: React.FC<VoiceLanguageSettingsProps> = ({
                         </div>
                       );
                     })}
+                  </div>
+                </div>
+              )}
+
+              {/* Noise Filter Sheet */}
+              {activeSheet === "noise_filter" && (
+                <div className="fixed inset-0 z-[200] bg-[#020617] flex flex-col">
+                  <div className="flex items-center gap-3 px-[14px] h-[56px] pt-[max(env(safe-area-inset-top),8px)] shrink-0 border-b border-white/10">
+                    <button onClick={() => setActiveSheet(null)} className="w-[40px] h-[40px] rounded-[12px] bg-white/5 border border-white/10 flex items-center justify-center text-white active:scale-95 transition-transform">
+                      <ArrowLeft className="w-5 h-5" />
+                    </button>
+                    <h3 className="text-[20px] font-semibold text-white">Noise Filter</h3>
+                  </div>
+                  
+                  <div className="flex-1 p-[16px] space-y-6 overflow-y-auto">
+                    <div className="bg-[#0f0f23] border border-purple-500/20 rounded-[20px] p-5 space-y-4">
+                      <div className="flex items-center justify-between">
+                        <div>
+                          <h4 className="text-base font-bold text-white">WebRTC Noise Suppression</h4>
+                          <p className="text-xs text-slate-400 mt-0.5">Filter echo, background fans & static</p>
+                        </div>
+                        <button
+                          onClick={() => updateMicConfig({ cleanVoice: !micSettingsState.cleanVoice })}
+                          className={`w-14 h-7 rounded-full transition-all relative ${micSettingsState.cleanVoice ? "bg-purple-600" : "bg-slate-700"}`}
+                        >
+                          <motion.div animate={{ x: micSettingsState.cleanVoice ? 30 : 4 }} className="w-5 h-5 bg-white rounded-full absolute top-1" />
+                        </button>
+                      </div>
+
+                      <div className="pt-3 border-t border-white/5 space-y-2 text-xs text-slate-300">
+                        <div className="flex items-center gap-2 text-purple-400 font-bold">
+                          <Filter className="w-4 h-4" />
+                          <span>How Noise Filter works:</span>
+                        </div>
+                        <p className="text-slate-400 leading-relaxed">
+                          • <strong className="text-white">ON:</strong> Requests WebRTC mic with noise suppression, echo cancellation, and auto gain control.
+                        </p>
+                        <p className="text-slate-400 leading-relaxed">
+                          • <strong className="text-white">OFF:</strong> Requests standard direct microphone stream without WebRTC processing.
+                        </p>
+                        <p className="text-slate-400 leading-relaxed italic">
+                          Automatic fallback to default microphone is active if WebRTC constraints are unsupported.
+                        </p>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              )}
+
+              {/* Noise Gate Sheet */}
+              {activeSheet === "noise_gate" && (
+                <div className="fixed inset-0 z-[200] bg-[#020617] flex flex-col">
+                  <div className="flex items-center gap-3 px-[14px] h-[56px] pt-[max(env(safe-area-inset-top),8px)] shrink-0 border-b border-white/10">
+                    <button onClick={() => setActiveSheet(null)} className="w-[40px] h-[40px] rounded-[12px] bg-white/5 border border-white/10 flex items-center justify-center text-white active:scale-95 transition-transform">
+                      <ArrowLeft className="w-5 h-5" />
+                    </button>
+                    <h3 className="text-[20px] font-semibold text-white">Noise Gate</h3>
+                  </div>
+
+                  <div className="flex-1 p-[16px] space-y-5 overflow-y-auto">
+                    {/* Live Meter */}
+                    <LiveNoiseGateMeter isEnabled={micSettingsState.noiseGate} sensitivity={micSettingsState.noiseGateSensitivity} />
+
+                    <div className="bg-[#0f0f23] border border-purple-500/20 rounded-[20px] p-5 space-y-4">
+                      <div className="flex items-center justify-between">
+                        <div>
+                          <h4 className="text-base font-bold text-white">Enable Noise Gate</h4>
+                          <p className="text-xs text-slate-400 mt-0.5">Silence audio when speaking stops</p>
+                        </div>
+                        <button
+                          onClick={() => updateMicConfig({ noiseGate: !micSettingsState.noiseGate })}
+                          className={`w-14 h-7 rounded-full transition-all relative ${micSettingsState.noiseGate ? "bg-purple-600" : "bg-slate-700"}`}
+                        >
+                          <motion.div animate={{ x: micSettingsState.noiseGate ? 30 : 4 }} className="w-5 h-5 bg-white rounded-full absolute top-1" />
+                        </button>
+                      </div>
+
+                      {/* Sensitivity selector */}
+                      <div className="pt-3 border-t border-white/5 space-y-2">
+                        <label className="text-xs font-bold text-slate-300 uppercase tracking-wider block">
+                          Gate Sensitivity Margin
+                        </label>
+                        <div className="grid grid-cols-3 gap-2">
+                          {(["Low", "Medium", "High"] as NoiseGateSensitivity[]).map((sens) => {
+                            const isSel = micSettingsState.noiseGateSensitivity === sens;
+                            return (
+                              <button
+                                key={sens}
+                                type="button"
+                                onClick={() => updateMicConfig({ noiseGateSensitivity: sens })}
+                                className={`py-2.5 rounded-xl border text-xs font-bold transition-all ${
+                                  isSel
+                                    ? "bg-purple-600 border-purple-400 text-white shadow-lg"
+                                    : "bg-slate-900 border-white/10 text-slate-400 hover:text-white"
+                                }`}
+                              >
+                                {sens} {sens === "Low" ? "(+6dB)" : sens === "High" ? "(+14dB)" : "(+10dB)"}
+                              </button>
+                            );
+                          })}
+                        </div>
+                      </div>
+
+                      <div className="pt-3 border-t border-white/5 space-y-1.5 text-xs text-slate-400">
+                        <p>• Learns background noise floor dynamically over the last 3s.</p>
+                        <p>• Holds gate open for 300ms hangover to prevent word clipping.</p>
+                        <p>• Zeroes out closed frames so TV or street noise is not sent to AI.</p>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              )}
+
+              {/* Fast Reply Sheet */}
+              {activeSheet === "fast_reply" && (
+                <div className="fixed inset-0 z-[200] bg-[#020617] flex flex-col">
+                  <div className="flex items-center gap-3 px-[14px] h-[56px] pt-[max(env(safe-area-inset-top),8px)] shrink-0 border-b border-white/10">
+                    <button onClick={() => setActiveSheet(null)} className="w-[40px] h-[40px] rounded-[12px] bg-white/5 border border-white/10 flex items-center justify-center text-white active:scale-95 transition-transform">
+                      <ArrowLeft className="w-5 h-5" />
+                    </button>
+                    <h3 className="text-[20px] font-semibold text-white">Fast Reply (VAD)</h3>
+                  </div>
+
+                  <div className="flex-1 p-[16px] space-y-5 overflow-y-auto">
+                    <div className="bg-[#0f0f23] border border-purple-500/20 rounded-[20px] p-5 space-y-4">
+                      <div className="flex items-center justify-between">
+                        <div>
+                          <h4 className="text-base font-bold text-white">Gemini Live VAD Tuning</h4>
+                          <p className="text-xs text-slate-400 mt-0.5">Faster turn response when you stop speaking</p>
+                        </div>
+                        <button
+                          onClick={() => updateMicConfig({ fastReply: !micSettingsState.fastReply })}
+                          className={`w-14 h-7 rounded-full transition-all relative ${micSettingsState.fastReply ? "bg-purple-600" : "bg-slate-700"}`}
+                        >
+                          <motion.div animate={{ x: micSettingsState.fastReply ? 30 : 4 }} className="w-5 h-5 bg-white rounded-full absolute top-1" />
+                        </button>
+                      </div>
+
+                      <div className="pt-3 border-t border-white/5 space-y-2">
+                        <h5 className="text-xs font-bold uppercase tracking-wider text-purple-400">Active Parameters</h5>
+                        <div className="bg-slate-900/80 rounded-xl p-3 space-y-1.5 font-mono text-xs border border-white/5 text-slate-300">
+                          <div className="flex justify-between">
+                            <span className="text-slate-400">startOfSpeechSensitivity:</span>
+                            <span className="text-emerald-400 font-bold">LOW</span>
+                          </div>
+                          <div className="flex justify-between">
+                            <span className="text-slate-400">endOfSpeechSensitivity:</span>
+                            <span className="text-emerald-400 font-bold">HIGH</span>
+                          </div>
+                          <div className="flex justify-between">
+                            <span className="text-slate-400">prefixPaddingMs:</span>
+                            <span className="text-purple-300">200 ms</span>
+                          </div>
+                          <div className="flex justify-between">
+                            <span className="text-slate-400">silenceDurationMs:</span>
+                            <span className="text-amber-400 font-bold">{micSettingsState.streetMode ? "400 ms (Street)" : "500 ms"}</span>
+                          </div>
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              )}
+
+              {/* Street Mode Sheet */}
+              {activeSheet === "street_mode" && (
+                <div className="fixed inset-0 z-[200] bg-[#020617] flex flex-col">
+                  <div className="flex items-center gap-3 px-[14px] h-[56px] pt-[max(env(safe-area-inset-top),8px)] shrink-0 border-b border-white/10">
+                    <button onClick={() => setActiveSheet(null)} className="w-[40px] h-[40px] rounded-[12px] bg-white/5 border border-white/10 flex items-center justify-center text-white active:scale-95 transition-transform">
+                      <ArrowLeft className="w-5 h-5" />
+                    </button>
+                    <h3 className="text-[20px] font-semibold text-white">Street Mode</h3>
+                  </div>
+
+                  <div className="flex-1 p-[16px] space-y-5 overflow-y-auto">
+                    <div className="bg-[#0f0f23] border border-amber-500/30 rounded-[20px] p-5 space-y-4">
+                      <div className="flex items-center justify-between">
+                        <div>
+                          <h4 className="text-base font-bold text-white flex items-center gap-2">
+                            <ShieldAlert className="w-5 h-5 text-amber-400" />
+                            <span>Noisy Environment Preset</span>
+                          </h4>
+                          <p className="text-xs text-slate-400 mt-0.5">For streets, markets, cars & noisy outdoors</p>
+                        </div>
+                        <button
+                          onClick={() => {
+                            const next = !micSettingsState.streetMode;
+                            updateMicConfig({ streetMode: next });
+                            showToast(next ? "Street Mode Enabled" : "Street Mode Disabled");
+                          }}
+                          className={`w-14 h-7 rounded-full transition-all relative ${micSettingsState.streetMode ? "bg-amber-500" : "bg-slate-700"}`}
+                        >
+                          <motion.div animate={{ x: micSettingsState.streetMode ? 30 : 4 }} className="w-5 h-5 bg-white rounded-full absolute top-1" />
+                        </button>
+                      </div>
+
+                      {micSettingsState.streetMode && (
+                        <div className="p-3 bg-amber-500/10 border border-amber-500/30 rounded-xl flex items-center gap-2 text-amber-300 font-bold text-xs">
+                          <Check className="w-4 h-4 text-amber-400 shrink-0" />
+                          <span>Street Mode Active Badge Enabled</span>
+                        </div>
+                      )}
+
+                      <div className="pt-3 border-t border-white/5 space-y-2 text-xs text-slate-300">
+                        <p className="font-bold text-slate-200">Automatically configures when ON:</p>
+                        <ul className="list-disc list-inside space-y-1 text-slate-400">
+                          <li>Noise Filter: <strong className="text-white">ON</strong></li>
+                          <li>Noise Gate: <strong className="text-white">ON (High +14dB)</strong></li>
+                          <li>Fast Reply silenceDurationMs: <strong className="text-amber-400 font-bold">400 ms</strong></li>
+                        </ul>
+                      </div>
+                    </div>
                   </div>
                 </div>
               )}
