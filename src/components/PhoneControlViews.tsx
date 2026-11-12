@@ -487,12 +487,21 @@ export const AppPermissionsView = ({ setCurrentView, setToast }: any) => {
   };
 
   const requestNotificationsPermission = async (): Promise<boolean> => {
-    if (typeof Notification === 'undefined') {
+    if (typeof Notification === 'undefined' || typeof Notification.requestPermission !== 'function') {
       setStatuses(prev => ({ ...prev, app_perm_notifications: 'বন্ধ' }));
       return false;
     }
     try {
-      const res = await Notification.requestPermission();
+      const res = await new Promise<NotificationPermission>((resolve, reject) => {
+        try {
+          const maybePromise = Notification.requestPermission((cbResult) => resolve(cbResult));
+          if (maybePromise && typeof (maybePromise as Promise<NotificationPermission>).then === 'function') {
+            (maybePromise as Promise<NotificationPermission>).then(resolve, reject);
+          }
+        } catch (err) {
+          reject(err);
+        }
+      });
       if (res === 'granted') {
         setStatuses(prev => ({ ...prev, app_perm_notifications: 'চালু' }));
         setPermanentlyDenied(prev => ({ ...prev, app_perm_notifications: false }));
@@ -1014,43 +1023,139 @@ export const AppPermissionsView = ({ setCurrentView, setToast }: any) => {
             const Icon = perm.icon;
             const status = statuses[perm.id] || 'জিজ্ঞেস করা হয়নি';
             const isWhatsAppOrMessenger = perm.id === 'app_perm_whatsapp' || perm.id === 'app_perm_messenger';
+            const isNativePerm = perm.id === 'app_perm_contacts' || perm.id === 'app_perm_phone_calls';
             const isPermanentlyDenied = isApp && (status === 'বন্ধ' || Boolean(permanentlyDenied[perm.id])) && !isWhatsAppOrMessenger && perm.type !== 'api';
 
+            if (!isApp) {
+              return (
+                <button
+                  key={perm.id}
+                  data-nav-id={perm.id}
+                  onClick={() => setSelectedSubPerm(perm.id)}
+                  className="w-full p-4 sm:p-5 bg-[#0F172A]/80 border border-purple-500/30 rounded-[2.5rem] shadow-2xl flex items-center justify-between active:scale-[0.98] transition-all text-left group"
+                >
+                  <div className="flex items-center gap-4 min-w-0 pr-2">
+                    <div className="w-12 h-12 rounded-full bg-purple-600/10 border border-purple-500/20 flex items-center justify-center text-purple-400 shrink-0 group-active:scale-90 transition-transform">
+                      <Icon className="w-6 h-6" />
+                    </div>
+                    <div className="min-w-0">
+                      <h4 className="text-base font-black uppercase tracking-wider text-white leading-tight truncate">
+                        {perm.num}. {perm.name}
+                      </h4>
+                      <div className="mt-1 flex items-center gap-2">
+                        <span className="text-[11px] text-slate-400 font-bold uppercase tracking-widest">
+                          স্ট্যাটাস:
+                        </span>
+                        {renderStatusPill(status)}
+                      </div>
+                    </div>
+                  </div>
+                  <ChevronRight className="w-5 h-5 text-slate-500 shrink-0 group-hover:text-purple-400 transition-colors" />
+                </button>
+              );
+            }
+
             return (
-              <button
+              <div
                 key={perm.id}
                 data-nav-id={perm.id}
+                role="button"
+                tabIndex={0}
                 onClick={() => setSelectedSubPerm(perm.id)}
-                className="w-full p-4 sm:p-5 bg-[#0F172A]/80 border border-purple-500/30 rounded-[2.5rem] shadow-2xl flex items-center justify-between active:scale-[0.98] transition-all text-left group"
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter' || e.key === ' ') {
+                    e.preventDefault();
+                    setSelectedSubPerm(perm.id);
+                  }
+                }}
+                className="w-full p-4 sm:p-5 bg-[#0F172A]/80 border border-purple-500/30 rounded-[2.5rem] shadow-2xl text-left group cursor-pointer transition-all"
               >
-                <div className="flex items-center gap-4 min-w-0 pr-2">
-                  <div className="w-12 h-12 rounded-full bg-purple-600/10 border border-purple-500/20 flex items-center justify-center text-purple-400 shrink-0 group-active:scale-90 transition-transform">
-                    <Icon className="w-6 h-6" />
-                  </div>
-                  <div className="min-w-0">
-                    <h4 className="text-base font-black uppercase tracking-wider text-white leading-tight truncate">
-                      {perm.num}. {perm.name}
-                    </h4>
-                    <div className="mt-1 flex items-center gap-2">
-                      <span className="text-[11px] text-slate-400 font-bold uppercase tracking-widest">
-                        স্ট্যাটাস:
-                      </span>
-                      {renderStatusPill(status)}
+                <div className="flex items-center justify-between">
+                  <div className="flex items-center gap-4 min-w-0 pr-2">
+                    <div className="w-12 h-12 rounded-full bg-purple-600/10 border border-purple-500/20 flex items-center justify-center text-purple-400 shrink-0 group-active:scale-90 transition-transform">
+                      <Icon className="w-6 h-6" />
                     </div>
-                    {isApp && isWhatsAppOrMessenger && (
-                      <p className="mt-1.5 text-[11px] text-purple-300/90 font-medium leading-snug">
-                        {WHATSAPP_MESSENGER_NOTE}
-                      </p>
+                    <div className="min-w-0">
+                      <h4 className="text-base font-black uppercase tracking-wider text-white leading-tight truncate">
+                        {perm.num}. {perm.name}
+                      </h4>
+                      <div className="mt-1 flex items-center gap-2">
+                        <span className="text-[11px] text-slate-400 font-bold uppercase tracking-widest">
+                          স্ট্যাটাস:
+                        </span>
+                        {renderStatusPill(status)}
+                      </div>
+                    </div>
+                  </div>
+                  <ChevronRight className="w-5 h-5 text-slate-500 shrink-0 group-hover:text-purple-400 transition-colors" />
+                </div>
+
+                {isWhatsAppOrMessenger && (
+                  <p className="mt-2.5 text-[11px] text-purple-300/90 font-medium leading-snug">
+                    {WHATSAPP_MESSENGER_NOTE}
+                  </p>
+                )}
+
+                {isPermanentlyDenied && (
+                  <p className="mt-2.5 text-[11px] text-rose-300/90 font-medium leading-snug">
+                    {PERMANENT_DENIED_ANDROID_MSG}
+                  </p>
+                )}
+
+                {(isNativePerm || isWhatsAppOrMessenger) && (
+                  <div
+                    className="mt-3 pt-3 border-t border-white/10 flex flex-wrap items-center gap-2"
+                    onClick={(e) => e.stopPropagation()}
+                  >
+                    {isNativePerm && (
+                      <button
+                        type="button"
+                        disabled={isProcessing || isTestingContacts || isGrantingAll}
+                        onClick={() => handleAction(perm)}
+                        className="px-4 py-2 rounded-xl bg-gradient-to-r from-purple-600 to-indigo-600 hover:from-purple-500 hover:to-indigo-500 disabled:opacity-60 text-white font-black text-xs tracking-wide active:scale-95 transition-all"
+                      >
+                        অনুমতি দাও
+                      </button>
                     )}
-                    {isPermanentlyDenied && (
-                      <p className="mt-1.5 text-[11px] text-rose-300/90 font-medium leading-snug">
-                        {PERMANENT_DENIED_ANDROID_MSG}
-                      </p>
+
+                    {perm.id === 'app_perm_contacts' && (
+                      <button
+                        type="button"
+                        disabled={isProcessing || isTestingContacts || isGrantingAll}
+                        onClick={handleTestContacts}
+                        className="px-4 py-2 rounded-xl bg-white/10 hover:bg-white/15 border border-purple-500/30 disabled:opacity-60 text-purple-100 font-black text-xs tracking-wide active:scale-95 transition-all"
+                      >
+                        {isTestingContacts ? 'পরীক্ষা করা হচ্ছে...' : 'পরীক্ষা করো'}
+                      </button>
+                    )}
+
+                    {isWhatsAppOrMessenger && (
+                      <button
+                        type="button"
+                        disabled={isProcessing || isGrantingAll}
+                        onClick={() => handleAction(perm)}
+                        className="px-4 py-2 rounded-xl bg-gradient-to-r from-purple-600 to-indigo-600 hover:from-purple-500 hover:to-indigo-500 disabled:opacity-60 text-white font-black text-xs tracking-wide active:scale-95 transition-all inline-flex items-center gap-1.5"
+                      >
+                        <span>খোলো</span>
+                        <ExternalLink className="w-3.5 h-3.5 text-purple-200" />
+                      </button>
                     )}
                   </div>
-                </div>
-                <ChevronRight className="w-5 h-5 text-slate-500 shrink-0 group-hover:text-purple-400 transition-colors" />
-              </button>
+                )}
+
+                {perm.id === 'app_perm_contacts' && contactsTestResult && (
+                  <div
+                    onClick={(e) => e.stopPropagation()}
+                    className={`mt-2.5 p-2.5 rounded-xl border text-xs font-semibold text-center ${
+                      contactsTestResult.ok
+                        ? 'bg-emerald-500/10 border-emerald-500/30 text-emerald-300'
+                        : 'bg-rose-500/10 border-rose-500/30 text-rose-300'
+                    }`}
+                  >
+                    {contactsTestResult.text}
+                  </div>
+                )}
+              </div>
             );
           })}
         </div>
