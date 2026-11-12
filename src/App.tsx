@@ -8191,16 +8191,29 @@ export function App() {
       },
       onTranscription: (role, text, isFinal) => {
         const rawClean = (text || "").trim();
+        const speaker = role === 'assistant' ? 'rose' : 'user';
+        const streamId = speaker === "user" ? "live-stream-user" : "live-stream-rose";
+
+        // Remove placeholder if Rose starts speaking or if user turn completes with empty text
+        if (isFinal && !rawClean && speaker === 'user') {
+          setChatHistory((prev) => prev.filter((m) => m.id !== streamId));
+          return;
+        }
+
         if (!rawClean) return;
         const cleanText =
           role === "assistant"
             ? stripStageCues(cleanAssistantReplyText(rawClean, prefsRef.current.language))
             : rawClean;
         if (!cleanText) return;
-        const speaker = role === 'assistant' ? 'rose' : 'user';
+        
+        // If Rose starts speaking, clear any user "শুনছি..." placeholder that never got real text
+        if (speaker === 'rose') {
+          setChatHistory((prev) => prev.filter((m) => !(m.id === 'live-stream-user' && m.text === 'শুনছি...')));
+        }
+
         updateLiveCaption(speaker, cleanText);
 
-        const streamId = speaker === "user" ? "live-stream-user" : "live-stream-rose";
         const nowTime = new Date().toLocaleTimeString([], {
           hour: "2-digit",
           minute: "2-digit",

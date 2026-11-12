@@ -358,6 +358,7 @@ export class GeminiLiveSession {
   public currentMicLevel = 0;
   public currentOutputLevel = 0;
   public activeMode: 'live' | 'fallback' = 'fallback';
+  private userStartedSpeakingEmitted = false;
 
   constructor(private options: GeminiLiveOptions) {}
 
@@ -799,6 +800,10 @@ export class GeminiLiveSession {
           const now = Date.now();
           if (prob >= thresholds.vadNegative) {
             this.lastLiveVadVoiceAt = now;
+            if (!this.userStartedSpeakingEmitted && !this.liveUserBuffer.trim()) {
+              this.userStartedSpeakingEmitted = true;
+              this.options.onTranscription?.('user', 'শুনছি...', false);
+            }
           }
           // Only stream audio when Silero detects speech or within 650ms hangover after speech
           if (prob < thresholds.vadPositive && now - this.lastLiveVadVoiceAt > 650) {
@@ -1658,6 +1663,9 @@ export class GeminiLiveSession {
         if (this.liveStreetAllowed && isValidVoiceTranscript(finalUser)) {
           this.options.onTranscription?.('user', finalUser, true);
         }
+      } else if (this.userStartedSpeakingEmitted) {
+        // Clear placeholder if no text arrived before turn complete
+        this.options.onTranscription?.('user', '', true);
       }
       if (this.liveStreetAllowed && this.liveAssistantBuffer.trim()) {
         const finalCleaned = stripStageCues(
@@ -1837,6 +1845,12 @@ export class GeminiLiveSession {
       this.lastVoiceTime = Date.now();
       this.clipUsedPushToTalk = isPushToTalkCurrentlyActive();
       resetPushToTalkTurnFlag();
+
+      if (!this.userStartedSpeakingEmitted && !this.liveUserBuffer.trim()) {
+        this.userStartedSpeakingEmitted = true;
+        this.options.onTranscription?.('user', 'শুনছি...', false);
+      }
+
       this.mediaRecorder = recorder;
 
       recorder.ondataavailable = (ev) => {
@@ -2363,6 +2377,7 @@ export class GeminiLiveSession {
 
   private async finishSpeakingAndReturnToListening(waitAfterEndedMs = 200) {
     if (this.wasStoppedByUser) return;
+    this.userStartedSpeakingEmitted = false;
     this.isProcessingClip = false;
     this.isRecordingClip = false;
     this.discardClip = false;
