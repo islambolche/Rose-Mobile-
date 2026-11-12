@@ -1,7 +1,7 @@
 import type { CapacitorConfig } from '@capacitor/cli';
 
 const config: CapacitorConfig = {
-  appId: 'com.yousuf.roseai',
+  appId: 'com.mdyousufkhan.rose',
   appName: 'Rose AI',
   webDir: 'dist',
   server: {
