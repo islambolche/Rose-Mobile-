@@ -319,7 +319,12 @@ export const isValidVoiceTranscript = (text?: string, durationSec?: number): boo
     return false;
   }
   const clean = String(text).trim();
-  if (clean.length < 2) return false;
+  if (!clean || clean.length < 2) return false;
+
+  // Reject timer-like strings (e.g., "00:00", "01:23"), placeholder strings like "(user audio)"
+  if (/^\d{1,2}:\d{2}(:\d{2})?$/.test(clean) || clean === '(user audio)') {
+    return false;
+  }
 
   const lower = clean.toLowerCase();
   if (/^(los|um|uh|ah|er|hm|hmm|ঁ|h|a|o|e|buraya|los\.?)$/i.test(lower)) {
@@ -329,6 +334,11 @@ export const isValidVoiceTranscript = (text?: string, durationSec?: number): boo
   // Allow Bengali script (\u0980-\u09FF), Latin script (a-zA-Z), ASCII & Bengali digits (0-9\u09E6-\u09EF), whitespace, standard punctuation
   const invalidCharRegex = /[^\u0980-\u09FFa-zA-Z0-9\u09E6-\u09EF\s\.,!\?\-'"’`:;()।]/;
   if (invalidCharRegex.test(clean)) {
+    return false;
+  }
+
+  // Must contain at least one Bengali or Latin letter
+  if (!/[\u0980-\u09FFa-zA-Z]/.test(clean)) {
     return false;
   }
 

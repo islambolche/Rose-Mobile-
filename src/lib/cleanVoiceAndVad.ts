@@ -20,20 +20,31 @@ const STORAGE_KEY_FAST_REPLY = 'rose_fast_reply';
 const STORAGE_KEY_SMART_LISTEN = 'rose_smart_listen';
 const STORAGE_KEY_STREET_MODE = 'rose_street_mode';
 const STORAGE_KEY_MIC_SENSITIVITY = 'rose_mic_sensitivity';
+const STORAGE_KEY_MIGRATION_RESET_V3 = 'rose_audio_defaults_v3_reset';
 
 export function getMicListeningSettings(): MicListeningSettings {
   try {
     if (typeof window === 'undefined' || !window.localStorage) {
       return {
-        cleanVoice: true,
-        noiseGate: true,
+        cleanVoice: false,
+        noiseGate: false,
         noiseGateSensitivity: 'Medium',
-        fastReply: true,
+        fastReply: false,
         smartListen: true,
         streetMode: false,
         micSensitivity: 'medium',
       };
     }
+
+    // Migration requirement 5: On app start, reset these four to Off once if migration key not set
+    if (localStorage.getItem(STORAGE_KEY_MIGRATION_RESET_V3) !== 'true') {
+      localStorage.setItem(STORAGE_KEY_CLEAN_VOICE, 'false');
+      localStorage.setItem(STORAGE_KEY_NOISE_GATE, 'false');
+      localStorage.setItem(STORAGE_KEY_FAST_REPLY, 'false');
+      localStorage.setItem(STORAGE_KEY_STREET_MODE, 'false');
+      localStorage.setItem(STORAGE_KEY_MIGRATION_RESET_V3, 'true');
+    }
+
     const rawClean = localStorage.getItem(STORAGE_KEY_CLEAN_VOICE);
     const rawGate = localStorage.getItem(STORAGE_KEY_NOISE_GATE);
     const rawGateSens = localStorage.getItem(STORAGE_KEY_NOISE_GATE_SENS);
@@ -45,14 +56,14 @@ export function getMicListeningSettings(): MicListeningSettings {
     const streetMode = rawStreet === 'true';
 
     // When streetMode is active: automatically Noise Filter ON, Noise Gate ON (High sensitivity)
-    const cleanVoice = streetMode ? true : rawClean === null ? true : rawClean === 'true';
-    const noiseGate = streetMode ? true : rawGate === null ? true : rawGate === 'true';
+    const cleanVoice = streetMode ? true : rawClean === 'true';
+    const noiseGate = streetMode ? true : rawGate === 'true';
     const noiseGateSensitivity: NoiseGateSensitivity = streetMode
       ? 'High'
       : rawGateSens === 'Low' || rawGateSens === 'Medium' || rawGateSens === 'High'
       ? rawGateSens
       : 'Medium';
-    const fastReply = rawFast === null ? true : rawFast === 'true';
+    const fastReply = streetMode ? true : rawFast === 'true';
     const smartListen = rawSmart === null ? true : rawSmart === 'true';
     const micSensitivity: MicSensitivityLevel =
       rawSens === 'low' || rawSens === 'medium' || rawSens === 'high' ? rawSens : 'medium';
@@ -60,10 +71,10 @@ export function getMicListeningSettings(): MicListeningSettings {
     return { cleanVoice, noiseGate, noiseGateSensitivity, fastReply, smartListen, streetMode, micSensitivity };
   } catch {
     return {
-      cleanVoice: true,
-      noiseGate: true,
+      cleanVoice: false,
+      noiseGate: false,
       noiseGateSensitivity: 'Medium',
-      fastReply: true,
+      fastReply: false,
       smartListen: true,
       streetMode: false,
       micSensitivity: 'medium',
@@ -102,20 +113,20 @@ export function saveMicListeningSettings(partial: Partial<MicListeningSettings>)
 
 export function resetAudioSettings(): MicListeningSettings {
   const defaults: MicListeningSettings = {
-    cleanVoice: true,
-    noiseGate: true,
+    cleanVoice: false,
+    noiseGate: false,
     noiseGateSensitivity: 'Medium',
-    fastReply: true,
+    fastReply: false,
     smartListen: true,
     streetMode: false,
     micSensitivity: 'medium',
   };
   try {
     if (typeof window !== 'undefined' && window.localStorage) {
-      localStorage.setItem(STORAGE_KEY_CLEAN_VOICE, 'true');
-      localStorage.setItem(STORAGE_KEY_NOISE_GATE, 'true');
+      localStorage.setItem(STORAGE_KEY_CLEAN_VOICE, 'false');
+      localStorage.setItem(STORAGE_KEY_NOISE_GATE, 'false');
       localStorage.setItem(STORAGE_KEY_NOISE_GATE_SENS, 'Medium');
-      localStorage.setItem(STORAGE_KEY_FAST_REPLY, 'true');
+      localStorage.setItem(STORAGE_KEY_FAST_REPLY, 'false');
       localStorage.setItem(STORAGE_KEY_SMART_LISTEN, 'true');
       localStorage.setItem(STORAGE_KEY_STREET_MODE, 'false');
       localStorage.setItem(STORAGE_KEY_MIC_SENSITIVITY, 'medium');

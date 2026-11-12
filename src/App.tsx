@@ -2983,25 +2983,31 @@ export function App() {
         localStorage.getItem("rose_messages");
       const parsed = saved ? JSON.parse(saved) : [];
       if (!Array.isArray(parsed)) return [];
-      return parsed.map((m: any, i: number) => {
-        const msgText = String(m?.text ?? m?.content ?? "");
-        const msgRole =
-          m?.role === "assistant" || m?.role === "model"
-            ? "rose"
-            : m?.role || "user";
-        return {
-          id: m?.id || `msg-init-${i}-${Date.now()}`,
-          role: msgRole,
-          text: msgText,
-          content: msgText,
-          time:
-            m?.time ||
-            new Date().toLocaleTimeString([], {
-              hour: "2-digit",
-              minute: "2-digit",
-            }),
-        };
-      });
+      return parsed
+        .map((m: any, i: number) => {
+          const msgText = String(m?.text ?? m?.content ?? "").trim();
+          const msgRole =
+            m?.role === "assistant" || m?.role === "model"
+              ? "rose"
+              : m?.role || "user";
+          return {
+            id: m?.id || `msg-init-${i}-${Date.now()}`,
+            role: msgRole,
+            text: msgText,
+            content: msgText,
+            time:
+              m?.time ||
+              new Date().toLocaleTimeString([], {
+                hour: "2-digit",
+                minute: "2-digit",
+              }),
+          };
+        })
+        .filter((m: Message) => {
+          if (!m.text || !m.text.trim()) return false;
+          if (m.role === "user" && (/^\d{1,2}:\d{2}(:\d{2})?$/.test(m.text.trim()) || m.text.trim() === "(user audio)")) return false;
+          return true;
+        });
     } catch (e) {
       return [];
     }
