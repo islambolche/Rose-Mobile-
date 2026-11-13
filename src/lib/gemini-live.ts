@@ -2817,7 +2817,12 @@ export class GeminiLiveSession {
       if (cleanLiveKey) {
         wsParams.set('apiKey', cleanLiveKey);
       }
-      const wsUrl = `${protocol}//${host}/api/live?${wsParams.toString()}`;
+      const directWsUrl = cleanLiveKey
+        ? `wss://generativelanguage.googleapis.com/ws/google.ai.generativelanguage.v1beta.GenerativeService.BidiGenerateContent?key=${encodeURIComponent(cleanLiveKey)}`
+        : `wss://generativelanguage.googleapis.com/ws/google.ai.generativelanguage.v1beta.GenerativeService.BidiGenerateContent`;
+      const proxyWsUrl = `${protocol}//${host}/api/live?${wsParams.toString()}`;
+      let wsUrl = directWsUrl;
+      let triedProxy = false;
 
       let socket: WebSocket | null = null;
       const finish = (success: boolean) => {

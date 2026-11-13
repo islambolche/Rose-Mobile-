@@ -151,6 +151,17 @@ export const setGeminiKey = async (key: string): Promise<void> => {
     await storage.set('gemini_api_key', clean);
     await backupKeyToIndexedDB('gemini_api_key', clean);
 
+    try {
+      if (typeof window !== 'undefined' && window.localStorage) {
+        localStorage.removeItem('gemini_cached_chat_models');
+        localStorage.removeItem('gemini_cached_live_models');
+        localStorage.removeItem('rose_tts_models_cache_v2');
+        localStorage.removeItem('rose_voice_models_cache_v2');
+        localStorage.removeItem('cached_answer_model');
+        localStorage.removeItem('cached_tts_model');
+      }
+    } catch {}
+
     if (typeof window !== 'undefined') {
       window.dispatchEvent(new CustomEvent('gemini_key_updated', { detail: clean }));
     }

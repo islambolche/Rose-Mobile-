@@ -879,21 +879,30 @@ export const verifyProviderKey = async (
   try {
     let res: Response;
     if (providerId === 'gemini') {
-      res = await fetch('/api/gemini/verify', {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify({ apiKey: testKey }),
-        signal: controller.signal,
-      });
+      try {
+        res = await fetch('https://generativelanguage.googleapis.com/v1beta/models', {
+          method: 'GET',
+          headers: {
+            'x-goog-api-key': testKey,
+          },
+          signal: controller.signal,
+        });
+      } catch {
+        // Fallback to server proxy if direct network fails
+        res = await fetch('/api/gemini/verify', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ apiKey: testKey }),
+          signal: controller.signal,
+        }).catch(() => ({ ok: false, status: 500 } as any));
+      }
 
-      if (res.ok) {
+      if (res.status === 200 || res.ok) {
         await setProviderStatus(providerId, 'READY');
         return {
           ok: true,
           status: 'READY',
-          httpStatus: res.status,
+          httpStatus: res.status || 200,
           errorText: 'READY ✓',
         };
       }
@@ -904,7 +913,7 @@ export const verifyProviderKey = async (
           ok: true,
           status: 'READY',
           httpStatus: 429,
-          errorText: 'READY (limit full, পরে আবার)',
+          errorText: 'READY (আজকের সীমা শেষ)',
         };
       }
 

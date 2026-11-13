@@ -118,6 +118,15 @@ export async function fetchGeminiModelsWithFallback(
   signal?: AbortSignal
 ): Promise<Response> {
   const cleanKey = resolveClientGeminiKey(apiKey);
+  try {
+    const res = await fetch('https://generativelanguage.googleapis.com/v1beta/models', {
+      method: 'GET',
+      headers: cleanKey ? { 'x-goog-api-key': cleanKey } : {},
+      signal,
+    });
+    if (res.ok) return res;
+  } catch {}
+
   const proxyUrl = `/api/gemini/models${cleanKey ? `?apiKey=${encodeURIComponent(cleanKey)}` : ''}`;
   const proxyRes = await fetch(proxyUrl, { method: 'GET', signal });
   if (proxyRes.ok) setApiBackendAvailable(true);
@@ -129,6 +138,21 @@ export async function fetchGeminiGenerateWithFallback(
   signal?: AbortSignal
 ): Promise<Response> {
   const cleanKey = resolveClientGeminiKey(payload?.apiKey);
+  const rawModel = String(payload?.model || 'gemini-1.5-flash').replace(/^models\//, '').trim();
+  const directBody = normalizeDirectBody(payload);
+  try {
+    const res = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${rawModel}:generateContent`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        ...(cleanKey ? { 'x-goog-api-key': cleanKey } : {}),
+      },
+      body: JSON.stringify(directBody),
+      signal,
+    });
+    if (res.ok) return res;
+  } catch {}
+
   const bodyPayload = cleanKey ? { ...payload, apiKey: cleanKey } : payload;
   const proxyRes = await fetch('/api/gemini/generate', {
     method: 'POST',
@@ -145,6 +169,21 @@ export async function fetchGeminiStreamWithFallback(
   signal?: AbortSignal
 ): Promise<Response> {
   const cleanKey = resolveClientGeminiKey(payload?.apiKey);
+  const rawModel = String(payload?.model || 'gemini-1.5-flash').replace(/^models\//, '').trim();
+  const directBody = normalizeDirectBody(payload);
+  try {
+    const res = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${rawModel}:streamGenerateContent?alt=sse`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        ...(cleanKey ? { 'x-goog-api-key': cleanKey } : {}),
+      },
+      body: JSON.stringify(directBody),
+      signal,
+    });
+    if (res.ok) return res;
+  } catch {}
+
   const bodyPayload = cleanKey ? { ...payload, apiKey: cleanKey } : payload;
   const proxyRes = await fetch('/api/gemini/stream', {
     method: 'POST',
@@ -166,6 +205,26 @@ export async function fetchGeminiTtsWithFallback(
     rawModel && rawModel.toLowerCase().includes('tts')
       ? rawModel
       : 'gemini-2.5-flash-preview-tts';
+  const directBody = {
+    ...normalizeDirectBody(payload),
+    generationConfig: {
+      ...(payload?.generationConfig || {}),
+      responseModalities: ["AUDIO"]
+    }
+  };
+  try {
+    const res = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${targetModel}:generateContent`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        ...(cleanKey ? { 'x-goog-api-key': cleanKey } : {}),
+      },
+      body: JSON.stringify(directBody),
+      signal,
+    });
+    if (res.ok) return res;
+  } catch {}
+
   const bodyPayload = cleanKey
     ? { ...payload, model: targetModel, apiKey: cleanKey }
     : { ...payload, model: targetModel };

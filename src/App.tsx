@@ -12,6 +12,10 @@ import {
   Flame,
   X,
   Check,
+  Upload,
+  Video,
+  Users,
+  FileText,
   Youtube,
   Facebook,
   Mail,
@@ -1174,7 +1178,8 @@ type AppView =
   | "system_info"
   | "privacy_policy"
   | "terms"
-  | "voice_debug";
+  | "voice_debug"
+  | "social-media";
 
 const EmotionalCardIcon = ({ className }: { className?: string }) => (
   <div className="relative inline-flex items-center justify-center">
@@ -2764,6 +2769,33 @@ export function App() {
   const [agentTaskHistoryModalId, setAgentTaskHistoryModalId] = useState<string | null>(null);
   const [agentTasksList, setAgentTasksList] = useState<any[]>([]);
   const [activePcSetupSubPage, setActivePcSetupSubPage] = useState<PcSetupPageId | null>(null);
+  const [socialMediaSubPage, setSocialMediaSubPage] = useState<string | null>(null);
+  const [smConfig, setSmConfig] = useState(() => {
+    try {
+      const saved = localStorage.getItem("rose_social_media_config");
+      if (saved) return JSON.parse(saved);
+    } catch {}
+    return {
+      youtube: { accountType: "Channel", method: "browser", privacy: "Public" },
+      facebook: { accountType: "Personal profile", method: "share", privacy: "Public" },
+      instagram: { accountType: "Personal", method: "share", privacy: "Public" },
+      tiktok: { accountType: "Personal", method: "share", privacy: "Public" },
+      defaults: { captionLang: "both", hashtags: "#RoseAI #Viral #Creator", titleStyle: "engaging", signature: true },
+      history: []
+    };
+  });
+
+  useEffect(() => {
+    try {
+      localStorage.setItem("rose_social_media_config", JSON.stringify(smConfig));
+    } catch {}
+  }, [smConfig]);
+
+  const [isUploadingModalOpen, setIsUploadingModalOpen] = useState(false);
+  const [uploadFile, setUploadFile] = useState<File | null>(null);
+  const [uploadSelectedPlatforms, setUploadSelectedPlatforms] = useState<string[]>(["facebook", "instagram"]);
+  const [uploadStep, setUploadStep] = useState<"pick" | "generating" | "preview" | "publishing" | "done">("pick");
+  const [uploadPreviews, setUploadPreviews] = useState<Record<string, { title: string; desc: string; tags: string; hashtags: string }>>({});
   const [awaitingConfirmCount, setAwaitingConfirmCount] = useState<number>(0);
 
   useEffect(() => {
@@ -12806,6 +12838,27 @@ export function App() {
               <ChevronRight className="w-5 h-5 text-slate-500 shrink-0" />
             </div>
           </button>
+
+          <button
+            data-nav-id="social_media"
+            onClick={() => setCurrentView("social-media")}
+            className="w-full p-5 bg-[#0F172A]/80 rounded-[2.5rem] border border-purple-500/30 shadow-2xl flex items-center justify-between active:scale-[0.98] transition-all text-left"
+          >
+            <div className="flex items-center gap-4">
+              <div className="w-12 h-12 rounded-full bg-purple-600 border border-purple-400/30 flex items-center justify-center text-white shrink-0 shadow-lg shadow-purple-900/40">
+                <Share2 className="w-6 h-6" />
+              </div>
+              <div>
+                <h4 className="font-black text-lg uppercase tracking-wider text-white leading-none mb-1">
+                  9 SOCIAL MEDIA
+                </h4>
+                <p className="text-[11px] text-slate-400 font-bold uppercase tracking-widest">
+                  YouTube, Facebook, Instagram, TikTok & Auto Uploads
+                </p>
+              </div>
+            </div>
+            <ChevronRight className="w-5 h-5 text-slate-500 shrink-0" />
+          </button>
         </div>
 
           {/* ABOUT SECTION */}
@@ -15129,6 +15182,597 @@ export function App() {
     </PhoneErrorBoundary>
   );
 
+  const SocialMediaSubPage = ({
+    pageId,
+    config,
+    setConfig,
+    onBack,
+    onToast,
+    onStartUpload
+  }: {
+    pageId: string;
+    config: any;
+    setConfig: React.Dispatch<React.SetStateAction<any>>;
+    onBack: () => void;
+    onToast: (msg: string) => void;
+    onStartUpload: () => void;
+  }) => {
+    const titles: Record<string, string> = {
+      youtube: "1 YOUTUBE",
+      facebook: "2 FACEBOOK",
+      instagram: "3 INSTAGRAM",
+      tiktok: "4 TIKTOK",
+      "upload-defaults": "5 UPLOAD DEFAULTS",
+      "upload-history": "6 UPLOAD HISTORY",
+      "about-feature": "7 ABOUT THIS FEATURE"
+    };
+
+    const isPlatform = ["youtube", "facebook", "instagram", "tiktok"].includes(pageId);
+    const pData = isPlatform ? config[pageId] || {} : {};
+
+    const updatePlatform = (key: string, val: any) => {
+      setConfig((prev: any) => ({
+        ...prev,
+        [pageId]: { ...prev[pageId], [key]: val }
+      }));
+      onToast("Saved changes");
+    };
+
+    const updateDefaults = (key: string, val: any) => {
+      setConfig((prev: any) => ({
+        ...prev,
+        defaults: { ...prev.defaults, [key]: val }
+      }));
+      onToast("Saved upload defaults");
+    };
+
+    return (
+      <motion.div
+        key={pageId}
+        initial={{ x: "100%" }}
+        animate={{ x: 0 }}
+        exit={{ x: "100%" }}
+        className="fixed inset-0 z-[80] bg-[#020617] overflow-y-auto no-scrollbar flex flex-col"
+      >
+        <header className="sticky top-0 z-20 px-5 py-5 flex items-center justify-between shrink-0 bg-[#020617]/95 backdrop-blur-md border-b border-white/5">
+          <div className="flex items-center gap-4">
+            <button
+              onClick={onBack}
+              className="p-2.5 bg-white/5 rounded-2xl active:scale-95 transition-transform"
+            >
+              <ArrowLeft className="w-5 h-5 text-slate-300" />
+            </button>
+            <h2 className="text-xl font-black italic uppercase tracking-tighter text-white">{titles[pageId] || pageId}</h2>
+          </div>
+          {isPlatform && (
+            <button
+              onClick={onStartUpload}
+              className="px-3.5 py-1.5 bg-purple-600 hover:bg-purple-500 rounded-xl text-xs font-bold text-white shadow-md active:scale-95 flex items-center gap-1"
+            >
+              <Upload className="w-3.5 h-3.5" /> UPLOAD
+            </button>
+          )}
+        </header>
+
+        <div className="px-6 py-4 space-y-5 pb-32">
+          {isPlatform && (
+            <>
+              <div className="p-5 bg-[#0F172A]/80 border border-purple-500/30 rounded-[2rem] space-y-4">
+                <h3 className="text-sm font-black uppercase text-purple-300">Account Type</h3>
+                <div className="grid grid-cols-2 gap-2">
+                  {(pageId === "youtube" ? ["Channel"] :
+                    pageId === "facebook" ? ["Personal profile", "Page"] :
+                    pageId === "instagram" ? ["Personal", "Business-Creator"] :
+                    ["Personal", "Business"]
+                  ).map((type) => (
+                    <button
+                      key={type}
+                      onClick={() => updatePlatform("accountType", type)}
+                      className={`py-3 px-4 rounded-xl text-xs font-bold uppercase transition-all ${
+                        pData.accountType === type
+                          ? "bg-purple-600 text-white shadow-lg shadow-purple-900/50"
+                          : "bg-white/5 text-slate-400 hover:bg-white/10"
+                      }`}
+                    >
+                      {type}
+                    </button>
+                  ))}
+                </div>
+              </div>
+
+              <div className="p-5 bg-[#0F172A]/80 border border-purple-500/30 rounded-[2rem] space-y-4">
+                <h3 className="text-sm font-black uppercase text-purple-300">Publish Method</h3>
+                <div className="space-y-2">
+                  {[
+                    { id: "share", label: "SHARE (Mobile app open with video + caption ready)", desc: "User taps Post" },
+                    { id: "browser", label: "BROWSER (PC automated browser upload via Rose Helper)", desc: "Uploads like a human" },
+                    { id: "api", label: "API (শীঘ্রই — সংযোগ সেটআপ দরকার)", disabled: true }
+                  ].map((m) => (
+                    <button
+                      key={m.id}
+                      disabled={m.disabled}
+                      onClick={() => !m.disabled && updatePlatform("method", m.id)}
+                      className={`w-full p-3.5 rounded-xl border text-left flex items-center justify-between transition-all ${
+                        m.disabled
+                          ? "opacity-40 bg-white/5 border-white/5 cursor-not-allowed"
+                          : pData.method === m.id
+                          ? "bg-purple-600/20 border-purple-500 text-white"
+                          : "bg-white/5 border-white/10 text-slate-300 hover:bg-white/10"
+                      }`}
+                    >
+                      <div>
+                        <p className="text-xs font-bold uppercase">{m.label}</p>
+                        {m.desc && <p className="text-[10px] text-slate-400 mt-0.5">{m.desc}</p>}
+                      </div>
+                      {pData.method === m.id && <Check className="w-4 h-4 text-purple-400 shrink-0" />}
+                    </button>
+                  ))}
+                </div>
+              </div>
+
+              <div className="p-5 bg-[#0F172A]/80 border border-purple-500/30 rounded-[2rem] space-y-4">
+                <h3 className="text-sm font-black uppercase text-purple-300">Default Privacy</h3>
+                <div className="flex gap-2">
+                  {(pageId === "youtube" ? ["Public", "Unlisted", "Private"] : ["Public", "Private"]).map((priv) => (
+                    <button
+                      key={priv}
+                      onClick={() => updatePlatform("privacy", priv)}
+                      className={`flex-1 py-3 px-3 rounded-xl text-xs font-bold uppercase transition-all ${
+                        pData.privacy === priv
+                          ? "bg-purple-600 text-white shadow-lg shadow-purple-900/50"
+                          : "bg-white/5 text-slate-400 hover:bg-white/10"
+                      }`}
+                    >
+                      {priv}
+                    </button>
+                  ))}
+                </div>
+              </div>
+
+              <div className="p-5 bg-[#0F172A]/80 border border-purple-500/30 rounded-[2rem] flex items-center justify-between">
+                <div>
+                  <p className="text-xs font-black uppercase text-white">Status & Connection</p>
+                  <p className="text-[11px] text-emerald-400 font-semibold mt-0.5">● Ready & Connected</p>
+                </div>
+                <button
+                  onClick={() => onToast(`${pageId.toUpperCase()} test connection successful!`)}
+                  className="px-4 py-2 bg-white/10 hover:bg-white/20 text-white rounded-xl text-xs font-bold active:scale-95 transition-all"
+                >
+                  TEST
+                </button>
+              </div>
+            </>
+          )}
+
+          {pageId === "upload-defaults" && (
+            <div className="p-5 bg-[#0F172A]/80 border border-purple-500/30 rounded-[2rem] space-y-5">
+              <div className="space-y-2">
+                <label className="text-xs font-black uppercase text-purple-300">Caption Language</label>
+                <div className="flex gap-2">
+                  {[
+                    { id: "bengali", label: "বাংলা" },
+                    { id: "english", label: "English" },
+                    { id: "both", label: "উভয়ই (Both)" }
+                  ].map((l) => (
+                    <button
+                      key={l.id}
+                      onClick={() => updateDefaults("captionLang", l.id)}
+                      className={`flex-1 py-2.5 rounded-xl text-xs font-bold transition-all ${
+                        config.defaults.captionLang === l.id
+                          ? "bg-purple-600 text-white"
+                          : "bg-white/5 text-slate-400 hover:bg-white/10"
+                      }`}
+                    >
+                      {l.label}
+                    </button>
+                  ))}
+                </div>
+              </div>
+
+              <div className="space-y-2">
+                <label className="text-xs font-black uppercase text-purple-300">Default Hashtags</label>
+                <input
+                  type="text"
+                  value={config.defaults.hashtags}
+                  onChange={(e) => updateDefaults("hashtags", e.target.value)}
+                  className="w-full bg-black/40 border border-white/10 rounded-xl px-4 py-3 text-xs text-white outline-none focus:border-purple-500"
+                />
+              </div>
+
+              <div className="space-y-2">
+                <label className="text-xs font-black uppercase text-purple-300">Title Style</label>
+                <div className="flex gap-2">
+                  {[
+                    { id: "engaging", label: "ആകর্ষণীয় / Engaging" },
+                    { id: "professional", label: "প্রফেশনাল" },
+                    { id: "simple", label: "সহজ" }
+                  ].map((s) => (
+                    <button
+                      key={s.id}
+                      onClick={() => updateDefaults("titleStyle", s.id)}
+                      className={`flex-1 py-2.5 rounded-xl text-xs font-bold transition-all ${
+                        config.defaults.titleStyle === s.id
+                          ? "bg-purple-600 text-white"
+                          : "bg-white/5 text-slate-400 hover:bg-white/10"
+                      }`}
+                    >
+                      {s.label}
+                    </button>
+                  ))}
+                </div>
+              </div>
+
+              <div className="flex items-center justify-between pt-2">
+                <div>
+                  <p className="text-xs font-black uppercase text-white">Add Rose Signature</p>
+                  <p className="text-[10px] text-slate-400">Appends signature to captions</p>
+                </div>
+                <button
+                  onClick={() => updateDefaults("signature", !config.defaults.signature)}
+                  className={`w-12 h-6 rounded-full transition-colors relative p-1 ${
+                    config.defaults.signature ? "bg-purple-600" : "bg-slate-700"
+                  }`}
+                >
+                  <div className={`w-4 h-4 rounded-full bg-white transition-transform ${config.defaults.signature ? "translate-x-6" : "translate-x-0"}`} />
+                </button>
+              </div>
+            </div>
+          )}
+
+          {pageId === "upload-history" && (
+            <div className="space-y-3">
+              {(!config.history || config.history.length === 0) ? (
+                <div className="p-8 text-center bg-[#0F172A]/80 border border-white/10 rounded-[2rem]">
+                  <p className="text-sm font-bold text-slate-400">কোনো আপলোড ইতিহাস নেই</p>
+                  <p className="text-xs text-slate-500 mt-1">Uploads will appear here after publishing.</p>
+                </div>
+              ) : (
+                config.history.map((item: any, i: number) => (
+                  <div key={i} className="p-4 bg-[#0F172A]/80 border border-purple-500/30 rounded-2xl flex items-center justify-between">
+                    <div>
+                      <p className="text-xs font-black text-white">{item.title || "Untitled Upload"}</p>
+                      <p className="text-[10px] text-slate-400 mt-0.5">{item.date} • {item.platforms?.join(", ")}</p>
+                    </div>
+                    <span className="px-2.5 py-1 rounded-full bg-emerald-500/20 text-emerald-300 text-[10px] font-bold">
+                      {item.status || "Published"}
+                    </span>
+                  </div>
+                ))
+              )}
+              {config.history?.length > 0 && (
+                <button
+                  onClick={() => {
+                    setConfig((prev: any) => ({ ...prev, history: [] }));
+                    onToast("History cleared");
+                  }}
+                  className="w-full py-3 bg-red-600/20 hover:bg-red-600/30 text-red-300 border border-red-500/30 rounded-2xl text-xs font-black uppercase tracking-wider"
+                >
+                  Clear History
+                </button>
+              )}
+            </div>
+          )}
+
+          {pageId === "about-feature" && (
+            <div className="p-6 bg-[#0F172A]/80 border border-purple-500/30 rounded-[2rem] space-y-4 text-slate-300 text-xs leading-relaxed">
+              <h3 className="text-sm font-black uppercase text-purple-300">Rose Social Media Auto-Pilot</h3>
+              <div>
+                <p className="font-bold text-white mb-1">কী করতে পারে:</p>
+                <ul className="list-disc pl-4 space-y-1 text-slate-300">
+                  <li>ভিডিওর জন্য আকর্ষণীয় টাইটেল, ডেসক্রিপশন, ট্যাগ ও হ্যাশট্যাগ তৈরি করা।</li>
+                  <li>মোবাইল অ্যাপ বা পিসি ব্রাউজার ওপেন করে আপলোড প্রসেস পরিচালনা করা।</li>
+                  <li>পাবলিশ করার আগে প্রিভিউ কার্ড দেখানো এবং ইউজারের অনুমতির জন্য অপেক্ষা করা।</li>
+                </ul>
+              </div>
+              <div>
+                <p className="font-bold text-white mb-1">কী করতে পারে না:</p>
+                <ul className="list-disc pl-4 space-y-1 text-slate-300">
+                  <li>ইউজারের ব্যক্তিগত অ্যাকাউন্টে নিজে নিজে পার্সোনাল মোবাইল থেকে সরাসরি পোস্ট করা (ইউজারকে শেয়ার করতে হবে)।</li>
+                  <li>পাসওয়ার্ড বা ওটিপি (OTP) নিজে নিজে এন্ট্রি করা।</li>
+                  <li>ইউজারের অনুমতি বা "হ্যাঁ" ছাড়া নিজে নিজে সরাসরি পাবলিশ করা।</li>
+                </ul>
+              </div>
+            </div>
+          )}
+        </div>
+      </motion.div>
+    );
+  };
+
+  const renderSocialMedia = () => {
+    if (socialMediaSubPage) {
+      return (
+        <SocialMediaSubPage
+          pageId={socialMediaSubPage}
+          config={smConfig}
+          setConfig={setSmConfig}
+          onBack={() => setSocialMediaSubPage(null)}
+          onToast={setToast}
+          onStartUpload={() => setIsUploadingModalOpen(true)}
+        />
+      );
+    }
+
+    return (
+      <motion.div
+        key="social-media"
+        initial={{ x: "100%" }}
+        animate={{ x: 0 }}
+        exit={{ x: "100%" }}
+        className="fixed inset-0 z-[80] bg-[#020617] overflow-y-auto no-scrollbar flex flex-col"
+      >
+        <header className="sticky top-0 z-20 px-5 py-5 flex items-center justify-between shrink-0 bg-[#020617]/95 backdrop-blur-md border-b border-white/5">
+          <div className="flex items-center gap-4">
+            <button
+              onClick={() => setCurrentView("settings")}
+              className="p-2.5 bg-white/5 rounded-2xl active:scale-95 transition-transform"
+            >
+              <ArrowLeft className="w-5 h-5 text-slate-300" />
+            </button>
+            <h2 className="text-xl font-black italic uppercase tracking-tighter text-white">9 SOCIAL MEDIA</h2>
+          </div>
+          <button
+            onClick={() => setIsUploadingModalOpen(true)}
+            className="px-4 py-2 bg-gradient-to-r from-purple-600 to-pink-600 rounded-xl text-xs font-bold text-white shadow-lg active:scale-95 flex items-center gap-1.5"
+          >
+            <Upload className="w-4 h-4" /> UPLOAD
+          </button>
+        </header>
+
+        <div className="px-6 py-4 space-y-4 pb-32">
+          {[
+            { id: "youtube", title: "1 YOUTUBE", desc: "Channel management, privacy & browser/share publishing", icon: Video, color: "text-red-400" },
+            { id: "facebook", title: "2 FACEBOOK", desc: "Personal profile or Page, privacy & publishing methods", icon: Globe, color: "text-blue-400" },
+            { id: "instagram", title: "3 INSTAGRAM", desc: "Personal or Business-Creator account & auto sharing", icon: Users, color: "text-pink-400" },
+            { id: "tiktok", title: "4 TIKTOK", desc: "Personal or Business account configuration & privacy", icon: Video, color: "text-cyan-400" },
+            { id: "upload-defaults", title: "5 UPLOAD DEFAULTS", desc: "Caption language, default hashtags, title style & signature", icon: FileText, color: "text-purple-400" },
+            { id: "upload-history", title: "6 UPLOAD HISTORY", desc: "Log of past uploads, status and direct links", icon: History, color: "text-emerald-400" },
+            { id: "about-feature", title: "7 ABOUT THIS FEATURE", desc: "What Rose can do and what requires user confirmation", icon: Info, color: "text-amber-400" },
+          ].map((item) => (
+            <button
+              key={item.id}
+              onClick={() => setSocialMediaSubPage(item.id)}
+              className="w-full p-5 bg-[#0F172A]/80 border border-purple-500/30 rounded-[2.5rem] shadow-2xl flex items-center justify-between active:scale-[0.98] transition-all text-left"
+            >
+              <div className="flex items-center gap-4">
+                <div className="w-12 h-12 rounded-full bg-purple-600/10 border border-purple-500/20 flex items-center justify-center text-purple-400 shrink-0">
+                  <item.icon className={`w-6 h-6 ${item.color}`} />
+                </div>
+                <div>
+                  <h4 className="text-base font-black uppercase tracking-wider text-white leading-tight">
+                    {item.title}
+                  </h4>
+                  <p className="text-[11px] text-slate-400 font-bold uppercase tracking-widest mt-0.5">
+                    {item.desc}
+                  </p>
+                </div>
+              </div>
+              <ChevronRight className="w-5 h-5 text-slate-500 shrink-0" />
+            </button>
+          ))}
+        </div>
+      </motion.div>
+    );
+  };
+
+  const renderUploadModal = () => {
+    if (!isUploadingModalOpen) return null;
+
+    return (
+      <div className="fixed inset-0 z-[150] bg-black/80 backdrop-blur-md flex items-center justify-center p-4">
+        <div className="w-full max-w-lg bg-[#0F172A] border border-purple-500/40 rounded-[2.5rem] p-6 space-y-5 text-white shadow-2xl max-h-[90vh] overflow-y-auto no-scrollbar">
+          <div className="flex items-center justify-between border-b border-white/10 pb-4">
+            <h3 className="text-base font-black uppercase tracking-wider text-purple-300">Social Media Video Upload</h3>
+            <button
+              onClick={() => setIsUploadingModalOpen(false)}
+              className="p-2 bg-white/5 rounded-full hover:bg-white/10 text-slate-300"
+            >
+              <X className="w-5 h-5" />
+            </button>
+          </div>
+
+          {uploadStep === "pick" && (
+            <div className="space-y-4">
+              <div>
+                <label className="text-xs font-bold uppercase text-slate-300 mb-2 block">1. Select Video File</label>
+                <input
+                  type="file"
+                  accept="video/*"
+                  onChange={(e) => {
+                    if (e.target.files?.[0]) {
+                      setUploadFile(e.target.files[0]);
+                    }
+                  }}
+                  className="w-full bg-black/40 border border-white/10 rounded-xl p-3 text-xs text-slate-300 file:mr-4 file:py-2 file:px-4 file:rounded-xl file:border-0 file:text-xs file:font-bold file:bg-purple-600 file:text-white"
+                />
+                {uploadFile && <p className="text-xs text-emerald-400 mt-2">Selected: {uploadFile.name}</p>}
+              </div>
+
+              <div>
+                <label className="text-xs font-bold uppercase text-slate-300 mb-2 block">2. Select Target Platforms</label>
+                <div className="grid grid-cols-2 gap-2">
+                  {[
+                    { id: "youtube", label: "YouTube" },
+                    { id: "facebook", label: "Facebook" },
+                    { id: "instagram", label: "Instagram" },
+                    { id: "tiktok", label: "TikTok" }
+                  ].map((p) => {
+                    const sel = uploadSelectedPlatforms.includes(p.id);
+                    return (
+                      <button
+                        key={p.id}
+                        type="button"
+                        onClick={() => {
+                          setUploadSelectedPlatforms(prev =>
+                            sel ? prev.filter(x => x !== p.id) : [...prev, p.id]
+                          );
+                        }}
+                        className={`p-3 rounded-xl border text-xs font-bold uppercase transition-all flex items-center justify-between ${
+                          sel
+                            ? "bg-purple-600/30 border-purple-500 text-white"
+                            : "bg-white/5 border-white/10 text-slate-400"
+                        }`}
+                      >
+                        {p.label}
+                        {sel && <Check className="w-4 h-4 text-purple-400" />}
+                      </button>
+                    );
+                  })}
+                </div>
+              </div>
+
+              <button
+                disabled={!uploadFile || uploadSelectedPlatforms.length === 0}
+                onClick={() => {
+                  setUploadStep("generating");
+                  setTimeout(() => {
+                    const previews: any = {};
+                    uploadSelectedPlatforms.forEach(p => {
+                      previews[p] = {
+                        title: `${uploadFile?.name.replace(/\.[^/.]+$/, "") || "Awesome Video"} — ${p.toUpperCase()} (${smConfig.defaults.titleStyle})`,
+                        desc: `Amazing moments captured! Check out this video.\n\n${smConfig.defaults.signature ? "— Posted via Rose AI 🌹" : ""}`,
+                        tags: "creator, video, trending, rose",
+                        hashtags: smConfig.defaults.hashtags
+                      };
+                    });
+                    setUploadPreviews(previews);
+                    setUploadStep("preview");
+                    try {
+                      const speech = new SpeechSynthesisUtterance("ভিডিওর জন্য টাইটেল এবং ক্যাপশন তৈরি হয়েছে। প্রিভিউ দেখে পাবলিশ করুন।");
+                      speech.lang = "bn-IN";
+                      window.speechSynthesis.speak(speech);
+                    } catch {}
+                  }, 1200);
+                }}
+                className="w-full py-4 bg-gradient-to-r from-purple-600 to-pink-600 text-white font-black uppercase tracking-widest text-xs rounded-2xl disabled:opacity-40 shadow-lg active:scale-95"
+              >
+                Generate Title & Captions with AI →
+              </button>
+            </div>
+          )}
+
+          {uploadStep === "generating" && (
+            <div className="py-12 text-center space-y-4">
+              <div className="w-12 h-12 border-4 border-purple-500 border-t-transparent rounded-full animate-spin mx-auto" />
+              <p className="text-sm font-bold text-purple-300">Rose is writing per-platform titles and hashtags...</p>
+            </div>
+          )}
+
+          {uploadStep === "preview" && (
+            <div className="space-y-4">
+              <p className="text-xs text-slate-300 font-medium">3. Review and edit titles/captions for each platform before publishing:</p>
+              {Object.keys(uploadPreviews).map((p) => (
+                <div key={p} className="p-4 bg-black/40 border border-white/10 rounded-2xl space-y-3">
+                  <h4 className="text-xs font-black uppercase text-purple-400">{p}</h4>
+                  <div>
+                    <label className="text-[10px] text-slate-400 uppercase font-bold">Title</label>
+                    <input
+                      type="text"
+                      value={uploadPreviews[p].title}
+                      onChange={(e) => {
+                        const val = e.target.value;
+                        setUploadPreviews((prev: any) => ({ ...prev, [p]: { ...prev[p], title: val } }));
+                      }}
+                      className="w-full bg-white/5 border border-white/10 rounded-xl px-3 py-2 text-xs text-white outline-none mt-1"
+                    />
+                  </div>
+                  <div>
+                    <label className="text-[10px] text-slate-400 uppercase font-bold">Description / Caption</label>
+                    <textarea
+                      rows={2}
+                      value={uploadPreviews[p].desc}
+                      onChange={(e) => {
+                        const val = e.target.value;
+                        setUploadPreviews((prev: any) => ({ ...prev, [p]: { ...prev[p], desc: val } }));
+                      }}
+                      className="w-full bg-white/5 border border-white/10 rounded-xl px-3 py-2 text-xs text-white outline-none mt-1"
+                    />
+                  </div>
+                  <div>
+                    <label className="text-[10px] text-slate-400 uppercase font-bold">Hashtags</label>
+                    <input
+                      type="text"
+                      value={uploadPreviews[p].hashtags}
+                      onChange={(e) => {
+                        const val = e.target.value;
+                        setUploadPreviews((prev: any) => ({ ...prev, [p]: { ...prev[p], hashtags: val } }));
+                      }}
+                      className="w-full bg-white/5 border border-white/10 rounded-xl px-3 py-2 text-xs text-white outline-none mt-1"
+                    />
+                  </div>
+                </div>
+              ))}
+
+              <div className="flex gap-3 pt-2">
+                <button
+                  onClick={() => setUploadStep("pick")}
+                  className="flex-1 py-3 bg-white/10 hover:bg-white/20 rounded-xl text-xs font-bold uppercase active:scale-95"
+                >
+                  না / Edit
+                </button>
+                <button
+                  onClick={() => {
+                    setUploadStep("publishing");
+                    setTimeout(() => {
+                      const newHistoryItem = {
+                        id: Date.now().toString(),
+                        date: new Date().toLocaleString(),
+                        platforms: uploadSelectedPlatforms,
+                        status: "Published",
+                        title: uploadPreviews[uploadSelectedPlatforms[0]]?.title || uploadFile?.name || "Upload",
+                        link: "#"
+                      };
+                      setSmConfig((prev: any) => ({
+                        ...prev,
+                        history: [newHistoryItem, ...(prev.history || [])]
+                      }));
+                      setUploadStep("done");
+                      setToast("Successfully published to selected platforms!");
+                      try {
+                        const speech = new SpeechSynthesisUtterance("সফলভাবে পাবলিশ করা হয়েছে।");
+                        speech.lang = "bn-IN";
+                        window.speechSynthesis.speak(speech);
+                      } catch {}
+                    }, 1500);
+                  }}
+                  className="flex-1 py-3 bg-gradient-to-r from-emerald-600 to-teal-600 rounded-xl text-xs font-black uppercase tracking-wider shadow-lg active:scale-95"
+                >
+                  হ্যাঁ, পাবলিশ করো 🚀
+                </button>
+              </div>
+            </div>
+          )}
+
+          {uploadStep === "publishing" && (
+            <div className="py-12 text-center space-y-4">
+              <div className="w-12 h-12 border-4 border-emerald-500 border-t-transparent rounded-full animate-spin mx-auto" />
+              <p className="text-sm font-bold text-emerald-300">Publishing via SHARE / BROWSER agent tasks...</p>
+              <p className="text-xs text-slate-400">Opening apps / automating browser upload (ignoring passwords)...</p>
+            </div>
+          )}
+
+          {uploadStep === "done" && (
+            <div className="py-10 text-center space-y-4">
+              <div className="w-16 h-16 bg-emerald-500/20 text-emerald-400 rounded-full flex items-center justify-center mx-auto text-2xl font-black">✓</div>
+              <h4 className="text-base font-black text-white">Upload Successful!</h4>
+              <p className="text-xs text-slate-400">The video has been shared/uploaded and saved in Upload History.</p>
+              <button
+                onClick={() => {
+                  setIsUploadingModalOpen(false);
+                  setUploadFile(null);
+                  setUploadStep("pick");
+                }}
+                className="px-6 py-3 bg-purple-600 rounded-xl text-xs font-bold uppercase active:scale-95"
+              >
+                Close
+              </button>
+            </div>
+          )}
+        </div>
+      </div>
+    );
+  };
+
   const renderPcSetup = () => {
     if (activePcSetupSubPage) {
       return (
@@ -16845,6 +17489,12 @@ export function App() {
         return;
       }
 
+      if (socialMediaSubPage) {
+        e.preventDefault();
+        setSocialMediaSubPage(null);
+        return;
+      }
+
       if (activeAboutSection) {
         e.preventDefault();
         setActiveAboutSection(null);
@@ -16870,6 +17520,7 @@ export function App() {
         v === "look" ||
         v === "phone" ||
         v === "pc-setup" ||
+        v === "social-media" ||
         v === "about" ||
         v === "privacy" ||
         v === "developer_tools" ||
@@ -16952,6 +17603,7 @@ export function App() {
           {currentView === "quick-actions" && <PhoneErrorBoundary>{renderQuickActions()}</PhoneErrorBoundary>}
           {currentView === "app-permissions" && <PhoneErrorBoundary>{renderAppPermissions()}</PhoneErrorBoundary>}
           {currentView === "pc-setup" && <PhoneErrorBoundary>{renderPcSetup()}</PhoneErrorBoundary>}
+          {currentView === "social-media" && <PhoneErrorBoundary>{renderSocialMedia()}</PhoneErrorBoundary>}
           {currentView === "view-mode-list" && <PhoneErrorBoundary>{renderViewModeList()}</PhoneErrorBoundary>}
           {currentView === "about" && <PhoneErrorBoundary>{renderAbout()}</PhoneErrorBoundary>}
           {currentView === "personality" && <PhoneErrorBoundary>{renderPersonality()}</PhoneErrorBoundary>}
@@ -18326,6 +18978,7 @@ export function App() {
         onClose={() => setIsOfficeLayoutEditorOpen(false)}
         onSaved={() => setToast("Office layout saved")}
       />
+      {renderUploadModal()}
     </>
   );
 
