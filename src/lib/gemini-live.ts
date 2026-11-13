@@ -839,18 +839,28 @@ export class GeminiLiveSession {
   }
 
 
-  public injectSystemInstructionToSpeak(sentence: string) {
-    if (this.ws && this.ws.readyState === WebSocket.OPEN && this.isSetupComplete) {
+  public injectSystemInstructionToSpeak(sentence: string): boolean {
+    if (
+      !this.isFallbackMode &&
+      this.ws &&
+      this.ws.readyState === WebSocket.OPEN &&
+      this.isSetupComplete
+    ) {
       try {
+        this.interruptPlayback();
+        this.liveAssistantBuffer = '';
+        this.isRoseTurnActive = false;
         this.ws.send(
           JSON.stringify({
             realtimeInput: {
-              text: `[SYSTEM INSTRUCTION: Say exactly this to the user in your sweet natural Bengali voice: "${sentence}". Do not add anything else.]`,
+              text: `Say exactly this to the user: "${sentence}". Do not add anything else and do not give your own answer.`,
             },
           })
         );
+        return true;
       } catch {}
     }
+    return false;
   }
 
   public supportsVideo(): boolean {
@@ -2218,10 +2228,7 @@ export class GeminiLiveSession {
               output: {
                 ok: phoneRes.ok,
                 message: phoneRes.message,
-                instruction:
-                  name === 'confirm_action' || name === 'phone_confirm'
-                    ? `Say ONLY this single short sentence with the result, nothing extra: "${phoneRes.message}"`
-                    : `Say ONLY this exact sentence in Bengali once verbatim, with nothing before or after: "${phoneRes.message}"`,
+                instruction: `Say exactly this to the user: "${phoneRes.message}". Do not add anything else and do not give your own answer.`,
                 ...(phoneRes.contacts ? { contacts: phoneRes.contacts } : {}),
               },
             },
@@ -2357,7 +2364,12 @@ export class GeminiLiveSession {
       .replace(/[\r\n\t\s"']+/g, '')
       .trim();
 
-    // Mark old session as "closing", close WebSocket, and disconnect all mic streams & audio nodes BEFORE opening the new one
+    // Close any older session/socket and disconnect all mic streams & audio nodes BEFORE opening the new one
+    if (activeGlobalLiveSession && activeGlobalLiveSession !== this) {
+      try {
+        activeGlobalLiveSession.stop();
+      } catch {}
+    }
     const oldSessionId = this.sessionId;
     const newSessionId = `live_${++globalLiveSessionCounter}_${Date.now()}`;
     this.sessionLifecycleState = 'closing';
@@ -2517,6 +2529,24 @@ export class GeminiLiveSession {
     if (content.outputTranscription?.text) {
       this.awaitingReplySince = 0;
       this.watchdogReconnectedForTurn = false;
+      // Flush any buffered user inputTranscription to the USER bubble before starting Rose's bubble
+      const pendingUserText = this.liveUserBuffer.trim();
+      if (pendingUserText) {
+        this.liveUserBuffer = '';
+        if (!this.hasDisallowedTranscriptScript(pendingUserText)) {
+          this.liveStreetAllowed = passesStreetModeFilter(
+            pendingUserText,
+            this.options.assistantName,
+            consumePushToTalkTurnFlag()
+          );
+          if (this.liveStreetAllowed) {
+            voiceDebugStore.recordFirstTranscript(pendingUserText);
+            this.options.onTranscription?.('user', pendingUserText, true);
+          }
+        } else {
+          this.options.onTranscription?.('user', '', true);
+        }
+      }
       if (!this.liveStreetAllowed) {
         this.stopAllAudioPlayback();
         return;
@@ -2633,12 +2663,16 @@ export class GeminiLiveSession {
           this.options.onTranscription?.('assistant', goodbyeText, true);
         }
         this.options.onTurnComplete?.();
-        void (async () => {
-          try {
-            await this.speakReply(this.cachedApiKey, goodbyeText);
-          } catch {}
+        if (this.isFallbackMode && (!this.ws || this.ws.readyState !== WebSocket.OPEN)) {
+          void (async () => {
+            try {
+              await this.speakReply(this.cachedApiKey, goodbyeText);
+            } catch {}
+            this.triggerEndCallCleanup();
+          })();
+        } else {
           this.triggerEndCallCleanup();
-        })();
+        }
         return;
       }
       this.scheduleReturnToListening();
@@ -2651,6 +2685,7 @@ export class GeminiLiveSession {
   // =========================================================================
   private activateFallbackPath(apiKey: string) {
     if (this.wasStoppedByUser) return;
+    this.releaseExistingSocketOnly('fallback_mode');
     this.isFallbackMode = true;
     this.activeMode = 'fallback';
     this.socketStatus = 'open';
@@ -3421,6 +3456,10 @@ export class GeminiLiveSession {
     text: string,
     prestartedTtsMap?: Map<string, Promise<any>>
   ): Promise<void> {
+    // Fallback TTS is disabled while a live WebSocket session exists
+    if (!this.isFallbackMode || (this.ws && this.ws.readyState === WebSocket.OPEN && this.isSetupComplete)) {
+      return;
+    }
     const filteredText = cleanAssistantReplyText(text, this.options.language);
     const cleanText = filteredText.replace(/[*#_~`]/g, '').trim();
     if (!cleanText || !this.isCurrentSession()) return;
@@ -3613,7 +3652,13 @@ export class GeminiLiveSession {
 
   private speakViaBrowserSpeechSynthesis(text: string): Promise<boolean> {
     return new Promise((resolve) => {
-      if (typeof window === 'undefined' || !('speechSynthesis' in window) || !this.isCurrentSession()) {
+      if (
+        !this.isFallbackMode ||
+        (this.ws && this.ws.readyState === WebSocket.OPEN && this.isSetupComplete) ||
+        typeof window === 'undefined' ||
+        !('speechSynthesis' in window) ||
+        !this.isCurrentSession()
+      ) {
         resolve(false);
         return;
       }

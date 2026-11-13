@@ -205,7 +205,11 @@ import {
   executePhoneToolActionByName,
   routePhoneActionFromText,
   hasPendingConfirmAction,
+  hasPendingCancelAction,
+  hasPendingPhoneInteraction,
   handlePendingPhoneConfirmation,
+  handlePendingPhoneUserReply,
+  cancelPendingDelayedAction,
 } from "./lib/phone";
 import { Folder, ShieldCheck } from "lucide-react";
 
@@ -1447,6 +1451,7 @@ const VoiceCheckView = ({
 
   // 5. TEST VOICE (Real sample speech with Gemini TTS first, then Browser fallback)
   const handleTestVoice = async () => {
+    if (isLiveSessionActive()) return;
     if (voiceTestingState === "playing") return;
     const vol = prefs.voiceVolume ?? 80;
     if (vol <= 0) {
@@ -2851,7 +2856,7 @@ export function App() {
           liveSessionRef.current.injectSystemInstructionToSpeak(
             `${member.bengaliName}-এর কাজ সম্পন্ন হয়েছে। ${text}`
           );
-        } else if (isAssistantEnabled) {
+        } else if (isAssistantEnabled && !isLiveCallActiveNow()) {
           try {
             const spokenReport = `${member.bengaliName}-এর কাজ সম্পন্ন হয়েছে। ${text}`;
             directGeminiTTS({
@@ -3313,24 +3318,60 @@ export function App() {
   const [hasPendingPhoneConfirm, setHasPendingPhoneConfirm] = useState<boolean>(() =>
     hasPendingConfirmAction()
   );
+  const [hasPendingPhoneCancel, setHasPendingPhoneCancel] = useState<boolean>(() =>
+    hasPendingCancelAction()
+  );
   const [pendingConfirmTick, setPendingConfirmTick] = useState<number>(0);
+  const [pendingCancelTick, setPendingCancelTick] = useState<number>(0);
 
   useEffect(() => {
     if (typeof window === "undefined") return;
     const syncPending = (e?: Event) => {
       const detail = (e as CustomEvent)?.detail;
-      const next =
+      const nextConfirm =
         detail && typeof detail.hasPendingConfirm === "boolean"
           ? detail.hasPendingConfirm
           : hasPendingConfirmAction();
-      setHasPendingPhoneConfirm(next);
-      if (next) {
+      const nextCancel =
+        detail && typeof detail.hasPendingCancel === "boolean"
+          ? detail.hasPendingCancel
+          : hasPendingCancelAction();
+      setHasPendingPhoneConfirm(nextConfirm);
+      setHasPendingPhoneCancel(nextCancel);
+      if (nextConfirm) {
         setPendingConfirmTick((t) => t + 1);
+      }
+      if (nextCancel) {
+        setPendingCancelTick((t) => t + 1);
+      }
+    };
+    const onDelayedResult = (e: Event) => {
+      const detail = (e as CustomEvent)?.detail;
+      const reply = String(detail?.reply || "").trim();
+      if (!reply) return;
+      if (liveSessionRef.current) {
+        const spokeLive = liveSessionRef.current.injectSystemInstructionToSpeak(reply);
+        if (!spokeLive) {
+          pushSharedMessageRef.current({
+            role: "rose",
+            text: reply,
+            replyMode: "text",
+          });
+        }
+      } else {
+        pushSharedMessageRef.current({
+          role: "rose",
+          text: reply,
+          replyMode: "text",
+        });
       }
     };
     window.addEventListener("rose-pending-phone-state-changed", syncPending as EventListener);
-    return () =>
+    window.addEventListener("rose-delayed-phone-result", onDelayedResult as EventListener);
+    return () => {
       window.removeEventListener("rose-pending-phone-state-changed", syncPending as EventListener);
+      window.removeEventListener("rose-delayed-phone-result", onDelayedResult as EventListener);
+    };
   }, []);
 
   useEffect(() => {
@@ -3340,6 +3381,14 @@ export function App() {
     }, 30200);
     return () => clearTimeout(timer);
   }, [hasPendingPhoneConfirm, pendingConfirmTick]);
+
+  useEffect(() => {
+    if (!hasPendingPhoneCancel) return;
+    const timer = setTimeout(() => {
+      setHasPendingPhoneCancel(hasPendingCancelAction());
+    }, 3500);
+    return () => clearTimeout(timer);
+  }, [hasPendingPhoneCancel, pendingCancelTick]);
 
   useEffect(() => {
     if (typeof window === "undefined") return;
@@ -5208,7 +5257,7 @@ export function App() {
       );
 
       incrementUsage("answer");
-      if (mode === "voice" && accumulatedText) {
+      if (mode === "voice" && accumulatedText && !isLiveCallActiveNow()) {
         speakSentenceViaGeminiTTS(accumulatedText);
       }
     } catch (error: any) {
@@ -6024,7 +6073,7 @@ export function App() {
   // Prefetch Gemini TTS audio for a sentence
   const requestGeminiTTSAudio = useCallback(
     async (text: string, token: number): Promise<{ audio?: string; error?: string; modelUsed?: string }> => {
-      if (speechTokenRef.current !== token) return {};
+      if (isLiveCallActiveNow() || speechTokenRef.current !== token) return {};
       try {
         const currentKey = getGeminiKey() || apiKeysRef.current.gemini || "";
         const sanitizedKey = currentKey.replace(/[\r\n\t\s"']+/g, "").trim();
@@ -6321,7 +6370,7 @@ export function App() {
       }
 
       const voices = await waitForVoices();
-      if (speechTokenRef.current !== token) return false;
+      if (isLiveCallActiveNow() || speechTokenRef.current !== token) return false;
 
       const requestedLang =
         prefsRef.current.language && prefsRef.current.language !== "auto"
@@ -6456,7 +6505,7 @@ export function App() {
         };
 
         const speakNow = () => {
-          if (settled || speechTokenRef.current !== token) return;
+          if (isLiveCallActiveNow() || settled || speechTokenRef.current !== token) return;
           try {
             window.speechSynthesis.speak(utterance);
             window.speechSynthesis.resume();
@@ -7442,17 +7491,47 @@ export function App() {
   const handlePendingPhoneDecisionButton = useCallback(async (decision: "yes" | "no") => {
     const res = await handlePendingPhoneConfirmation(decision);
     setHasPendingPhoneConfirm(hasPendingConfirmAction());
+    setHasPendingPhoneCancel(hasPendingCancelAction());
     if (res.handled && res.reply) {
-      pushSharedMessageRef.current({
-        role: "rose",
-        text: res.reply,
-        replyMode: liveSessionRef.current ? "voice" : "text",
-      });
       if (liveSessionRef.current) {
-        try {
-          liveSessionRef.current.interruptPlayback();
-          liveSessionRef.current.injectSystemInstructionToSpeak(res.reply);
-        } catch {}
+        const spokeLive = liveSessionRef.current.injectSystemInstructionToSpeak(res.reply);
+        if (!spokeLive) {
+          pushSharedMessageRef.current({
+            role: "rose",
+            text: res.reply,
+            replyMode: "text",
+          });
+        }
+      } else {
+        pushSharedMessageRef.current({
+          role: "rose",
+          text: res.reply,
+          replyMode: "text",
+        });
+      }
+    }
+  }, []);
+
+  const handleCancelDelayedPhoneButton = useCallback(async () => {
+    const res = cancelPendingDelayedAction();
+    setHasPendingPhoneConfirm(hasPendingConfirmAction());
+    setHasPendingPhoneCancel(hasPendingCancelAction());
+    if (res.handled && res.reply) {
+      if (liveSessionRef.current) {
+        const spokeLive = liveSessionRef.current.injectSystemInstructionToSpeak(res.reply);
+        if (!spokeLive) {
+          pushSharedMessageRef.current({
+            role: "rose",
+            text: res.reply,
+            replyMode: "text",
+          });
+        }
+      } else {
+        pushSharedMessageRef.current({
+          role: "rose",
+          text: res.reply,
+          replyMode: "text",
+        });
       }
     }
   }, []);
@@ -9062,13 +9141,22 @@ export function App() {
             : rawClean;
         if (!cleanText) return;
         
-        // If Rose starts speaking, clear any user placeholder that never got real text
+        // If Rose starts speaking, finalize any unfinalized user stream bubble as 'user' cleanly (or drop placeholders)
         if (speaker === 'rose') {
-          setChatHistory((prev) =>
-            prev.filter(
-              (m) => !(m.id === 'live-stream-user' && isPlaceholderText((m.text || '').trim()))
-            )
-          );
+          setChatHistory((prev) => {
+            const hasStreamUser = prev.some((m) => m.id === 'live-stream-user');
+            if (!hasStreamUser) return prev;
+            const finalizedId = `msg-${Date.now()}-${Math.random().toString(36).substring(2, 7)}`;
+            const next = prev
+              .filter(
+                (m) => !(m.id === 'live-stream-user' && isPlaceholderText((m.text || '').trim()))
+              )
+              .map((m) =>
+                m.id === 'live-stream-user' ? { ...m, id: finalizedId, role: 'user' as const } : m
+              );
+            chatHistoryRef.current = next;
+            return next;
+          });
         }
 
         updateLiveCaption(speaker, cleanText);
@@ -9137,6 +9225,7 @@ export function App() {
                 idx === existingIdx
                   ? {
                       ...m,
+                      role: speaker,
                       text: cleanText,
                       content: cleanText,
                       replyMode: "voice",
@@ -9175,6 +9264,17 @@ export function App() {
               ? ADMIN_DISPLAY_NAME
               : getEffectiveUserName(settingsRef.current.ownerName, OWNER_NAME);
             void (async () => {
+              // Handle pending 3s cancel ("না"/"থামো"/cancel/no) or contact choice ("১"/"২") if active
+              if (hasPendingPhoneInteraction()) {
+                const pendingRes = await handlePendingPhoneUserReply(cleanText);
+                if (pendingRes.handled && pendingRes.reply) {
+                  if (!assistantAlreadyReplied) {
+                    session.injectSystemInstructionToSpeak(pendingRes.reply);
+                  }
+                  return;
+                }
+              }
+
               let res = await routePcCommandMessage(cleanText, {
                 userName: liveOwnerName,
                 source: isPcLayoutActive ? 'pc' : 'mobile',
@@ -9204,7 +9304,6 @@ export function App() {
                 });
               }
               if (res.matched && res.roseReply && res.type !== 'phone' && !assistantAlreadyReplied) {
-                session.interruptPlayback();
                 session.injectSystemInstructionToSpeak(res.roseReply);
               }
             })();
@@ -10834,6 +10933,7 @@ export function App() {
     overrideSpeed?: number,
     overridePitch?: number
   ) => {
+    if (isLiveCallActiveNow()) return;
     if (isTestingVoiceSettings) return;
     ensureAudioContext();
     const vol =
@@ -10954,11 +11054,14 @@ export function App() {
       void (async () => {
         const phoneRouted = await routePhoneActionFromText(text);
         if (phoneRouted.matched && phoneRouted.reply) {
-          pushSharedMessage({
-            role: "rose",
-            text: phoneRouted.reply,
-            replyMode: "text",
-          });
+          const spokeViaLive = liveSessionRef.current?.injectSystemInstructionToSpeak(phoneRouted.reply);
+          if (!spokeViaLive) {
+            pushSharedMessage({
+              role: "rose",
+              text: phoneRouted.reply,
+              replyMode: "text",
+            });
+          }
           return;
         }
         try {
@@ -11321,6 +11424,17 @@ export function App() {
                           className="flex-1 py-3 px-4 rounded-2xl bg-rose-600/85 hover:bg-rose-500 text-white text-base font-bold shadow-lg active:scale-95 transition-all flex items-center justify-center gap-1.5"
                         >
                           না ✕
+                        </button>
+                      </div>
+                    )}
+                    {!isUser && !hasPendingPhoneConfirm && hasPendingPhoneCancel && idx === lastRoseBubbleIdx && (
+                      <div className="flex items-center mt-2 pl-12">
+                        <button
+                          type="button"
+                          onClick={() => void handleCancelDelayedPhoneButton()}
+                          className="px-3.5 py-1.5 rounded-xl bg-rose-600/85 hover:bg-rose-500 text-white text-xs font-bold shadow active:scale-95 transition-all"
+                        >
+                          বাতিল
                         </button>
                       </div>
                     )}

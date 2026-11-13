@@ -12,6 +12,7 @@ const LEGACY_CONTACTS_STORAGE_KEY = 'iyabd_saved_contacts';
 const CONTACT_ALIAS_STORAGE_KEY = 'rose_contact_alias';
 const PENDING_PHONE_STATE_KEY = 'rose_pending_phone_state';
 const PENDING_TIMEOUT_MS = 30 * 1000; // 30 seconds
+const AUTO_EXECUTE_DELAY_MS = 3000; // 3 seconds for calls and whatsapp_send
 const DEDUPE_WINDOW_MS = 2000;
 
 export type PhoneActionType =
@@ -44,6 +45,14 @@ type PendingPhoneState =
       postText?: string;
       searchApp?: SearchAppId;
       searchQuery?: string;
+      timestamp: number;
+    }
+  | {
+      type: 'awaiting_auto_cancel';
+      actionType: 'phone_call' | 'whatsapp_call' | 'whatsapp_message';
+      contact: RoseContact;
+      video?: boolean;
+      messageText?: string;
       timestamp: number;
     }
   | {
@@ -90,6 +99,7 @@ type PendingPhoneState =
 let sessionDeviceContacts: RoseContact[] | null = null;
 const aiSpellingCache = new Map<string, string[]>();
 let memoryPendingState: PendingPhoneState | null = null;
+let activeAutoExecuteTimer: ReturnType<typeof setTimeout> | null = null;
 let lastActionCache: { signature: string; reply: string; timestamp: number } | null = null;
 
 export const APP_PACKAGE_MAP: Record<string, { pkg: string; label: string }> = {
@@ -295,12 +305,77 @@ function isStandalonePhoneNumber(raw: string): string | null {
   return null;
 }
 
+const WORD_CHAR_RE = /[\p{L}\p{N}\p{M}]/u;
+
+function hasWholePhrase(text: string, phrase: string): boolean {
+  const haystack = String(text || '').toLowerCase();
+  const needle = String(phrase || '').trim().toLowerCase();
+  if (!haystack || !needle) return false;
+  let fromIndex = 0;
+  while (fromIndex <= haystack.length - needle.length) {
+    const idx = haystack.indexOf(needle, fromIndex);
+    if (idx === -1) break;
+    const beforeChar = idx > 0 ? haystack[idx - 1] : '';
+    const afterIdx = idx + needle.length;
+    const afterChar = afterIdx < haystack.length ? haystack[afterIdx] : '';
+    const beforeOk = !beforeChar || !WORD_CHAR_RE.test(beforeChar);
+    const afterOk = !afterChar || !WORD_CHAR_RE.test(afterChar);
+    if (beforeOk && afterOk) {
+      return true;
+    }
+    fromIndex = idx + 1;
+  }
+  return false;
+}
+
+function hasAnyWholePhrase(text: string, phrases: string[]): boolean {
+  return phrases.some((p) => hasWholePhrase(text, p));
+}
+
+const NON_CONTACT_STOPWORDS = new Set([
+  'আমি', 'আমাকে', 'আমার', 'আমরা', 'আমাদের',
+  'তুমি', 'তোমাকে', 'তোমার', 'তোমরা', 'তোমাদের', 'তোর', 'তোকে',
+  'আপনি', 'আপনাকে', 'আপনার', 'আপনারা',
+  'সে', 'তাকে', 'তার', 'তারা', 'ও', 'ওকে', 'ওর', 'উনি', 'উনাকে', 'উনার',
+  'এটা', 'ওটা', 'সেটা', 'এইটা', 'ওইটা', 'এগুলো', 'ওগুলো',
+  'একটা', 'একটি', 'কিছু', 'কোনো', 'কোন', 'সব', 'সবাই', 'কেউ', 'কারো', 'কাউকে',
+  'কী', 'কি', 'কেন', 'কোথায়', 'কখন', 'কেমন', 'কত',
+  'হ্যাঁ', 'না', 'নাহ', 'ঠিক', 'ভালো', 'খারাপ', 'নতুন', 'পুরনো',
+  'পড়ালেখা', 'পড়াশোনা', 'বই', 'বইটা', 'ছবি', 'ছবিটা', 'ভিডিও', 'ভিডিওটা',
+  'ফাইল', 'ইমেইল', 'গান', 'খবর', 'টাকা', 'কাজ', 'অ্যাপ',
+  'কল', 'ফোন', 'মেসেজ', 'বার্তা', 'পাঠাও', 'দাও', 'করো', 'কর', 'করুন',
+  'লেখা', 'লেখো', 'লিখো', 'হোয়াটসঅ্যাপ', 'হোয়াটসঅ্যাপ', 'whatsapp',
+  'call', 'phone', 'message', 'text', 'send', 'this', 'that', 'it', 'me', 'you', 'someone', 'anyone',
+]);
+
+function isValidExtractedContactName(candidate: string): boolean {
+  const clean = String(candidate || '').trim();
+  if (!clean) return false;
+  if (extractPhoneNumberFromText(clean)) return true;
+  if (clean.length < 2) return false;
+  const lower = clean.toLowerCase();
+  if (NON_CONTACT_STOPWORDS.has(lower)) return false;
+  const tokens = lower.split(/\s+/).filter(Boolean);
+  if (tokens.length === 0) return false;
+  if (tokens.every((t) => NON_CONTACT_STOPWORDS.has(t))) return false;
+  return true;
+}
+
 export function isWhatsAppRequest(text: string): boolean {
-  return /(?:whatsapp|হোয়াটসঅ্যাপ|হোয়াটসঅ্যাপ|\bwa\b)/i.test(String(text || ''));
+  const s = String(text || '');
+  return hasAnyWholePhrase(s, [
+    'whatsapp',
+    'wa',
+    'হোয়াটসঅ্যাপ',
+    'হোয়াটসঅ্যাপ',
+    'হোয়াটসঅ্যাপে',
+    'হোয়াটসঅ্যাপে',
+  ]);
 }
 
 export function isVideoCallRequest(text: string): boolean {
-  return /(?:ভিডিও\s*কল|ভিডিওতে\s*কল|video\s*call|cam\s*call|\bvideo\b)/i.test(String(text || ''));
+  const s = String(text || '');
+  return hasAnyWholePhrase(s, ['ভিডিও কল', 'ভিডিওতে কল', 'video call', 'cam call', 'video']);
 }
 
 export function openCallOrWhatsAppLink(rawNumber: string, channel: 'whatsapp' | 'tel' = 'whatsapp'): string {
@@ -430,16 +505,16 @@ export function cleanContactQueryName(raw: string): string {
   if (!s) return '';
 
   s = s.replace(/^(?:হ্যালো\s+|হাই\s+|এই\s+|শোনো\s+)?(?:রোজ|rose)\s*[,।:!-]?\s*/i, '');
-  s = s.replace(/\b(?:please|প্লিজ|একটু|এখনই|এখন|তাড়াতাড়ি)\b/gi, ' ');
+  s = s.replace(/(?:^|\s)(?:please|প্লিজ|একটু|এখনই|এখন|তাড়াতাড়ি)(?=$|\s)/gi, ' ');
   s = s.replace(
-    /(?:হোয়াটসঅ্যাপে|হোয়াটসঅ্যাপে|হোয়াটসঅ্যাপ|হোয়াটসঅ্যাপ|whatsapp[-\s]*এ|on\s+whatsapp|in\s+whatsapp|via\s+whatsapp|whatsapp|নরমাল|সিমে|সিম|ফোনে|ডায়ালে|ভিডিওতে|ভিডিও|video)/gi,
+    /(?:^|\s)(?:হোয়াটসঅ্যাপে|হোয়াটসঅ্যাপে|হোয়াটসঅ্যাপ|হোয়াটসঅ্যাপ|whatsapp[-\s]*এ|on\s+whatsapp|in\s+whatsapp|via\s+whatsapp|whatsapp|নরমাল|সিমে|সিম|ফোনে|ডায়ালে|ভিডিওতে|ভিডিও|video)(?=$|\s)/gi,
     ' '
   );
   s = s.replace(
-    /(?:এর\s+নম্বরে\s+|নম্বরে\s+)?(?:একটা\s+|একটি\s+)?(?:কল|ফোন|ডায়াল|মেসেজ|ম্যাসেজ|বার্তা|call|dial|phone|message|msg)\s*(?:দাও|দেও|দে|দেন|দিন|করো|কর|করুন|করে\s*দাও|করে\s*দে|দেব|দিব|করব|করো\s*তো|দাও\s*তো|লেখো|লিখো|পাঠাও)?.*/i,
+    /(?:^|\s)(?:এর\s+নম্বরে\s+|নম্বরে\s+)?(?:একটা\s+|একটি\s+)?(?:কল|ফোন|মেসেজ|call|phone|message|text)\s*(?:দাও|দেও|দে|দেন|দিন|করো|কর|করুন|করে\s*দাও|করে\s*দে|দেব|দিব|করব|করো\s*তো|দাও\s*তো|লিখে\s*পাঠাও|পাঠাও)?.*/i,
     ''
   );
-  s = s.replace(/\b(?:call|dial|phone|ring|message|msg|send|text)\b/gi, ' ');
+  s = s.replace(/(?:^|\s)(?:call|dial|phone|ring|message|msg|send|text)(?=$|\s)/gi, ' ');
   s = s.replace(/[-–—,:।.?!"'()[\]]/g, ' ').replace(/\s+/g, ' ').trim();
   s = s.replace(/\s+(?:কে|রে|এর|তে|এ)$/i, '').trim();
   if (s.endsWith('কে') && s.length > 2) {
@@ -923,9 +998,22 @@ export async function searchContacts(
 // Pending State Management (Confirmations, Disambiguation, Alias Learning)
 // ============================================================================
 
+function clearAutoExecuteTimer(): void {
+  if (activeAutoExecuteTimer) {
+    clearTimeout(activeAutoExecuteTimer);
+    activeAutoExecuteTimer = null;
+  }
+}
+
 function getPendingState(): PendingPhoneState | null {
   const now = Date.now();
-  if (memoryPendingState && now - memoryPendingState.timestamp < PENDING_TIMEOUT_MS) {
+  const isStateValid = (st: PendingPhoneState | null): boolean => {
+    if (!st) return false;
+    const ttl = st.type === 'awaiting_auto_cancel' ? AUTO_EXECUTE_DELAY_MS + 1500 : PENDING_TIMEOUT_MS;
+    return now - Number(st.timestamp || 0) < ttl;
+  };
+
+  if (memoryPendingState && isStateValid(memoryPendingState)) {
     return memoryPendingState;
   }
   memoryPendingState = null;
@@ -935,7 +1023,7 @@ function getPendingState(): PendingPhoneState | null {
       const raw = localStorage.getItem(PENDING_PHONE_STATE_KEY);
       if (raw) {
         const parsed = JSON.parse(raw);
-        if (parsed && now - Number(parsed.timestamp || 0) < PENDING_TIMEOUT_MS) {
+        if (isStateValid(parsed)) {
           memoryPendingState = parsed;
           return memoryPendingState;
         } else {
@@ -950,13 +1038,23 @@ function getPendingState(): PendingPhoneState | null {
 function isConfirmPromptState(state: PendingPhoneState | null): boolean {
   return Boolean(
     state &&
-      (state.type === 'awaiting_confirm' ||
+      ((state.type === 'awaiting_confirm' &&
+        state.actionType !== 'phone_call' &&
+        state.actionType !== 'whatsapp_call' &&
+        state.actionType !== 'whatsapp_message') ||
         state.type === 'awaiting_post_video_tap' ||
         state.type === 'awaiting_fallback_normal_call')
   );
 }
 
+function isAutoCancelPromptState(state: PendingPhoneState | null): boolean {
+  return Boolean(state && state.type === 'awaiting_auto_cancel');
+}
+
 function setPendingState(state: PendingPhoneState | null): void {
+  if (!state || state.type !== 'awaiting_auto_cancel') {
+    clearAutoExecuteTimer();
+  }
   memoryPendingState = state;
   if (typeof window !== 'undefined' && window.localStorage) {
     try {
@@ -974,6 +1072,7 @@ function setPendingState(state: PendingPhoneState | null): void {
           detail: {
             hasPending: Boolean(state),
             hasPendingConfirm: isConfirmPromptState(state),
+            hasPendingCancel: isAutoCancelPromptState(state),
           },
         })
       );
@@ -987,6 +1086,18 @@ export function hasPendingPhoneInteraction(): boolean {
 
 export function hasPendingConfirmAction(): boolean {
   return isConfirmPromptState(getPendingState());
+}
+
+export function hasPendingCancelAction(): boolean {
+  return isAutoCancelPromptState(getPendingState());
+}
+
+export function cancelPendingDelayedAction(): { handled: boolean; reply?: string } {
+  const pending = getPendingState();
+  clearAutoExecuteTimer();
+  if (!pending) return { handled: false };
+  setPendingState(null);
+  return { handled: true, reply: 'ঠিক আছে, দিলাম না।' };
 }
 
 function getRecentDedupeReply(signature: string): string | null {
@@ -1279,6 +1390,75 @@ async function performNativeAppSearch(app: SearchAppId, query: string): Promise<
   return `${meta.label}-এ ‘${query}’ খুঁজছি।`;
 }
 
+function emitDelayedPhoneResult(
+  reply: string,
+  actionType: 'phone_call' | 'whatsapp_call' | 'whatsapp_message',
+  isPromptOrError: boolean
+): void {
+  if (typeof window === 'undefined' || !reply) return;
+  try {
+    window.dispatchEvent(
+      new CustomEvent('rose-delayed-phone-result', {
+        detail: { reply, actionType, isPromptOrError },
+      })
+    );
+  } catch {}
+}
+
+function scheduleAutoExecuteAction(params: {
+  actionType: 'phone_call' | 'whatsapp_call' | 'whatsapp_message';
+  contact: RoseContact;
+  video?: boolean;
+  messageText?: string;
+}): void {
+  clearAutoExecuteTimer();
+  const scheduledTs = Date.now();
+  setPendingState({
+    type: 'awaiting_auto_cancel',
+    actionType: params.actionType,
+    contact: params.contact,
+    video: Boolean(params.video),
+    messageText: params.messageText,
+    timestamp: scheduledTs,
+  });
+
+  activeAutoExecuteTimer = setTimeout(() => {
+    activeAutoExecuteTimer = null;
+    const current = getPendingState();
+    if (!current || current.type !== 'awaiting_auto_cancel' || current.timestamp !== scheduledTs) {
+      return;
+    }
+    setPendingState(null);
+    void (async () => {
+      if (params.actionType === 'whatsapp_message') {
+        const res = await performNativeWhatsAppMessage(params.contact, params.messageText || '');
+        emitDelayedPhoneResult(res, 'whatsapp_message', true);
+      } else if (params.actionType === 'whatsapp_call') {
+        const res = await performNativeWhatsAppCall(params.contact, Boolean(params.video));
+        const needsFollowUp =
+          res === ONLY_IN_ROSE_APP_MSG ||
+          res.includes('পেলাম না') ||
+          res.includes('চাপো') ||
+          res.includes('সঠিক ফোন নম্বর') ||
+          res.includes('যায়নি');
+        if (needsFollowUp) {
+          emitDelayedPhoneResult(res, 'whatsapp_call', true);
+        }
+      } else {
+        const res = await performNativePhoneCall(params.contact);
+        const needsFollowUp =
+          res === ONLY_IN_ROSE_APP_MSG ||
+          res.includes('সঠিক ফোন নম্বর') ||
+          res.includes('যায়নি') ||
+          res.includes('চাপো');
+        if (needsFollowUp) {
+          emitDelayedPhoneResult(res, 'phone_call', true);
+        }
+      }
+    })();
+  }, AUTO_EXECUTE_DELAY_MS);
+}
+
 function buildConfirmationPrompt(
   actionType: PhoneActionType,
   contact: RoseContact,
@@ -1296,34 +1476,28 @@ function buildConfirmationPrompt(
       });
       return `${displayName}-কে কী মেসেজ পাঠাব?`;
     }
-    setPendingState({
-      type: 'awaiting_confirm',
+    scheduleAutoExecuteAction({
       actionType: 'whatsapp_message',
       contact,
       messageText: body,
-      timestamp: Date.now(),
     });
-    return `${displayName}-কে এটা পাঠাব: '${body}'। ঠিক আছে?`;
+    return `${displayName}-কে এটা পাঠাচ্ছি: '${body}'…`;
   }
 
   if (actionType === 'whatsapp_call') {
-    setPendingState({
-      type: 'awaiting_confirm',
+    scheduleAutoExecuteAction({
       actionType: 'whatsapp_call',
       contact,
       video: Boolean(video),
-      timestamp: Date.now(),
     });
-    return `${displayName}-কে WhatsApp-এ ${video ? 'ভিডিও ' : ''}কল দেব? হ্যাঁ বললে দেব।`;
+    return `${displayName}-কে WhatsApp-এ ${video ? 'ভিডিও ' : ''}কল দিচ্ছি…`;
   }
 
-  setPendingState({
-    type: 'awaiting_confirm',
+  scheduleAutoExecuteAction({
     actionType: 'phone_call',
     contact,
-    timestamp: Date.now(),
   });
-  return `${displayName}-কে ফোন কল দেব? হ্যাঁ বললে দেব।`;
+  return `${displayName}-কে কল দিচ্ছি…`;
 }
 
 function formatAmbiguousPrompt(matches: RoseContact[]): string {
@@ -1757,10 +1931,17 @@ export function isAffirmativeReply(text: string): boolean {
   return tokens.some((tok) => yesWords.has(tok));
 }
 
+export function isAutoCancelReply(text: string): boolean {
+  const { normalized, tokens } = normalizeConfirmReplyTokens(text);
+  if (!normalized) return false;
+  const cancelWords = new Set(['না', 'নাহ', 'থামো', 'থাম', 'থাক', 'বাদ', 'cancel', 'no', 'stop']);
+  return tokens.some((tok) => cancelWords.has(tok));
+}
+
 export function isNegativeReply(text: string): boolean {
   const { normalized, tokens } = normalizeConfirmReplyTokens(text);
   if (!normalized) return false;
-  const noWords = new Set(['না', 'নাহ', 'থাক', 'বাদ', 'no', 'cancel']);
+  const noWords = new Set(['না', 'নাহ', 'থামো', 'থাক', 'বাদ', 'no', 'cancel']);
   if (tokens.some((tok) => noWords.has(tok))) return true;
   return /(?:^|\s)(?:দরকার\s+নেই|লাগবে\s+না|চাপতে\s+হবে\s+না|নিজেই?\s+চাপব|বন্ধ\s+করো|করো\s+না|দিও\s+না)(?:\s|$)/.test(
     normalized
@@ -1773,6 +1954,24 @@ export async function handlePendingPhoneConfirmation(decision: 'yes' | 'no'): Pr
 }> {
   const pending = getPendingState();
   if (!pending) return { handled: false };
+
+  if (pending.type === 'awaiting_auto_cancel') {
+    clearAutoExecuteTimer();
+    setPendingState(null);
+    if (decision === 'no') {
+      return { handled: true, reply: 'ঠিক আছে, দিলাম না।' };
+    }
+    if (pending.actionType === 'whatsapp_message') {
+      const reply = await performNativeWhatsAppMessage(pending.contact, pending.messageText || '');
+      return { handled: true, reply };
+    }
+    if (pending.actionType === 'whatsapp_call') {
+      const reply = await performNativeWhatsAppCall(pending.contact, Boolean(pending.video));
+      return { handled: true, reply };
+    }
+    const reply = await performNativePhoneCall(pending.contact);
+    return { handled: true, reply };
+  }
 
   if (pending.type === 'awaiting_confirm') {
     setPendingState(null);
@@ -1820,7 +2019,7 @@ export async function handlePendingPhoneConfirmation(decision: 'yes' | 'no'): Pr
   if (pending.type === 'awaiting_fallback_normal_call') {
     setPendingState(null);
     if (decision === 'no') {
-      return { handled: true, reply: 'ঠিক আছে, কল দিচ্ছি না।' };
+      return { handled: true, reply: 'ঠিক আছে, দিলাম না।' };
     }
     const reply = await performNativePhoneCall(pending.contact);
     return { handled: true, reply };
@@ -1838,19 +2037,16 @@ export async function handlePendingPhoneUserReply(
   const pending = getPendingState();
   if (!pending) return { handled: false };
 
-  // 1. Confirmation for call / WhatsApp / Messenger / post_video / app_search
-  if (pending.type === 'awaiting_confirm') {
-    // If they gave edited message text while confirming a WhatsApp message (e.g. "না, লিখো আমি বের হচ্ছি")
-    if (pending.actionType === 'whatsapp_message') {
-      const editMatch = raw.match(/(?:লিখো|লেখো|বদলিয়ে|বদলে|change\s*to)\s*[:\-]?\s*(.+)$/i);
-      if (editMatch && editMatch[1]) {
-        const newBody = editMatch[1].trim();
-        return {
-          handled: true,
-          reply: buildConfirmationPrompt('whatsapp_message', pending.contact, false, newBody),
-        };
-      }
+  // 0. 3-second cancelable delay for calls and WhatsApp messages
+  if (pending.type === 'awaiting_auto_cancel') {
+    if (isAutoCancelReply(raw)) {
+      return cancelPendingDelayedAction();
     }
+    return { handled: false };
+  }
+
+  // 1. Confirmation for Messenger / post_video / app_search
+  if (pending.type === 'awaiting_confirm') {
     if (isNegativeReply(raw)) {
       return handlePendingPhoneConfirmation('no');
     }
@@ -2199,39 +2395,51 @@ function parseWhatsAppMessageIntent(text: string): {
   target?: string;
   body?: string;
 } {
-  if (!isWhatsAppRequest(text)) return { matched: false };
+  // Strict whole-word trigger check: ONLY মেসেজ, মেসেজ দাও, লিখে পাঠাও, পাঠাও, message, text
+  const hasStrictMsgTrigger = hasAnyWholePhrase(text, [
+    'মেসেজ দাও',
+    'লিখে পাঠাও',
+    'মেসেজ',
+    'পাঠাও',
+    'message',
+    'text',
+  ]);
+  if (!hasStrictMsgTrigger) return { matched: false };
 
-  const hasMsgVerb =
-    /(?:মেসেজ|ম্যাসেজ|বার্তা|লেখো|লিখো|লিখে\s*দাও|পাঠাও|পাঠিয়ে\s*দাও|সেন্ড|\bmessage\b|\bmsg\b|\bsend\b|\btext\b)/i.test(
-      text
-    );
-  if (!hasMsgVerb) return { matched: false };
+  // Ignore if explicitly Messenger or a call
+  if (hasAnyWholePhrase(text, ['messenger', 'মেসেঞ্জার', 'মেসেঞ্জারে'])) {
+    return { matched: false };
+  }
+  if (hasAnyWholePhrase(text, ['কল', 'ফোন', 'call'])) {
+    return { matched: false };
+  }
 
-  const isPureCall = /(?:কল\s*দাও|কল\s*করো|ফোন\s*দাও|\bcall\b)/i.test(text);
-  if (isPureCall) return { matched: false };
-
+  // Bengali pattern: recipient MUST be addressed with কে / এর নম্বরে / নম্বরে (e.g. "আম্মুকে মেসেজ দাও ...")
   const bnMatch = text.match(
-    /^(?:(?:হ্যালো|হাই|এই|শোনো)\s+)?(?:(?:রোজ|rose)\s*[,।:!-]?\s*)?(.+?)(?:কে|কে\s+|এর\s+নম্বরে|নম্বরে|এ)\s+.*?(?:মেসেজ|ম্যাসেজ|বার্তা|লেখো|লিখো|পাঠাও|পাঠিয়ে\s*দাও|দাও|করো)\s*(?:যে|বলে|লিখে|:|-)?\s*(.*)$/i
+    /^(?:(?:হ্যালো|হাই|এই|শোনো)\s+)?(?:(?:রোজ|rose)\s*[,।:!-]?\s*)?(?:(?:whatsapp|হোয়াটসঅ্যাপ|হোয়াটসঅ্যাপ)(?:ে|-?এ)?\s+)?(.+?)(?:কে|-কে|\s+এর\s+নম্বরে|\s+নম্বরে)(?:\s+.*?)(?:মেসেজ\s*দাও|লিখে\s*পাঠাও|মেসেজ|পাঠাও)\s*(?:যে|বলে|লিখে|:|-)?\s*(.*)$/i
   );
   if (bnMatch && bnMatch[1]) {
-    const target = cleanContactQueryName(
-      bnMatch[1].replace(/(?:হোয়াটসঅ্যাপে|হোয়াটসঅ্যাপে|হোয়াটসঅ্যাপ|হোয়াটসঅ্যাপ|whatsapp[-\s]*এ?)/gi, ' ')
+    const rawTarget = bnMatch[1].replace(
+      /(?:হোয়াটসঅ্যাপে|হোয়াটসঅ্যাপে|হোয়াটসঅ্যাপ|হোয়াটসঅ্যাপ|whatsapp[-\s]*এ?)/gi,
+      ' '
     );
+    const target = cleanContactQueryName(rawTarget);
     const body = String(bnMatch[2] || '')
       .replace(/^(?:যে|বলে|লিখে|:|-)\s*/i, '')
       .trim();
-    if (target) {
+    if (isValidExtractedContactName(target)) {
       return { matched: true, target, body };
     }
   }
 
+  // English pattern: "(whatsapp )?(message|text) (to )<contact>(: body)"
   const enMatch = text.match(
-    /(?:whatsapp|হোয়াটসঅ্যাপ|হোয়াটসঅ্যাপ)\s*(?:message|msg|text|মেসেজ)?\s*(?:to\s+)?([^\d:+]+?|[+০-৯0-9\-\s]{7,})(?:\s*(?:saying|that|:|-|,|যে)\s*(.*))?$/i
+    /^(?:(?:hey|hi|rose)[,\s]+)?(?:whatsapp\s+)?(?:message|text)\s+(?:to\s+)?([A-Za-z\u0980-\u09FF][A-Za-z\u0980-\u09FF\s]{1,30}?|[+০-৯0-9\-\s]{7,})(?:\s*(?:saying|that|:|-|,|যে)\s*(.*))?$/i
   );
   if (enMatch && enMatch[1]) {
     const target = cleanContactQueryName(enMatch[1]) || enMatch[1].trim();
     const body = String(enMatch[2] || '').trim();
-    if (target) {
+    if (isValidExtractedContactName(target)) {
       return { matched: true, target, body };
     }
   }
@@ -2245,19 +2453,18 @@ export async function routePhoneActionFromText(
   const text = String(rawMessage || '').trim();
   if (!text) return { matched: false };
 
-  // 1. Check pending confirmation / disambiguation / alias or number reply
+  // 1. Check pending confirmation / 3s cancel / disambiguation / alias or number reply
   const pendingRes = await handlePendingPhoneUserReply(text);
   if (pendingRes.handled && pendingRes.reply) {
     return { matched: true, reply: pendingRes.reply };
   }
 
-  const isPcExplicit = /(পিসিতে|পিসির|ল্যাপটপে|কম্পিউটারে|\bon\s+pc\b|\bpc\b)/i.test(text);
+  const isPcExplicit = hasAnyWholePhrase(text, ['পিসিতে', 'পিসির', 'ল্যাপটপে', 'কম্পিউটারে', 'pc', 'laptop']);
   if (isPcExplicit) return { matched: false };
 
   // 2. Teach alias directly: e.g. "আম্মু মানে Ammu Home"
   const teachAlias = parseAliasTeachCommand(text);
   if (teachAlias) {
-    // Try resolving target against cached contacts so we store the exact display name if found
     const allRes = await getAllContacts(false);
     const targetMatches = matchSpellingsAgainstContacts([teachAlias.target], allRes.contacts);
     const canonicalTarget =
@@ -2271,19 +2478,9 @@ export async function routePhoneActionFromText(
     };
   }
 
-  // 3. Standalone number only ("01712345678") -> use directly (still confirm)
-  const standaloneNum = isStandalonePhoneNumber(text);
-  if (standaloneNum) {
-    const reply = await phone_call(standaloneNum);
-    return { matched: true, reply };
-  }
-
-  // 4. Explicit WhatsApp message intent
+  // 3. Explicit WhatsApp message intent (requires contact name + strict whole-word keyword)
   const waMsgIntent = parseWhatsAppMessageIntent(text);
   if (waMsgIntent.matched && waMsgIntent.target) {
-    // If the user explicitly gave message text, route & confirm directly;
-    // if they wrote a high-level instruction without quoted text (e.g. "রহিমকে জানাও আসতে দেরি হবে"),
-    // let's only intercept when body text was extracted or person was parsed cleanly
     const reply = await whatsapp_message({
       person: waMsgIntent.target,
       message: waMsgIntent.body || '',
@@ -2291,33 +2488,34 @@ export async function routePhoneActionFromText(
     return { matched: true, reply };
   }
 
-  // 4b. Explicit Messenger message intent
-  const isMessengerReq = /(?:messenger|মেসেঞ্জার|মেসেঞ্জারে)/i.test(text);
-  const hasMsgSendVerb =
-    /(?:মেসেজ|ম্যাসেজ|বার্তা|লেখো|লিখো|লিখে\s*দাও|পাঠাও|পাঠিয়ে\s*দাও|সেন্ড|\bmessage\b|\bmsg\b|\bsend\b|\btext\b)/i.test(
-      text
-    );
+  // 4. Explicit Messenger message intent
+  const isMessengerReq = hasAnyWholePhrase(text, ['messenger', 'মেসেঞ্জার', 'মেসেঞ্জারে']);
+  const hasMsgSendVerb = hasAnyWholePhrase(text, [
+    'মেসেজ দাও',
+    'লিখে পাঠাও',
+    'মেসেজ',
+    'পাঠাও',
+    'message',
+    'text',
+  ]);
   if (isMessengerReq && hasMsgSendVerb) {
     const messengerBodyMatch = text.match(
-      /(?:messenger|মেসেঞ্জারে?|মেসেঞ্জার)\s*(?:এ|-?এ)?\s*(?:মেসেজ|ম্যাসেজ|বার্তা|message|msg|text)?\s*(?:পাঠাও|পাঠিয়ে\s*দাও|লেখো|লিখো|দাও|করো|send)?\s*(?:যে|বলে|লিখে|:|-)?\s*(.+)$/i
+      /(?:messenger|মেসেঞ্জারে?|মেসেঞ্জার)\s*(?:এ|-?এ)?\s*(?:মেসেজ|message|text)?\s*(?:লিখে\s*পাঠাও|পাঠাও|দাও|করো|send)?\s*(?:যে|বলে|লিখে|:|-)?\s*(.+)$/i
     );
     const extractedBody = String(messengerBodyMatch?.[1] || '')
       .replace(/^(?:যে|বলে|লিখে|হলো|হল|:|-)\s*/i, '')
       .trim();
-    if (extractedBody && !/^(?:মেসেজ|ম্যাসেজ|পাঠাও|দাও|করো|send)$/i.test(extractedBody)) {
+    if (extractedBody && !/^(?:মেসেজ|পাঠাও|দাও|করো|send)$/i.test(extractedBody)) {
       const reply = await messenger_send({ message: extractedBody });
       return { matched: true, reply };
     }
   }
 
-  // 5. Call / WhatsApp call intent (always confirms before dialing)
+  // 5. Strict Call / WhatsApp call intent: requires whole-word কল / ফোন / call AND a contact name (or number)
   const extractedNumber = extractPhoneNumberFromText(text);
-  const hasCallVerb =
-    /(কল\s*(দাও|দেও|দে|দেন|দিন|করো|কর|করুন|করে\s*দাও|দেব|দিব)|ফোন\s*(দাও|দেও|দে|দেন|দিন|করো|কর|করুন|করে\s*দাও)|ডায়াল\s*করো|হোয়াটসঅ্যাপ\s*করো|হোয়াটসঅ্যাপ\s*করো|\bcall\b|\bdial\b)/i.test(
-      text
-    );
+  const hasStrictCallKeyword = hasAnyWholePhrase(text, ['কল', 'ফোন', 'call']);
 
-  if (hasCallVerb) {
+  if (hasStrictCallKeyword) {
     const isWa = isWhatsAppRequest(text);
     const video = isVideoCallRequest(text);
 
@@ -2328,31 +2526,32 @@ export async function routePhoneActionFromText(
       return { matched: true, reply };
     }
 
-    if (/(?:এই\s*নম্বরে|ওই\s*নম্বরে|নম্বরটাতে|নাম্বারটাতে|এই\s*নাম্বারে|ওকে|তাকে|উনাকে)/i.test(text)) {
-      const history = getSharedRecentMessages();
-      for (let i = history.length - 1; i >= 0; i--) {
-        const recentNum = extractPhoneNumberFromText(history[i].text);
-        if (recentNum) {
-          const reply = isWa ? await whatsapp_call(recentNum, video) : await phone_call(recentNum);
-          return { matched: true, reply };
-        }
-      }
-    }
+    // Must not match conversational questions/statements about phones like "ফোন ব্যবহার করলে পড়ালেখা নষ্ট হয়"
+    const isQuestionOrStatement =
+      hasAnyWholePhrase(text, ['কেন', 'কিভাবে', 'কীভাবে', 'হয়', 'হয়েছে', 'নষ্ট', 'কিনব', 'দাম', 'ভালো', 'খারাপ', 'নেই']) &&
+      !/(?:^|\s)\S+(?:কে|-কে)(?:\s|$)/i.test(text);
 
-    const contactName = cleanContactQueryName(text);
-    if (contactName) {
-      const reply = isWa
-        ? await whatsapp_call(contactName, video)
-        : await phone_call(contactName);
-      return { matched: true, reply };
+    if (!isQuestionOrStatement) {
+      // Check Bengali explicit recipient `<name>কে ... (কল|ফোন|call)` OR clean contact extraction
+      const bnRecipientMatch = text.match(
+        /^(?:(?:হ্যালো|হাই|এই|শোনো)\s+)?(?:(?:রোজ|rose)\s*[,।:!-]?\s*)?(?:(?:whatsapp|হোয়াটসঅ্যাপ|হোয়াটসঅ্যাপ)(?:ে|-?এ)?\s+)?(.+?)(?:কে|-কে|\s+এর\s+নম্বরে|\s+নম্বরে)\s+/i
+      );
+      const rawCandidate = bnRecipientMatch?.[1] ? bnRecipientMatch[1] : text;
+      const contactName = cleanContactQueryName(rawCandidate);
+      if (isValidExtractedContactName(contactName)) {
+        const reply = isWa
+          ? await whatsapp_call(contactName, video)
+          : await phone_call(contactName);
+        return { matched: true, reply };
+      }
     }
   }
 
   // 6. Explicit app search intent (YouTube, Facebook, Instagram, TikTok, Google)
   const searchMatch = text.match(
-    /(youtube|ইউটিউব|ইউটিউবে|facebook|ফেসবুক|ফেসবুকে|instagram|ইনস্টাগ্রাম|ইন্সটাগ্রামে?|tiktok|টিকটক|টিকটকে|google|গুগল|গুগলে)(?:-?এ|তে)?\s+(?:.+?\s+)?(?:খোঁজো|খুজো|সার্চ\s*করো|সার্চ|দেখাও|\bsearch\b|\bfind\b)\s*[:\-]?\s*(.*)$/i
+    /(?:^|\s)(youtube|ইউটিউব|ইউটিউবে|facebook|ফেসবুক|ফেসবুকে|instagram|ইনস্টাগ্রাম|ইন্সটাগ্রামে?|tiktok|টিকটক|টিকটকে|google|গুগল|গুগলে)(?:-?এ|তে)?\s+(?:.+?\s+)?(?:খোঁজো|খুজো|সার্চ\s*করো|সার্চ|দেখাও|search|find)(?=$|\s|[:\-])\s*[:\-]?\s*(.*)$/i
   ) || text.match(
-    /(?:search|খোঁজো|খুজো|সার্চ\s*করো)\s+(.+?)\s+(?:on|in)\s+(youtube|facebook|instagram|tiktok|google)/i
+    /(?:^|\s)(?:search|খোঁজো|খুজো|সার্চ\s*করো)\s+(.+?)\s+(?:on|in)\s+(youtube|facebook|instagram|tiktok|google)(?=$|\s)/i
   );
   if (searchMatch) {
     let appRaw = '';
@@ -2362,8 +2561,8 @@ export async function routePhoneActionFromText(
       queryRaw = searchMatch[2] || '';
       if (!queryRaw) {
         queryRaw = text
-          .replace(/(?:youtube|ইউটিউব|ইউটিউবে|facebook|ফেসবুক|ফেসবুকে|instagram|ইনস্টাগ্রাম|ইন্সটাগ্রামে?|tiktok|টিকটক|টিকটকে|google|গুগল|গুগলে)(?:-?এ|তে)?/gi, '')
-          .replace(/(?:নিয়ে|নিয়ে|সার্চ\s*করো|সার্চ|খোঁজো|খুজো|দেখাও|\bsearch\b|\bfind\b|রোজ|rose)/gi, '')
+          .replace(/(?:^|\s)(?:youtube|ইউটিউব|ইউটিউবে|facebook|ফেসবুক|ফেসবুকে|instagram|ইনস্টাগ্রাম|ইন্সটাগ্রামে?|tiktok|টিকটক|টিকটকে|google|গুগল|গুগলে)(?:-?এ|তে)?(?=$|\s)/gi, ' ')
+          .replace(/(?:^|\s)(?:নিয়ে|নিয়ে|সার্চ\s*করো|সার্চ|খোঁজো|খুজো|দেখাও|search|find|রোজ|rose)(?=$|\s)/gi, ' ')
           .trim();
       }
     } else {
@@ -2379,14 +2578,14 @@ export async function routePhoneActionFromText(
 
   // 7. Video post intent (YouTube, Facebook, Instagram, TikTok)
   const hasVideoPostVerb =
-    /(?:ভিডিও|রিলস?|শর্টস?|\bvideo\b|\breels?\b|\bshorts?\b)/i.test(text) &&
-    /(?:পোস্ট|আপলোড|শেয়ার|শেয়ার|ছাড়ো|ছাড়ো|\bpost\b|\bupload\b|\bshare\b)/i.test(text);
+    hasAnyWholePhrase(text, ['ভিডিও', 'রিলস', 'রিল', 'শর্টস', 'শর্ট', 'video', 'reels', 'reel', 'shorts', 'short']) &&
+    hasAnyWholePhrase(text, ['পোস্ট', 'আপলোড', 'শেয়ার', 'শেয়ার', 'ছাড়ো', 'ছাড়ো', 'post', 'upload', 'share']);
   if (hasVideoPostVerb) {
     const normPlat = normalizePostPlatform(text);
     if (normPlat) {
       const topic = text
-        .replace(/(?:youtube|ইউটিউব|ইউটিউবে|facebook|ফেসবুক|ফেসবুকে|instagram|ইনস্টাগ্রাম|ইন্সটাগ্রামে?|tiktok|টিকটক|টিকটকে)(?:-?এ|তে)?/gi, '')
-        .replace(/(?:ভিডিও|রিলস?|শর্টস?|পোস্ট|আপলোড|শেয়ার|শেয়ার|ছাড়ো|ছাড়ো|করো|দাও|নিয়ে|নিয়ে|একটা|\bvideo\b|\bpost\b|\bupload\b|\bshare\b|রোজ|rose)/gi, '')
+        .replace(/(?:^|\s)(?:youtube|ইউটিউব|ইউটিউবে|facebook|ফেসবুক|ফেসবুকে|instagram|ইনস্টাগ্রাম|ইন্সটাগ্রামে?|tiktok|টিকটক|টিকটকে)(?:-?এ|তে)?(?=$|\s)/gi, ' ')
+        .replace(/(?:^|\s)(?:ভিডিও|রিলস?|শর্টস?|পোস্ট|আপলোড|শেয়ার|শেয়ার|ছাড়ো|ছাড়ো|করো|দাও|নিয়ে|নিয়ে|একটা|video|post|upload|share|রোজ|rose)(?=$|\s)/gi, ' ')
         .trim();
       const reply = await post_video({ platform: normPlat, topic: topic || normPlat });
       return { matched: true, reply };
@@ -2394,8 +2593,19 @@ export async function routePhoneActionFromText(
   }
 
   // 8. Open app intent
-  const hasOpenVerb = /(খোলো|খোল|খুলো|খুলে\s*দাও|চালু\s*করো|চালাও|ওপেন\s*করো|ওপেন|\bopen\b|\blaunch\b)/i.test(text);
-  if (hasOpenVerb && !hasCallVerb) {
+  const hasOpenVerb = hasAnyWholePhrase(text, [
+    'খোলো',
+    'খোল',
+    'খুলো',
+    'খুলে দাও',
+    'চালু করো',
+    'চালাও',
+    'ওপেন করো',
+    'ওপেন',
+    'open',
+    'launch',
+  ]);
+  if (hasOpenVerb && !hasStrictCallKeyword) {
     const resolvedApp = resolveAppKey(text);
     if (resolvedApp) {
       const reply = await open_app(resolvedApp.key);

@@ -223,19 +223,19 @@ You CAN clear the chat with app_action clear_chat after the user says yes. Never
 
 PHONE & WHATSAPP CALL RULE (CRITICAL):
 1. Tools available:
-   - phone_call(person): Start a normal phone call confirmation flow for a contact name or phone number.
-   - whatsapp_call(person, video?): Start a WhatsApp audio or video call confirmation flow (with accessibility auto-tap).
-   - whatsapp_send(person, message): Write a short natural message in the user's language, read it back ("<name>-কে এটা পাঠাব: '<text>'। ঠিক আছে?"), wait for user's yes, open WhatsApp and auto-tap Send if accessibility is on.
+   - phone_call(person): Match contact name or phone number. After match, tool returns "<name>-কে কল দিচ্ছি…" and automatically dials after 3 seconds unless the user says না/থামো/cancel/no. NO yes-confirmation. If 2+ contacts match, it asks "কোনটা? ১. … ২. …".
+   - whatsapp_call(person, video?): Match contact name or phone number. After match, tool returns "<name>-কে WhatsApp-এ কল দিচ্ছি…" and automatically calls after 3 seconds unless cancelled. NO yes-confirmation.
+   - whatsapp_send(person, message): Write a short natural message in the user's language; tool reads it once ("<name>-কে এটা পাঠাচ্ছি: '<text>'…"), waits 3 seconds for "না"/cancel, then sends automatically.
    - messenger_send(message): Read back the message and ask confirmation ("Messenger-এ এটা পাঠাব: '<text>'। ঠিক আছে?"). After user says yes, shareTextTo opens Messenger and asks "যাকে পাঠাবে তার নাম বলো".
    - messenger_recipient(name): After messenger_send asked "যাকে পাঠাবে তার নাম বলো", call this with the spoken recipient name to type, select, and send on Messenger.
    - post_video(platform, topic, title?, description?, hashtags?): Write catchy title, description, and hashtags for youtube/facebook/instagram/tiktok, read them back and ask confirmation. After user says yes, copyText & pickVideoAndShare run and say "ভিডিও বাছো; লেখা কপি করা আছে। Post/Upload আমি চাপব কি না বলো।". After user says yes again, phone_confirm("yes") auto-taps Upload/Post/Share/Next.
    - app_search(app, query): Confirm once and open in-app search for youtube, facebook, instagram, tiktok, or google.
-   - confirm_action(answer: 'yes'|'no'): Resolve ANY pending confirmation action (calls, WhatsApp, Messenger, post_video copy/picker, post_video Upload/Post auto-tap, or app_search) whenever the user says yes/হ্যাঁ/হা/হাঁ/হুম/হুঁ/জি/জ্বি/ঠিক আছে/দাও/করো/কর/ওকে/ok/okay/ya/ha/haa/hmm or no/না/নাহ/থাক/বাদ/cancel.
+   - confirm_action(answer: 'yes'|'no'): Cancel any 3-second delayed call/WhatsApp message (if user says না/থামো/cancel/no -> answer='no'), OR resolve pending Messenger/post_video/app_search confirmation.
    - phone_confirm(decision): Legacy alias for confirm_action.
    - save_contact_alias(spoken_name, saved_name): Save an alias when user teaches one (e.g. "আম্মু মানে Ammu Home").
    - phone(action): For open_app or search_contacts.
 2. ALWAYS call the phone/social tool SILENTLY first before speaking a single word. NEVER say "কল করছি", "কল দিচ্ছি", "পাঠাচ্ছি", "খুলছি", or any reply before the tool result returns.
-3. ALWAYS require the user's yes before placing any call, sending any message, opening share/search, or auto-tapping Post/Upload. Never claim an action ran until confirm_action returns success.
+3. For calls and whatsapp_send, NEVER ask "হ্যাঁ বললে দেব" or yes/no questions. Require yes-confirmation only for Messenger, post_video, and app_search.
 4. After any phone/social tool or confirm_action returns, speak ONLY one short sentence with the exact result message returned by the tool, with nothing extra before or after.
 
 END CALL RULE (CRITICAL):
@@ -245,7 +245,7 @@ You CAN end the live voice call yourself using the end_call tool. When the user 
 export const ROSE_PHONE_FUNCTION_DECLARATIONS = [
   {
     name: 'phone_call',
-    description: 'Initiate a normal phone call to a contact name or phone number (always confirms with user first before dialing).',
+    description: 'Initiate a normal phone call to a contact name or phone number (announces "<name>-কে কল দিচ্ছি…" and dials automatically after 3 seconds unless cancelled).',
     parameters: {
       type: 'OBJECT',
       properties: {
@@ -259,7 +259,7 @@ export const ROSE_PHONE_FUNCTION_DECLARATIONS = [
   },
   {
     name: 'whatsapp_call',
-    description: 'Initiate a WhatsApp audio or video call to a contact name or phone number (always confirms with user first).',
+    description: 'Initiate a WhatsApp audio or video call to a contact name or phone number (announces and calls automatically after 3 seconds unless cancelled).',
     parameters: {
       type: 'OBJECT',
       properties: {
@@ -277,7 +277,7 @@ export const ROSE_PHONE_FUNCTION_DECLARATIONS = [
   },
   {
     name: 'whatsapp_send',
-    description: 'Write a short WhatsApp message in the user language, read it back for confirmation, then open WhatsApp and auto-tap Send if accessibility is enabled.',
+    description: 'Write a short WhatsApp message in the user language, read it once, wait 3 seconds for "না"/cancel, then open WhatsApp and auto-tap Send if accessibility is enabled.',
     parameters: {
       type: 'OBJECT',
       properties: {
