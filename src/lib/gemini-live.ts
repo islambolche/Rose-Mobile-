@@ -16,7 +16,10 @@ import {
   ensureNoThoughtSystemInstruction,
   connectBoostedOutputChain,
   configureBoostedOutputRoute,
+  getOrCreateBoostedOutputChain,
   resetOutputGainForReply,
+  fadeOutAndStopSources,
+  decodePcm16ChunkWithCarry,
   volumeSliderToGain,
   isValidVoiceTranscript,
   discoverLightestFlashModel,
@@ -73,6 +76,7 @@ import {
   getSharedPhoneAndHistoryContextBlock,
 } from './phone';
 import { executePcTaskTool } from '../pc/pcTaskManager';
+import { executeOfficeTaskTool } from './officeSync';
 
 export interface GeminiLiveOptions {
   assistantName?: string;
@@ -427,11 +431,14 @@ export class GeminiLiveSession {
   private watchdogReconnectedForTurn = false;
   private visualizerRunning = false;
 
-  // 250ms PCM Chunk Accumulation Buffer (24000Hz * 0.25s = 6000 samples)
+  // ~150ms PCM Jitter Buffer (24000Hz * 0.15s = 3600 samples) + odd leftover byte carry
   private pendingPcmChunks: Float32Array[] = [];
   private pendingPcmSamplesCount = 0;
   private pcmFlushTimer: any = null;
   private liveTurnCompleted = false;
+  private leftoverPcmByte: number | null = null;
+  private isReplyFirstChunk = true;
+  private lastPcmChunkKey = '';
 
   // Discovered models from ListModels
   private liveModels: string[] = [];
@@ -2978,21 +2985,57 @@ export class GeminiLiveSession {
       console.log('[GeminiLive] Executing tool call:', name, args);
 
       try {
-        if (name === 'assign_task') {
+        if (name === 'office_task') {
+          this.phoneToolHandledForTurn = true;
+          const officeRes = await executeOfficeTaskTool({
+            agent: String(args.agent || 'mira'),
+            kind: String(args.kind || 'task'),
+            text: String(args.text || args.instruction || ''),
+          });
+          functionResponses.push({
+            id: callId,
+            name: 'office_task',
+            response: {
+              output: {
+                ok: officeRes.ok,
+                taskId: officeRes.row.id,
+                message: officeRes.message,
+                instruction: `Say ONLY this exact sentence in Bengali right away: "${officeRes.message}". Do not add anything else.`,
+              },
+            },
+          });
+        } else if (name === 'assign_task') {
+          this.phoneToolHandledForTurn = true;
           const res = await assignTask({
             agent: String(args.agent || 'mira'),
             instruction: String(args.instruction || ''),
             source: typeof window !== 'undefined' && window.innerWidth >= 1024 ? 'pc' : 'mobile',
           });
           functionResponses.push({
+            id: callId,
+            name: 'assign_task',
             response: {
               output: {
                 success: res.success,
                 message: res.message,
                 taskId: res.task.id,
+                instruction: `Say ONLY this exact sentence in Bengali right away: "${res.message}".`,
               },
             },
+          });
+        } else if (name === 'get_team_status') {
+          this.phoneToolHandledForTurn = true;
+          const res = await getTeamStatus(args.agent ? String(args.agent) : 'mira');
+          functionResponses.push({
             id: callId,
+            name: 'get_team_status',
+            response: {
+              output: {
+                success: res.success,
+                message: res.summary,
+                instruction: `Say ONLY this exact sentence in Bengali right away: "${res.summary}".`,
+              },
+            },
           });
         } else if (name === 'app_action') {
           try {
@@ -3550,6 +3593,7 @@ export class GeminiLiveSession {
       this.liveTurnCompleted = true;
       voiceDebugStore.finishTurn();
       this.flushPendingPcmChunks(true);
+      this.scheduleReplyEndFadeOut();
       if (
         this.pendingEndCallAfterSpeech &&
         !this.endCallReceivedAudioAfterTool &&
@@ -4478,21 +4522,10 @@ export class GeminiLiveSession {
           }
           this.isBrowserTtsSpeaking = false;
 
-          const binaryStr = atob(base64Pcm);
-          const len = binaryStr.length;
-          const bytes = new Uint8Array(len);
-          for (let i = 0; i < len; i++) bytes[i] = binaryStr.charCodeAt(i);
-
-          const sampleCount = Math.floor(len / 2);
-          if (sampleCount <= 0) {
+          const { float32 } = decodePcm16ChunkWithCarry(base64Pcm, null);
+          if (float32.length <= 0) {
             resolve(false);
             return;
-          }
-
-          const view = new DataView(bytes.buffer, bytes.byteOffset, sampleCount * 2);
-          const float32 = new Float32Array(sampleCount);
-          for (let i = 0; i < sampleCount; i++) {
-            float32[i] = view.getInt16(i * 2, true) / 32768.0;
           }
 
           // SampleRate strictly 24000; browser resamples cleanly to ctx.sampleRate
@@ -4509,26 +4542,25 @@ export class GeminiLiveSession {
           const volPercent = this.options.voiceVolume ?? 80;
           const targetGain = volumeSliderToGain(volPercent);
 
-          // Explicitly reset persistent output GainNode before playing each new reply
-          resetOutputGainForReply(ctx, volPercent, this.outputAnalyser);
           const { gainNode } = connectBoostedOutputChain(
             ctx,
             source,
             volPercent,
             this.outputAnalyser
           );
-          gainNode.gain.cancelScheduledValues(ctx.currentTime);
-          gainNode.gain.setValueAtTime(targetGain, ctx.currentTime);
 
-          const startTime = Math.max(ctx.currentTime + 0.03, this.nextStartTime);
+          const startTime = Math.max(this.nextStartTime, ctx.currentTime + 0.05);
           const duration = audioBuffer.duration / speed;
           this.nextStartTime = startTime + duration;
 
-          const fadeTime = Math.min(0.005, duration * 0.25);
+          const fadeInSec = Math.min(0.01, duration * 0.35);
+          const fadeOutSec = Math.min(0.03, duration * 0.45);
+          const fadeOutStart = Math.max(startTime + fadeInSec, startTime + duration - fadeOutSec);
 
+          gainNode.gain.cancelScheduledValues(ctx.currentTime);
           gainNode.gain.setValueAtTime(0, startTime);
-          gainNode.gain.linearRampToValueAtTime(targetGain, startTime + fadeTime);
-          gainNode.gain.setValueAtTime(targetGain, Math.max(startTime + fadeTime, startTime + duration - fadeTime));
+          gainNode.gain.linearRampToValueAtTime(targetGain, startTime + fadeInSec);
+          gainNode.gain.setValueAtTime(targetGain, fadeOutStart);
           gainNode.gain.linearRampToValueAtTime(0, startTime + duration);
 
           this.stateEnteredAt = Date.now();
@@ -4538,10 +4570,6 @@ export class GeminiLiveSession {
               source.disconnect();
             } catch {}
             this.scheduledAudioSources = this.scheduledAudioSources.filter((s) => s !== source);
-            try {
-              gainNode.gain.cancelScheduledValues(ctx.currentTime);
-              gainNode.gain.setValueAtTime(targetGain, ctx.currentTime);
-            } catch {}
             resolve(true);
           };
 
@@ -4684,33 +4712,50 @@ export class GeminiLiveSession {
   }
 
   private playPcmAudioChunk(base64Pcm: string) {
-    if (!this.isCurrentSession()) return;
+    if (!this.isCurrentSession() || !base64Pcm) return;
     try {
-      const binaryStr = atob(base64Pcm);
-      const len = binaryStr.length;
-      const bytes = new Uint8Array(len);
-      for (let i = 0; i < len; i++) bytes[i] = binaryStr.charCodeAt(i);
-
-      const sampleCount = Math.floor(len / 2);
-      if (sampleCount <= 0) return;
-      const view = new DataView(bytes.buffer, bytes.byteOffset, sampleCount * 2);
-      const float32 = new Float32Array(sampleCount);
-      for (let i = 0; i < sampleCount; i++) {
-        float32[i] = view.getInt16(i * 2, true) / 32768.0;
+      // Guard against duplicate playback of the exact same chunk
+      const chunkKey = `${base64Pcm.length}:${base64Pcm.slice(0, 32)}:${base64Pcm.slice(-32)}`;
+      if (chunkKey === this.lastPcmChunkKey) {
+        return;
       }
+      this.lastPcmChunkKey = chunkKey;
+
+      const { float32, nextLeftoverByte } = decodePcm16ChunkWithCarry(
+        base64Pcm,
+        this.leftoverPcmByte
+      );
+      this.leftoverPcmByte = nextLeftoverByte;
+      if (float32.length <= 0) return;
 
       this.pendingPcmChunks.push(float32);
       this.pendingPcmSamplesCount += float32.length;
 
-      // Minimum 250ms at 24000Hz = 6000 samples
-      if (this.pendingPcmSamplesCount >= 6000) {
+      // Small jitter buffer: start playing after ~150 ms of audio is queued (3600 samples at 24000 Hz)
+      const jitterThresholdSamples = this.isReplyFirstChunk ? 3600 : 1200;
+      if (this.pendingPcmSamplesCount >= jitterThresholdSamples) {
         this.flushPendingPcmChunks(false);
       } else {
         if (this.pcmFlushTimer) clearTimeout(this.pcmFlushTimer);
         this.pcmFlushTimer = setTimeout(() => {
           this.flushPendingPcmChunks(true);
-        }, 120);
+        }, 90);
       }
+    } catch {}
+  }
+
+  private scheduleReplyEndFadeOut() {
+    const ctx = this.playbackAudioCtx || this.audioCtx;
+    if (!ctx || ctx.state === 'closed') return;
+    if (this.scheduledAudioSources.length === 0) return;
+    try {
+      const volPercent = this.options.voiceVolume ?? 80;
+      const targetGain = volumeSliderToGain(volPercent);
+      const { gainNode } = getOrCreateBoostedOutputChain(ctx, volPercent, this.outputAnalyser);
+      const endTime = Math.max(ctx.currentTime + 0.03, this.nextStartTime);
+      const fadeStart = Math.max(ctx.currentTime, endTime - 0.03);
+      gainNode.gain.setValueAtTime(targetGain, fadeStart);
+      gainNode.gain.linearRampToValueAtTime(0, endTime);
     } catch {}
   }
 
@@ -4722,10 +4767,12 @@ export class GeminiLiveSession {
     if (!this.isCurrentSession()) {
       this.pendingPcmChunks = [];
       this.pendingPcmSamplesCount = 0;
+      this.leftoverPcmByte = null;
       return;
     }
     if (this.pendingPcmSamplesCount <= 0 || this.pendingPcmChunks.length === 0) return;
-    if (!force && this.pendingPcmSamplesCount < 6000) return;
+    const minSamples = this.isReplyFirstChunk ? 3600 : 1200;
+    if (!force && this.pendingPcmSamplesCount < minSamples) return;
 
     // Wait 300ms after releasing the mic before starting playback of the reply
     const elapsedSinceMicRelease = Date.now() - this.micReleasedAt;
@@ -4741,6 +4788,7 @@ export class GeminiLiveSession {
     if (!ctx) {
       this.pendingPcmChunks = [];
       this.pendingPcmSamplesCount = 0;
+      this.leftoverPcmByte = null;
       return;
     }
     setBrowserAudioSessionType('playback');
@@ -4775,22 +4823,27 @@ export class GeminiLiveSession {
         this.outputAnalyser
       );
 
-      if (this.needsGainResetForTurn) {
-        this.needsGainResetForTurn = false;
-        gainNode.gain.cancelScheduledValues(ctx.currentTime);
-        gainNode.gain.setValueAtTime(targetGain, ctx.currentTime);
-      }
-
-      const startTime = Math.max(ctx.currentTime + 0.03, this.nextStartTime);
+      const startTime = Math.max(this.nextStartTime, ctx.currentTime + 0.05);
       const duration = audioBuffer.duration;
       this.nextStartTime = startTime + duration;
 
-      const fadeTime = Math.min(0.005, duration * 0.25);
+      // Fade-in 10 ms at the start of a reply; keep steady gain across middle chunks
+      if (this.needsGainResetForTurn || this.isReplyFirstChunk) {
+        this.needsGainResetForTurn = false;
+        this.isReplyFirstChunk = false;
+        const fadeInSec = Math.min(0.01, duration * 0.4);
+        gainNode.gain.cancelScheduledValues(ctx.currentTime);
+        gainNode.gain.setValueAtTime(0, startTime);
+        gainNode.gain.linearRampToValueAtTime(targetGain, startTime + fadeInSec);
+      }
 
-      gainNode.gain.setValueAtTime(0, startTime);
-      gainNode.gain.linearRampToValueAtTime(targetGain, startTime + fadeTime);
-      gainNode.gain.setValueAtTime(targetGain, Math.max(startTime + fadeTime, startTime + duration - fadeTime));
-      gainNode.gain.linearRampToValueAtTime(0, startTime + duration);
+      // If the turn is already marked complete when flushing the final chunk, schedule 30 ms fade-out
+      if (this.liveTurnCompleted) {
+        const fadeOutSec = Math.min(0.03, duration * 0.45);
+        const fadeOutStart = Math.max(startTime + 0.01, this.nextStartTime - fadeOutSec);
+        gainNode.gain.setValueAtTime(targetGain, fadeOutStart);
+        gainNode.gain.linearRampToValueAtTime(0, this.nextStartTime);
+      }
 
       this.stateEnteredAt = Date.now();
       this.scheduledAudioSources.push(source);
@@ -4799,18 +4852,15 @@ export class GeminiLiveSession {
           source.disconnect();
         } catch {}
         this.scheduledAudioSources = this.scheduledAudioSources.filter((s) => s !== source);
-        if (this.scheduledAudioSources.length === 0) {
-          try {
-            gainNode.gain.cancelScheduledValues(ctx.currentTime);
-            gainNode.gain.setValueAtTime(targetGain, ctx.currentTime);
-          } catch {}
-        }
         if (
           this.scheduledAudioSources.length === 0 &&
           this.pendingPcmSamplesCount === 0 &&
           this.liveTurnCompleted &&
           !this.wasStoppedByUser
         ) {
+          this.isReplyFirstChunk = true;
+          this.leftoverPcmByte = null;
+          this.lastPcmChunkKey = '';
           if (this.pendingEndCallAfterSpeech) {
             setTimeout(() => {
               this.triggerEndCallCleanup();
@@ -4903,19 +4953,16 @@ export class GeminiLiveSession {
     }
     this.pendingPcmChunks = [];
     this.pendingPcmSamplesCount = 0;
-    this.scheduledAudioSources.forEach((s) => {
-      try {
-        s.onended = null;
-      } catch {}
-      try {
-        s.stop();
-      } catch {}
-      try {
-        s.disconnect();
-      } catch {}
-    });
+    this.leftoverPcmByte = null;
+    this.isReplyFirstChunk = true;
+    this.lastPcmChunkKey = '';
+    const sourcesToStop = this.scheduledAudioSources;
     this.scheduledAudioSources = [];
     this.nextStartTime = 0;
+    if (sourcesToStop.length > 0) {
+      const ctx = this.playbackAudioCtx || this.audioCtx;
+      fadeOutAndStopSources(ctx, sourcesToStop, 0.03);
+    }
   }
 
   private scheduleReturnToListening() {

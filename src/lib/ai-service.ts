@@ -656,18 +656,60 @@ export const extractNonThoughtTextFromParts = (
 };
 
 /**
- * Converts Settings Volume Slider (0-100, default 80%) to WebAudio Gain (default 1.4 at 80%, max 1.8 at 100%).
+ * Converts Settings Volume Slider (0-100, default 80%) to clean WebAudio Gain (0.9 default/max, never above 1.0).
  */
 export const volumeSliderToGain = (volumePercent?: number): number => {
+  if (typeof volumePercent === 'number' && !isNaN(volumePercent) && volumePercent <= 0) {
+    return 0;
+  }
   const v =
     typeof volumePercent === 'number' && !isNaN(volumePercent) && volumePercent > 0
       ? volumePercent
       : 80;
   const clamped = Math.min(100, Math.max(1, v));
-  if (clamped <= 80) {
-    return 0.35 + (clamped / 80) * 1.05; // 0.35 at min, 1.4 at 80%
+  if (clamped >= 80) {
+    return 0.9; // 0.9 at 80%-100%, never above 1.0
   }
-  return 1.4 + ((clamped - 80) / 20) * 0.4; // 1.4 at 80%, 1.8 at 100%
+  return Math.min(0.9, Math.max(0.1, (clamped / 80) * 0.9));
+};
+
+/**
+ * Decodes base64 16-bit little-endian PCM into Float32Array (value / 32768) while carrying any odd leftover byte to the next chunk.
+ */
+export const decodePcm16ChunkWithCarry = (
+  base64Pcm: string,
+  leftoverByte: number | null
+): { float32: Float32Array<ArrayBuffer>; nextLeftoverByte: number | null } => {
+  const binaryStr = atob(base64Pcm);
+  const rawLen = binaryStr.length;
+  const hasCarry = leftoverByte !== null && leftoverByte !== undefined;
+  const totalBytesLen = rawLen + (hasCarry ? 1 : 0);
+  if (totalBytesLen <= 0) {
+    return { float32: new Float32Array(0), nextLeftoverByte: null };
+  }
+
+  const bytes = new Uint8Array(totalBytesLen);
+  let writeIdx = 0;
+  if (hasCarry) {
+    bytes[writeIdx++] = leftoverByte & 0xff;
+  }
+  for (let i = 0; i < rawLen; i++) {
+    bytes[writeIdx++] = binaryStr.charCodeAt(i) & 0xff;
+  }
+
+  const nextLeftoverByte = totalBytesLen % 2 === 1 ? bytes[totalBytesLen - 1] : null;
+  const sampleCount = Math.floor(totalBytesLen / 2);
+  if (sampleCount <= 0) {
+    return { float32: new Float32Array(0), nextLeftoverByte };
+  }
+
+  const view = new DataView(bytes.buffer, bytes.byteOffset, sampleCount * 2);
+  const float32 = new Float32Array(sampleCount);
+  for (let i = 0; i < sampleCount; i++) {
+    float32[i] = view.getInt16(i * 2, true) / 32768;
+  }
+
+  return { float32, nextLeftoverByte };
 };
 
 interface PersistentOutputChain {
@@ -732,11 +774,11 @@ export const getOrCreateBoostedOutputChain = (
     gainNode.gain.setValueAtTime(targetGain, ctx.currentTime);
 
     const compressor = ctx.createDynamicsCompressor();
-    compressor.threshold.setValueAtTime(-12, ctx.currentTime);
-    compressor.knee.setValueAtTime(6, ctx.currentTime);
-    compressor.ratio.setValueAtTime(12, ctx.currentTime);
-    compressor.attack.setValueAtTime(0.003, ctx.currentTime);
-    compressor.release.setValueAtTime(0.1, ctx.currentTime);
+    compressor.threshold.setValueAtTime(-6, ctx.currentTime);
+    compressor.knee.setValueAtTime(10, ctx.currentTime);
+    compressor.ratio.setValueAtTime(4, ctx.currentTime);
+    compressor.attack.setValueAtTime(0.01, ctx.currentTime);
+    compressor.release.setValueAtTime(0.15, ctx.currentTime);
 
     gainNode.connect(compressor);
 
@@ -788,8 +830,61 @@ export const resetOutputGainForReply = (
 };
 
 /**
- * Connects an AudioNode (source) through the persistent, non-clipping limiter chain:
- * source -> GainNode (default 1.4, max 1.8) -> DynamicsCompressorNode (threshold -12, knee 6, ratio 12, attack 0.003, release 0.1) -> (AnalyserNode) -> single active route
+ * Ramps the output GainNode down over 30ms (fade-out) and then stops & disconnects the given sources
+ * so sources are never stopped abruptly (preventing clicks/pops on end, interrupt, or END button).
+ */
+export const fadeOutAndStopSources = (
+  ctx: AudioContext | null | undefined,
+  sources: Iterable<AudioBufferSourceNode>,
+  fadeSec = 0.03
+): void => {
+  const list = Array.from(sources);
+  for (const s of list) {
+    try {
+      s.onended = null;
+    } catch {}
+  }
+  if (list.length === 0) return;
+
+  if (!ctx || ctx.state === 'closed') {
+    for (const s of list) {
+      try {
+        s.stop();
+      } catch {}
+      try {
+        s.disconnect();
+      } catch {}
+    }
+    return;
+  }
+
+  const chain = persistentOutputChains.get(ctx);
+  if (chain && ctx.state === 'running') {
+    try {
+      const now = ctx.currentTime;
+      const currentVal = Math.min(0.9, Math.max(0, chain.gainNode.gain.value || 0.9));
+      chain.gainNode.gain.cancelScheduledValues(now);
+      chain.gainNode.gain.setValueAtTime(currentVal, now);
+      chain.gainNode.gain.linearRampToValueAtTime(0, now + fadeSec);
+    } catch {}
+  }
+
+  const delayMs = Math.max(10, Math.round(fadeSec * 1000) + 4);
+  setTimeout(() => {
+    for (const s of list) {
+      try {
+        s.stop();
+      } catch {}
+      try {
+        s.disconnect();
+      } catch {}
+    }
+  }, delayMs);
+};
+
+/**
+ * Connects an AudioNode (source) through the persistent clean output chain:
+ * source -> GainNode (gain 0.9, never > 1.0) -> DynamicsCompressorNode (threshold -6, ratio 4, gentle) -> (AnalyserNode) -> destination
  */
 export const connectBoostedOutputChain = (
   ctx: AudioContext,

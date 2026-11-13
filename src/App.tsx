@@ -161,6 +161,8 @@ import {
   volumeSliderToGain,
   connectBoostedOutputChain,
   resetOutputGainForReply,
+  fadeOutAndStopSources,
+  decodePcm16ChunkWithCarry,
 } from "./lib/ai-service";
 import {
   generateTextWithSelectedEngine,
@@ -216,6 +218,25 @@ import {
   assignTask,
   getTeamStatus,
 } from "./lib/team";
+import {
+  executeOfficeTaskTool,
+  startPcOfficeTasksSync,
+  startMobileOfficeTasksSync,
+  saveSharedChatMessageToSupabase,
+  startSharedChatMessagesSync,
+  subscribeOfficeSync,
+  getLiveActivityTasks,
+  getRecentCompletedTasks,
+  getAgentChatMessages,
+  getActiveRightPanelAgent,
+  setActiveRightPanelAgent,
+  clearAgentChatMessages,
+  AGENT_BENGALI_NAMES,
+  AGENT_ENGLISH_NAMES,
+  OfficeAgentId,
+  OfficeTaskRow,
+  AgentChatMessage,
+} from "./lib/officeSync";
 import { agentWorker } from "./lib/agentWorker";
 import { routeUserMessageForTeamTask, routePcCommandMessage } from "./lib/teamRouter";
 import { PcSetupPage, PcSetupPageId } from "./components/PcSetupViews";
@@ -1485,6 +1506,9 @@ const VoiceCheckView = ({
     }
   };
 
+  const testAudioCtxRef = useRef<AudioContext | null>(null);
+  const testNextStartTimeRef = useRef<number>(0);
+
   // 5. TEST VOICE (Real sample speech with Gemini TTS first, then Browser fallback)
   const handleTestVoice = async () => {
     if (isLiveSessionActive()) return;
@@ -1512,33 +1536,44 @@ const VoiceCheckView = ({
           });
           if (data?.audio) {
             const AudioCtx = window.AudioContext || (window as any).webkitAudioContext;
-            const ctx = new AudioCtx();
+            if (!testAudioCtxRef.current || testAudioCtxRef.current.state === "closed") {
+              testAudioCtxRef.current = new AudioCtx({ sampleRate: 24000, latencyHint: "interactive" });
+            }
+            const ctx = testAudioCtxRef.current;
             if (ctx.state !== "running") await ctx.resume().catch(() => {});
-            const binaryStr = atob(data.audio);
-            const len = binaryStr.length;
-            const bytes = new Uint8Array(len);
-            for (let i = 0; i < len; i++) bytes[i] = binaryStr.charCodeAt(i);
-            const sampleCount = Math.floor(len / 2);
-            const view = new DataView(bytes.buffer, bytes.byteOffset, sampleCount * 2);
-            const float32 = new Float32Array(sampleCount);
-            for (let i = 0; i < sampleCount; i++) float32[i] = view.getInt16(i * 2, true) / 32768.0;
-            const audioBuffer = ctx.createBuffer(1, float32.length, 24000);
-            audioBuffer.copyToChannel(float32, 0);
-            const src = ctx.createBufferSource();
-            src.buffer = audioBuffer;
-            src.playbackRate.value = clampSpeechSpeed(prefs.speechSpeed ?? 1.1);
-            connectBoostedOutputChain(ctx, src, vol, null);
-            await new Promise<void>((resolve) => {
-              src.onended = () => {
-                ctx.close().catch(() => {});
-                resolve();
-              };
-              src.start(0);
-            });
-            setToast("Gemini TTS");
-            setVoiceTestingState("passed");
-            setTimeout(() => setVoiceTestingState("idle"), 3000);
-            return;
+            const { float32 } = decodePcm16ChunkWithCarry(data.audio, null);
+            if (float32.length > 0) {
+              const audioBuffer = ctx.createBuffer(1, float32.length, 24000);
+              audioBuffer.copyToChannel(float32, 0);
+              const src = ctx.createBufferSource();
+              src.buffer = audioBuffer;
+              const rate = clampSpeechSpeed(prefs.speechSpeed ?? 1.1);
+              src.playbackRate.value = rate;
+              const targetGain = volumeSliderToGain(vol);
+              const { gainNode } = connectBoostedOutputChain(ctx, src, vol, null);
+              const startTime = Math.max(testNextStartTimeRef.current || 0, ctx.currentTime + 0.05);
+              const duration = audioBuffer.duration / rate;
+              testNextStartTimeRef.current = startTime + duration;
+              const fadeInSec = Math.min(0.01, duration * 0.35);
+              const fadeOutSec = Math.min(0.03, duration * 0.45);
+              const fadeOutStart = Math.max(startTime + fadeInSec, startTime + duration - fadeOutSec);
+              gainNode.gain.cancelScheduledValues(ctx.currentTime);
+              gainNode.gain.setValueAtTime(0, startTime);
+              gainNode.gain.linearRampToValueAtTime(targetGain, startTime + fadeInSec);
+              gainNode.gain.setValueAtTime(targetGain, fadeOutStart);
+              gainNode.gain.linearRampToValueAtTime(0, startTime + duration);
+              await new Promise<void>((resolve) => {
+                src.onended = () => {
+                  try { src.disconnect(); } catch {}
+                  resolve();
+                };
+                src.start(startTime);
+              });
+              setToast("Gemini TTS");
+              setVoiceTestingState("passed");
+              setTimeout(() => setVoiceTestingState("idle"), 3000);
+              return;
+            }
           }
         } catch {}
       }
@@ -2895,11 +2930,129 @@ export function App() {
 
   const [pcActiveNav, setPcActiveNav] = useState<PcNavItem>("home");
 
+  // Office Sync State (PC right-panel agent chats + Task Assigned -> Live Activity & Recent Tasks)
+  const [rightPanelAgent, setRightPanelAgentState] = useState<OfficeAgentId>(() =>
+    getActiveRightPanelAgent()
+  );
+  const [rightPanelAgentMessages, setRightPanelAgentMessages] = useState<AgentChatMessage[]>(() =>
+    getAgentChatMessages(getActiveRightPanelAgent())
+  );
+  const [officeLiveTasks, setOfficeLiveTasks] = useState<OfficeTaskRow[]>(() =>
+    getLiveActivityTasks()
+  );
+  const [officeRecentTasks, setOfficeRecentTasks] = useState<OfficeTaskRow[]>(() =>
+    getRecentCompletedTasks()
+  );
+  const [showRightPanelTasks, setShowRightPanelTasks] = useState<boolean>(false);
+
+  useEffect(() => {
+    const syncState = () => {
+      const activeAg = getActiveRightPanelAgent();
+      setRightPanelAgentState(activeAg);
+      setRightPanelAgentMessages([...getAgentChatMessages(activeAg)]);
+      setOfficeLiveTasks([...getLiveActivityTasks()]);
+      setOfficeRecentTasks([...getRecentCompletedTasks()]);
+    };
+    syncState();
+    return subscribeOfficeSync(syncState);
+  }, []);
+
   useEffect(() => {
     if (currentView === "home" && pcActiveNav === "settings") {
       setPcActiveNav("home");
     }
   }, [currentView, pcActiveNav]);
+
+  // 2 & 3) Realtime subscription to office_tasks on PC layout vs Mobile layout
+  useEffect(() => {
+    if (isPcLayoutActive) {
+      const stopPcSync = startPcOfficeTasksSync(({ row, agentBengali, report }) => {
+        const announcement = `${agentBengali} জানাল: ${report}`;
+        // If originated on PC (or live call active on PC), also post/speak on PC
+        if (row.from_device === "pc") {
+          const spoke = liveSessionRef.current?.injectSystemInstructionToSpeak(announcement);
+          if (!spoke) {
+            pushSharedMessageRef.current({
+              role: "rose",
+              text: announcement,
+              replyMode: "text",
+            });
+          }
+        }
+      });
+      return () => {
+        stopPcSync();
+      };
+    } else {
+      const stopMobileSync = startMobileOfficeTasksSync((announcement) => {
+        const spokeViaLive = liveSessionRef.current?.injectSystemInstructionToSpeak(announcement);
+        pushSharedMessageRef.current({
+          role: "rose",
+          text: announcement,
+          replyMode: spokeViaLive ? "voice" : "text",
+        });
+      });
+      return () => {
+        stopMobileSync();
+      };
+    }
+  }, [isPcLayoutActive]);
+
+  // 4) Same Rose everywhere: load and sync chat_messages keyed by workspace
+  useEffect(() => {
+    const stopChatSync = startSharedChatMessagesSync({
+      onInitialLoad: (rows) => {
+        if (!rows || rows.length === 0) return;
+        setChatHistory((prev) => {
+          const existingIds = new Set(prev.map((m) => m.id).filter(Boolean));
+          const merged = [...prev];
+          for (const r of rows) {
+            if (existingIds.has(r.id)) continue;
+            const timeStr = new Date(r.created_at).toLocaleTimeString([], {
+              hour: "2-digit",
+              minute: "2-digit",
+            });
+            const last = merged[merged.length - 1];
+            if (last && last.role === r.role && (last.text || last.content || "").trim() === r.text.trim()) {
+              continue;
+            }
+            merged.push({
+              id: r.id,
+              role: r.role,
+              text: r.text,
+              content: r.text,
+              time: timeStr,
+              timestamp: timeStr,
+            } as Message);
+            existingIds.add(r.id);
+          }
+          chatHistoryRef.current = merged;
+          try {
+            const serialized = JSON.stringify(merged);
+            localStorage.setItem("iyabd_chat_history", serialized);
+            localStorage.setItem("rose_messages", serialized);
+          } catch {}
+          return merged;
+        });
+      },
+      onNewMessage: (r) => {
+        const timeStr = new Date(r.created_at).toLocaleTimeString([], {
+          hour: "2-digit",
+          minute: "2-digit",
+        });
+        pushSharedMessageRef.current({
+          id: r.id,
+          role: r.role,
+          text: r.text,
+          time: timeStr,
+          skipRemoteSync: true,
+        });
+      },
+    });
+    return () => {
+      stopChatSync();
+    };
+  }, []);
 
   // Forward Virtual Office task completion directly into the chat panel
   useEffect(() => {
@@ -3398,6 +3551,7 @@ export function App() {
       debugLine?: string;
       retryText?: string;
       replyMode?: "text" | "voice";
+      skipRemoteSync?: boolean;
     }) => {
       const rawText = String(msg.text ?? "").trim();
       const cleanText = msg.role === "rose" ? stripStageCues(rawText) : rawText;
@@ -3477,6 +3631,13 @@ export function App() {
           localStorage.setItem("iyabd_chat_history", serialized);
           localStorage.setItem("rose_messages", serialized);
         } catch (e) {}
+        if (!msg.skipRemoteSync && (entry.role === "user" || entry.role === "rose")) {
+          void saveSharedChatMessageToSupabase({
+            id: entry.id,
+            role: entry.role,
+            text: cleanText,
+          });
+        }
         return next;
       });
     },
@@ -4814,18 +4975,13 @@ export function App() {
   const activeAudioSourcesCountRef = useRef<number>(0);
 
   const stopPlayback = useCallback(() => {
-    activeAudioSourcesRef.current.forEach((source) => {
-      try {
-        source.stop();
-      } catch (e) {}
-    });
+    const sourcesToStop = activeAudioSourcesRef.current;
     activeAudioSourcesRef.current = [];
     audioQueueRef.current = [];
     isPlayingRef.current = false;
-    if (outputAudioCtxRef.current) {
-      nextStartTimeRef.current = outputAudioCtxRef.current.currentTime;
-    } else {
-      nextStartTimeRef.current = 0;
+    nextStartTimeRef.current = 0;
+    if (sourcesToStop.length > 0) {
+      fadeOutAndStopSources(outputAudioCtxRef.current, sourcesToStop, 0.03);
     }
     setLiveDebug((d) => ({ ...d, isPlaying: false }));
   }, []);
@@ -5165,8 +5321,14 @@ export function App() {
   const base64ToPcm = (base64: string) => {
     const binary = atob(base64);
     const bytes = new Uint8Array(binary.length);
-    for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
-    return new Int16Array(bytes.buffer);
+    for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i) & 0xff;
+    const sampleCount = Math.floor(bytes.byteLength / 2);
+    const view = new DataView(bytes.buffer, bytes.byteOffset, sampleCount * 2);
+    const pcm = new Int16Array(sampleCount);
+    for (let i = 0; i < sampleCount; i++) {
+      pcm[i] = view.getInt16(i * 2, true);
+    }
+    return pcm;
   };
 
   const queueAudio = (pcmData: Int16Array) => {
@@ -5220,11 +5382,13 @@ export function App() {
       return;
     }
 
-    if (!outputAudioCtxRef.current) {
-      outputAudioCtxRef.current = new AudioContext({ sampleRate: 24000 });
-      nextStartTimeRef.current = outputAudioCtxRef.current.currentTime;
+    if (!outputAudioCtxRef.current || outputAudioCtxRef.current.state === "closed") {
+      const AudioCtx = window.AudioContext || (window as any).webkitAudioContext;
+      outputAudioCtxRef.current = new AudioCtx({ sampleRate: 24000, latencyHint: "interactive" });
+      nextStartTimeRef.current = 0;
     }
 
+    const wasAlreadyPlaying = isPlayingRef.current;
     isPlayingRef.current = true;
     pauseGlobalMicForSpeech([activeStreamRef.current, micStreamRef.current]);
 
@@ -5234,10 +5398,10 @@ export function App() {
     const pcm = audioQueueRef.current.shift()!;
     updateDebugLog("Audio playing", "success");
     const float32 = new Float32Array(pcm.length);
-    for (let i = 0; i < pcm.length; i++) float32[i] = pcm[i] / 0x8000;
+    for (let i = 0; i < pcm.length; i++) float32[i] = pcm[i] / 32768;
 
     const buffer = ctx.createBuffer(1, float32.length, 24000);
-    buffer.getChannelData(0).set(float32);
+    buffer.copyToChannel(float32, 0);
 
     const source = ctx.createBufferSource();
     source.buffer = buffer;
@@ -5245,26 +5409,46 @@ export function App() {
     const rate = Math.max(0.8, Math.min(1.25, prefs.speechSpeed));
     source.playbackRate.setValueAtTime(rate, ctx.currentTime);
 
+    const vol = prefs.voiceVolume ?? 80;
+    const targetGain = volumeSliderToGain(vol);
     const { gainNode } = connectBoostedOutputChain(
       ctx,
       source,
-      prefs.voiceVolume ?? 80,
+      vol,
       outputAnalyserRef.current
     );
     gainNodeRef.current = gainNode;
 
-    const startTime = Math.max(ctx.currentTime, nextStartTimeRef.current);
-    source.start(startTime);
-    nextStartTimeRef.current = startTime + buffer.duration;
+    const startTime = Math.max(nextStartTimeRef.current, ctx.currentTime + 0.05);
+    const duration = buffer.duration / rate;
+    nextStartTimeRef.current = startTime + duration;
 
-    startSafetyTimer(buffer.duration * 1000);
+    if (!wasAlreadyPlaying) {
+      const fadeInSec = Math.min(0.01, duration * 0.35);
+      gainNode.gain.cancelScheduledValues(ctx.currentTime);
+      gainNode.gain.setValueAtTime(0, startTime);
+      gainNode.gain.linearRampToValueAtTime(targetGain, startTime + fadeInSec);
+    }
+    if (audioQueueRef.current.length === 0) {
+      const fadeOutSec = Math.min(0.03, duration * 0.45);
+      const fadeOutStart = Math.max(startTime + 0.01, startTime + duration - fadeOutSec);
+      gainNode.gain.setValueAtTime(targetGain, fadeOutStart);
+      gainNode.gain.linearRampToValueAtTime(0, startTime + duration);
+    }
+
+    activeAudioSourcesRef.current.push(source);
+    source.start(startTime);
+
+    startSafetyTimer(duration * 1000);
 
     source.onended = () => {
-      if (audioQueueRef.current.length === 0) {
+      try { source.disconnect(); } catch {}
+      activeAudioSourcesRef.current = activeAudioSourcesRef.current.filter((s) => s !== source);
+      if (audioQueueRef.current.length === 0 && activeAudioSourcesRef.current.length === 0) {
         isPlayingRef.current = false;
         resumeGlobalMicAfterSpeech([activeStreamRef.current, micStreamRef.current]);
         setTimeout(() => returnToListening(), 300);
-      } else {
+      } else if (audioQueueRef.current.length > 0) {
         processAudioQueue();
       }
     };
@@ -5868,21 +6052,20 @@ export function App() {
     }
     currentUtteranceRef.current = null;
 
-    // 3. Stop and disconnect all active AudioBufferSourceNodes
+    // 3. Fade out (30 ms) and stop/disconnect all active AudioBufferSourceNodes (never stop abruptly)
     const nodesToStop = new Set<AudioBufferSourceNode>(allActiveAudioNodesRef.current);
     if (ttsFallbackSourceRef.current) nodesToStop.add(ttsFallbackSourceRef.current);
     if (sampleAudioSourceRef.current) nodesToStop.add(sampleAudioSourceRef.current);
     activeAudioSourcesRef.current.forEach((n) => nodesToStop.add(n));
 
-    nodesToStop.forEach((node) => {
-      try { node.onended = null; } catch (e) {}
-      try { node.stop(); } catch (e) {}
-      try { node.disconnect(); } catch (e) {}
-    });
     allActiveAudioNodesRef.current.clear();
     activeAudioSourcesRef.current = [];
     ttsFallbackSourceRef.current = null;
     sampleAudioSourceRef.current = null;
+    nextStartTimeRef.current = 0;
+    if (nodesToStop.size > 0) {
+      fadeOutAndStopSources(outputAudioCtxRef.current, nodesToStop, 0.03);
+    }
 
     // 4. Stop all active HTMLAudioElements
     const elemsToStop = new Set<HTMLAudioElement>(allActiveAudioElementsRef.current);
@@ -6473,19 +6656,8 @@ export function App() {
             await ctx.resume().catch(() => {});
           }
 
-          const binaryStr = atob(base64Audio);
-          const len = binaryStr.length;
-          const bytes = new Uint8Array(len);
-          for (let i = 0; i < len; i++) bytes[i] = binaryStr.charCodeAt(i);
-
-          const sampleCount = Math.floor(len / 2);
-          if (sampleCount > 0) {
-            const view = new DataView(bytes.buffer, bytes.byteOffset, sampleCount * 2);
-            const float32 = new Float32Array(sampleCount);
-            for (let i = 0; i < sampleCount; i++) {
-              float32[i] = view.getInt16(i * 2, true) / 32768.0;
-            }
-
+          const { float32 } = decodePcm16ChunkWithCarry(base64Audio, null);
+          if (float32.length > 0) {
             // SampleRate strictly 24000; browser resamples cleanly to ctx.sampleRate
             const audioBuffer = ctx.createBuffer(1, float32.length, 24000);
             audioBuffer.copyToChannel(float32, 0);
@@ -6502,7 +6674,6 @@ export function App() {
             }
 
             const targetGain = volumeSliderToGain(vol);
-            resetOutputGainForReply(ctx, vol, outputAnalyserRef.current);
             const { gainNode } = connectBoostedOutputChain(
               ctx,
               source,
@@ -6510,17 +6681,19 @@ export function App() {
               outputAnalyserRef.current
             );
             gainNodeRef.current = gainNode;
-            gainNode.gain.cancelScheduledValues(ctx.currentTime);
-            gainNode.gain.setValueAtTime(targetGain, ctx.currentTime);
 
-            const startTime = Math.max(ctx.currentTime + 0.03, nextStartTimeRef.current || 0);
+            const startTime = Math.max(nextStartTimeRef.current || 0, ctx.currentTime + 0.05);
             const duration = audioBuffer.duration / clampedRate;
             nextStartTimeRef.current = startTime + duration;
 
-            const fadeTime = Math.min(0.005, duration * 0.25);
+            const fadeInSec = Math.min(0.01, duration * 0.35);
+            const fadeOutSec = Math.min(0.03, duration * 0.45);
+            const fadeOutStart = Math.max(startTime + fadeInSec, startTime + duration - fadeOutSec);
+
+            gainNode.gain.cancelScheduledValues(ctx.currentTime);
             gainNode.gain.setValueAtTime(0, startTime);
-            gainNode.gain.linearRampToValueAtTime(targetGain, startTime + fadeTime);
-            gainNode.gain.setValueAtTime(targetGain, Math.max(startTime + fadeTime, startTime + duration - fadeTime));
+            gainNode.gain.linearRampToValueAtTime(targetGain, startTime + fadeInSec);
+            gainNode.gain.setValueAtTime(targetGain, fadeOutStart);
             gainNode.gain.linearRampToValueAtTime(0, startTime + duration);
 
             allActiveAudioNodesRef.current.add(source);
@@ -6535,18 +6708,17 @@ export function App() {
                 try {
                   source.disconnect();
                 } catch {}
-                try {
-                  gainNode.gain.cancelScheduledValues(ctx.currentTime);
-                  gainNode.gain.setValueAtTime(targetGain, ctx.currentTime);
-                } catch {}
                 allActiveAudioNodesRef.current.delete(source);
                 resolve(ok);
               };
 
               pulseTimer = setInterval(() => {
                 if (speechTokenRef.current !== token) {
-                  try { source.stop(); } catch {}
-                  finish(true);
+                  if (pulseTimer) clearInterval(pulseTimer);
+                  settled = true;
+                  allActiveAudioNodesRef.current.delete(source);
+                  fadeOutAndStopSources(ctx, [source], 0.03);
+                  resolve(true);
                   return;
                 }
                 lastWordBoundaryTimeRef.current = performance.now();
@@ -7112,6 +7284,7 @@ export function App() {
       let roseBubbleCreated = false;
       let anySentenceEnqueued = false;
 
+      let roseBubbleSyncTimer: ReturnType<typeof setTimeout> | null = null;
       const updateSharedRoseBubble = (
         latestText: string,
         confirmation?: ActionConfirmationData,
@@ -7124,6 +7297,14 @@ export function App() {
         if (pcTaskId) {
           linkPcTaskToMessage(pcTaskId, roseMessageId);
         }
+        if (roseBubbleSyncTimer) clearTimeout(roseBubbleSyncTimer);
+        roseBubbleSyncTimer = setTimeout(() => {
+          void saveSharedChatMessageToSupabase({
+            id: roseMessageId,
+            role: "rose",
+            text: cleanDisplay,
+          });
+        }, 450);
         if (!roseBubbleCreated) {
           roseBubbleCreated = true;
           setStatus("idle");
@@ -7550,6 +7731,25 @@ export function App() {
                 const { name: toolName, args: toolArgs } = functionCallPart.functionCall;
                 console.log("[Gemini Function Call]", toolName, toolArgs);
 
+                if (toolName === "office_task") {
+                  const officeRes = await executeOfficeTaskTool(
+                    {
+                      agent: String(toolArgs?.agent || "mira"),
+                      kind: String(toolArgs?.kind || "task"),
+                      text: String(toolArgs?.text || toolArgs?.instruction || userText),
+                    },
+                    viewMode === "pc" || (viewMode === "auto" && window.innerWidth >= 1024) ? "pc" : "mobile"
+                  );
+                  fullAccumulatedText = officeRes.message;
+                  updateSharedRoseBubble(officeRes.message);
+                  if (replyMode === "voice") {
+                    anySentenceEnqueued = true;
+                    enqueueSentenceForToken(officeRes.message, turnToken, lockedEngineMode);
+                  }
+                  reqSuccess = true;
+                  return;
+                }
+
                 if (toolName === "assign_task") {
                   const res = await assignTask({
                     agent: String(toolArgs?.agent || "mira"),
@@ -7567,7 +7767,11 @@ export function App() {
                 }
 
                 if (toolName === "get_team_status") {
-                  const res = await getTeamStatus(toolArgs?.agent ? String(toolArgs.agent) : undefined);
+                  const res = await getTeamStatus(
+                    toolArgs?.agent ? String(toolArgs.agent) : undefined,
+                    userText,
+                    viewMode === "pc" || (viewMode === "auto" && window.innerWidth >= 1024) ? "pc" : "mobile"
+                  );
                   fullAccumulatedText = res.summary;
                   updateSharedRoseBubble(res.summary);
                   if (replyMode === "voice") {
@@ -8772,17 +8976,21 @@ export function App() {
     }
   };
 
+  const liveLeftoverByteRef = useRef<number | null>(null);
+
   const queueLiveAudio = async (base64: string, onPlayed?: () => void) => {
-    const binary = atob(base64);
-    const bytes = new Uint8Array(binary.length);
-    for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
+    const { float32, nextLeftoverByte } = decodePcm16ChunkWithCarry(
+      base64,
+      liveLeftoverByteRef.current
+    );
+    liveLeftoverByteRef.current = nextLeftoverByte;
+    if (float32.length <= 0) return;
 
-    const pcm = new Int16Array(bytes.buffer);
-    const float32 = new Float32Array(pcm.length);
-    for (let i = 0; i < pcm.length; i++) float32[i] = pcm[i] / 32768;
-
-    if (!outputAudioCtxRef.current) {
-      outputAudioCtxRef.current = new (window.AudioContext || (window as any).webkitAudioContext)({ sampleRate: 24000 });
+    if (!outputAudioCtxRef.current || outputAudioCtxRef.current.state === "closed") {
+      outputAudioCtxRef.current = new (window.AudioContext || (window as any).webkitAudioContext)({
+        sampleRate: 24000,
+        latencyHint: "interactive",
+      });
     }
     const ctx = outputAudioCtxRef.current;
 
@@ -8795,7 +9003,7 @@ export function App() {
     }
 
     const buffer = ctx.createBuffer(1, float32.length, 24000);
-    buffer.getChannelData(0).set(float32);
+    buffer.copyToChannel(float32, 0);
 
     const source = ctx.createBufferSource();
     source.buffer = buffer;
@@ -8806,10 +9014,12 @@ export function App() {
       outputAnalyserRef.current = analyser;
     }
 
+    const vol = prefs.voiceVolume ?? 80;
+    const targetGain = volumeSliderToGain(vol);
     const { gainNode } = connectBoostedOutputChain(
       ctx,
       source,
-      prefs.voiceVolume ?? 80,
+      vol,
       outputAnalyserRef.current
     );
     gainNodeRef.current = gainNode;
@@ -8817,22 +9027,34 @@ export function App() {
     const rate = Math.max(0.8, Math.min(1.25, prefs.speechSpeed));
     source.playbackRate.setValueAtTime(rate, ctx.currentTime);
 
+    const wasAlreadyPlaying = activeAudioSourcesRef.current.length > 0;
     pauseGlobalMicForSpeech([activeStreamRef.current, micStreamRef.current]);
     activeAudioSourcesRef.current.push(source);
     isPlayingRef.current = true;
     setLiveDebug((d) => ({ ...d, isPlaying: true }));
     if (sessionStateRef.current !== "SPEAKING") transitionToState("SPEAKING");
 
-    const startTime = Math.max(ctx.currentTime, nextStartTimeRef.current);
+    const startTime = Math.max(nextStartTimeRef.current, ctx.currentTime + 0.05);
+    const duration = buffer.duration / rate;
+    nextStartTimeRef.current = startTime + duration;
+
+    if (!wasAlreadyPlaying) {
+      const fadeInSec = Math.min(0.01, duration * 0.4);
+      gainNode.gain.cancelScheduledValues(ctx.currentTime);
+      gainNode.gain.setValueAtTime(0, startTime);
+      gainNode.gain.linearRampToValueAtTime(targetGain, startTime + fadeInSec);
+    }
+
     source.start(startTime);
     if (onPlayed) {
       onPlayed();
     }
-    nextStartTimeRef.current = startTime + (buffer.duration / rate);
 
     source.onended = () => {
+      try { source.disconnect(); } catch {}
       activeAudioSourcesRef.current = activeAudioSourcesRef.current.filter((s) => s !== source);
       if (activeAudioSourcesRef.current.length === 0) {
+        liveLeftoverByteRef.current = null;
         isPlayingRef.current = false;
         resumeGlobalMicAfterSpeech([activeStreamRef.current, micStreamRef.current]);
         setLiveDebug((d) => ({ ...d, isPlaying: false }));
@@ -9021,37 +9243,49 @@ export function App() {
   const playAudioChunkImmediately = async (pcm: Int16Array) => {
     if (isLiveCallActiveNow()) return;
     try {
-      if (!outputAudioCtxRef.current) {
-        outputAudioCtxRef.current = new AudioContext({ sampleRate: 24000 });
-        nextStartTimeRef.current = outputAudioCtxRef.current.currentTime;
+      if (!outputAudioCtxRef.current || outputAudioCtxRef.current.state === "closed") {
+        const AudioCtx = window.AudioContext || (window as any).webkitAudioContext;
+        outputAudioCtxRef.current = new AudioCtx({ sampleRate: 24000, latencyHint: "interactive" });
+        nextStartTimeRef.current = 0;
       }
       const ctx = outputAudioCtxRef.current;
       if (ctx.state === "suspended") await ctx.resume();
 
       const float32 = new Float32Array(pcm.length);
-      for (let i = 0; i < pcm.length; i++) float32[i] = pcm[i] / 0x8000;
+      for (let i = 0; i < pcm.length; i++) float32[i] = pcm[i] / 32768;
 
       const buffer = ctx.createBuffer(1, float32.length, 24000);
-      buffer.getChannelData(0).set(float32);
+      buffer.copyToChannel(float32, 0);
 
       const source = ctx.createBufferSource();
       source.buffer = buffer;
       const rate = Math.max(0.8, Math.min(1.25, prefs.speechSpeed));
       source.playbackRate.setValueAtTime(rate, ctx.currentTime);
 
+      const vol = prefs.voiceVolume ?? 80;
+      const targetGain = volumeSliderToGain(vol);
       const { gainNode } = connectBoostedOutputChain(
         ctx,
         source,
-        prefs.voiceVolume ?? 80,
+        vol,
         outputAnalyserRef.current
       );
       gainNodeRef.current = gainNode;
 
       pauseGlobalMicForSpeech([activeStreamRef.current, micStreamRef.current]);
-      const startTime = Math.max(ctx.currentTime, nextStartTimeRef.current);
-      source.start(startTime);
+      const startTime = Math.max(nextStartTimeRef.current, ctx.currentTime + 0.05);
       const effectiveDuration = buffer.duration / rate;
       nextStartTimeRef.current = startTime + effectiveDuration;
+
+      if ((activeAudioSourcesCountRef.current || 0) === 0) {
+        const fadeInSec = Math.min(0.01, effectiveDuration * 0.35);
+        gainNode.gain.cancelScheduledValues(ctx.currentTime);
+        gainNode.gain.setValueAtTime(0, startTime);
+        gainNode.gain.linearRampToValueAtTime(targetGain, startTime + fadeInSec);
+      }
+
+      activeAudioSourcesRef.current.push(source);
+      source.start(startTime);
 
       isPlayingRef.current = true;
       setSpeakingState("speaking");
@@ -9059,6 +9293,8 @@ export function App() {
       activeAudioSourcesCountRef.current = (activeAudioSourcesCountRef.current || 0) + 1;
 
       source.onended = () => {
+        try { source.disconnect(); } catch {}
+        activeAudioSourcesRef.current = activeAudioSourcesRef.current.filter((s) => s !== source);
         activeAudioSourcesCountRef.current = Math.max(0, (activeAudioSourcesCountRef.current || 1) - 1);
         if (activeAudioSourcesCountRef.current === 0) {
           isPlayingRef.current = false;
@@ -10254,6 +10490,7 @@ export function App() {
         source.buffer = buffer;
         source.playbackRate.value = clampedRate;
 
+        const targetGain = volumeSliderToGain(vol);
         const { gainNode } = connectBoostedOutputChain(
           ctx,
           source,
@@ -10262,14 +10499,28 @@ export function App() {
         );
         gainNodeRef.current = gainNode;
 
+        const startTime = Math.max(nextStartTimeRef.current || 0, ctx.currentTime + 0.05);
+        const duration = buffer.duration / clampedRate;
+        nextStartTimeRef.current = startTime + duration;
+        const fadeInSec = Math.min(0.01, duration * 0.35);
+        const fadeOutSec = Math.min(0.03, duration * 0.45);
+        const fadeOutStart = Math.max(startTime + fadeInSec, startTime + duration - fadeOutSec);
+
+        gainNode.gain.cancelScheduledValues(ctx.currentTime);
+        gainNode.gain.setValueAtTime(0, startTime);
+        gainNode.gain.linearRampToValueAtTime(targetGain, startTime + fadeInSec);
+        gainNode.gain.setValueAtTime(targetGain, fadeOutStart);
+        gainNode.gain.linearRampToValueAtTime(0, startTime + duration);
+
         allActiveAudioNodesRef.current.add(source);
         setPlayingVoiceId(voiceId);
         source.onended = () => {
+          try { source.disconnect(); } catch {}
           allActiveAudioNodesRef.current.delete(source);
           setPlayingVoiceId(null);
           resumeGlobalMicAfterSpeech([activeStreamRef.current, micStreamRef.current]);
         };
-        source.start(0);
+        source.start(startTime);
         return;
       }
 
@@ -11621,35 +11872,168 @@ export function App() {
 
         {/* Layer 2: Header */}
         {isPcLayout ? (
-          <div className="relative z-[2] px-5 py-3 border-b border-white/5 flex items-center justify-between shrink-0 bg-[#020617]/90 backdrop-blur-md">
-            <div className="flex items-center gap-3">
-              <div className="relative w-9 h-9 rounded-full overflow-hidden border border-purple-500/30 bg-[#0F172A] shrink-0 shadow-[0_0_12px_rgba(168,85,247,0.3)]">
-                <img
-                  src={ROSE_BRAND.avatar}
-                  alt={ROSE_BRAND.name}
-                  className="w-full h-full object-cover object-[50%_25%]"
-                />
-                <span className="absolute bottom-0 right-0 w-2.5 h-2.5 rounded-full bg-emerald-400 border-2 border-[#020617]" />
-              </div>
-              <div>
-                <div className="flex items-center gap-1.5">
-                  <h1 className="text-sm font-bold text-white tracking-wide">Rose</h1>
-                  <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse" />
+          <div className="relative z-[2] border-b border-white/5 flex flex-col shrink-0 bg-[#020617]/95 backdrop-blur-md">
+            <div className="px-4 py-2.5 flex items-center justify-between">
+              <div className="flex items-center gap-2.5">
+                <div className="relative w-8 h-8 rounded-full overflow-hidden border border-purple-500/30 bg-[#0F172A] shrink-0 shadow-[0_0_12px_rgba(168,85,247,0.3)]">
+                  <img
+                    src={
+                      rightPanelAgent === "rose"
+                        ? ROSE_BRAND.avatar
+                        : `/office/avatars/${rightPanelAgent}.png`
+                    }
+                    alt={AGENT_ENGLISH_NAMES[rightPanelAgent]}
+                    className="w-full h-full object-cover object-[50%_25%]"
+                  />
+                  <span className="absolute bottom-0 right-0 w-2 h-2 rounded-full bg-emerald-400 border border-[#020617]" />
                 </div>
-                <p className="text-[10px] text-emerald-400/90 font-medium leading-none">Online</p>
+                <div>
+                  <div className="flex items-center gap-1.5">
+                    <h1 className="text-xs font-bold text-white tracking-wide">
+                      {AGENT_ENGLISH_NAMES[rightPanelAgent]} ({AGENT_BENGALI_NAMES[rightPanelAgent]})
+                    </h1>
+                    <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse" />
+                  </div>
+                  <p className="text-[10px] text-emerald-400/90 font-medium leading-none">
+                    Online
+                  </p>
+                </div>
+              </div>
+              <div className="flex items-center gap-1.5">
+                <button
+                  type="button"
+                  onClick={() => setShowRightPanelTasks((v) => !v)}
+                  className={`px-2 py-1 rounded-lg text-[10px] font-bold border transition-all flex items-center gap-1 ${
+                    officeLiveTasks.length > 0
+                      ? "bg-emerald-500/20 border-emerald-500/40 text-emerald-300 animate-pulse"
+                      : showRightPanelTasks
+                      ? "bg-purple-600/30 border-purple-400/50 text-purple-200"
+                      : "bg-white/5 border-white/10 text-slate-300 hover:text-white"
+                  }`}
+                  title="Task Assigned: Live Activity & Recent Tasks"
+                >
+                  <span>Task Assigned</span>
+                  <span className="px-1.5 py-0.2 rounded-full bg-black/40 text-[9px]">
+                    {officeLiveTasks.length}/{officeRecentTasks.length}
+                  </span>
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setShowDeleteAllConfirm(true)}
+                  aria-label="Delete chat history"
+                  className="p-1.5 rounded-xl bg-white/5 hover:bg-rose-500/20 text-slate-400 hover:text-rose-400 active:scale-95 transition-all"
+                  title="Clear chat"
+                >
+                  <Trash2 className="w-3.5 h-3.5" />
+                </button>
               </div>
             </div>
-            <div className="flex items-center gap-1">
-              <button
-                type="button"
-                onClick={() => setShowDeleteAllConfirm(true)}
-                aria-label="Delete chat history"
-                className="p-2 rounded-xl bg-white/5 hover:bg-rose-500/20 text-slate-400 hover:text-rose-400 active:scale-95 transition-all"
-                title="Clear chat"
-              >
-                <Trash2 className="w-4 h-4" />
-              </button>
+
+            {/* PC Right Panel Agent Tabs */}
+            <div className="px-3 pb-2 flex items-center gap-1 overflow-x-auto no-scrollbar">
+              {(["rose", "mira", "arin", "zayan", "naira"] as OfficeAgentId[]).map((ag) => {
+                const isSelected = rightPanelAgent === ag;
+                const agLiveCount = officeLiveTasks.filter((t) => t.agent === ag).length;
+                return (
+                  <button
+                    key={ag}
+                    type="button"
+                    onClick={() => setActiveRightPanelAgent(ag)}
+                    className={`px-2.5 py-1 rounded-full text-[10px] font-bold transition-all shrink-0 flex items-center gap-1 border ${
+                      isSelected
+                        ? "bg-purple-600 text-white border-purple-400/60 shadow-[0_0_10px_rgba(168,85,247,0.4)]"
+                        : "bg-white/5 text-slate-300 border-white/10 hover:bg-white/10 hover:text-white"
+                    }`}
+                  >
+                    <span>{AGENT_ENGLISH_NAMES[ag]}</span>
+                    {agLiveCount > 0 && (
+                      <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-ping" />
+                    )}
+                  </button>
+                );
+              })}
             </div>
+
+            {/* Task Assigned -> Live Activity & Recent Tasks inside Right Panel */}
+            {(officeLiveTasks.length > 0 || showRightPanelTasks) && (
+              <div className="px-3 pb-2.5 space-y-2 border-t border-white/5 pt-2 bg-[#080417]/90 max-h-48 overflow-y-auto no-scrollbar">
+                {/* Live Activity */}
+                <div>
+                  <div className="flex items-center justify-between mb-1">
+                    <span className="text-[10px] font-black uppercase tracking-wider text-emerald-400 flex items-center gap-1">
+                      <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-ping" />
+                      Task Assigned → Live Activity
+                    </span>
+                    <span className="text-[9px] text-slate-400 font-semibold">
+                      {officeLiveTasks.length} active
+                    </span>
+                  </div>
+                  {officeLiveTasks.length === 0 ? (
+                    <p className="text-[10px] text-slate-500">কোনো চলমান কাজ নেই</p>
+                  ) : (
+                    <div className="space-y-1">
+                      {officeLiveTasks.map((t) => (
+                        <div
+                          key={t.id}
+                          onClick={() => setActiveRightPanelAgent(t.agent)}
+                          className="p-2 rounded-xl bg-emerald-950/30 border border-emerald-500/30 cursor-pointer hover:border-emerald-400/50 transition-all"
+                        >
+                          <div className="flex items-center justify-between text-[10px]">
+                            <span className="font-bold text-emerald-300">
+                              {AGENT_ENGLISH_NAMES[t.agent]} ({AGENT_BENGALI_NAMES[t.agent]})
+                            </span>
+                            <span className="px-1.5 py-0.5 rounded bg-emerald-500/20 text-emerald-200 text-[9px] font-bold uppercase animate-pulse">
+                              {t.status}
+                            </span>
+                          </div>
+                          <p className="text-[11px] text-white font-medium mt-0.5 truncate">
+                            Rose: {t.text}
+                          </p>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                </div>
+
+                {/* Recent Tasks */}
+                {officeRecentTasks.length > 0 && (
+                  <div>
+                    <div className="flex items-center justify-between mb-1">
+                      <span className="text-[10px] font-black uppercase tracking-wider text-purple-300">
+                        Recent Tasks
+                      </span>
+                      <span className="text-[9px] text-slate-400 font-semibold">
+                        {officeRecentTasks.length} done
+                      </span>
+                    </div>
+                    <div className="space-y-1">
+                      {officeRecentTasks.slice(0, 3).map((t) => (
+                        <div
+                          key={t.id}
+                          onClick={() => setActiveRightPanelAgent(t.agent)}
+                          className="p-2 rounded-xl bg-white/5 border border-white/10 cursor-pointer hover:border-purple-500/40 transition-all"
+                        >
+                          <div className="flex items-center justify-between text-[10px]">
+                            <span className="font-bold text-purple-300">
+                              {AGENT_ENGLISH_NAMES[t.agent]}
+                            </span>
+                            <span className="text-[9px] text-emerald-400 font-bold uppercase">
+                              {t.status}
+                            </span>
+                          </div>
+                          <p className="text-[10px] text-slate-300 truncate">Rose: {t.text}</p>
+                          {t.report && (
+                            <p className="text-[10px] text-emerald-200 truncate mt-0.5">
+                              {AGENT_ENGLISH_NAMES[t.agent]}: {t.report}
+                            </p>
+                          )}
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                )}
+              </div>
+            )}
           </div>
         ) : (
           <div className="relative z-[2] px-5 py-3 border-b border-white/5 flex items-center justify-between shrink-0 bg-[#020617]/90 backdrop-blur-md">
@@ -11681,7 +12065,54 @@ export function App() {
           className="relative z-[1] flex-1 min-h-0 overflow-y-auto space-y-4 no-scrollbar"
           style={{ padding: "12px 14px" }}
         >
-          {chatHistory.length === 0 && pcTasks.length === 0 && !hasInterim && !isThinking ? (
+          {isPcLayout && rightPanelAgent !== "rose" ? (
+            rightPanelAgentMessages.length === 0 ? (
+              <div className="flex flex-col items-center justify-center text-center opacity-70 px-4 h-44 py-4">
+                <MessageSquare className="w-8 h-8 mb-2 text-slate-600" />
+                <p className="text-xs font-black uppercase text-white tracking-wider">
+                  {AGENT_ENGLISH_NAMES[rightPanelAgent]} ({AGENT_BENGALI_NAMES[rightPanelAgent]})
+                </p>
+                <p className="text-[11px] text-slate-400 font-medium mt-1">
+                  Tasks assigned by Rose and reports from {AGENT_ENGLISH_NAMES[rightPanelAgent]} appear typed here in real time.
+                </p>
+              </div>
+            ) : (
+              <div className="space-y-3">
+                {rightPanelAgentMessages.map((agMsg) => {
+                  const isFromRose = agMsg.sender.toLowerCase() === "rose";
+                  return (
+                    <div
+                      key={agMsg.id}
+                      className={
+                        "flex flex-col w-full " + (isFromRose ? "items-end" : "items-start")
+                      }
+                    >
+                      <div
+                        className={
+                          "max-w-[88%] px-3.5 py-2.5 text-xs font-medium leading-relaxed shadow-lg whitespace-pre-wrap " +
+                          (isFromRose
+                            ? "bg-gradient-to-r from-purple-600/90 to-pink-600/90 text-white rounded-2xl rounded-tr-sm"
+                            : "bg-[#0F172A]/95 border border-emerald-500/35 text-slate-100 rounded-2xl rounded-tl-sm")
+                        }
+                      >
+                        <span>{agMsg.displayedText}</span>
+                        {agMsg.isTyping && (
+                          <span className="inline-block w-1.5 h-3.5 ml-0.5 align-middle bg-purple-300 animate-pulse" />
+                        )}
+                      </div>
+                      <span className="text-[9px] text-slate-400 font-medium mt-1 px-1">
+                        {agMsg.time}
+                      </span>
+                    </div>
+                  );
+                })}
+              </div>
+            )
+          ) : chatHistory.length === 0 &&
+            rightPanelAgentMessages.length === 0 &&
+            pcTasks.length === 0 &&
+            !hasInterim &&
+            !isThinking ? (
             <div
               className={`flex flex-col items-center justify-center text-center opacity-70 px-4 ${
                 isPcLayout ? "h-44 py-4" : "h-64"
@@ -11697,6 +12128,18 @@ export function App() {
             </div>
           ) : (
             <>
+              {isPcLayout &&
+                rightPanelAgent === "rose" &&
+                rightPanelAgentMessages.map((agMsg) => (
+                  <div key={agMsg.id} className="flex flex-col w-full items-start">
+                    <div className="max-w-[88%] px-3.5 py-2.5 text-xs font-medium leading-relaxed shadow-lg bg-[#0F172A]/95 border border-purple-500/35 text-slate-100 rounded-2xl rounded-tl-sm whitespace-pre-wrap">
+                      <span>{agMsg.displayedText}</span>
+                      {agMsg.isTyping && (
+                        <span className="inline-block w-1.5 h-3.5 ml-0.5 align-middle bg-purple-300 animate-pulse" />
+                      )}
+                    </div>
+                  </div>
+                ))}
               {(() => {
                 let lastRoseBubbleIdx = -1;
                 for (let i = chatHistory.length - 1; i >= 0; i--) {
@@ -12081,17 +12524,39 @@ export function App() {
               if (e.key === "Enter" && !e.shiftKey) {
                 e.preventDefault();
                 if (inputText.trim()) {
-                  sendTypedMessageToRose(inputText);
+                  if (isPcLayout && rightPanelAgent !== "rose") {
+                    const msgToSend = inputText.trim();
+                    setInputText("");
+                    void executeOfficeTaskTool(
+                      { agent: rightPanelAgent, text: msgToSend },
+                      "pc"
+                    );
+                  } else {
+                    sendTypedMessageToRose(inputText);
+                  }
                 }
               }
             }}
-            placeholder={"Message " + (settings.assistantName || ROSE_BRAND.name) + "..."}
+            placeholder={
+              isPcLayout && rightPanelAgent !== "rose"
+                ? `Message ${AGENT_ENGLISH_NAMES[rightPanelAgent]} (${AGENT_BENGALI_NAMES[rightPanelAgent]})...`
+                : "Message " + (settings.assistantName || ROSE_BRAND.name) + "..."
+            }
             className="flex-1 bg-black/40 border border-white/10 rounded-2xl px-4 py-2.5 text-xs text-white placeholder:text-slate-500 outline-none focus:ring-1 focus:ring-purple-500 resize-none max-h-24 overflow-y-auto leading-normal"
           />
           <button
             onClick={() => {
               if (inputText.trim()) {
-                sendTypedMessageToRose(inputText);
+                if (isPcLayout && rightPanelAgent !== "rose") {
+                  const msgToSend = inputText.trim();
+                  setInputText("");
+                  void executeOfficeTaskTool(
+                    { agent: rightPanelAgent, text: msgToSend },
+                    "pc"
+                  );
+                } else {
+                  sendTypedMessageToRose(inputText);
+                }
               }
             }}
             disabled={!inputText.trim()}
@@ -12127,6 +12592,7 @@ export function App() {
                     chatHistoryRef.current = [];
                     setInterimSpeechText("");
                     clearPcTasks();
+                    clearAgentChatMessages();
                     try {
                       localStorage.removeItem("iyabd_chat_history");
                       localStorage.removeItem("rose_messages");

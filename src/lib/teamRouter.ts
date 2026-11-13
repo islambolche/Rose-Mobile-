@@ -170,13 +170,16 @@ export async function routeUserMessageForTeamTask(
     };
   }
 
-  // 4. Team agent or team status detection
+  // 4. Team agent or team status detection -> office_task
   const isTeamGeneralStatus = /(টিম|অফিস|সবাই)/i.test(rawText);
   const detectedAgent = detectAgentInMessage(rawText);
-  const isStatusQuery = isTeamGeneralStatus || STATUS_WORDS.some(w => lower.includes(w)) || (detectedAgent && STATUS_WORDS.some(w => lower.includes(w)));
+  const isStatusQuery =
+    isTeamGeneralStatus ||
+    STATUS_WORDS.some((w) => lower.includes(w)) ||
+    (detectedAgent && STATUS_WORDS.some((w) => lower.includes(w)));
 
   if (isTeamGeneralStatus || (detectedAgent && isStatusQuery)) {
-    const statusRes = await getTeamStatus(detectedAgent || undefined);
+    const statusRes = await getTeamStatus(detectedAgent || 'mira', rawText, options.source);
     return {
       matched: true,
       type: 'status',
@@ -186,15 +189,18 @@ export async function routeUserMessageForTeamTask(
   }
 
   if (detectedAgent) {
-    const isWorkRequest = WORK_WORDS.some(w => lower.includes(w)) || rawText.length > 5;
+    const isWorkRequest = WORK_WORDS.some((w) => lower.includes(w)) || rawText.length > 5;
     if (isWorkRequest) {
-      const member = TEAM_MEMBERS[detectedAgent];
-      const res = await assignTask({ agent: detectedAgent, instruction: rawText, source: options.source });
+      const res = await assignTask({
+        agent: detectedAgent,
+        instruction: rawText,
+        source: options.source,
+      });
       return {
         matched: true,
         type: 'assign',
         agentId: detectedAgent,
-        roseReply: `${member.bengaliName}-কে কাজটা দিচ্ছি।`,
+        roseReply: res.message,
         task: res.task,
       };
     }

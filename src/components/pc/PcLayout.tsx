@@ -26,6 +26,14 @@ import { VirtualOffice } from "./office/VirtualOffice";
 import { OFFICE_AGENT_LIST } from "./office/officeConfig";
 import { DEVELOPER_INFO } from "../../lib/creator-profile";
 import { openExternal } from "../../lib/openExternal";
+import {
+  subscribeOfficeSync,
+  getLiveActivityTasks,
+  getRecentCompletedTasks,
+  AGENT_BENGALI_NAMES,
+  AGENT_ENGLISH_NAMES,
+  OfficeTaskRow,
+} from "../../lib/officeSync";
 
 export type PcNavItem = "home" | "chat" | "agents" | "tasks" | "history" | "settings";
 
@@ -110,6 +118,19 @@ export const PcLayout: React.FC<PcLayoutProps> = ({
       return next;
     });
   };
+
+  // Office Tasks (Task Assigned -> Live Activity & Recent Tasks)
+  const [liveTasks, setLiveTasks] = useState<OfficeTaskRow[]>(() => getLiveActivityTasks());
+  const [recentTasks, setRecentTasks] = useState<OfficeTaskRow[]>(() => getRecentCompletedTasks());
+
+  useEffect(() => {
+    const sync = () => {
+      setLiveTasks(getLiveActivityTasks());
+      setRecentTasks(getRecentCompletedTasks());
+    };
+    sync();
+    return subscribeOfficeSync(sync);
+  }, []);
 
   // Camera State & Streaming
   const [isCameraOn, setIsCameraOn] = useState(false);
@@ -549,21 +570,130 @@ export const PcLayout: React.FC<PcLayoutProps> = ({
               </div>
             </div>
           ) : activeNav === "tasks" ? (
-            /* TASKS PAGE */
-            <div className="flex-1 min-h-0 w-full overflow-y-auto no-scrollbar flex flex-col items-center p-8 text-center bg-[#020617] relative">
-              <div className="relative z-10 my-auto max-w-md w-full bg-[#0F172A]/85 border border-purple-500/30 rounded-[20px] p-8 shadow-2xl flex flex-col items-center">
-                <div className="w-16 h-16 rounded-full bg-purple-600/15 border border-purple-500/30 flex items-center justify-center text-purple-400 mb-4 shadow-lg shadow-purple-900/30">
-                  <CheckSquare className="w-8 h-8" />
+            /* TASKS PAGE: Task Assigned -> Live Activity & Recent Tasks */
+            <div className="flex-1 min-h-0 w-full overflow-y-auto no-scrollbar bg-[#020617]">
+              <div className="sticky top-0 z-20 px-6 pt-5 pb-3 bg-[#020617]/95 backdrop-blur-md border-b border-white/5">
+                <div className="max-w-4xl mx-auto flex items-center justify-between">
+                  <div>
+                    <h2 className="text-xl font-black text-white uppercase tracking-wider flex items-center gap-2">
+                      <CheckSquare className="w-6 h-6 text-purple-400" />
+                      Task Assigned
+                    </h2>
+                    <p className="text-xs text-slate-400 font-medium mt-0.5">
+                      Live Activity & Recent Tasks across your shared office workspace
+                    </p>
+                  </div>
+                  <span className="px-3 py-1 rounded-full bg-purple-600/20 border border-purple-500/30 text-purple-300 text-xs font-bold">
+                    {liveTasks.length} Active • {recentTasks.length} Done
+                  </span>
                 </div>
-                <h2 className="text-2xl font-black italic uppercase tracking-wider text-white mb-2">
-                  Tasks
-                </h2>
-                <span className="inline-flex items-center gap-1.5 px-3.5 py-1 rounded-full bg-purple-500/15 border border-purple-500/30 text-purple-300 text-[10px] font-black uppercase tracking-[2px] mb-3">
-                  <Sparkles className="w-3 h-3" /> Coming soon
-                </span>
-                <p className="text-xs font-medium text-slate-400 leading-relaxed">
-                  Scheduled tasks and autonomous PC workflows will appear here.
-                </p>
+              </div>
+
+              <div className="p-6 max-w-4xl mx-auto space-y-6 pb-10">
+                {/* Live Activity */}
+                <div className="bg-[#0F172A]/85 border border-purple-500/30 rounded-2xl p-5 shadow-xl space-y-3">
+                  <div className="flex items-center justify-between">
+                    <h3 className="text-xs font-black uppercase tracking-wider text-emerald-400 flex items-center gap-2">
+                      <span className="w-2 h-2 rounded-full bg-emerald-400 animate-ping" />
+                      Live Activity
+                    </h3>
+                    <span className="text-[11px] font-bold text-slate-400">
+                      {liveTasks.length} running
+                    </span>
+                  </div>
+                  {liveTasks.length === 0 ? (
+                    <p className="text-xs text-slate-400 py-3">
+                      কোনো চলমান কাজ নেই (No active tasks right now).
+                    </p>
+                  ) : (
+                    <div className="space-y-2.5">
+                      {liveTasks.map((t) => (
+                        <div
+                          key={t.id}
+                          className="p-3.5 rounded-xl bg-black/40 border border-emerald-500/30 flex items-start justify-between gap-3"
+                        >
+                          <div className="min-w-0 flex-1">
+                            <div className="flex items-center gap-2">
+                              <span className="px-2 py-0.5 rounded-full bg-purple-500/20 border border-purple-500/40 text-purple-200 text-[10px] font-bold">
+                                {AGENT_ENGLISH_NAMES[t.agent]} ({AGENT_BENGALI_NAMES[t.agent]})
+                              </span>
+                              <span className="text-[10px] text-slate-400 uppercase font-semibold">
+                                {t.kind} • from {t.from_device}
+                              </span>
+                            </div>
+                            <p className="text-xs font-semibold text-white mt-1.5 break-words">
+                              Rose: {t.text}
+                            </p>
+                          </div>
+                          <span className="shrink-0 px-2.5 py-1 rounded-full bg-emerald-500/20 border border-emerald-500/40 text-emerald-300 text-[10px] font-black uppercase animate-pulse">
+                            {t.status === "working" ? "Working..." : "New"}
+                          </span>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                </div>
+
+                {/* Recent Tasks */}
+                <div className="bg-[#0F172A]/85 border border-purple-500/30 rounded-2xl p-5 shadow-xl space-y-3">
+                  <div className="flex items-center justify-between">
+                    <h3 className="text-xs font-black uppercase tracking-wider text-purple-300 flex items-center gap-2">
+                      <Sparkles className="w-3.5 h-3.5 text-purple-400" />
+                      Recent Tasks
+                    </h3>
+                    <span className="text-[11px] font-bold text-slate-400">
+                      {recentTasks.length} completed
+                    </span>
+                  </div>
+                  {recentTasks.length === 0 ? (
+                    <p className="text-xs text-slate-400 py-3">
+                      এখনো কোনো সম্পন্ন কাজ নেই (No completed tasks yet).
+                    </p>
+                  ) : (
+                    <div className="space-y-2.5">
+                      {recentTasks.map((t) => (
+                        <div
+                          key={t.id}
+                          className="p-3.5 rounded-xl bg-black/40 border border-white/10 space-y-1.5"
+                        >
+                          <div className="flex items-center justify-between gap-2">
+                            <div className="flex items-center gap-2">
+                              <span className="px-2 py-0.5 rounded-full bg-purple-500/20 border border-purple-500/30 text-purple-200 text-[10px] font-bold">
+                                {AGENT_ENGLISH_NAMES[t.agent]} ({AGENT_BENGALI_NAMES[t.agent]})
+                              </span>
+                              <span className="text-[10px] text-slate-400">
+                                {new Date(t.updated_at || t.created_at).toLocaleTimeString([], {
+                                  hour: "2-digit",
+                                  minute: "2-digit",
+                                })}
+                              </span>
+                            </div>
+                            <span
+                              className={`px-2 py-0.5 rounded-full text-[10px] font-bold uppercase ${
+                                t.status === "done"
+                                  ? "bg-emerald-500/20 text-emerald-300 border border-emerald-500/30"
+                                  : "bg-rose-500/20 text-rose-300 border border-rose-500/30"
+                              }`}
+                            >
+                              {t.status}
+                            </span>
+                          </div>
+                          <p className="text-xs text-slate-300 font-medium break-words">
+                            <span className="text-purple-300 font-bold">Rose:</span> {t.text}
+                          </p>
+                          {t.report && (
+                            <p className="text-xs text-emerald-200 bg-emerald-950/30 border border-emerald-500/20 rounded-lg px-2.5 py-1.5 font-medium break-words">
+                              <span className="font-bold text-emerald-400">
+                                {AGENT_ENGLISH_NAMES[t.agent]}:
+                              </span>{" "}
+                              {t.report}
+                            </p>
+                          )}
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                </div>
               </div>
             </div>
           ) : activeNav === "history" ? (

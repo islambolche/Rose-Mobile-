@@ -5,6 +5,7 @@ import { getDynamicGroqChatModels, getProviderKey } from './chatEngines';
 import { cleanAssistantReplyText } from './ai-service';
 import { ROSE_TYPED_CHAT_FUNCTION_DECLARATIONS } from './team';
 import { executePcTaskTool } from '../pc/pcTaskManager';
+import { executeOfficeTaskTool } from './officeSync';
 
 export const NO_GEMINI_KEY_MSG = 'Gemini key সেভ করা নেই। Settings → CONNECTIONS-এ কী বসাও।';
 export const QUOTA_429_MSG = 'আজকের ফ্রি সীমা শেষ। পরে চেষ্টা করো বা নতুন কী দাও।';
@@ -644,7 +645,16 @@ export async function sendTypedChat(
         if (fcPart?.functionCall?.name) {
           const fcName = String(fcPart.functionCall.name);
           const fcArgs = fcPart.functionCall.args || {};
-          if (fcName === 'pc_task') {
+          if (fcName === 'office_task' || fcName === 'assign_task' || fcName === 'get_team_status') {
+            const officeRes = await executeOfficeTaskTool({
+              agent: String(fcArgs.agent || 'mira'),
+              kind: fcName === 'get_team_status' ? 'status' : String(fcArgs.kind || 'task'),
+              text: String(fcArgs.text || fcArgs.instruction || 'কাজের আপডেট দাও'),
+            });
+            if (officeRes?.message) {
+              return officeRes.message;
+            }
+          } else if (fcName === 'pc_task') {
             const pcRes = await executePcTaskTool(fcArgs);
             lastPcTaskId = pcRes.taskId;
             if (pcRes?.message) {

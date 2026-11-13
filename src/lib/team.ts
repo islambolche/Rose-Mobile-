@@ -1,5 +1,9 @@
-import { supabase } from './supabase';
 import { PC_TASK_FUNCTION_DECLARATION } from '../pc/pcTaskManager';
+import {
+  OFFICE_TASK_FUNCTION_DECLARATION,
+  executeOfficeTaskTool,
+  normalizeOfficeAgent,
+} from './officeSync';
 
 export type TeamAgentId = 'mira' | 'arin' | 'zayan' | 'naira';
 
@@ -113,111 +117,67 @@ export async function assignTask(params: {
   instruction: string;
   source?: 'mobile' | 'pc';
 }): Promise<{ success: boolean; message: string; task: AgentTaskRecord }> {
-  const targetRaw = params.agent.toLowerCase().trim();
-  let targetAgent: TeamAgentId = 'mira';
-
-  if (targetRaw.includes('arin') || targetRaw.includes('আরিন')) targetAgent = 'arin';
-  else if (targetRaw.includes('zayan') || targetRaw.includes('জায়ান') || targetRaw.includes('যায়ান')) targetAgent = 'zayan';
-  else if (targetRaw.includes('naira') || targetRaw.includes('নাইরা') || targetRaw.includes('নায়রা')) targetAgent = 'naira';
-  else if (targetRaw.includes('mira') || targetRaw.includes('মিরা') || targetRaw.includes('মীরা')) targetAgent = 'mira';
-
-  const member = TEAM_MEMBERS[targetAgent];
-  const taskId = generateTaskId();
-  const source = params.source || 'mobile';
+  const officeRes = await executeOfficeTaskTool(
+    {
+      agent: params.agent,
+      kind: 'task',
+      text: params.instruction,
+    },
+    params.source
+  );
+  const normalized = normalizeOfficeAgent(params.agent);
+  const targetAgent: TeamAgentId = normalized === 'rose' ? 'mira' : normalized;
 
   const task: AgentTaskRecord = {
-    id: taskId,
-    created_at: new Date().toISOString(),
+    id: officeRes.row.id,
+    created_at: officeRes.row.created_at,
     from_agent: 'rose',
     to_agent: targetAgent,
     instruction: params.instruction,
     status: 'assigned',
     reply: null,
     result: null,
-    source,
+    source: params.source || 'mobile',
   };
-
-  if (supabase) {
-    try {
-      await supabase.from('tasks').insert([task]);
-    } catch (err) {
-      console.warn('[Team Assign] Supabase insert warning:', err);
-    }
-  }
 
   return {
     success: true,
-    message: `ঠিক আছে, ${member.bengaliName}কে কাজটি দিলাম: "${params.instruction}"`,
+    message: officeRes.message,
     task,
   };
 }
 
-export async function getTeamStatus(agentParam?: string): Promise<{ success: boolean; summary: string }> {
-  if (!supabase) {
-    return { success: true, summary: 'টিম সিস্টেম অনলাইনে আছে।' };
-  }
-
-  try {
-    const { data, error } = await supabase
-      .from('tasks')
-      .select('*')
-      .order('created_at', { ascending: false })
-      .limit(15);
-
-    if (error) {
-      console.error('[getTeamStatus] Supabase error:', error);
-      return { success: false, summary: 'টিমের তথ্য এখন আনতে পারছি না।' };
-    }
-
-    if (!data || data.length === 0) {
-      return { success: true, summary: 'আজ কাউকে কোনো কাজ দেওয়া হয়নি, সবাই ফাঁকা।' };
-    }
-
-    if (agentParam) {
-      const targetRaw = agentParam.toLowerCase().trim();
-      let targetAgent: TeamAgentId = 'mira';
-      if (targetRaw.includes('arin') || targetRaw.includes('আরিন')) targetAgent = 'arin';
-      else if (targetRaw.includes('zayan') || targetRaw.includes('জায়ান')) targetAgent = 'zayan';
-      else if (targetRaw.includes('naira') || targetRaw.includes('নাইরা')) targetAgent = 'naira';
-      
-      const member = TEAM_MEMBERS[targetAgent];
-      const lastTask = data.find((t: any) => t.to_agent === targetAgent);
-      if (lastTask && lastTask.instruction) {
-        return {
-          success: true,
-          summary: `${member.bengaliName} এখন "${lastTask.instruction}" নিয়ে কাজ করছে।`,
-        };
-      }
-      return { success: true, summary: `${member.bengaliName} এখন ডেস্কে ফাঁকা আছে।` };
-    }
-
-    const statuses: string[] = [];
-    const agents: TeamAgentId[] = ['mira', 'arin', 'zayan', 'naira'];
-    for (const id of agents) {
-      const t = data.find((x: any) => x.to_agent === id);
-      if (t && t.instruction) {
-        statuses.push(`${TEAM_MEMBERS[id].bengaliName}: "${t.instruction}"`);
-      }
-    }
-
-    return {
-      success: true,
-      summary: statuses.length > 0 ? `টিমের বর্তমান অবস্থা: ${statuses.join(', ')}।` : 'আজ কাউকে কোনো কাজ দেওয়া হয়নি, সবাই ফাঁকা।',
-    };
-  } catch (err) {
-    console.error('[getTeamStatus] Exception:', err);
-    return { success: false, summary: 'টিমের তথ্য এখন আনতে পারছি না।' };
-  }
+export async function getTeamStatus(
+  agentParam?: string,
+  userText?: string,
+  source?: 'mobile' | 'pc'
+): Promise<{ success: boolean; summary: string }> {
+  const officeRes = await executeOfficeTaskTool(
+    {
+      agent: agentParam || 'mira',
+      kind: 'status',
+      text: userText || 'কাজের আপডেট দাও',
+    },
+    source
+  );
+  return {
+    success: true,
+    summary: officeRes.message,
+  };
 }
 
 export const TEAM_SYSTEM_INSTRUCTION = `
-You are Rose, the chief manager of a 5-member AI team: Mira, Arin, Zayan, Naira.
+You are Rose, the chief manager of a 5-member AI team: Rose, Mira, Arin, Zayan, Naira.
 
 APP NAVIGATION CONTROL:
 To open any page, go back, go home, scroll or clear chat you MUST call the app_action tool. Never say you opened something unless the tool returned ok:true. After ok:true say only one short sentence like 'ভয়েস অ্যান্ড ল্যাঙ্গুয়েজ খুললাম।' If ok:false, say 'পাতাটা খুঁজে পাইনি।'
 
-WORK TASK COMMAND RULE:
-When the user asks you to give a task to, ask, or check on Mira, Arin, Zayan or Naira, immediately call assign_task or get_team_status.
+OFFICE TASK & TEAM COMMAND RULE (CRITICAL):
+When the user asks you to give a task to, ask, or check status/report on Rose, Mira, Arin, Zayan or Naira (matching Bengali/English names and close spellings like আরিন/আরিয়ান/Arin, জায়ান/Zayan, মিরা/Mira, নাইরা/Naira, রোজ/Rose), immediately call the office_task tool with:
+- agent: "rose" | "mira" | "arin" | "zayan" | "naira"
+- kind: "task" (do this work) | "status" (what are you doing / report to me)
+- text: the user's words
+After office_task returns, answer right away with ONLY: "ঠিক আছে, <agent>-কে বলে দিচ্ছি" (exactly the message returned by the tool).
 
 CHAT CLEARING RULE:
 You CAN clear the chat with app_action clear_chat after the user says yes. Never say you cannot.
@@ -518,6 +478,7 @@ export const ROSE_TEAM_TOOLS = [
           required: ['action'],
         },
       },
+      OFFICE_TASK_FUNCTION_DECLARATION,
       PC_TASK_FUNCTION_DECLARATION,
     ],
   },
@@ -525,5 +486,6 @@ export const ROSE_TEAM_TOOLS = [
 
 export const ROSE_TYPED_CHAT_FUNCTION_DECLARATIONS = [
   ...ROSE_PHONE_FUNCTION_DECLARATIONS,
+  OFFICE_TASK_FUNCTION_DECLARATION,
   PC_TASK_FUNCTION_DECLARATION,
 ];

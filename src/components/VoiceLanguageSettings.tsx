@@ -34,7 +34,13 @@ import {
   SlidersHorizontal,
 } from "lucide-react";
 import { UnifiedSettings, saveUnifiedSettings, AssistantPersonality, ReplyLength } from "../types/settings";
-import { directGeminiTTS } from "../lib/ai-service";
+import {
+  directGeminiTTS,
+  connectBoostedOutputChain,
+  fadeOutAndStopSources,
+  decodePcm16ChunkWithCarry,
+  volumeSliderToGain,
+} from "../lib/ai-service";
 import { getElevenLabsKey } from "../lib/voiceEngine";
 import { ensureGeminiReady } from "../lib/geminiKey";
 import { fetchGeminiGenerateWithFallback } from "../lib/geminiDirect";
@@ -353,14 +359,15 @@ export const VoiceLanguageSettings: React.FC<VoiceLanguageSettingsProps> = ({
 
   const stopAudioPreview = () => {
     if (audioSourceRef.current) {
+      const current = audioSourceRef.current;
+      audioSourceRef.current = null;
       try {
-        if ("stop" in audioSourceRef.current) {
-          (audioSourceRef.current as AudioBufferSourceNode).stop();
-        } else if ("pause" in audioSourceRef.current) {
-          (audioSourceRef.current as HTMLAudioElement).pause();
+        if ("stop" in current) {
+          fadeOutAndStopSources(audioContextRef.current, [current as AudioBufferSourceNode], 0.03);
+        } else if ("pause" in current) {
+          (current as HTMLAudioElement).pause();
         }
       } catch (e) {}
-      audioSourceRef.current = null;
     }
     setPreviewingVoiceId(null);
     setLoadingVoiceId(null);
@@ -401,12 +408,16 @@ export const VoiceLanguageSettings: React.FC<VoiceLanguageSettingsProps> = ({
       const binaryString = atob(base64Audio || "");
       const bytes = new Uint8Array(binaryString.length);
       for (let i = 0; i < binaryString.length; i++) {
-        bytes[i] = binaryString.charCodeAt(i);
+        bytes[i] = binaryString.charCodeAt(i) & 0xff;
       }
 
-      const audioCtx =
-        audioContextRef.current || new (window.AudioContext || (window as any).webkitAudioContext)();
-      audioContextRef.current = audioCtx;
+      if (!audioContextRef.current || audioContextRef.current.state === "closed") {
+        audioContextRef.current = new (window.AudioContext || (window as any).webkitAudioContext)({
+          sampleRate: 24000,
+          latencyHint: "interactive",
+        });
+      }
+      const audioCtx = audioContextRef.current;
       if (audioCtx.state === "suspended") {
         await audioCtx.resume();
       }
@@ -419,29 +430,42 @@ export const VoiceLanguageSettings: React.FC<VoiceLanguageSettingsProps> = ({
         sourceNode = audioCtx.createBufferSource();
         sourceNode.buffer = audioBuffer;
       } else {
-        // 16-bit PCM 24kHz mono
-        // Ensure buffer is multiple of 2 for Int16
-        const safeByteLength = bytes.byteLength - (bytes.byteLength % 2);
-        const pcm16 = new Int16Array(bytes.buffer, 0, safeByteLength / 2);
-        const audioBuffer = audioCtx.createBuffer(1, pcm16.length, 24000);
-        const channelData = audioBuffer.getChannelData(0);
-        for (let i = 0; i < pcm16.length; i++) {
-          channelData[i] = pcm16[i] / 32768.0;
+        // 16-bit PCM 24kHz mono (read with DataView little-endian, value / 32768)
+        const { float32 } = decodePcm16ChunkWithCarry(base64Audio || "", null);
+        const audioBuffer = audioCtx.createBuffer(1, Math.max(1, float32.length), 24000);
+        if (float32.length > 0) {
+          audioBuffer.copyToChannel(float32, 0);
         }
         sourceNode = audioCtx.createBufferSource();
         sourceNode.buffer = audioBuffer;
       }
 
-      sourceNode.connect(audioCtx.destination);
+      const targetGain = volumeSliderToGain(80);
+      const { gainNode } = connectBoostedOutputChain(audioCtx, sourceNode, 80, null);
+      const startTime = audioCtx.currentTime + 0.05;
+      const duration = sourceNode.buffer?.duration || 0.5;
+      const fadeInSec = Math.min(0.01, duration * 0.35);
+      const fadeOutSec = Math.min(0.03, duration * 0.45);
+      const fadeOutStart = Math.max(startTime + fadeInSec, startTime + duration - fadeOutSec);
+
+      gainNode.gain.cancelScheduledValues(audioCtx.currentTime);
+      gainNode.gain.setValueAtTime(0, startTime);
+      gainNode.gain.linearRampToValueAtTime(targetGain, startTime + fadeInSec);
+      gainNode.gain.setValueAtTime(targetGain, fadeOutStart);
+      gainNode.gain.linearRampToValueAtTime(0, startTime + duration);
+
       audioSourceRef.current = sourceNode;
       setLoadingVoiceId(null);
       setPreviewingVoiceId(voiceName);
 
       sourceNode.onended = () => {
+        try {
+          sourceNode.disconnect();
+        } catch {}
         setPreviewingVoiceId((current) => (current === voiceName ? null : current));
       };
 
-      sourceNode.start(0);
+      sourceNode.start(startTime);
     } catch (error: any) {
       console.error("Voice preview error:", error);
       setLoadingVoiceId(null);
