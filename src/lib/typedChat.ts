@@ -2,7 +2,8 @@ import { getGeminiKey, ensureGeminiReady } from './geminiKey';
 import { buildRoseSystemInstruction } from './roseConfig';
 import { getDynamicGroqChatModels, getProviderKey } from './chatEngines';
 import { cleanAssistantReplyText } from './ai-service';
-import { ROSE_PHONE_FUNCTION_DECLARATIONS } from './team';
+import { ROSE_TYPED_CHAT_FUNCTION_DECLARATIONS } from './team';
+import { executePcTaskTool } from '../pc/pcTaskManager';
 
 export const NO_GEMINI_KEY_MSG = 'Gemini key সেভ করা নেই। Settings → CONNECTIONS-এ কী বসাও।';
 export const QUOTA_429_MSG = 'আজকের ফ্রি সীমা শেষ। পরে চেষ্টা করো বা নতুন কী দাও।';
@@ -370,7 +371,7 @@ function createStepSignal(masterSignal: AbortSignal, stepTimeoutMs: number): { s
 export async function sendTypedChat(
   history: Array<{ role: string; content?: string; text?: string; isError?: boolean }>,
   userText: string
-): Promise<{ text: string; modelUsed: string; provider?: 'gemini' | 'groq'; providerLabel?: string }> {
+): Promise<{ text: string; modelUsed: string; provider?: 'gemini' | 'groq'; providerLabel?: string; pcTaskId?: string }> {
   const apiKey = (getGeminiKey() || '').replace(/["'\r\n\t\s]+/g, '').trim();
   const groqKey = getStoredGroqKey();
   const hasGemini = await ensureGeminiReady(apiKey);
@@ -594,10 +595,12 @@ export async function sendTypedChat(
       { role: 'user', parts: [{ text: userText.trim() }] },
     ];
 
+    let lastPcTaskId: string | undefined;
+
     const geminiBody: any = {
       systemInstruction: { parts: [{ text: sysInstructionText }] },
       contents: geminiContents,
-      tools: [{ functionDeclarations: ROSE_PHONE_FUNCTION_DECLARATIONS }],
+      tools: [{ functionDeclarations: ROSE_TYPED_CHAT_FUNCTION_DECLARATIONS }],
       generationConfig: { temperature: 0.8 },
     };
 
@@ -645,13 +648,20 @@ export async function sendTypedChat(
         const parts = data?.candidates?.[0]?.content?.parts || [];
         const fcPart = parts.find((p: any) => p && p.functionCall);
         if (fcPart?.functionCall?.name) {
-          const { executePhoneToolActionByName } = await import('./phone');
-          const toolRes = await executePhoneToolActionByName(
-            String(fcPart.functionCall.name),
-            fcPart.functionCall.args || {}
-          );
-          if (toolRes?.message) {
-            return toolRes.message;
+          const fcName = String(fcPart.functionCall.name);
+          const fcArgs = fcPart.functionCall.args || {};
+          if (fcName === 'pc_task') {
+            const pcRes = await executePcTaskTool(fcArgs);
+            lastPcTaskId = pcRes.taskId;
+            if (pcRes?.message) {
+              return pcRes.message;
+            }
+          } else {
+            const { executePhoneToolActionByName } = await import('./phone');
+            const toolRes = await executePhoneToolActionByName(fcName, fcArgs);
+            if (toolRes?.message) {
+              return toolRes.message;
+            }
           }
         }
         const textPart = parts.find((p: any) => p && typeof p.text === 'string')?.text;
@@ -686,7 +696,12 @@ export async function sendTypedChat(
 
     try {
       const text = await executeGeminiFetch(currentModel, 8500);
-      return { text, modelUsed: currentModel, provider: 'gemini' };
+      return {
+        text,
+        modelUsed: currentModel,
+        provider: 'gemini',
+        ...(lastPcTaskId ? { pcTaskId: lastPcTaskId } : {}),
+      };
     } catch (err1: any) {
       primaryGeminiErr = err1;
       errorTrace.gemini_primary = {
@@ -714,7 +729,12 @@ export async function sendTypedChat(
           console.log('[TypedChat] Trying secondary Gemini flash model once:', altModel);
           const text = await executeGeminiFetch(altModel, 6000);
           localStorage.setItem('chat_model', altModel);
-          return { text, modelUsed: altModel, provider: 'gemini' };
+          return {
+            text,
+            modelUsed: altModel,
+            provider: 'gemini',
+            ...(lastPcTaskId ? { pcTaskId: lastPcTaskId } : {}),
+          };
         }
       } catch (err2: any) {
         secondaryGeminiErr = err2;

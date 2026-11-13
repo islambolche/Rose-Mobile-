@@ -2278,6 +2278,11 @@ export async function executePhoneToolActionByName(
     if (res.handled && res.reply) {
       return { ok: true, message: res.reply };
     }
+    const { handlePendingPcTaskDecision } = await import('../pc/pcTaskManager');
+    const pcRes = await handlePendingPcTaskDecision(decision);
+    if (pcRes.handled && pcRes.reply) {
+      return { ok: true, message: pcRes.reply };
+    }
     return { ok: false, message: 'কোনো কাজের অনুমতির অপেক্ষায় নেই।' };
   }
 
@@ -2468,7 +2473,20 @@ export async function routePhoneActionFromText(
     return { matched: true, reply: pendingRes.reply };
   }
 
-  const isPcExplicit = hasAnyWholePhrase(text, ['পিসিতে', 'পিসির', 'ল্যাপটপে', 'কম্পিউটারে', 'pc', 'laptop']);
+  const isPcExplicit = hasAnyWholePhrase(text, [
+    'পিসি',
+    'পিসিতে',
+    'পিসির',
+    'ল্যাপটপ',
+    'ল্যাপটপে',
+    'ল্যাপটপের',
+    'কম্পিউটার',
+    'কম্পিউটারে',
+    'কম্পিউটারের',
+    'pc',
+    'laptop',
+    'computer',
+  ]);
   if (isPcExplicit) return { matched: false };
 
   // 2. Teach alias directly: e.g. "আম্মু মানে Ammu Home"

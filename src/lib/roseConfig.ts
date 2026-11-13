@@ -16,7 +16,7 @@ import { APP_NAVIGATION_KNOWLEDGE } from "./appKnowledge";
 import { DEVELOPER_INFO, getDeveloperFactsInstruction } from "./creator-profile";
 import { TEAM_MEMBERS, TEAM_SYSTEM_INSTRUCTION } from "./team";
 import { officeEngine } from "../components/pc/office/officeEngine";
-import { getStoredDeviceId, getStoredPcSecret } from "./pcCommand";
+import { getPcDeviceId, getPcSecret } from "../pc/pcClient";
 import { supabase } from "./supabase";
 import { APP_MANUAL } from "./appManual";
 import { getSharedPhoneAndHistoryContextBlock } from "./phone";
@@ -90,13 +90,13 @@ export function buildRoseSystemInstruction(
     ? `ব্যবহারকারীর নাম: ${ownerName}। তাকে এই নামেই ডাকবে। The user's name is ${ownerName}. Address the user by this name naturally in text and live voice calls.`
     : `You don't know the user's name yet. If asked, politely ask them to tell you.`;
 
-  const secretSet = Boolean(getStoredPcSecret());
-  const deviceId = getStoredDeviceId();
+  const secretSet = Boolean(getPcSecret());
+  const deviceId = getPcDeviceId();
 
   const pcStatusBlock = `- PC HELPER STATUS:
 Device ID: ${deviceId}
 Secret Set: ${secretSet ? "Yes (Secret configured)" : "No (Missing secret in PC HELPER)"}
-Remote Control: You can control the PC using the pc_command tool (ping, open_app, lock, media, shutdown, etc.). Always respond concisely and tell the user the outcome.`;
+Remote Control: When the user asks for anything on the computer/PC/laptop (পিসি, ল্যাপটপ, কম্পিউটার), call pc_task. Never pretend it is done before the result comes.`;
 
   const teamStatusBlock = `- OFFICE TEAM STATUS:
 ${Object.values(TEAM_MEMBERS).map((m) => `- ${m.bengaliName} (${m.name}, ${m.role}): ${officeEngine.getStates()[m.id]?.isWorking ? "কাজ করছে" : "ডেস্কে উপস্থিত"}`).join("\n")}`;
@@ -209,7 +209,7 @@ CORE IDENTITY & MANDATES:
 
 - SILENT MODE RULE (CRITICAL): ব্যবহারকারী তোমার নাম ধরে চুপ থাকতে বললে (যেমন "Rose/রোজ চুপ করো", "Rose কথা বলো না", "Rose stop talking") তুমি সংক্ষেপে "ঠিক আছে" বলে নীরব হয়ে থাকবে এবং নাম ধরে না ডাকা পর্যন্ত কোনো উত্তর দিয়ো না। আবার নাম ধরে ডাকলে (যেমন "Rose", "Rose শোনো", "রোজ কথা বলো") সাথে সাথে স্বাভাবিকভাবে সাড়া দেওয়া শুরু করবে।
 - GOOGLE SEARCH (INTERNET): For anything about current events, news, prices, new AI tools, releases, sports, weather or anything that may have changed recently, use Google Search before answering, and keep the answer short (max 2–3 sentences in voice).
-- PHONE CONTROL & PC CONTROL: You can open apps, lock PC, control volume, search files on the user's connected PC via pc_command tool.
+- PHONE CONTROL & PC CONTROL: When the user asks for anything on the computer/PC/laptop (পিসি, ল্যাপটপ, কম্পিউটার), call pc_task. Never pretend it is done before the result comes.
 - CHAT CLEARING: You CAN clear the chat with app_action clear_chat after the user says yes. Never say you cannot.
 - END VOICE CALL: You CAN end the current voice call yourself using the end_call tool when the user asks to hang up, stop, or end the call (e.g. ফোন কাটো, কল বন্ধ করো, রাখো, bye, end call). Call end_call and say one short goodbye (e.g. "ঠিক আছে, রাখছি।"). Never say "I can't end the call" or "আমি কল কাটতে পারি না".
 

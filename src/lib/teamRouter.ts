@@ -203,48 +203,9 @@ export async function routeUserMessageForTeamTask(
   return { matched: false };
 }
 
-import { sendPcCommand } from './pcCommand';
-
 export async function routePcCommandMessage(
-  userMessage: string,
-  options: RouteMessageOptions = {}
+  _userMessage: string,
+  _options: RouteMessageOptions = {}
 ): Promise<RouteTaskResult> {
-  if (!userMessage || typeof userMessage !== 'string') return { matched: false };
-  const text = userMessage.trim();
-  const lower = text.toLowerCase();
-  let pcAction: string | null = null;
-  let pcArgs: Record<string, any> = {};
-  let confirmNeeded = false;
-
-  const hasExplicitPc = /(পিসি|পিসিতে|ল্যাপটপ|কম্পিউটার|\bpc\b|\blaptop\b)/i.test(text);
-
-  if ((lower.includes('ক্রোম খোলো') || lower.includes('open chrome')) && hasExplicitPc) {
-    pcAction = 'open_app';
-    pcArgs = { name: 'chrome' };
-  } else if (lower.includes('লক করো') || lower.includes('lock pc')) {
-    pcAction = 'lock';
-  } else if (lower.includes('ভলিউম বাড়াও') || lower.includes('volume up')) {
-    pcAction = 'media';
-    pcArgs = { key: 'volume_up' };
-  } else if (lower.includes('ভলিউম কমাও') || lower.includes('volume down')) {
-    pcAction = 'media';
-    pcArgs = { key: 'volume_down' };
-  } else if (lower.includes('মিউট করো') || lower.includes('mute pc')) {
-    pcAction = 'media';
-    pcArgs = { key: 'mute' };
-  } else if (lower.includes('স্ক্রিনশট নাও') || lower.includes('take screenshot')) {
-    pcAction = 'screenshot';
-  } else if (lower.includes('শাটডাউন করো') || lower.includes('shutdown pc')) {
-    pcAction = 'shutdown';
-    confirmNeeded = true;
-  }
-
-  if (!pcAction) return { matched: false };
-  if (confirmNeeded) {
-    await sendPcCommand(pcAction, pcArgs, { source: options.source, onToast: options.onToast });
-    return { matched: true, roseReply: 'ফোনে অনুমতি দাও।' };
-  }
-
-  const res = await sendPcCommand(pcAction, pcArgs, { source: options.source, onToast: options.onToast });
-  return { matched: true, roseReply: res.success ? `ঠিক আছে, ${res.message}።` : res.message };
+  return { matched: false };
 }

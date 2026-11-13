@@ -67,6 +67,7 @@ import {
   routePhoneActionFromText,
   getSharedPhoneAndHistoryContextBlock,
 } from './phone';
+import { executePcTaskTool } from '../pc/pcTaskManager';
 
 export interface GeminiLiveOptions {
   assistantName?: string;
@@ -3099,6 +3100,21 @@ export class GeminiLiveSession {
                 message: phoneRes.message,
                 instruction: `Say exactly this to the user: "${phoneRes.message}". Do not add anything else and do not give your own answer.`,
                 ...(phoneRes.contacts ? { contacts: phoneRes.contacts } : {}),
+              },
+            },
+          });
+        } else if (name === 'pc_task') {
+          this.phoneToolHandledForTurn = true;
+          const pcRes = await executePcTaskTool(args || {});
+          functionResponses.push({
+            id: callId,
+            name: 'pc_task',
+            response: {
+              output: {
+                ok: pcRes.ok,
+                taskId: pcRes.taskId || null,
+                message: pcRes.message,
+                instruction: `Say exactly this in Bengali: "${pcRes.message}". Do not pretend the task is done yet; the result will arrive in the background.`,
               },
             },
           });

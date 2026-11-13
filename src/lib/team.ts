@@ -1,4 +1,5 @@
 import { supabase } from './supabase';
+import { PC_TASK_FUNCTION_DECLARATION } from '../pc/pcTaskManager';
 
 export type TeamAgentId = 'mira' | 'arin' | 'zayan' | 'naira';
 
@@ -240,6 +241,9 @@ PHONE & WHATSAPP CALL RULE (CRITICAL):
 
 END CALL RULE (CRITICAL):
 You CAN end the live voice call yourself using the end_call tool. When the user asks to hang up, stop, or end the call (e.g. ফোন কাটো, কল বন্ধ করো, রাখো, bye, end call), call end_call and say one short goodbye (e.g. "ঠিক আছে, রাখছি।"). You must NEVER say "I can't end the call" or "আমি কল কাটতে পারি না".
+
+PC / LAPTOP TASK RULE (CRITICAL):
+When the user asks for anything on the computer/PC/laptop (পিসি, ল্যাপটপ, কম্পিউটার), call pc_task. Never pretend it is done before the result comes.
 `.trim();
 
 export const ROSE_PHONE_FUNCTION_DECLARATIONS = [
@@ -373,7 +377,7 @@ export const ROSE_PHONE_FUNCTION_DECLARATIONS = [
   },
   {
     name: 'confirm_action',
-    description: 'Resolve ANY pending action awaiting confirmation (phone_call, whatsapp_call, whatsapp_send, messenger_send, post_video, app_search) when the user agrees or declines.',
+    description: 'Resolve ANY pending action awaiting confirmation (pending PC task, phone_call, whatsapp_call, whatsapp_send, messenger_send, post_video, app_search) when the user agrees or declines.',
     parameters: {
       type: 'OBJECT',
       properties: {
@@ -511,18 +515,12 @@ export const ROSE_TEAM_TOOLS = [
           required: ['action'],
         },
       },
-      {
-        name: 'pc_command',
-        description: "Send remote control command to connected PC.",
-        parameters: {
-          type: 'OBJECT',
-          properties: {
-            action: { type: 'STRING', description: 'Action name' },
-            args: { type: 'OBJECT', description: 'Arguments' },
-          },
-          required: ['action'],
-        },
-      },
+      PC_TASK_FUNCTION_DECLARATION,
     ],
   },
+];
+
+export const ROSE_TYPED_CHAT_FUNCTION_DECLARATIONS = [
+  ...ROSE_PHONE_FUNCTION_DECLARATIONS,
+  PC_TASK_FUNCTION_DECLARATION,
 ];

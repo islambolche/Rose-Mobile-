@@ -233,6 +233,16 @@ import {
   handlePendingPhoneUserReply,
   cancelPendingDelayedAction,
 } from "./lib/phone";
+import {
+  PcTaskRecord,
+  subscribePcTasks,
+  approvePcTask,
+  rejectPcTask,
+  clearPcTasks,
+  hasPendingPcTaskConfirm,
+  handlePendingPcTaskReply,
+  linkPcTaskToMessage,
+} from "./pc/pcTaskManager";
 import { Folder, ShieldCheck } from "lucide-react";
 
 const APP_VERSION = "v1.4.0";
@@ -2695,18 +2705,41 @@ export function App() {
   const [awaitingConfirmCount, setAwaitingConfirmCount] = useState<number>(0);
 
   useEffect(() => {
-    if (!supabase) return;
+    const client = supabase;
+    if (!client) return;
     const fetchConfirmCount = async () => {
-      if (!supabase) return;
-      const { count } = await supabase
+      if (!client) return;
+      const { count } = await client
         .from("pc_commands")
         .select("*", { count: "exact", head: true })
         .eq("status", "awaiting_confirm");
       if (typeof count === "number") setAwaitingConfirmCount(count);
     };
-    fetchConfirmCount();
-    const interval = setInterval(fetchConfirmCount, 3000);
-    return () => clearInterval(interval);
+    void fetchConfirmCount();
+    let channel: any = null;
+    try {
+      channel = client
+        .channel("pc_confirm_badge_realtime")
+        .on(
+          "postgres_changes",
+          { event: "*", schema: "public", table: "pc_commands" },
+          () => {
+            void fetchConfirmCount();
+          }
+        )
+        .subscribe();
+    } catch {}
+    const interval = setInterval(() => {
+      void fetchConfirmCount();
+    }, 3000);
+    return () => {
+      clearInterval(interval);
+      if (channel) {
+        try {
+          client.removeChannel(channel);
+        } catch {}
+      }
+    };
   }, []);
 
   useEffect(() => {
@@ -3555,6 +3588,11 @@ export function App() {
   );
   const [pendingConfirmTick, setPendingConfirmTick] = useState<number>(0);
   const [pendingCancelTick, setPendingCancelTick] = useState<number>(0);
+  const [pcTasks, setPcTasks] = useState<PcTaskRecord[]>([]);
+
+  useEffect(() => {
+    return subscribePcTasks(setPcTasks);
+  }, []);
 
   useEffect(() => {
     if (typeof window === "undefined") return;
@@ -3598,11 +3636,34 @@ export function App() {
         });
       }
     };
+    const onPcTaskAnnounce = (e: Event) => {
+      const detail = (e as CustomEvent)?.detail;
+      const message = String(detail?.message || "").trim();
+      if (!message) return;
+      if (liveSessionRef.current) {
+        const spokeLive = liveSessionRef.current.injectSystemInstructionToSpeak(message);
+        if (!spokeLive) {
+          pushSharedMessageRef.current({
+            role: "rose",
+            text: message,
+            replyMode: "text",
+          });
+        }
+      } else {
+        pushSharedMessageRef.current({
+          role: "rose",
+          text: message,
+          replyMode: "text",
+        });
+      }
+    };
     window.addEventListener("rose-pending-phone-state-changed", syncPending as EventListener);
     window.addEventListener("rose-delayed-phone-result", onDelayedResult as EventListener);
+    window.addEventListener("rose-pc-task-announce", onPcTaskAnnounce as EventListener);
     return () => {
       window.removeEventListener("rose-pending-phone-state-changed", syncPending as EventListener);
       window.removeEventListener("rose-delayed-phone-result", onDelayedResult as EventListener);
+      window.removeEventListener("rose-pc-task-announce", onPcTaskAnnounce as EventListener);
     };
   }, []);
 
@@ -7046,10 +7107,14 @@ export function App() {
         latestText: string,
         confirmation?: ActionConfirmationData,
         groundingLinks?: Array<{ title: string; url: string }>,
-        providerLabel?: string
+        providerLabel?: string,
+        pcTaskId?: string
       ) => {
         const cleanDisplay = stripStageCues(latestText.replace(/[*#_~`]/g, "").trim());
         if (!cleanDisplay) return;
+        if (pcTaskId) {
+          linkPcTaskToMessage(pcTaskId, roseMessageId);
+        }
         if (!roseBubbleCreated) {
           roseBubbleCreated = true;
           setStatus("idle");
@@ -7066,6 +7131,7 @@ export function App() {
                 actionConfirmation: confirmation,
                 groundingLinks: groundingLinks,
                 ...(providerLabel ? { providerLabel } : {}),
+                ...(pcTaskId ? { pcTaskId } : {}),
               },
             ];
             chatHistoryRef.current = next;
@@ -7088,6 +7154,7 @@ export function App() {
                     actionConfirmation: confirmation || m.actionConfirmation,
                     groundingLinks: groundingLinks || m.groundingLinks,
                     ...(providerLabel ? { providerLabel } : {}),
+                    ...(pcTaskId ? { pcTaskId } : {}),
                   }
                 : m
             );
@@ -7104,6 +7171,19 @@ export function App() {
 
       // 2. Local PC Command Router & Team Task Router (Before sending any user message to model)
       try {
+        if (hasPendingPcTaskConfirm()) {
+          const pcReplyRes = await handlePendingPcTaskReply(userText);
+          if (pcReplyRes.handled && pcReplyRes.reply) {
+            updateSharedRoseBubble(pcReplyRes.reply);
+            if (replyMode === "voice") {
+              enqueueSentenceForToken(pcReplyRes.reply, turnToken, lockedEngineMode);
+            }
+            isProcessingGeminiRef.current = false;
+            setStatus("idle");
+            return;
+          }
+        }
+
         const effectiveUser = isAdmin()
           ? ADMIN_DISPLAY_NAME
           : getEffectiveUserName(settingsRef.current.ownerName, OWNER_NAME);
@@ -7126,6 +7206,7 @@ export function App() {
             clearChatCallback: () => {
               setChatHistory([]);
               chatHistoryRef.current = [];
+              clearPcTasks();
               try {
                 localStorage.removeItem("iyabd_chat_history");
                 localStorage.removeItem("rose_messages");
@@ -7157,7 +7238,8 @@ export function App() {
           const result = await sendTypedChat(chatHistoryRef.current, userText);
           const replyText = typeof result === 'string' ? result : result.text;
           const providerLabel = typeof result === 'object' ? result.providerLabel : undefined;
-          updateSharedRoseBubble(replyText, undefined, undefined, providerLabel);
+          const pcTaskId = typeof result === 'object' ? result.pcTaskId : undefined;
+          updateSharedRoseBubble(replyText, undefined, undefined, providerLabel, pcTaskId);
           setLiveErrorMsg(null);
           return;
         } catch (err: any) {
@@ -9535,6 +9617,15 @@ export function App() {
                     return;
                   }
                 }
+                if (hasPendingPcTaskConfirm()) {
+                  const pcReplyRes = await handlePendingPcTaskReply(cleanText);
+                  if (pcReplyRes.handled && pcReplyRes.reply) {
+                    if (!assistantAlreadyReplied) {
+                      targetSession.injectSystemInstructionToSpeak(pcReplyRes.reply);
+                    }
+                    return;
+                  }
+                }
 
                 let res = await routePcCommandMessage(cleanText, {
                   userName: liveOwnerName,
@@ -11433,6 +11524,20 @@ export function App() {
           }
           return;
         }
+        if (hasPendingPcTaskConfirm()) {
+          const pcReplyRes = await handlePendingPcTaskReply(text);
+          if (pcReplyRes.handled && pcReplyRes.reply) {
+            const spokeViaLive = liveSessionRef.current?.injectSystemInstructionToSpeak(pcReplyRes.reply);
+            if (!spokeViaLive) {
+              pushSharedMessage({
+                role: "rose",
+                text: pcReplyRes.reply,
+                replyMode: "text",
+              });
+            }
+            return;
+          }
+        }
         try {
           liveSessionRef.current?.sendClientContent({
             turns: [
@@ -11567,7 +11672,7 @@ export function App() {
           className="relative z-[1] flex-1 min-h-0 overflow-y-auto space-y-4 no-scrollbar"
           style={{ padding: "12px 14px" }}
         >
-          {chatHistory.length === 0 && !hasInterim && !isThinking ? (
+          {chatHistory.length === 0 && pcTasks.length === 0 && !hasInterim && !isThinking ? (
             <div
               className={`flex flex-col items-center justify-center text-center opacity-70 px-4 ${
                 isPcLayout ? "h-44 py-4" : "h-64"
@@ -11807,6 +11912,53 @@ export function App() {
                         </button>
                       </div>
                     )}
+                    {!isUser && (msg as any).pcTaskId && (() => {
+                      const linkedTask = pcTasks.find((t) => t.id === (msg as any).pcTaskId);
+                      if (!linkedTask) return null;
+                      return (
+                        <div className="mt-2 ml-12 w-full max-w-[320px] p-3 rounded-2xl bg-[#0F172A]/90 border border-purple-500/30 shadow-lg space-y-2">
+                          <div className="flex items-start justify-between gap-2">
+                            <div className="flex items-center gap-1.5 min-w-0">
+                              <Cpu className="w-3.5 h-3.5 text-purple-400 shrink-0" />
+                              <span className="text-xs font-bold text-white break-words">
+                                {linkedTask.task}
+                              </span>
+                            </div>
+                            <span
+                              className={`shrink-0 px-2 py-0.5 rounded-full text-[10px] font-bold ${
+                                linkedTask.uiStatus === "শেষ"
+                                  ? "bg-emerald-500/20 text-emerald-300 border border-emerald-500/30"
+                                  : linkedTask.uiStatus === "ব্যর্থ"
+                                  ? "bg-rose-500/20 text-rose-300 border border-rose-500/30"
+                                  : linkedTask.uiStatus === "অনুমতি লাগবে"
+                                  ? "bg-amber-500/20 text-amber-300 border border-amber-500/30"
+                                  : "bg-purple-500/20 text-purple-200 border border-purple-500/30 animate-pulse"
+                              }`}
+                            >
+                              {linkedTask.uiStatus}
+                            </span>
+                          </div>
+                          {linkedTask.rawStatus === "awaiting_confirm" && (
+                            <div className="flex items-center gap-2 pt-0.5">
+                              <button
+                                type="button"
+                                onClick={() => void approvePcTask(linkedTask.id)}
+                                className="flex-1 py-1.5 px-3 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-black uppercase tracking-wider active:scale-95 transition-all"
+                              >
+                                ALLOW
+                              </button>
+                              <button
+                                type="button"
+                                onClick={() => void rejectPcTask(linkedTask.id)}
+                                className="flex-1 py-1.5 px-3 rounded-xl bg-rose-600/85 hover:bg-rose-500 text-white text-xs font-black uppercase tracking-wider active:scale-95 transition-all"
+                              >
+                                DENY
+                              </button>
+                            </div>
+                          )}
+                        </div>
+                      );
+                    })()}
                     {!isUser && (msg as any).providerLabel && (
                       <span className="text-[10px] text-slate-400 font-normal mt-1 px-1 text-left pl-9">
                         {(msg as any).providerLabel}
@@ -11821,6 +11973,55 @@ export function App() {
                 );
               });
               })()}
+
+              {/* Unanchored PC Task cards (e.g. triggered via live voice call) */}
+              {pcTasks
+                .filter((t) => !chatHistory.some((m) => (m as any).pcTaskId === t.id))
+                .map((task) => (
+                  <div key={task.id} className="flex flex-col w-full items-start pl-12">
+                    <div className="w-full max-w-[320px] p-3 rounded-2xl bg-[#0F172A]/90 border border-purple-500/30 shadow-lg space-y-2">
+                      <div className="flex items-start justify-between gap-2">
+                        <div className="flex items-center gap-1.5 min-w-0">
+                          <Cpu className="w-3.5 h-3.5 text-purple-400 shrink-0" />
+                          <span className="text-xs font-bold text-white break-words">
+                            {task.task}
+                          </span>
+                        </div>
+                        <span
+                          className={`shrink-0 px-2 py-0.5 rounded-full text-[10px] font-bold ${
+                            task.uiStatus === "শেষ"
+                              ? "bg-emerald-500/20 text-emerald-300 border border-emerald-500/30"
+                              : task.uiStatus === "ব্যর্থ"
+                              ? "bg-rose-500/20 text-rose-300 border border-rose-500/30"
+                              : task.uiStatus === "অনুমতি লাগবে"
+                              ? "bg-amber-500/20 text-amber-300 border border-amber-500/30"
+                              : "bg-purple-500/20 text-purple-200 border border-purple-500/30 animate-pulse"
+                          }`}
+                        >
+                          {task.uiStatus}
+                        </span>
+                      </div>
+                      {task.rawStatus === "awaiting_confirm" && (
+                        <div className="flex items-center gap-2 pt-0.5">
+                          <button
+                            type="button"
+                            onClick={() => void approvePcTask(task.id)}
+                            className="flex-1 py-1.5 px-3 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-black uppercase tracking-wider active:scale-95 transition-all"
+                          >
+                            ALLOW
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => void rejectPcTask(task.id)}
+                            className="flex-1 py-1.5 px-3 rounded-xl bg-rose-600/85 hover:bg-rose-500 text-white text-xs font-black uppercase tracking-wider active:scale-95 transition-all"
+                          >
+                            DENY
+                          </button>
+                        </div>
+                      )}
+                    </div>
+                  </div>
+                ))}
 
               {/* Temporary interim speech recognition text in gray bubble */}
               {hasInterim && (
@@ -11916,6 +12117,7 @@ export function App() {
                     setChatHistory([]);
                     chatHistoryRef.current = [];
                     setInterimSpeechText("");
+                    clearPcTasks();
                     try {
                       localStorage.removeItem("iyabd_chat_history");
                       localStorage.removeItem("rose_messages");
@@ -12085,7 +12287,14 @@ export function App() {
                 </p>
               </div>
             </div>
-            <ChevronRight className="w-5 h-5 text-slate-500 shrink-0" />
+            <div className="flex items-center gap-2 shrink-0">
+              {awaitingConfirmCount > 0 && (
+                <span className="px-2.5 py-0.5 rounded-full bg-red-600 text-white text-[10px] font-black uppercase shadow-lg">
+                  {awaitingConfirmCount}
+                </span>
+              )}
+              <ChevronRight className="w-5 h-5 text-slate-500 shrink-0" />
+            </div>
           </button>
         </div>
 
@@ -14451,7 +14660,7 @@ export function App() {
               </div>
               <div>
                 <h4 className="text-base font-black uppercase tracking-wider text-white leading-tight">
-                  1. PC HELPER
+                  1 PC HELPER
                 </h4>
                 <p className="text-[11px] text-slate-400 font-bold uppercase tracking-widest mt-0.5">
                   Device status, ID & Secret config
@@ -14472,7 +14681,7 @@ export function App() {
               </div>
               <div>
                 <h4 className="text-base font-black uppercase tracking-wider text-white leading-tight">
-                  2. PC CONTROL
+                  2 PC CONTROL
                 </h4>
                 <p className="text-[11px] text-slate-400 font-bold uppercase tracking-widest mt-0.5">
                   App, link, lock, volume, power
@@ -14493,7 +14702,7 @@ export function App() {
               </div>
               <div>
                 <h4 className="text-base font-black uppercase tracking-wider text-white leading-tight">
-                  3. PC FILES
+                  3 PC FILES
                 </h4>
                 <p className="text-[11px] text-slate-400 font-bold uppercase tracking-widest mt-0.5">
                   Browse & search allowed folders
@@ -14514,7 +14723,7 @@ export function App() {
               </div>
               <div>
                 <h4 className="text-base font-black uppercase tracking-wider text-white leading-tight">
-                  4. CONFIRMATIONS
+                  4 CONFIRMATIONS
                 </h4>
                 <p className="text-[11px] text-slate-400 font-bold uppercase tracking-widest mt-0.5">
                   {awaitingConfirmCount > 0 ? `${awaitingConfirmCount} commands awaiting approval` : "Approve or reject pending actions"}
@@ -14543,7 +14752,7 @@ export function App() {
               </div>
               <div>
                 <h4 className="text-base font-black uppercase tracking-wider text-white leading-tight">
-                  5. PC HISTORY
+                  5 PC HISTORY
                 </h4>
                 <p className="text-[11px] text-slate-400 font-bold uppercase tracking-widest mt-0.5">
                   Last 50 pc_commands log
@@ -14564,7 +14773,7 @@ export function App() {
               </div>
               <div>
                 <h4 className="text-base font-black uppercase tracking-wider text-white leading-tight">
-                  6. SAFETY
+                  6 SAFETY
                 </h4>
                 <p className="text-[11px] text-slate-400 font-bold uppercase tracking-widest mt-0.5">
                   Emergency stop & config info
@@ -14585,7 +14794,7 @@ export function App() {
               </div>
               <div>
                 <h4 className="text-base font-black uppercase tracking-wider text-white leading-tight">
-                  7. LOCAL AI
+                  7 LOCAL AI
                 </h4>
                 <p className="text-[11px] text-slate-400 font-bold uppercase tracking-widest mt-0.5">
                   OpenJarvis local model info
