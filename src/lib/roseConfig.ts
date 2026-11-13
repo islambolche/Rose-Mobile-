@@ -21,6 +21,38 @@ import { supabase } from "./supabase";
 import { APP_MANUAL } from "./appManual";
 import { getSharedPhoneAndHistoryContextBlock } from "./phone";
 
+export const BENGALI_FIRST_LINE_LOCK =
+  "তুমি সবসময় শুধু বাংলায় কথা বলবে। ইংরেজিতে কখনো উত্তর দেবে না, যদি না ব্যবহারকারী স্পষ্টভাবে ইংরেজি চায়।";
+
+export function getLanguageFirstLineLock(language?: string): string {
+  const raw = String(language || "").trim().toLowerCase();
+  if (!raw || raw === "auto" || raw.startsWith("bn")) {
+    return BENGALI_FIRST_LINE_LOCK;
+  }
+  if (raw.startsWith("en")) {
+    return "Always speak and reply in English unless the user explicitly asks for another language.";
+  }
+  if (raw.startsWith("hi")) {
+    return "हमेशा केवल हिंदी में बात करें, जब तक कि उपयोगकर्ता स्पष्ट रूप से किसी अन्य भाषा में न पूछे।";
+  }
+  if (raw.startsWith("ur")) {
+    return "ہمیشہ صرف اردو میں بات کریں، جب تک کہ صارف واضح طور پر کسی دوسری زبان کا نہ کہے۔";
+  }
+  if (raw.startsWith("ar")) {
+    return "تحدث دائماً باللغة العربية فقط، ما لم يطلب المستخدم لغة أخرى صراحةً.";
+  }
+  return BENGALI_FIRST_LINE_LOCK;
+}
+
+export function ensureLanguageFirstLineLock(instructionText: string, language?: string): string {
+  const firstLine = getLanguageFirstLineLock(language);
+  const body = String(instructionText || "")
+    .split(firstLine)
+    .join("")
+    .trim();
+  return body ? `${firstLine}\n${body}` : firstLine;
+}
+
 /**
  * Builds Rose's system instruction centrally.
  * Used by mobile chat, mobile voice, PC chat, and PC voice.
@@ -39,6 +71,7 @@ export function buildRoseSystemInstruction(
   const { level: affectionLevel, instruction: affectionInstruction } = getActiveAffectionDetails(currentSettings);
   const personalityId = currentSettings.personality || label;
   const config = PERSONALITY_CONFIGS[personalityId] || PERSONALITY_CONFIGS["Normal"];
+  const firstLineLock = getLanguageFirstLineLock(currentPrefs?.language);
 
   const langLabel =
     currentPrefs.language === "auto"
@@ -191,7 +224,8 @@ Rules:
   const appManualBlock = `APP MANUAL – where every button is and what it does. Use it to answer how-to questions and to navigate. Never invent buttons.
 ${APP_MANUAL}`;
 
-  const rawFullInstruction = `Your name is ${assistantName}. Always introduce yourself with this name. Reply in the language the user speaks, Bangla by default. Always answer the user's actual question. Never reply with only your name.
+  const rawFullInstruction = `${firstLineLock}
+Your name is ${assistantName}. Always introduce yourself with this name. Reply in the language the user speaks, Bangla by default. Always answer the user's actual question. Never reply with only your name.
 
 ${userNameInstruction}
 
@@ -227,7 +261,10 @@ ${navSystemRule}
 
 ${getSharedPhoneAndHistoryContextBlock()}`;
 
-  return applyAdminSystemInstructionOverride(rawFullInstruction);
+  const overridden = applyAdminSystemInstructionOverride(rawFullInstruction, {
+    isLiveVoice: forVoice,
+  });
+  return ensureLanguageFirstLineLock(overridden, currentPrefs?.language);
 }
 
 /**

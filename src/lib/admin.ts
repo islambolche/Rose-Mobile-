@@ -159,14 +159,29 @@ export function applyAdminSystemInstructionOverride(
   instructionText: string,
   options?: { isLiveVoice?: boolean }
 ): string {
+  const BENGALI_FIRST_LINE =
+    "তুমি সবসময় শুধু বাংলায় কথা বলবে। ইংরেজিতে কখনো উত্তর দেবে না, যদি না ব্যবহারকারী স্পষ্টভাবে ইংরেজি চায়।";
+  const trimmedInput = String(instructionText || "").trim();
+  const existingFirstLine = trimmedInput.split("\n")[0]?.trim() || "";
+  const hasExplicitLanguageFirstLine =
+    existingFirstLine === BENGALI_FIRST_LINE ||
+    existingFirstLine.startsWith("Always speak and reply in ") ||
+    existingFirstLine.startsWith("हमेशा केवल हिंदी") ||
+    existingFirstLine.startsWith("ہمیشہ صرف اردو") ||
+    existingFirstLine.startsWith("تحدث دائماً باللغة العربية");
+  const topLanguageLock = hasExplicitLanguageFirstLine ? existingFirstLine : BENGALI_FIRST_LINE;
+
   if (!isAdmin()) {
-    return instructionText;
+    const bodyWithoutDup = trimmedInput.split(topLanguageLock).join("").trim();
+    return bodyWithoutDup ? `${topLanguageLock}\n${bodyWithoutDup}` : topLanguageLock;
   }
   const hadLiveVoiceTail = Boolean(
     options?.isLiveVoice || (instructionText && instructionText.includes(ADMIN_VOICE_DELIVERY_INSTRUCTION))
   );
   let base = instructionText
     ? String(instructionText)
+        .split(topLanguageLock)
+        .join("")
         .split(ADMIN_VOICE_DELIVERY_INSTRUCTION)
         .join("")
         .split(ADMIN_EMOTION_RULE)
@@ -194,9 +209,10 @@ When the camera is on you can see Yousuf and his room. Speak naturally about wha
 `;
 
   if (hadLiveVoiceTail) {
-    return `${base}\n\n${ADMIN_MIN_LENGTH_OVERRIDE} ${ADMIN_LIVE_VOICE_DIRECTION}\n\n${ADMIN_EMOTION_RULE}\n\n${ADMIN_VOICE_DELIVERY_INSTRUCTION}\n\n${developerModeInstruction}\n\n${cameraInstruction}`;
+    return `${topLanguageLock}\n${base}\n\n${ADMIN_MIN_LENGTH_OVERRIDE} ${ADMIN_LIVE_VOICE_DIRECTION}\n\n${ADMIN_EMOTION_RULE}\n\n${ADMIN_VOICE_DELIVERY_INSTRUCTION}\n\n${developerModeInstruction}\n\n${cameraInstruction}`;
   }
-  return `${base}\n\n${ADMIN_MIN_LENGTH_OVERRIDE} ${ADMIN_STAGE_CUE_HINT}\n\n${ADMIN_EMOTION_RULE}\n\n${developerModeInstruction}\n\n${cameraInstruction}`;
+  return `${topLanguageLock}\n${base}\n\n${ADMIN_MIN_LENGTH_OVERRIDE} ${ADMIN_STAGE_CUE_HINT}\n\n${ADMIN_EMOTION_RULE}\n\n${developerModeInstruction}\n\n${cameraInstruction}`;
 }
+
 
 

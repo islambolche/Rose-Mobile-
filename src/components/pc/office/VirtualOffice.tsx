@@ -184,8 +184,8 @@ export const VirtualOffice: React.FC<VirtualOfficeProps> = ({
     // Perspective height: smaller further back (smaller y), larger in front (larger y)
     const fullHeightPercent = calculatePerspectiveHeight(posY) * scaleMultiplier;
     const renderHeightPercent = isSeated
-      ? agent.id === "rose"
-        ? 18 * scaleMultiplier
+      ? agent.id === "rose" || agent.id === "mira"
+        ? 20 * scaleMultiplier
         : fullHeightPercent * 0.56
       : fullHeightPercent;
 
@@ -205,7 +205,7 @@ export const VirtualOffice: React.FC<VirtualOfficeProps> = ({
       : "animate-idle-breathe";
 
     const useDedicatedSeatedSprite = Boolean(isSeated && agent.seatedImage);
-    const activeImageSrc = useDedicatedSeatedSprite && agent.seatedImage ? agent.seatedImage : agent.image;
+    const activeImageSrc = isSeated && agent.seatedImage ? agent.seatedImage : agent.image;
 
     return (
       <div
@@ -305,19 +305,18 @@ export const VirtualOffice: React.FC<VirtualOfficeProps> = ({
   };
 
   /**
-   * Render Bengali agent name on the BACK of that agent's laptop/monitor lid.
+   * Render English agent name on the BACK of that agent's laptop/monitor lid.
    * Plain, sharp, flat colour text centered on the lid back.
    */
   const renderDeskLabel = (agentId: string) => {
     const pos = DEFAULT_LABEL_POSITIONS[agentId] || { x: 50, y: 50 };
-    const bengaliName = DESK_BENGALI_NAMES[agentId] || agentId;
+    const labelText = (DESK_BENGALI_NAMES[agentId] || agentId).toUpperCase();
     const labelColor = DESK_GLOW_COLORS[agentId]?.color || "#FFFFFF";
 
     return (
       <span
         key={`desk-label-${agentId}`}
         data-agent-label={agentId}
-        lang="bn"
         className="pointer-events-none select-none"
         style={{
           position: "absolute",
@@ -326,10 +325,12 @@ export const VirtualOffice: React.FC<VirtualOfficeProps> = ({
           transform: "translate(-50%, -50%)",
           zIndex: 1050,
           pointerEvents: "none",
-          fontFamily: '"Noto Sans Bengali", sans-serif',
+          fontFamily: '"Poppins", "Montserrat", sans-serif',
           fontWeight: 700,
           fontStyle: "normal",
-          fontSize: "clamp(12px, 1.15vw, 20px)",
+          fontSize: "clamp(12px, 1.1vw, 19px)",
+          letterSpacing: "1px",
+          textTransform: "uppercase",
           lineHeight: 1,
           whiteSpace: "nowrap",
           textAlign: "center",
@@ -342,7 +343,7 @@ export const VirtualOffice: React.FC<VirtualOfficeProps> = ({
           animation: "none",
         }}
       >
-        {bengaliName}
+        {labelText}
       </span>
     );
   };

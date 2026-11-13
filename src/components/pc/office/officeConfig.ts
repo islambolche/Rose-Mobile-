@@ -58,13 +58,13 @@ export const OFFICE_AISLES = {
 // Aliased as DEFAULT_OFFICE_POSITIONS for backwards compatibility
 export const DEFAULT_OFFICE_POSITIONS = DEFAULT_STAND_POSITIONS;
 
-// Default seated positions (hips/bottom-edge point x%, y% of the office):
+// Default seated positions (bottom-edge point x%, y% of the office):
 export const DEFAULT_SEAT_POSITIONS: Record<string, AgentPosition> = {
-  arin:  { x: 23.9, y: 35.3, scale: 1.0 },
+  arin:  { x: 23.9, y: 33.3, scale: 1.1 },
   zayan: { x: 75.8, y: 35.3, scale: 1.0 },
-  rose:  { x: 49.9, y: 46.0, scale: 1.0 },
-  mira:  { x: 12.3, y: 57.9, scale: 1.0 },
-  naira: { x: 89.0, y: 59.5, scale: 1.0 },
+  rose:  { x: 49.9, y: 52.0, scale: 1.0 },
+  mira:  { x: 12.3, y: 63.5, scale: 1.0 },
+  naira: { x: 89.0, y: 56.5, scale: 1.0 },
 };
 
 // Default laptop/monitor lid-back name label positions (center of lid in % of office image, width = lid width %):
@@ -130,11 +130,11 @@ export const DEFAULT_ROSE_ROUTES: Record<string, AgentRouteConfig> = {
 };
 
 export const DESK_BENGALI_NAMES: Record<string, string> = {
-  rose: "রোজ",
-  mira: "মিরা",
-  arin: "আরিন",
-  zayan: "জায়ান",
-  naira: "নাইরা",
+  rose: "ROSE",
+  mira: "MIRA",
+  arin: "ARIN",
+  zayan: "ZAYAN",
+  naira: "NAIRA",
 };
 
 export const DESK_LABEL_COLORS: Record<string, string> = {
@@ -192,7 +192,7 @@ export const DESK_OVERLAYS: Record<string, string> = {
 };
 
 export const STORAGE_KEY_OFFICE_POSITIONS = "rose_office_positions_v2";
-export const STORAGE_KEY_OFFICE_SEAT_POSITIONS = "rose_office_seat_positions_v2";
+export const STORAGE_KEY_OFFICE_SEAT_POSITIONS = "rose_office_seat_positions_v4";
 export const STORAGE_KEY_OFFICE_LABEL_POSITIONS = "rose_office_laptop_label_positions_v1";
 export const STORAGE_KEY_OFFICE_ROUTES = "rose_office_routes_v2";
 
@@ -352,7 +352,7 @@ export const OFFICE_AGENTS: Record<string, OfficeAgentConfig> = {
     role: "Chief Business Manager",
     color: "#EC4899", // Pink
     image: "/agents/rose-new.png",
-    seatedImage: "/agents/rose-new-seated.png",
+    seatedImage: "/agents/rose-seated-new.png",
     avatar: "/office/avatars/rose.png",
     defaultX: 31,
     defaultY: 63,
@@ -365,6 +365,7 @@ export const OFFICE_AGENTS: Record<string, OfficeAgentConfig> = {
     role: "Customer Communication",
     color: "#10B981", // Green
     image: "/office/mira.png",
+    seatedImage: "/agents/mira-seated-new.png",
     avatar: "/office/avatars/mira.png",
     defaultX: 32,
     defaultY: 60,

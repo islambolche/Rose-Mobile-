@@ -1083,18 +1083,33 @@ app.post('/api/gemini/tts', async (req, res) => {
       : [String(voiceName || 'Leda').trim() || 'Leda'];
 
     const requestedClean = model ? String(model).replace(/^models\//, '').trim() : '';
-    const initialModels = Array.from(
-      new Set(
-        [
-          requestedClean && requestedClean.toLowerCase().includes('tts') ? requestedClean : null,
-          'gemini-3.8-flash-lite-tts',
-          'gemini-3.8-flash-tts',
-          'gemini-2.5-flash-preview-tts',
-        ].filter(Boolean)
-      )
-    ) as string[];
+    const candidateTtsModels: string[] = [];
+    if (requestedClean && requestedClean.toLowerCase().includes('tts')) {
+      candidateTtsModels.push(requestedClean);
+    }
 
-    const triedModels = new Set<string>();
+    try {
+      const discovered = await normalizeSdkModelsList(client);
+      for (const m of discovered) {
+        const name = String(m?.name || '').replace(/^models\//, '').trim();
+        const methods: string[] = m?.supportedActions || m?.supportedGenerationMethods || [];
+        if (
+          name &&
+          name.toLowerCase().includes('tts') &&
+          methods.includes('generateContent') &&
+          !candidateTtsModels.includes(name)
+        ) {
+          candidateTtsModels.push(name);
+        }
+      }
+    } catch {}
+
+    for (const fallbackTts of ['gemini-2.5-flash-preview-tts', 'gemini-2.5-pro-preview-tts']) {
+      if (!candidateTtsModels.includes(fallbackTts)) {
+        candidateTtsModels.push(fallbackTts);
+      }
+    }
+
     let base64Audio: string | undefined = undefined;
     let workingModelUsed: string | undefined = undefined;
     let workingVoiceUsed: string | undefined = undefined;
@@ -1102,23 +1117,51 @@ app.post('/api/gemini/tts', async (req, res) => {
     let lastStatus = 500;
 
     const tryModelAndVoices = async (m: string): Promise<boolean> => {
+      if (!m || !m.toLowerCase().includes('tts')) return false;
       for (let vIdx = 0; vIdx < voicesToTry.length; vIdx++) {
         const candidateVoice = voicesToTry[vIdx];
         try {
-          const response = await client.models.generateContent({
-            model: m,
-            contents: [{ role: 'user', parts: [{ text: ttsPrompt }] }],
-            config: {
-              responseModalities: [Modality.AUDIO],
-              speechConfig: {
-                voiceConfig: {
-                  prebuiltVoiceConfig: { voiceName: candidateVoice },
-                },
+          const upstreamRes = await fetch(
+            `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(m)}:generateContent`,
+            {
+              method: 'POST',
+              headers: {
+                'Content-Type': 'application/json',
+                'x-goog-api-key': effectiveKey,
               },
-            },
-          });
+              body: JSON.stringify({
+                contents: [{ parts: [{ text: ttsPrompt }] }],
+                generationConfig: {
+                  responseModalities: ['AUDIO'],
+                  speechConfig: {
+                    voiceConfig: {
+                      prebuiltVoiceConfig: { voiceName: candidateVoice },
+                    },
+                  },
+                },
+              }),
+            }
+          );
 
-          const rawB64 = response.candidates?.[0]?.content?.parts?.find((p: any) => p.inlineData)?.inlineData?.data;
+          const rawText = await upstreamRes.text().catch(() => '');
+          let data: any = null;
+          try {
+            data = rawText ? JSON.parse(rawText) : null;
+          } catch {}
+
+          if (!upstreamRes.ok) {
+            lastStatus = upstreamRes.status;
+            lastErrorText = data?.error?.message || rawText || `HTTP ${upstreamRes.status}`;
+            if (upstreamRes.status === 400 && vIdx + 1 < voicesToTry.length) {
+              continue;
+            }
+            if (upstreamRes.status === 404) {
+              return false;
+            }
+            break;
+          }
+
+          const rawB64 = data?.candidates?.[0]?.content?.parts?.find((p: any) => p?.inlineData)?.inlineData?.data;
           if (rawB64) {
             const buf = Buffer.from(rawB64, 'base64');
             if (buf.length > 44 && buf.toString('ascii', 0, 4) === 'RIFF') {
@@ -1147,33 +1190,9 @@ app.post('/api/gemini/tts', async (req, res) => {
       return false;
     };
 
-    for (const m of initialModels) {
-      triedModels.add(m);
+    for (const m of candidateTtsModels) {
       const ok = await tryModelAndVoices(m);
       if (ok && base64Audio) break;
-    }
-
-    if (!base64Audio) {
-      try {
-        const discovered = await normalizeSdkModelsList(client);
-        const discoveredTtsModels = discovered
-          .filter((m: any) => {
-            const name = String(m?.name || '').replace(/^models\//, '');
-            const methods: string[] = m?.supportedActions || m?.supportedGenerationMethods || [];
-            return (
-              name.toLowerCase().includes('tts') &&
-              methods.includes('generateContent') &&
-              !triedModels.has(name)
-            );
-          })
-          .map((m: any) => String(m.name).replace(/^models\//, ''));
-
-        for (const dm of discoveredTtsModels) {
-          triedModels.add(dm);
-          const ok = await tryModelAndVoices(dm);
-          if (ok && base64Audio) break;
-        }
-      } catch {}
     }
 
     if (!base64Audio) {

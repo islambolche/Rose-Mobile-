@@ -254,93 +254,95 @@ export async function fetchGeminiTtsWithFallback(
   signal?: AbortSignal
 ): Promise<Response> {
   const cleanKey = resolveClientGeminiKey(payload?.apiKey);
+  const rawModel = String(payload?.model || '').replace(/^models\//, '').trim();
+  const targetModel =
+    rawModel && rawModel.toLowerCase().includes('tts')
+      ? rawModel
+      : 'gemini-2.5-flash-preview-tts';
+  const voicesToTry: string[] =
+    Array.isArray(payload?.voices) && payload.voices.length > 0
+      ? payload.voices.map((v: any) => String(v || '').trim()).filter(Boolean)
+      : [String(payload?.voiceName || 'Leda').trim() || 'Leda'];
+
+  if (cleanKey) {
+    let lastRes: Response | null = null;
+    for (const voiceName of voicesToTry) {
+      const res = await fetch(
+        `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(targetModel)}:generateContent`,
+        {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'x-goog-api-key': cleanKey,
+          },
+          body: JSON.stringify({
+            contents: [{ parts: [{ text: String(payload?.text || '') }] }],
+            generationConfig: {
+              responseModalities: ['AUDIO'],
+              speechConfig: {
+                voiceConfig: {
+                  prebuiltVoiceConfig: { voiceName },
+                },
+              },
+            },
+          }),
+          signal,
+        }
+      );
+
+      lastRes = res;
+      if (!res.ok) {
+        if (res.status === 400) continue;
+        return res;
+      }
+
+      const data = await res.json().catch(() => null);
+      const rawB64 = data?.candidates?.[0]?.content?.parts?.find((p: any) => p?.inlineData)?.inlineData?.data;
+      if (rawB64) {
+        return new Response(
+          JSON.stringify({
+            audio: stripRiffHeaderFromBase64(rawB64),
+            modelUsed: targetModel,
+            voiceUsed: voiceName,
+          }),
+          {
+            status: 200,
+            headers: { 'Content-Type': 'application/json' },
+          }
+        );
+      }
+    }
+
+    if (lastRes) {
+      return lastRes;
+    }
+  }
 
   if (isApiBackendAvailable() !== false) {
     try {
       const proxyRes = await fetch('/api/gemini/tts', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(payload),
+        body: JSON.stringify({ ...payload, model: targetModel }),
         signal,
       });
       if (isMissingApiRouteResponse(proxyRes)) {
         setApiBackendAvailable(false);
-        if (!cleanKey) {
-          return new Response(JSON.stringify({ error: { code: 401, message: 'Add your Gemini key in Settings > Connections.' } }), {
-            status: 401,
-            headers: { 'Content-Type': 'application/json' },
-          });
-        }
       } else {
         if (proxyRes.ok) setApiBackendAvailable(true);
         return proxyRes;
       }
     } catch (err: any) {
-      if (err?.name === 'AbortError' || !cleanKey) throw err;
+      if (err?.name === 'AbortError') throw err;
     }
   }
 
-  const targetModel =
-    String(payload?.model || 'gemini-3.8-flash-lite-tts').replace(/^models\//, '').trim() ||
-    'gemini-3.8-flash-lite-tts';
-  const voicesToTry: string[] =
-    Array.isArray(payload?.voices) && payload.voices.length > 0
-      ? payload.voices.map((v: any) => String(v || '').trim()).filter(Boolean)
-      : [String(payload?.voiceName || 'Leda').trim() || 'Leda'];
-
-  let lastRes: Response | null = null;
-  for (const voiceName of voicesToTry) {
-    const res = await fetch(
-      `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(targetModel)}:generateContent`,
-      {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'x-goog-api-key': cleanKey,
-        },
-        body: JSON.stringify({
-          contents: [{ role: 'user', parts: [{ text: String(payload?.text || '') }] }],
-          generationConfig: {
-            responseModalities: ['AUDIO'],
-            speechConfig: {
-              voiceConfig: {
-                prebuiltVoiceConfig: { voiceName },
-              },
-            },
-          },
-        }),
-        signal,
-      }
-    );
-
-    lastRes = res;
-    if (!res.ok) {
-      if (res.status === 400) continue;
-      return res;
-    }
-
-    const data = await res.json().catch(() => null);
-    const rawB64 = data?.candidates?.[0]?.content?.parts?.find((p: any) => p?.inlineData)?.inlineData?.data;
-    if (rawB64) {
-      return new Response(
-        JSON.stringify({
-          audio: stripRiffHeaderFromBase64(rawB64),
-          modelUsed: targetModel,
-          voiceUsed: voiceName,
-        }),
-        {
-          status: 200,
-          headers: { 'Content-Type': 'application/json' },
-        }
-      );
-    }
-  }
-
-  return (
-    lastRes ||
-    new Response(JSON.stringify({ error: { message: 'No audio returned from Gemini TTS', code: 500 } }), {
+  return new Response(
+    JSON.stringify({ error: { message: 'No audio returned from Gemini TTS', code: 500 } }),
+    {
       status: 500,
       headers: { 'Content-Type': 'application/json' },
-    })
+    }
   );
 }
+

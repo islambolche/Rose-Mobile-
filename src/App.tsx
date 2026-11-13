@@ -190,6 +190,7 @@ import {
   GeminiLiveSession,
   isLiveSessionActive,
   stopActiveGlobalLiveSession,
+  discoverVoiceModelsFromListModels,
 } from "./lib/gemini-live";
 import {
   getMicListeningSettings,
@@ -4981,7 +4982,7 @@ export function App() {
     isPlayingRef.current = false;
     nextStartTimeRef.current = 0;
     if (sourcesToStop.length > 0) {
-      fadeOutAndStopSources(outputAudioCtxRef.current, sourcesToStop, 0.03);
+      fadeOutAndStopSources(outputAudioCtxRef.current, sourcesToStop, 0.04);
     }
     setLiveDebug((d) => ({ ...d, isPlaying: false }));
   }, []);
@@ -5484,20 +5485,20 @@ export function App() {
     const lang = prefs.language === "auto" ? "bn-BD" : prefs.language;
     const voices = window.speechSynthesis.getVoices() || [];
     const { voice: femaleVoice, foundFemale } = pickStrictFemaleVoice(voices, lang);
+    if (!foundFemale || !femaleVoice) {
+      lastSpeakerTypeRef.current = "none";
+      setLastSpeakerType("none");
+      setSpeakingState("idle");
+      if (onEnd) onEnd();
+      return;
+    }
 
     pauseGlobalMicForSpeech([activeStreamRef.current, micStreamRef.current]);
     window.speechSynthesis.cancel();
     const utterance = new SpeechSynthesisUtterance(cleanedText);
-    if (foundFemale && femaleVoice) {
-      utterance.voice = femaleVoice;
-      utterance.lang = femaleVoice.lang || lang;
-      utterance.rate = Math.max(0.8, Math.min(1.25, prefs.speechSpeed));
-    } else {
-      utterance.lang = lang;
-      utterance.pitch = 1.25;
-      utterance.rate = 1.0;
-      setToast("ফোনে নারী কণ্ঠ পাওয়া যায়নি, Gemini TTS ঠিক করুন");
-    }
+    utterance.voice = femaleVoice;
+    utterance.lang = femaleVoice.lang || lang;
+    utterance.rate = Math.max(0.8, Math.min(1.25, prefs.speechSpeed));
     utterance.volume = 1.0;
 
     lastSpeakerTypeRef.current = "phone voice (female)";
@@ -6064,7 +6065,7 @@ export function App() {
     sampleAudioSourceRef.current = null;
     nextStartTimeRef.current = 0;
     if (nodesToStop.size > 0) {
-      fadeOutAndStopSources(outputAudioCtxRef.current, nodesToStop, 0.03);
+      fadeOutAndStopSources(outputAudioCtxRef.current, nodesToStop, 0.04);
     }
 
     // 4. Stop all active HTMLAudioElements
@@ -6643,12 +6644,13 @@ export function App() {
       try {
         const AudioCtx = window.AudioContext || (window as any).webkitAudioContext;
         if (AudioCtx) {
-          if (
-            !outputAudioCtxRef.current ||
-            outputAudioCtxRef.current.state === "closed" ||
-            outputAudioCtxRef.current === inputAudioCtxRef.current
-          ) {
-            outputAudioCtxRef.current = new AudioCtx({ sampleRate: 24000, latencyHint: "interactive" });
+          if (!outputAudioCtxRef.current || outputAudioCtxRef.current.state === "closed") {
+            const sharedCtx =
+              inputAudioCtxRef.current && inputAudioCtxRef.current.state !== "closed"
+                ? inputAudioCtxRef.current
+                : new AudioCtx({ latencyHint: "interactive" });
+            inputAudioCtxRef.current = sharedCtx;
+            outputAudioCtxRef.current = sharedCtx;
           }
           const ctx = outputAudioCtxRef.current;
           setBrowserAudioSessionType("playback");
@@ -6717,7 +6719,7 @@ export function App() {
                   if (pulseTimer) clearInterval(pulseTimer);
                   settled = true;
                   allActiveAudioNodesRef.current.delete(source);
-                  fadeOutAndStopSources(ctx, [source], 0.03);
+                  fadeOutAndStopSources(ctx, [source], 0.04);
                   resolve(true);
                   return;
                 }
@@ -6847,8 +6849,8 @@ export function App() {
           : "bn-BD";
 
       const { voice: matchedVoice, foundFemale } = pickStrictFemaleVoice(voices, requestedLang);
-      if (!foundFemale) {
-        setToast("ফোনে নারী কণ্ঠ পাওয়া যায়নি, Gemini TTS ঠিক করুন");
+      if (!foundFemale || !matchedVoice) {
+        return false;
       }
 
       const savedPitchVal = (() => {
@@ -6918,19 +6920,13 @@ export function App() {
         }
         const utterance = new SpeechSynthesisUtterance(spokenClean);
         currentUtteranceRef.current = utterance;
-        if (foundFemale && matchedVoice) {
-          utterance.voice = matchedVoice;
-          utterance.lang = matchedVoice.lang || requestedLang;
-          const isEmotional = settingsRef.current?.personality === "Emotional";
-          utterance.rate = isEmotional
-            ? (emotionalSlowRateRef.current ? 0.9 : 1.0)
-            : clampSpeechSpeed(prefsRef.current.speechSpeed ?? 1.1);
-          utterance.pitch = isEmotional ? 1.08 : savedPitchVal;
-        } else {
-          utterance.lang = requestedLang;
-          utterance.pitch = 1.25;
-          utterance.rate = 1.0;
-        }
+        utterance.voice = matchedVoice;
+        utterance.lang = matchedVoice.lang || requestedLang;
+        const isEmotional = settingsRef.current?.personality === "Emotional";
+        utterance.rate = isEmotional
+          ? (emotionalSlowRateRef.current ? 0.9 : 1.0)
+          : clampSpeechSpeed(prefsRef.current.speechSpeed ?? 1.1);
+        utterance.pitch = isEmotional ? 1.08 : savedPitchVal;
         utterance.volume = 1.0;
 
         utterance.onstart = () => {
@@ -8104,7 +8100,7 @@ export function App() {
     setMicLevel(0);
     setIsUserSpeaking(false);
 
-    if (inputAudioCtxRef.current) {
+    if (inputAudioCtxRef.current && inputAudioCtxRef.current !== outputAudioCtxRef.current) {
       try { inputAudioCtxRef.current.close(); } catch (e) {}
       inputAudioCtxRef.current = null;
     }
@@ -8118,33 +8114,79 @@ export function App() {
     try {
       const AudioCtx = window.AudioContext || (window as any).webkitAudioContext;
       if (!AudioCtx) return;
-      if (!inputAudioCtxRef.current || inputAudioCtxRef.current.state === "closed") {
-        inputAudioCtxRef.current = new AudioCtx({ sampleRate: 16000, latencyHint: "interactive" });
+      let sharedCtx = outputAudioCtxRef.current || inputAudioCtxRef.current;
+      if (!sharedCtx || sharedCtx.state === "closed") {
+        sharedCtx = new AudioCtx({ latencyHint: "interactive" });
       }
-      if (inputAudioCtxRef.current.state === "suspended") {
-        inputAudioCtxRef.current.resume().catch((e) => console.warn("[Audio] Resume input error:", e));
-      }
-      if (!outputAudioCtxRef.current || outputAudioCtxRef.current.state === "closed") {
-        outputAudioCtxRef.current = new AudioCtx({ sampleRate: 24000, latencyHint: "interactive" });
-      }
-      if (outputAudioCtxRef.current.state === "suspended") {
-        outputAudioCtxRef.current.resume().catch((e) => console.warn("[Audio] Resume output error:", e));
+      inputAudioCtxRef.current = sharedCtx;
+      outputAudioCtxRef.current = sharedCtx;
+      if (sharedCtx.state === "suspended") {
+        sharedCtx.resume().catch((e) => console.warn("[Audio] Resume shared AudioContext error:", e));
       }
       // Play a 1-frame silent buffer to unlock audio output on Android WebView / mobile browsers
-      const unlockCtx = outputAudioCtxRef.current || inputAudioCtxRef.current;
-      if (unlockCtx) {
+      if (sharedCtx) {
         try {
-          const silentBuffer = unlockCtx.createBuffer(1, 1, 22050);
-          const silentSource = unlockCtx.createBufferSource();
+          const silentBuffer = sharedCtx.createBuffer(1, 1, 22050);
+          const silentSource = sharedCtx.createBufferSource();
           silentSource.buffer = silentBuffer;
-          silentSource.connect(unlockCtx.destination);
+          silentSource.connect(sharedCtx.destination);
           silentSource.start(0);
         } catch (e) {}
       }
     } catch (e) {
-      console.error("[Audio] Failed initializing AudioContexts:", e);
+      console.error("[Audio] Failed initializing AudioContext:", e);
     }
   }, []);
+
+  // Pre-warm on first user tap: create/resume ONE AudioContext, get mic permission once, and cache resolved live & TTS models in localStorage
+  const didPreWarmAudioAndModelsRef = useRef(false);
+  useEffect(() => {
+    const preWarmModels = () => {
+      const key = (getGeminiKey() || apiKeysRef.current.gemini || "").replace(/["'\r\n\t\s]+/g, "").trim();
+      if (key) {
+        void discoverVoiceModelsFromListModels(key).catch(() => {});
+        void discoverAvailableTtsModels(key, false).catch(() => {});
+      }
+    };
+    preWarmModels();
+
+    const handleFirstUserGesture = () => {
+      if (didPreWarmAudioAndModelsRef.current) return;
+      didPreWarmAudioAndModelsRef.current = true;
+      ensureAudioContext();
+      preWarmModels();
+      if (
+        !isNativeMicConfigured() &&
+        typeof navigator !== "undefined" &&
+        navigator.mediaDevices &&
+        typeof navigator.mediaDevices.getUserMedia === "function"
+      ) {
+        navigator.mediaDevices
+          .getUserMedia({ audio: true })
+          .then((stream) => {
+            // Stop tracks immediately after permission check so the mic indicator is off until orb is pressed
+            if (!isLiveCallActiveNow() && !isAssistantEnabledRef.current) {
+              stream.getTracks().forEach((t) => {
+                try { t.stop(); } catch {}
+              });
+            }
+          })
+          .catch(() => {});
+      }
+      window.removeEventListener("pointerdown", handleFirstUserGesture, true);
+      window.removeEventListener("touchstart", handleFirstUserGesture, true);
+      window.removeEventListener("keydown", handleFirstUserGesture, true);
+    };
+
+    window.addEventListener("pointerdown", handleFirstUserGesture, true);
+    window.addEventListener("touchstart", handleFirstUserGesture, true);
+    window.addEventListener("keydown", handleFirstUserGesture, true);
+    return () => {
+      window.removeEventListener("pointerdown", handleFirstUserGesture, true);
+      window.removeEventListener("touchstart", handleFirstUserGesture, true);
+      window.removeEventListener("keydown", handleFirstUserGesture, true);
+    };
+  }, [ensureAudioContext]);
 
   const blobToBase64 = useCallback((blob: Blob): Promise<string> => {
     return new Promise((resolve, reject) => {
@@ -9521,30 +9563,22 @@ export function App() {
       fetchServerGeminiStatus().catch(() => {});
     } catch (e) {}
 
-    // Requirement 2a: Create separate persistent input and output AudioContexts and call await ctx.resume()
+    // Use ONE shared persistent AudioContext for both input and output
     ensureAudioContext();
     const AudioCtx = window.AudioContext || (window as any).webkitAudioContext;
-    if (!inputAudioCtxRef.current || inputAudioCtxRef.current.state === "closed") {
-      inputAudioCtxRef.current = new AudioCtx({ sampleRate: 48000, latencyHint: "interactive" });
+    let currentCtx = outputAudioCtxRef.current || inputAudioCtxRef.current;
+    if (!currentCtx || currentCtx.state === "closed") {
+      currentCtx = new AudioCtx({ latencyHint: "interactive" });
     }
-    if (
-      !outputAudioCtxRef.current ||
-      outputAudioCtxRef.current.state === "closed" ||
-      outputAudioCtxRef.current === inputAudioCtxRef.current
-    ) {
-      outputAudioCtxRef.current = new AudioCtx({ sampleRate: 24000, latencyHint: "interactive" });
-    }
-    const currentCtx = inputAudioCtxRef.current;
-    if (currentCtx && currentCtx.state !== 'running') {
-      try { await currentCtx.resume(); } catch(e) {}
-    }
-    if (outputAudioCtxRef.current && outputAudioCtxRef.current.state !== 'running') {
-      try { await outputAudioCtxRef.current.resume(); } catch(e) {}
+    inputAudioCtxRef.current = currentCtx;
+    outputAudioCtxRef.current = currentCtx;
+    if (currentCtx && currentCtx.state !== "running") {
+      try { void currentCtx.resume(); } catch (e) {}
     }
 
-    // Requirement 2a & 3: getUserMedia call & error handling (skipped when Android Native Mic is On)
+    // Check getUserMedia support; GeminiLiveSession.start() opens the Live socket and the mic in parallel!
     const useNativeMicForCall = isNativeMicConfigured();
-    let micStream: MediaStream | null = null;
+    const micStream: MediaStream | null = null;
     if (useNativeMicForCall) {
       setDiagGetUserMediaStatus("native-mic");
     } else {
@@ -9554,39 +9588,8 @@ export function App() {
         setToast("মাইক পাওয়া যায়নি");
         return;
       }
-      try {
-        setBrowserAudioSessionType("play-and-record");
-        const isApp = isAndroidApp();
-        micStream = await getGlobalMicStream({
-          audio: isApp
-            ? {
-                autoGainControl: true,
-                noiseSuppression: true,
-                echoCancellation: true,
-              }
-            : {
-                echoCancellation: false,
-                noiseSuppression: true,
-                autoGainControl: false,
-              },
-        });
-        setDiagGetUserMediaStatus("ok");
-      } catch (err: any) {
-        console.error("getUserMedia error:", err);
-        const errName = String(err?.name || "");
-        const errMsg = String(err?.message || err || "");
-        const isDenied = errName === 'NotAllowedError' || errName === 'PermissionDeniedError' || errMsg.toLowerCase().includes('denied');
-        const isNotFound = errName === 'NotFoundError' || errName === 'DevicesNotFoundError' || /device not found|requested device not found/i.test(errMsg);
-        const errText = isNotFound
-          ? "মাইক পাওয়া যায়নি"
-          : isDenied
-          ? "মাইক্রোফোনের অনুমতি নেই। Chrome এর তালা আইকনে চেপে Microphone Allow করুন।"
-          : `getUserMedia error: ${errMsg}`;
-        setDiagGetUserMediaStatus(`error ${errMsg || 'denied'}`);
-        triggerLiveBottomError(errText);
-        setToast(errText);
-        return;
-      }
+      setBrowserAudioSessionType("play-and-record");
+      setDiagGetUserMediaStatus("ok");
     }
 
     if (callStartAttemptRef.current !== startAttemptId || !isCallScreenOpenRef.current) {
@@ -9658,7 +9661,8 @@ export function App() {
         ...callOptions,
         onStateChange: (state: 'connecting' | 'listening' | 'thinking' | 'speaking' | 'off') => {
           if (liveSessionRef.current !== targetSession) return;
-          if (state === 'listening') transitionToState("LISTENING");
+          if (state === 'connecting') transitionToState("CONNECTING");
+          else if (state === 'listening') transitionToState("LISTENING");
           else if (state === 'thinking') transitionToState("THINKING");
           else if (state === 'speaking') transitionToState("SPEAKING");
           else if (state === 'off') {
@@ -9969,7 +9973,7 @@ export function App() {
     session.setMuted(false);
 
     liveSessionRef.current = session;
-    transitionToState("LISTENING");
+    transitionToState("CONNECTING");
     if (canReuseWarmed) {
       void (async () => {
         const promoted = await session.activateFromWarmUp((session as any).options);
@@ -10021,16 +10025,12 @@ export function App() {
     try {
       const AudioCtx = window.AudioContext || (window as any).webkitAudioContext;
       if (AudioCtx) {
-        if (!inputAudioCtxRef.current || inputAudioCtxRef.current.state === "closed") {
-          inputAudioCtxRef.current = new AudioCtx({ sampleRate: 48000, latencyHint: "interactive" });
+        let sharedCtx = outputAudioCtxRef.current || inputAudioCtxRef.current;
+        if (!sharedCtx || sharedCtx.state === "closed") {
+          sharedCtx = new AudioCtx({ latencyHint: "interactive" });
         }
-        if (
-          !outputAudioCtxRef.current ||
-          outputAudioCtxRef.current.state === "closed" ||
-          outputAudioCtxRef.current === inputAudioCtxRef.current
-        ) {
-          outputAudioCtxRef.current = new AudioCtx({ sampleRate: 24000, latencyHint: "interactive" });
-        }
+        inputAudioCtxRef.current = sharedCtx;
+        outputAudioCtxRef.current = sharedCtx;
       }
     } catch {}
 

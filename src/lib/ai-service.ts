@@ -830,13 +830,13 @@ export const resetOutputGainForReply = (
 };
 
 /**
- * Ramps the output GainNode down over 30ms (fade-out) and then stops & disconnects the given sources
+ * Ramps the output GainNode down over 40ms (fade-out) and then stops & disconnects the given sources
  * so sources are never stopped abruptly (preventing clicks/pops on end, interrupt, or END button).
  */
 export const fadeOutAndStopSources = (
   ctx: AudioContext | null | undefined,
   sources: Iterable<AudioBufferSourceNode>,
-  fadeSec = 0.03
+  fadeSec = 0.04
 ): void => {
   const list = Array.from(sources);
   for (const s of list) {
@@ -1748,13 +1748,21 @@ export const runGeminiSpeedTest = async (
 const CUSTOM_TTS_MODEL_STORAGE_KEY = 'rose_custom_tts_model';
 const TTS_MODELS_CACHE_STORAGE_KEY = 'rose_tts_models_cache_v2';
 const LAST_ACTIVE_TTS_MODEL_KEY = 'rose_last_active_tts_model';
-const TTS_CACHE_TTL_MS = 60 * 60 * 1000; // 1 hour
+const TTS_CACHE_TTL_MS = 24 * 60 * 60 * 1000; // 24 hours
 
-// Clean up any stale legacy TTS model keys once on module load
+// Clean up any stale legacy or non-TTS model keys once on module load
 try {
   if (typeof window !== 'undefined') {
     localStorage.removeItem('working_gemini_tts_model');
     localStorage.removeItem('iyabd_tts_model');
+    const savedCustom = localStorage.getItem(CUSTOM_TTS_MODEL_STORAGE_KEY) || '';
+    if (savedCustom && !savedCustom.toLowerCase().includes('tts')) {
+      localStorage.removeItem(CUSTOM_TTS_MODEL_STORAGE_KEY);
+    }
+    const savedLast = localStorage.getItem(LAST_ACTIVE_TTS_MODEL_KEY) || '';
+    if (savedLast && !savedLast.toLowerCase().includes('tts')) {
+      localStorage.removeItem(LAST_ACTIVE_TTS_MODEL_KEY);
+    }
   }
 } catch {}
 
@@ -1782,16 +1790,21 @@ function scoreTtsModelVersion(modelName: string): number {
 export const getCustomTtsModel = (): string => {
   try {
     if (typeof window === 'undefined') return '';
-    return (localStorage.getItem(CUSTOM_TTS_MODEL_STORAGE_KEY) || '')
+    const saved = (localStorage.getItem(CUSTOM_TTS_MODEL_STORAGE_KEY) || '')
       .replace(/^models\//, '')
       .trim();
+    if (saved && saved.toLowerCase().includes('tts')) {
+      return saved;
+    }
+    return '';
   } catch {
     return '';
   }
 };
 
 export const setCustomTtsModel = (modelName: string): string => {
-  const clean = String(modelName || '').replace(/^models\//, '').trim();
+  const rawClean = String(modelName || '').replace(/^models\//, '').trim();
+  const clean = rawClean && rawClean.toLowerCase().includes('tts') ? rawClean : '';
   try {
     if (typeof window !== 'undefined') {
       if (clean) {
@@ -1806,23 +1819,29 @@ export const setCustomTtsModel = (modelName: string): string => {
 
 export const getLastUsedTtsModel = (): string => {
   const custom = getCustomTtsModel();
-  if (custom) return custom;
-  if (lastActiveTtsModelMemory) return lastActiveTtsModelMemory;
+  if (custom && custom.toLowerCase().includes('tts')) return custom;
+  if (lastActiveTtsModelMemory && lastActiveTtsModelMemory.toLowerCase().includes('tts')) {
+    return lastActiveTtsModelMemory;
+  }
   try {
     if (typeof window !== 'undefined') {
       const saved = (localStorage.getItem(LAST_ACTIVE_TTS_MODEL_KEY) || '')
         .replace(/^models\//, '')
         .trim();
-      if (saved) return saved;
+      if (saved && saved.toLowerCase().includes('tts')) {
+        lastActiveTtsModelMemory = saved;
+        return saved;
+      }
     }
   } catch {}
-  if (cachedDiscoveredTtsModels.length > 0) return cachedDiscoveredTtsModels[0];
+  const validCached = cachedDiscoveredTtsModels.filter((m) => m.toLowerCase().includes('tts'));
+  if (validCached.length > 0) return validCached[0];
   return '';
 };
 
-const setLastUsedTtsModel = (modelName: string) => {
+export const setLastUsedTtsModel = (modelName: string) => {
   const clean = String(modelName || '').replace(/^models\//, '').trim();
-  if (!clean) return;
+  if (!clean || !clean.toLowerCase().includes('tts')) return;
   lastActiveTtsModelMemory = clean;
   try {
     if (typeof window !== 'undefined') {
@@ -1832,7 +1851,9 @@ const setLastUsedTtsModel = (modelName: string) => {
 };
 
 export const getCachedTtsModelsList = (): string[] => {
-  if (cachedDiscoveredTtsModels.length > 0) return [...cachedDiscoveredTtsModels];
+  if (cachedDiscoveredTtsModels.length > 0) {
+    return cachedDiscoveredTtsModels.filter((m) => m.toLowerCase().includes('tts'));
+  }
   try {
     if (typeof window !== 'undefined') {
       const raw = localStorage.getItem(TTS_MODELS_CACHE_STORAGE_KEY);
@@ -1844,7 +1865,9 @@ export const getCachedTtsModelsList = (): string[] => {
           typeof parsed.timestamp === 'number' &&
           Date.now() - parsed.timestamp < TTS_CACHE_TTL_MS
         ) {
-          cachedDiscoveredTtsModels = parsed.models;
+          cachedDiscoveredTtsModels = parsed.models.filter((m: any) =>
+            String(m || '').toLowerCase().includes('tts')
+          );
           lastTtsDiscoveryTime = parsed.timestamp;
           lastTtsDiscoveryKeyPrefix = String(parsed.keyPrefix || '');
           return [...cachedDiscoveredTtsModels];
@@ -1878,17 +1901,21 @@ export const discoverAvailableTtsModels = async (
         const raw = localStorage.getItem(TTS_MODELS_CACHE_STORAGE_KEY);
         if (raw) {
           const parsed = JSON.parse(raw);
+          const validModels = Array.isArray(parsed?.models)
+            ? parsed.models.filter((m: any) => String(m || '').toLowerCase().includes('tts'))
+            : [];
           if (
-            parsed &&
-            Array.isArray(parsed.models) &&
-            parsed.models.length > 0 &&
+            validModels.length > 0 &&
             parsed.keyPrefix === keyPrefix &&
             typeof parsed.timestamp === 'number' &&
             now - parsed.timestamp < TTS_CACHE_TTL_MS
           ) {
-            cachedDiscoveredTtsModels = parsed.models;
+            cachedDiscoveredTtsModels = validModels;
             lastTtsDiscoveryTime = parsed.timestamp;
             lastTtsDiscoveryKeyPrefix = keyPrefix;
+            if (!lastActiveTtsModelMemory) {
+              setLastUsedTtsModel(validModels[0]);
+            }
             return [...cachedDiscoveredTtsModels];
           }
         }
@@ -1935,7 +1962,7 @@ export const discoverAvailableTtsModels = async (
     lastTtsDiscoveryKeyPrefix = keyPrefix;
 
     try {
-      if (typeof window !== 'undefined') {
+      if (typeof window !== 'undefined' && found.length > 0) {
         localStorage.setItem(
           TTS_MODELS_CACHE_STORAGE_KEY,
           JSON.stringify({
@@ -1992,9 +2019,28 @@ export const pickStrictFemaleVoice = (
   const rawLang = String(preferredLang || 'bn-BD').toLowerCase();
   const langPrefix = rawLang === 'auto' || !rawLang ? 'bn' : rawLang.split(/[-_]/)[0];
 
+  if (langPrefix === 'bn') {
+    // Strictly Bengali voices only (bn-BD / bn-IN / bn) — never read Bengali text with an English or Hindi voice
+    const bnVoices = voices.filter((v) => {
+      const l = String(v.lang || '').toLowerCase().replace('_', '-');
+      const n = `${v.name || ''} ${v.voiceURI || ''}`.toLowerCase();
+      return l === 'bn-bd' || l === 'bn-in' || l.startsWith('bn') || n.includes('bengali') || n.includes('bangla');
+    });
+    if (bnVoices.length === 0) {
+      return { voice: null, foundFemale: false };
+    }
+    const bnFemale =
+      bnVoices.find((v) => isFemaleVoice(v) && String(v.lang || '').toLowerCase().replace('_', '-') === 'bn-bd') ||
+      bnVoices.find((v) => isFemaleVoice(v) && String(v.lang || '').toLowerCase().replace('_', '-') === 'bn-in') ||
+      bnVoices.find((v) => isFemaleVoice(v)) ||
+      bnVoices.find((v) => !isMaleVoice(v)) ||
+      bnVoices[0];
+    return { voice: bnFemale || null, foundFemale: Boolean(bnFemale) };
+  }
+
   const allFemaleVoices = voices.filter((v) => isFemaleVoice(v));
 
-  // 1. Female voice matching Settings' Language (e.g. bn)
+  // Female voice matching Settings' Language
   const matchingLangFemale = allFemaleVoices.find((v) =>
     String(v.lang || '')
       .toLowerCase()
@@ -2005,26 +2051,18 @@ export const pickStrictFemaleVoice = (
     return { voice: matchingLangFemale, foundFemale: true };
   }
 
-  // 2. Language-mismatched female voice (prefer hi-IN, en-IN first, then any female voice)
-  const hiInFemale = allFemaleVoices.find((v) =>
-    String(v.lang || '').toLowerCase().replace('_', '-').startsWith('hi')
+  const matchingLangAny = voices.find(
+    (v) =>
+      !isMaleVoice(v) &&
+      String(v.lang || '')
+        .toLowerCase()
+        .replace('_', '-')
+        .startsWith(langPrefix)
   );
-  if (hiInFemale) {
-    return { voice: hiInFemale, foundFemale: true };
+  if (matchingLangAny) {
+    return { voice: matchingLangAny, foundFemale: true };
   }
 
-  const enInFemale = allFemaleVoices.find(
-    (v) => String(v.lang || '').toLowerCase().replace('_', '-') === 'en-in'
-  );
-  if (enInFemale) {
-    return { voice: enInFemale, foundFemale: true };
-  }
-
-  if (allFemaleVoices.length > 0) {
-    return { voice: allFemaleVoices[0], foundFemale: true };
-  }
-
-  // 3. No female voice found at all: NEVER pick a male voice
   return { voice: null, foundFemale: false };
 };
 
@@ -2043,28 +2081,36 @@ export const directGeminiTTS = async (payload: any) => {
   }
 
   const candidateModels: string[] = [];
+  const pushIfValidTtsModel = (m?: string) => {
+    const clean = String(m || '').replace(/^models\//, '').trim();
+    if (clean && clean.toLowerCase().includes('tts') && !candidateModels.includes(clean)) {
+      candidateModels.push(clean);
+    }
+  };
 
-  // 1. User's custom saved TTS model in localStorage takes top priority if non-empty
-  const customSaved = getCustomTtsModel();
-  if (customSaved) {
-    candidateModels.push(customSaved);
+  // 1. User's custom saved TTS model in localStorage (only if it contains "tts")
+  pushIfValidTtsModel(getCustomTtsModel());
+
+  // 2. Explicit model in payload if passed and contains "tts"
+  pushIfValidTtsModel(model);
+
+  // 3. Cached resolved TTS model in localStorage so we don't re-fetch ListModels on every call
+  pushIfValidTtsModel(getLastUsedTtsModel());
+  for (const cachedModel of getCachedTtsModelsList()) {
+    pushIfValidTtsModel(cachedModel);
   }
 
-  // 2. Explicit model in payload if passed
-  if (model && String(model).trim()) {
-    const cleanExplicit = String(model).replace(/^models\//, '').trim();
-    if (cleanExplicit && !candidateModels.includes(cleanExplicit)) {
-      candidateModels.push(cleanExplicit);
+  // 4. Only fetch ListModels if we don't already have a cached TTS model
+  if (candidateModels.length === 0) {
+    const discovered = await discoverAvailableTtsModels(cleanKey);
+    for (const dm of discovered) {
+      pushIfValidTtsModel(dm);
     }
   }
 
-  // 3. Auto-discovered TTS models from ListModels (cached 1 hour, highest version first)
-  const discovered = await discoverAvailableTtsModels(cleanKey);
-  for (const dm of discovered) {
-    const cleanDm = dm.replace(/^models\//, '').trim();
-    if (cleanDm && !candidateModels.includes(cleanDm)) {
-      candidateModels.push(cleanDm);
-    }
+  // 5. Fallback TTS models whose names contain "tts" (never a normal chat model)
+  for (const fallbackTts of ['gemini-2.5-flash-preview-tts', 'gemini-2.5-pro-preview-tts']) {
+    pushIfValidTtsModel(fallbackTts);
   }
 
   const adminActive = isAdmin();
@@ -2073,18 +2119,19 @@ export const directGeminiTTS = async (payload: any) => {
     ? [...ADMIN_PREFERRED_VOICES]
     : [selectedVoiceName];
 
-  const modelsToTry = candidateModels.length > 0 ? candidateModels.slice(0, 3) : [''];
+  const modelsToTry = candidateModels.slice(0, 3);
   const attempts: Array<{ model: string; status: number | string; message: string }> = [];
   let lastError: any = null;
 
   for (const rawTargetModel of modelsToTry) {
-    const targetModel = rawTargetModel ? rawTargetModel.replace(/^models\//, '').trim() : '';
+    const targetModel = rawTargetModel.replace(/^models\//, '').trim();
+    if (!targetModel || !targetModel.toLowerCase().includes('tts')) continue;
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), GEMINI_TTS_PER_REQUEST_TIMEOUT_MS);
     try {
       const res = await fetchGeminiTtsWithFallback(
         {
-          model: targetModel || undefined,
+          model: targetModel,
           text: ttsPromptText,
           voiceName: selectedVoiceName,
           voices: voicesToTry,
@@ -2105,7 +2152,7 @@ export const directGeminiTTS = async (payload: any) => {
           data?.exactError || data?.error?.message || rawBodyText || `HTTP ${res.status}`,
           cleanKey
         ).trim();
-        const usedModelLabel = targetModel || 'gemini-tts';
+        const usedModelLabel = targetModel;
         attempts.push({
           model: usedModelLabel,
           status: res.status,
@@ -2120,7 +2167,7 @@ export const directGeminiTTS = async (payload: any) => {
         continue;
       }
 
-      const finalModel = data.modelUsed || targetModel || 'gemini-3.8-flash-lite-tts';
+      const finalModel = data.modelUsed || targetModel;
       const finalVoice = data.voiceUsed || selectedVoiceName;
       setLastUsedTtsModel(finalModel);
       if (adminActive) {

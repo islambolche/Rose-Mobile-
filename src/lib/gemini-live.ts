@@ -23,7 +23,9 @@ import {
   volumeSliderToGain,
   isValidVoiceTranscript,
   discoverLightestFlashModel,
+  setLastUsedTtsModel,
 } from './ai-service';
+import { ensureLanguageFirstLineLock } from './roseConfig';
 import {
   pauseGlobalMicForSpeech,
   resumeGlobalMicAfterSpeech,
@@ -230,8 +232,130 @@ interface DiscoveredVoiceModels {
   ttsModels: string[];
 }
 
-async function discoverVoiceModelsFromListModels(apiKey: string): Promise<DiscoveredVoiceModels> {
+const VOICE_MODELS_CACHE_KEY = 'rose_voice_models_cache_v2';
+const RESOLVED_LIVE_MODEL_KEY = 'rose_resolved_live_model';
+const LIVE_RESUMPTION_HANDLE_KEY = 'rose_live_resumption_handle';
+const VOICE_MODELS_CACHE_TTL_MS = 24 * 60 * 60 * 1000; // 24 hours
+
+let memoryCachedVoiceModels: (DiscoveredVoiceModels & { keyPrefix: string; timestamp: number }) | null = null;
+let lastGlobalResumptionHandle: string | null = (() => {
+  try {
+    if (typeof window !== 'undefined' && window.sessionStorage) {
+      return sessionStorage.getItem(LIVE_RESUMPTION_HANDLE_KEY) || null;
+    }
+  } catch {}
+  return null;
+})();
+
+function saveGlobalResumptionHandle(handle: string | null) {
+  lastGlobalResumptionHandle = handle;
+  try {
+    if (typeof window !== 'undefined' && window.sessionStorage) {
+      if (handle) {
+        sessionStorage.setItem(LIVE_RESUMPTION_HANDLE_KEY, handle);
+      } else {
+        sessionStorage.removeItem(LIVE_RESUMPTION_HANDLE_KEY);
+      }
+    }
+  } catch {}
+}
+
+export function getCachedResolvedLiveModel(): string {
+  try {
+    if (typeof window !== 'undefined' && window.localStorage) {
+      return (localStorage.getItem(RESOLVED_LIVE_MODEL_KEY) || '').replace(/^models\//, '').trim();
+    }
+  } catch {}
+  return '';
+}
+
+export function setCachedResolvedLiveModel(modelName: string) {
+  const clean = String(modelName || '').replace(/^models\//, '').trim();
+  if (!clean) return;
+  try {
+    if (typeof window !== 'undefined' && window.localStorage) {
+      localStorage.setItem(RESOLVED_LIVE_MODEL_KEY, clean);
+    }
+  } catch {}
+}
+
+function readCachedVoiceModelsFromStorage(apiKey?: string): DiscoveredVoiceModels | null {
   const cleanKey = String(apiKey || '').replace(/[\r\n\t\s"']+/g, '').trim();
+  const keyPrefix = cleanKey ? cleanKey.slice(0, 8) : 'server';
+  const now = Date.now();
+
+  if (
+    memoryCachedVoiceModels &&
+    memoryCachedVoiceModels.keyPrefix === keyPrefix &&
+    now - memoryCachedVoiceModels.timestamp < VOICE_MODELS_CACHE_TTL_MS &&
+    memoryCachedVoiceModels.liveModels.length > 0
+  ) {
+    const savedLive = getCachedResolvedLiveModel();
+    const orderedLive = savedLive
+      ? [savedLive, ...memoryCachedVoiceModels.liveModels.filter((m) => m !== savedLive)]
+      : [...memoryCachedVoiceModels.liveModels];
+    return {
+      liveModels: orderedLive,
+      flashModels: [...memoryCachedVoiceModels.flashModels],
+      ttsModels: [...memoryCachedVoiceModels.ttsModels],
+    };
+  }
+
+  try {
+    if (typeof window !== 'undefined' && window.localStorage) {
+      const raw = localStorage.getItem(VOICE_MODELS_CACHE_KEY);
+      if (raw) {
+        const parsed = JSON.parse(raw);
+        if (
+          parsed &&
+          parsed.keyPrefix === keyPrefix &&
+          typeof parsed.timestamp === 'number' &&
+          now - parsed.timestamp < VOICE_MODELS_CACHE_TTL_MS &&
+          Array.isArray(parsed.liveModels) &&
+          parsed.liveModels.length > 0
+        ) {
+          const liveModels: string[] = parsed.liveModels;
+          const flashModels: string[] = Array.isArray(parsed.flashModels) ? parsed.flashModels : [];
+          const ttsModels: string[] = Array.isArray(parsed.ttsModels)
+            ? parsed.ttsModels.filter((m: any) => String(m || '').toLowerCase().includes('tts'))
+            : [];
+          memoryCachedVoiceModels = {
+            liveModels,
+            flashModels,
+            ttsModels,
+            keyPrefix,
+            timestamp: parsed.timestamp,
+          };
+          const savedLive = getCachedResolvedLiveModel();
+          const orderedLive = savedLive
+            ? [savedLive, ...liveModels.filter((m) => m !== savedLive)]
+            : [...liveModels];
+          return {
+            liveModels: orderedLive,
+            flashModels,
+            ttsModels,
+          };
+        }
+      }
+    }
+  } catch {}
+  return null;
+}
+
+export async function discoverVoiceModelsFromListModels(
+  apiKey: string,
+  forceRefresh = false
+): Promise<DiscoveredVoiceModels> {
+  const cleanKey = String(apiKey || '').replace(/[\r\n\t\s"']+/g, '').trim();
+  const keyPrefix = cleanKey ? cleanKey.slice(0, 8) : 'server';
+
+  if (!forceRefresh) {
+    const cached = readCachedVoiceModelsFromStorage(cleanKey);
+    if (cached && cached.liveModels.length > 0) {
+      return cached;
+    }
+  }
+
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), 7000);
 
@@ -321,8 +445,45 @@ async function discoverVoiceModelsFromListModels(apiKey: string): Promise<Discov
     // Sort ttsModels: newest version first
     ttsCandidates.sort((a, b) => parseVersionScore(b) - parseVersionScore(a));
 
+    const resolvedLiveList = liveCandidates.slice(0, 3);
+    const now = Date.now();
+    memoryCachedVoiceModels = {
+      liveModels: resolvedLiveList,
+      flashModels: flashCandidates,
+      ttsModels: ttsCandidates,
+      keyPrefix,
+      timestamp: now,
+    };
+
+    if (resolvedLiveList.length > 0 && !getCachedResolvedLiveModel()) {
+      setCachedResolvedLiveModel(resolvedLiveList[0]);
+    }
+    if (ttsCandidates.length > 0) {
+      setLastUsedTtsModel(ttsCandidates[0]);
+    }
+
+    try {
+      if (typeof window !== 'undefined' && window.localStorage && resolvedLiveList.length > 0) {
+        localStorage.setItem(
+          VOICE_MODELS_CACHE_KEY,
+          JSON.stringify({
+            liveModels: resolvedLiveList,
+            flashModels: flashCandidates,
+            ttsModels: ttsCandidates,
+            keyPrefix,
+            timestamp: now,
+          })
+        );
+      }
+    } catch {}
+
+    const savedLive = getCachedResolvedLiveModel();
+    const orderedLive = savedLive
+      ? [savedLive, ...resolvedLiveList.filter((m) => m !== savedLive)]
+      : resolvedLiveList;
+
     return {
-      liveModels: liveCandidates.slice(0, 3),
+      liveModels: orderedLive,
       flashModels: flashCandidates,
       ttsModels: ttsCandidates,
     };
@@ -425,7 +586,7 @@ export class GeminiLiveSession {
   private watchdogTimer: any = null;
   private reconnectTimer: any = null;
   private isReconnecting = false;
-  private resumptionHandle: string | null = null;
+  private resumptionHandle: string | null = lastGlobalResumptionHandle;
   private connectedModelName: string | null = null;
   private awaitingReplySince = 0;
   private watchdogReconnectedForTurn = false;
@@ -439,6 +600,7 @@ export class GeminiLiveSession {
   private leftoverPcmByte: number | null = null;
   private isReplyFirstChunk = true;
   private lastPcmChunkKey = '';
+  private pendingMicPcmBase64Queue: Array<{ base64: string; rms: number; chunkMs: number }> = [];
 
   // Discovered models from ListModels
   private liveModels: string[] = [];
@@ -470,9 +632,48 @@ export class GeminiLiveSession {
   public activeMode: 'live' | 'fallback' = 'fallback';
   private userStartedSpeakingEmitted = false;
   private skipGrounding = false;
-  private speechLangMode: 'bn-BD' | 'bn-IN' | 'none' = 'bn-BD';
+  private speechLangMode: string = 'bn-IN';
   private inputTranscriptionLangRejected = false;
   private lastSetupRejectedForLang = false;
+
+  private resolveInitialSpeechLang(): string {
+    const raw = String(this.options.language || '').trim();
+    if (!raw || raw.toLowerCase() === 'auto' || raw.toLowerCase().startsWith('bn')) {
+      return 'bn-IN';
+    }
+    if (raw.toLowerCase().startsWith('en')) return 'en-US';
+    if (raw.toLowerCase().startsWith('hi')) return 'hi-IN';
+    return raw;
+  }
+
+  private flushBufferedInitialMicChunks() {
+    if (
+      !this.ws ||
+      this.ws.readyState !== WebSocket.OPEN ||
+      !this.isSetupComplete ||
+      this.wasStoppedByUser ||
+      this.isFallbackMode ||
+      this.isWarmOnly
+    ) {
+      return;
+    }
+    if (this.pendingMicPcmBase64Queue.length === 0) return;
+    const queued = this.pendingMicPcmBase64Queue.splice(0, this.pendingMicPcmBase64Queue.length);
+    for (const item of queued) {
+      if (!this.ws || this.ws.readyState !== WebSocket.OPEN || this.wasStoppedByUser) break;
+      try {
+        this.ws.send(
+          JSON.stringify({
+            realtimeInput: {
+              audio: { data: item.base64, mimeType: 'audio/pcm;rate=16000' },
+            },
+          })
+        );
+        this.chunksSent++;
+        voiceDebugStore.recordChunkSent(item.rms, item.chunkMs);
+      } catch {}
+    }
+  }
 
   // Smart Listening (@ricky0123/vad-web MicVAD + manual activityStart/End + Warm-up)
   private micVad: MicVADType | null = null;
@@ -1689,7 +1890,8 @@ export class GeminiLiveSession {
     const base = this.options.systemInstruction || 'You are Rose, a helpful assistant.';
     const sharedCtx = getSharedPhoneAndHistoryContextBlock();
     const withTeam = `${base}\n\n${TEAM_SYSTEM_INSTRUCTION}${sharedCtx ? `\n\n${sharedCtx}` : ''}`;
-    return applyAdminSystemInstructionOverride(withTeam);
+    const overridden = applyAdminSystemInstructionOverride(withTeam, { isLiveVoice: true });
+    return ensureLanguageFirstLineLock(overridden, this.options.language);
   }
 
   public async start() {
@@ -1720,14 +1922,15 @@ export class GeminiLiveSession {
     this.isProcessingClip = false;
     this.isRecordingClip = false;
     this.isBrowserTtsSpeaking = false;
-    this.resumptionHandle = null;
+    this.resumptionHandle = lastGlobalResumptionHandle;
     this.connectedModelName = null;
     this.awaitingReplySince = 0;
     this.watchdogReconnectedForTurn = false;
     this.liveUserBuffer = '';
     this.liveAssistantBuffer = '';
     this.suppressedForeignTranscript = false;
-    this.speechLangMode = 'bn-BD';
+    this.pendingMicPcmBase64Queue = [];
+    this.speechLangMode = this.resolveInitialSpeechLang();
     this.inputTranscriptionLangRejected = false;
     this.lastSetupRejectedForLang = false;
     this.phoneToolHandledForTurn = false;
@@ -1782,9 +1985,59 @@ export class GeminiLiveSession {
       smartVadPromise = this.initSmartMicVad(false);
     }
 
-    // 1. Initialize Single AudioContext, Microphone & AnalyserNode immediately
-    const audioReady = await this.initAudioAndAnalyzers();
+    // Notify Android foreground call service plugin (no-op if missing)
+    this.startRoseCallPlugin();
+    this.startWatchdog();
+
+    // Open the Live socket and the mic AT THE SAME TIME (parallel):
+    // Mic audio chunks (20-40ms) are buffered while the socket connects and flushed as soon as setupComplete arrives.
+    const connectSocketInParallel = async (): Promise<{
+      connectedLive: boolean;
+      modelsOk: boolean;
+    }> => {
+      try {
+        const discovered = await discoverVoiceModelsFromListModels(apiKey);
+        this.liveModels = discovered.liveModels;
+        this.flashModels = discovered.flashModels;
+        this.ttsModels = discovered.ttsModels;
+      } catch (err: any) {
+        const formatted = parseAndFormatGeminiError(err?.status || 0, err?.message || 'ListModels failed');
+        this.lastError = formatted.bengali;
+        return { connectedLive: false, modelsOk: false };
+      }
+
+      if (this.wasStoppedByUser || !this.isCurrentSession()) {
+        return { connectedLive: false, modelsOk: true };
+      }
+
+      if (this.liveModels.length > 0 && !getMicListeningSettings().streetMode) {
+        const connectedLive = await this.tryConnectLiveModels(
+          apiKey,
+          this.liveModels.slice(0, 3),
+          8000
+        );
+        return { connectedLive, modelsOk: true };
+      }
+      return { connectedLive: false, modelsOk: true };
+    };
+
+    const [audioReady, socketResult] = await Promise.all([
+      this.initAudioAndAnalyzers(),
+      connectSocketInParallel(),
+    ]);
+
     if (!audioReady || this.wasStoppedByUser) {
+      this.releaseExistingSocketOnly('audio_init_failed');
+      this.stopRoseCallPlugin();
+      return;
+    }
+
+    if (!socketResult.modelsOk) {
+      if (this.lastError) {
+        this.options.onError?.(this.lastError);
+      }
+      this.updateState('off');
+      this.socketStatus = 'closed';
       this.stopRoseCallPlugin();
       return;
     }
@@ -1798,51 +2051,27 @@ export class GeminiLiveSession {
       }
     }
 
-    // Notify Android foreground call service plugin (no-op if missing)
-    this.startRoseCallPlugin();
-
-    // Start Watchdog (10s no-reply after user transcription + 15s stuck PROCESSING/SPEAKING)
-    this.startWatchdog();
-
-    // 2. Fetch available models from Google ListModels dynamically
-    try {
-      const discovered = await discoverVoiceModelsFromListModels(apiKey);
-      this.liveModels = discovered.liveModels;
-      this.flashModels = discovered.flashModels;
-      this.ttsModels = discovered.ttsModels;
-    } catch (err: any) {
-      const formatted = parseAndFormatGeminiError(err?.status || 0, err?.message || 'ListModels failed');
-      this.lastError = formatted.bengali;
-      this.options.onError?.(formatted.bengali, formatted.original);
-      this.updateState('off');
-      this.socketStatus = 'closed';
-      this.stopRoseCallPlugin();
-      return;
-    }
-
     if (this.wasStoppedByUser) {
       this.stopRoseCallPlugin();
       return;
     }
 
-    // 3. Try Path 1 (Live WebSocket) unless Street Mode is enabled (Street Mode requires transcript wake-word verification before speaking)
-    if (this.liveModels.length > 0 && !getMicListeningSettings().streetMode) {
-      const connectedLive = await this.tryConnectLiveModels(apiKey, this.liveModels.slice(0, 3), 8000);
-      if (connectedLive && this.isCurrentSession()) {
-        this.activeMode = 'live';
-        this.socketStatus = 'open';
-        this.updateState('listening');
-        console.log('[GeminiLive] Live session active:', {
-          sessionId: this.sessionId,
-          model: this.connectedModelName,
-          audioRoute: this.activeAudioRoute,
-        });
-        return;
-      }
+    if (socketResult.connectedLive && this.isCurrentSession()) {
+      this.activeMode = 'live';
+      this.socketStatus = 'open';
+      this.flushBufferedInitialMicChunks();
+      // Show "LISTENING" only when the socket is really open
+      this.updateState('listening');
+      console.log('[GeminiLive] Live session active:', {
+        sessionId: this.sessionId,
+        model: this.connectedModelName,
+        audioRoute: this.activeAudioRoute,
+      });
+      return;
+    }
 
-      if (!this.wasStoppedByUser && this.isCurrentSession() && this.lastError) {
-        this.options.onError?.(this.lastError);
-      }
+    if (!this.wasStoppedByUser && this.isCurrentSession() && this.lastError) {
+      this.options.onError?.(this.lastError);
     }
 
     // 4. Activate Path 2 (Reliable Voice via MediaRecorder + generateContent + TTS/speechSynthesis)
@@ -2051,18 +2280,17 @@ export class GeminiLiveSession {
         throw new Error('মাইক সচল নয়');
       }
 
-      // Separate input AudioContext (for mic/VAD/RNNoise) and persistent output AudioContext (for speaker playback)
+      // Use shared pre-warmed AudioContext if provided, or create one
       this.audioCtx =
         this.options.audioContext && this.options.audioContext.state !== 'closed'
           ? this.options.audioContext
-          : new AudioCtxClass({ sampleRate: 48000 });
+          : new AudioCtxClass({ sampleRate: 48000, latencyHint: 'interactive' });
 
       this.playbackAudioCtx =
         this.options.playbackAudioContext &&
-        this.options.playbackAudioContext !== this.audioCtx &&
         this.options.playbackAudioContext.state !== 'closed'
           ? this.options.playbackAudioContext
-          : new AudioCtxClass({ sampleRate: 24000, latencyHint: 'interactive' });
+          : this.audioCtx;
 
       if (this.audioCtx.state !== 'running') {
         try {
@@ -2139,15 +2367,15 @@ export class GeminiLiveSession {
         }
       }
 
-      // Target ~40 ms chunk size (never > 100 ms)
+      // Target ~30 ms chunk size (strictly within 20-40 ms)
       const targetChunkSamples = Math.max(
         256,
-        Math.min(Math.round(sourceSampleRate * 0.1), Math.round(sourceSampleRate * 0.04))
+        Math.min(Math.round(sourceSampleRate * 0.04), Math.round(sourceSampleRate * 0.03))
       );
       const actualChunkMs = Math.round((targetChunkSamples / sourceSampleRate) * 1000);
 
       const captureSessionId = this.sessionId;
-      // Attach continuous ~40ms PCM16 capture for Live WebSocket AND feed Silero VAD for Path 2 fallback
+      // Attach continuous 20-40ms PCM16 capture for Live WebSocket AND feed Silero VAD for Path 2 fallback
       const sendPcm40msChunk = (float32Samples: Float32Array) => {
         if (
           !this.isCurrentSession(undefined, undefined, captureSessionId) ||
@@ -2179,13 +2407,7 @@ export class GeminiLiveSession {
           }
         }
 
-        if (
-          !this.ws ||
-          this.ws.readyState !== WebSocket.OPEN ||
-          !this.isSetupComplete ||
-          this.isFallbackMode ||
-          this.isWarmOnly
-        ) {
+        if (this.isFallbackMode || this.isWarmOnly) {
           voiceDebugStore.recordMicLevel(rms);
           return;
         }
@@ -2204,9 +2426,24 @@ export class GeminiLiveSession {
           binary += String.fromCharCode(pcm16Bytes[i]);
         }
         const base64 = btoa(binary);
+        const chunkMs = Math.round((float32Samples.length / sourceSampleRate) * 1000);
+
+        // Buffer initial 20-40ms chunks while the Live socket is still opening, then flush once open
+        if (!this.ws || this.ws.readyState !== WebSocket.OPEN || !this.isSetupComplete) {
+          voiceDebugStore.recordMicLevel(rms);
+          if (this.pendingMicPcmBase64Queue.length < 75) {
+            this.pendingMicPcmBase64Queue.push({ base64, rms, chunkMs });
+          } else {
+            this.pendingMicPcmBase64Queue.shift();
+            this.pendingMicPcmBase64Queue.push({ base64, rms, chunkMs });
+          }
+          return;
+        }
 
         try {
-          const chunkMs = Math.round((float32Samples.length / sourceSampleRate) * 1000);
+          if (this.pendingMicPcmBase64Queue.length > 0) {
+            this.flushBufferedInitialMicChunks();
+          }
           this.ws.send(
             JSON.stringify({
               realtimeInput: {
@@ -2229,7 +2466,7 @@ export class GeminiLiveSession {
               constructor() {
                 super();
                 const sr = typeof sampleRate === 'number' && sampleRate > 0 ? sampleRate : ${sourceSampleRate};
-                this.targetSamples = Math.max(256, Math.min(Math.round(sr * 0.1), Math.round(sr * 0.04)));
+                this.targetSamples = Math.max(256, Math.min(Math.round(sr * 0.04), Math.round(sr * 0.03)));
                 this._buf = new Float32Array(this.targetSamples);
                 this._offset = 0;
               }
@@ -2445,6 +2682,7 @@ export class GeminiLiveSession {
         if (!ok && !this.wasStoppedByUser && Date.now() + 600 < deadline) {
           // Fallback retry without sessionResumption/contextWindowCompression if model or expired handle rejected it
           this.resumptionHandle = null;
+          saveGlobalResumptionHandle(null);
           const retryTimeout = Math.min(2000, deadline - Date.now());
           ok = await this.trySingleLiveModel(
             apiKey,
@@ -2458,6 +2696,7 @@ export class GeminiLiveSession {
 
         if (ok) {
           this.connectedModelName = modelName;
+          setCachedResolvedLiveModel(modelName);
           if (adminActive) {
             console.log('[ADMIN LIVE] Used:', {
               model: modelName,
@@ -2556,10 +2795,13 @@ export class GeminiLiveSession {
         }
         const STT_LANG_PROMPT =
           'The user speaks Bengali (sometimes English words). Always understand and transcribe as Bengali or English, never Arabic, Thai or other languages. ভয়েস কলে সর্বোচ্চ ২-৩ ছোট বাক্যে উত্তর দাও।';
-        const rawLiveInst = `${STT_LANG_PROMPT}\n\n${ensureNoThoughtSystemInstruction(
+        const rawLiveInst = `${ensureNoThoughtSystemInstruction(
           this.getEffectiveSystemInstruction()
-        )}\n\n${getRoseTechInstruction()}`;
-        const finalLiveInst = applyAdminSystemInstructionOverride(rawLiveInst, { isLiveVoice: true });
+        )}\n\n${STT_LANG_PROMPT}\n\n${getRoseTechInstruction()}`;
+        const finalLiveInst = ensureLanguageFirstLineLock(
+          applyAdminSystemInstructionOverride(rawLiveInst, { isLiveVoice: true }),
+          this.options.language
+        );
 
         const selectedVoiceName =
           voiceNameOverride ||
@@ -2593,7 +2835,7 @@ export class GeminiLiveSession {
           micSettings.smartListen &&
           !micSettings.streetMode;
         this.sentSmartVadDisabledConfig = useSmartVadConfig;
-        const inputSttLang = this.speechLangMode === 'bn-IN' ? 'bn-IN' : 'bn-BD';
+        const inputSttLang = this.speechLangMode && this.speechLangMode !== 'none' ? this.speechLangMode : 'bn-IN';
 
         const setupPayload: any = {
           model: `models/${modelName}`,
@@ -2675,6 +2917,7 @@ export class GeminiLiveSession {
               resumptionUpdate.handle;
             if (newHandle && typeof newHandle === 'string') {
               this.resumptionHandle = newHandle;
+              saveGlobalResumptionHandle(newHandle);
             }
           }
 
@@ -2744,6 +2987,7 @@ export class GeminiLiveSession {
               !settled &&
               (lowerReason.includes('language') ||
                 lowerReason.includes('speech_config') ||
+                lowerReason.includes('speechconfig') ||
                 lowerReason.includes('input_audio_transcription') ||
                 lowerReason.includes('bn-bd') ||
                 lowerReason.includes('bn-in') ||
@@ -2760,10 +3004,7 @@ export class GeminiLiveSession {
                   downgraded = true;
                 }
               }
-              if (this.speechLangMode === 'bn-BD') {
-                this.speechLangMode = 'bn-IN';
-                downgraded = true;
-              } else if (this.speechLangMode === 'bn-IN') {
+              if (this.speechLangMode !== 'none') {
                 this.speechLangMode = 'none';
                 downgraded = true;
               } else if (!this.inputTranscriptionLangRejected) {
@@ -2772,7 +3013,7 @@ export class GeminiLiveSession {
               }
               if (downgraded) {
                 this.lastSetupRejectedForLang = true;
-                console.warn('[GeminiLive] Language/transcription config rejected; falling back:', {
+                console.warn('[GeminiLive] Language/transcription config rejected; retrying without languageCode:', {
                   speechLangMode: this.speechLangMode,
                   inputTranscriptionLangRejected: this.inputTranscriptionLangRejected,
                 });
@@ -2822,6 +3063,7 @@ export class GeminiLiveSession {
 
           if (msg.setupComplete) {
             this.isSetupComplete = true;
+            this.flushBufferedInitialMicChunks();
             finish(true);
             return;
           }
@@ -2916,6 +3158,7 @@ export class GeminiLiveSession {
             event?.code === 1007 ||
             lowerClose.includes('language') ||
             lowerClose.includes('speech_config') ||
+            lowerClose.includes('speechconfig') ||
             lowerClose.includes('input_audio_transcription') ||
             lowerClose.includes('bn-bd') ||
             lowerClose.includes('bn-in')
@@ -2931,10 +3174,7 @@ export class GeminiLiveSession {
                 downgraded = true;
               }
             }
-            if (this.speechLangMode === 'bn-BD') {
-              this.speechLangMode = 'bn-IN';
-              downgraded = true;
-            } else if (this.speechLangMode === 'bn-IN') {
+            if (this.speechLangMode !== 'none') {
               this.speechLangMode = 'none';
               downgraded = true;
             } else if (!this.inputTranscriptionLangRejected) {
@@ -2943,7 +3183,7 @@ export class GeminiLiveSession {
             }
             if (downgraded) {
               this.lastSetupRejectedForLang = true;
-              console.warn('[GeminiLive] Handshake closed (1007/lang); falling back:', {
+              console.warn('[GeminiLive] Handshake closed (1007/lang); retrying without languageCode:', {
                 speechLangMode: this.speechLangMode,
                 inputTranscriptionLangRejected: this.inputTranscriptionLangRejected,
               });
@@ -4616,18 +4856,18 @@ export class GeminiLiveSession {
           resolve(true);
           return;
         }
-        const utterance = new SpeechSynthesisUtterance(spokenText);
-        if (foundFemale && chosenVoice) {
-          utterance.voice = chosenVoice;
-          utterance.lang = chosenVoice.lang || requestedLang;
-          utterance.rate = Math.min(1.25, Math.max(0.85, this.options.speechSpeed || 1.05));
-          utterance.pitch = Math.min(1.5, Math.max(0.85, this.options.speechPitch || 1.15));
-        } else {
-          utterance.lang = requestedLang;
-          utterance.pitch = 1.25;
-          utterance.rate = 1.0;
-          this.options.onToast?.('ফোনে নারী কণ্ঠ পাওয়া যায়নি, Gemini TTS ঠিক করুন');
+
+        // If no matching voice exists (e.g. no bn-BD / bn-IN Bengali voice on device), show the text only — never read Bengali text with an English voice
+        if (!chosenVoice || !foundFemale) {
+          resolve(false);
+          return;
         }
+
+        const utterance = new SpeechSynthesisUtterance(spokenText);
+        utterance.voice = chosenVoice;
+        utterance.lang = chosenVoice.lang || requestedLang;
+        utterance.rate = Math.min(1.25, Math.max(0.85, this.options.speechSpeed || 1.05));
+        utterance.pitch = Math.min(1.5, Math.max(0.85, this.options.speechPitch || 1.15));
         utterance.volume = 1.0;
 
         let settled = false;
@@ -4752,8 +4992,8 @@ export class GeminiLiveSession {
       const volPercent = this.options.voiceVolume ?? 80;
       const targetGain = volumeSliderToGain(volPercent);
       const { gainNode } = getOrCreateBoostedOutputChain(ctx, volPercent, this.outputAnalyser);
-      const endTime = Math.max(ctx.currentTime + 0.03, this.nextStartTime);
-      const fadeStart = Math.max(ctx.currentTime, endTime - 0.03);
+      const endTime = Math.max(ctx.currentTime + 0.04, this.nextStartTime);
+      const fadeStart = Math.max(ctx.currentTime, endTime - 0.04);
       gainNode.gain.setValueAtTime(targetGain, fadeStart);
       gainNode.gain.linearRampToValueAtTime(0, endTime);
     } catch {}
@@ -4959,9 +5199,19 @@ export class GeminiLiveSession {
     const sourcesToStop = this.scheduledAudioSources;
     this.scheduledAudioSources = [];
     this.nextStartTime = 0;
+    const ctx = this.playbackAudioCtx || this.audioCtx;
     if (sourcesToStop.length > 0) {
-      const ctx = this.playbackAudioCtx || this.audioCtx;
-      fadeOutAndStopSources(ctx, sourcesToStop, 0.03);
+      fadeOutAndStopSources(ctx, sourcesToStop, 0.04);
+    } else if (ctx && ctx.state === 'running') {
+      try {
+        const volPercent = this.options.voiceVolume ?? 80;
+        const { gainNode } = getOrCreateBoostedOutputChain(ctx, volPercent, this.outputAnalyser);
+        const now = ctx.currentTime;
+        const currentVal = Math.min(0.9, Math.max(0, gainNode.gain.value || 0));
+        gainNode.gain.cancelScheduledValues(now);
+        gainNode.gain.setValueAtTime(currentVal, now);
+        gainNode.gain.linearRampToValueAtTime(0, now + 0.04);
+      } catch {}
     }
   }
 
@@ -5111,6 +5361,7 @@ export class GeminiLiveSession {
     this.detachMicSettingsListener();
     this.warmReady = false;
     this.options.onWarmReadyChange?.(false);
+    // Drop any audio chunks that arrive after END immediately
     this.sessionLifecycleState = 'closed';
     this.wasStoppedByUser = true;
     this.isReconnecting = false;
@@ -5121,12 +5372,13 @@ export class GeminiLiveSession {
     this.isFallbackMode = false;
     this.isProcessingClip = false;
     this.isRecordingClip = false;
-    this.resumptionHandle = null;
     this.connectedModelName = null;
     this.awaitingReplySince = 0;
     this.watchdogReconnectedForTurn = false;
     this.liveUserBuffer = '';
     this.liveAssistantBuffer = '';
+    this.pendingMicPcmBase64Queue = [];
+    this.leftoverPcmByte = null;
     this.pendingEndCallAfterSpeech = false;
     this.endCallReceivedAudioAfterTool = false;
     if (this.endCallFallbackTimer) {
@@ -5158,13 +5410,27 @@ export class GeminiLiveSession {
     }
     this.mediaRecorder = null;
 
+    // Detach socket incoming message handlers immediately so any chunks arriving after END are dropped
+    const sockToCloseAfterFade = this.ws;
+    if (sockToCloseAfterFade) {
+      try {
+        sockToCloseAfterFade.onopen = null;
+        sockToCloseAfterFade.onmessage = null;
+        sockToCloseAfterFade.onerror = null;
+        sockToCloseAfterFade.onclose = null;
+      } catch {}
+    }
+
+    const hadScheduledAudio = this.scheduledAudioSources.length > 0;
     this.isRoseTurnActive = false;
+    // Ramp output gain to 0 over 40 ms, then stop all scheduled sources, clear queue, disconnect nodes
     this.interruptPlayback();
 
     void this.cleanupSmartMicVad();
 
     this.clearMediaSession();
     this.teardownBackgroundAudioElement();
+    // Stop mic tracks and mic processor on END so no mic sound loops into the speaker
     this.disconnectAllMicAndAudioNodes();
 
     if (this.playbackAudioCtx && this.playbackAudioCtx.state !== 'closed') {
@@ -5181,9 +5447,26 @@ export class GeminiLiveSession {
     }
     this.activeAudioRoute = 'direct';
 
-    this.releaseExistingSocketOnly('stopped');
     if (activeGlobalLiveSession === this) {
       activeGlobalLiveSession = null;
+    }
+
+    // Close the Live socket AFTER the 40 ms fade
+    if (hadScheduledAudio && sockToCloseAfterFade) {
+      this.ws = null;
+      this.activeSocketSeq = 0;
+      setTimeout(() => {
+        try {
+          if (
+            sockToCloseAfterFade.readyState === WebSocket.OPEN ||
+            sockToCloseAfterFade.readyState === WebSocket.CONNECTING
+          ) {
+            sockToCloseAfterFade.close(1000, 'stopped');
+          }
+        } catch {}
+      }, 45);
+    } else {
+      this.releaseExistingSocketOnly('stopped');
     }
   }
 }
