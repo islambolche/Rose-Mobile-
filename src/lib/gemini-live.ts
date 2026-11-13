@@ -2821,7 +2821,7 @@ export class GeminiLiveSession {
         ? `wss://generativelanguage.googleapis.com/ws/google.ai.generativelanguage.v1beta.GenerativeService.BidiGenerateContent?key=${encodeURIComponent(cleanLiveKey)}`
         : `wss://generativelanguage.googleapis.com/ws/google.ai.generativelanguage.v1beta.GenerativeService.BidiGenerateContent`;
       const proxyWsUrl = `${protocol}//${host}/api/live?${wsParams.toString()}`;
-      let wsUrl = directWsUrl;
+      let wsUrl = proxyWsUrl;
       let triedProxy = false;
 
       let socket: WebSocket | null = null;
