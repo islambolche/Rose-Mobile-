@@ -353,7 +353,7 @@ export const PcLayout: React.FC<PcLayoutProps> = ({
 
         {/* 3) MAIN CONTENT AREA (Starts strictly below Top Bar; transform traps fixed Settings overlays inside this box) */}
         <div
-          className="relative z-10 flex-1 min-h-0 w-full flex flex-col overflow-hidden [transform:translateZ(0)]"
+          className="rose-pc-center-stage relative z-10 flex-1 min-h-0 w-full flex flex-col overflow-hidden [transform:translateZ(0)]"
           style={{ scrollPaddingTop: `${topNavHeight + 12}px` }}
         >
           {/* Sub-views (Settings, Profile, Developer, etc.) */}

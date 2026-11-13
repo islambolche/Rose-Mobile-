@@ -1,4 +1,5 @@
 import React, { useState, useEffect, useRef } from "react";
+import officeBgClean from "../../../assets/images/office_bg_clean_1794564680261.jpg";
 import {
   OFFICE_AGENTS,
   OfficeAgentConfig,
@@ -141,7 +142,6 @@ export const VirtualOffice: React.FC<VirtualOfficeProps> = ({
   };
 
   useEffect(() => {
-    // Dev-only check: after each render, count elements with data-agent-id per agent; if > 1, console.error("DUPLICATE AGENT", id)
     const agentIds = ["rose", "mira", "arin", "zayan", "naira"];
     agentIds.forEach((id) => {
       const count = document.querySelectorAll(`[data-agent-id="${id}"]`).length;
@@ -152,8 +152,9 @@ export const VirtualOffice: React.FC<VirtualOfficeProps> = ({
   });
 
   /**
-   * Render EXACTLY ONE element per agent id
-   * In 'seated' it shows the seated crop; otherwise the standing sprite.
+   * Render EXACTLY ONE sprite element per agent id.
+   * Pose state: "seated" | "standing" | "walking".
+   * Seated renders upper-body crop behind the desk; standing/walking renders full sprite on floor.
    */
   const renderAgent = (agentId: string) => {
     const agent: OfficeAgentConfig = OFFICE_AGENTS[agentId];
@@ -163,6 +164,7 @@ export const VirtualOffice: React.FC<VirtualOfficeProps> = ({
     const standPos = customPositions?.[agent.id] || DEFAULT_STAND_POSITIONS[agent.id];
     const state: AgentVisualState = states[agent.id] || {
       id: agent.id,
+      status: "seated",
       x: seatPos.x,
       y: seatPos.y,
       facing: agent.initialFacing,
@@ -173,12 +175,21 @@ export const VirtualOffice: React.FC<VirtualOfficeProps> = ({
     };
 
     const isEditingStand = Boolean(isEditMode && editTarget === "stand");
-    const isSeated = isEditingStand ? false : (state.isSeated && !state.isWalking);
+    const effectiveStatus = isEditingStand ? "standing" : state.status;
+    const isSeated = effectiveStatus === "seated";
+    const isWalking = effectiveStatus === "walking";
+
     const posX = isSeated ? seatPos.x : (isEditingStand && standPos ? standPos.x : state.x);
     const posY = isSeated ? seatPos.y : (isEditingStand && standPos ? standPos.y : state.y);
 
-    // Perspective height calculated linear between 21% at y=52 and 30% at y=96
-    const fullHeightPercent = calculatePerspectiveHeight(posY);
+    const scaleMultiplier = isSeated
+      ? seatPos.scale ?? 1.0
+      : isWalking
+      ? 1.0
+      : standPos?.scale ?? 1.0;
+
+    // Perspective height: smaller further back (smaller y), larger in front (larger y)
+    const fullHeightPercent = calculatePerspectiveHeight(posY) * scaleMultiplier;
     const renderHeightPercent = isSeated ? fullHeightPercent * 0.56 : fullHeightPercent;
 
     // Depth sorting: zIndex = Math.round(posY * 10)
@@ -188,12 +199,19 @@ export const VirtualOffice: React.FC<VirtualOfficeProps> = ({
 
     const isFlipped = state.facing === "left";
     const isSelected = isEditMode && (editTarget === "seat" || editTarget === "stand") && selectedAgentId === agentId;
+    const isSpeaking = Boolean(state.bubbleText);
+
+    const bodyAnimClass = isWalking
+      ? "animate-walk-bob"
+      : isSpeaking
+      ? "animate-talk-nod"
+      : "animate-idle-breathe";
 
     return (
       <div
         key={`sprite-agent-${agent.id}`}
         data-agent-id={agent.id}
-        data-agent-sprite={agent.id}
+        data-agent-state={effectiveStatus}
         className={`absolute -translate-x-1/2 -translate-y-full flex flex-col items-center justify-end select-none ${
           isEditMode && (editTarget === "seat" || editTarget === "stand")
             ? "cursor-grab active:cursor-grabbing pointer-events-auto"
@@ -204,7 +222,6 @@ export const VirtualOffice: React.FC<VirtualOfficeProps> = ({
           top: `${posY}%`,
           height: `${renderHeightPercent}%`,
           zIndex: isSelected ? 1100 : zIndex,
-          transition: state.isWalking ? "none" : "left 0.25s ease-out, top 0.25s ease-out",
         }}
         onPointerDown={(e) => {
           if (!isEditMode) return;
@@ -219,8 +236,8 @@ export const VirtualOffice: React.FC<VirtualOfficeProps> = ({
       >
         {/* Speech Bubble */}
         {state.bubbleText && (
-          <div className="absolute bottom-[110%] left-1/2 -translate-x-1/2 z-[1200] mb-1 animate-in fade-in zoom-in-95 duration-200 pointer-events-none">
-            <div className="relative max-w-[220px] px-3 py-1.5 rounded-2xl bg-[#080318]/95 border border-purple-400/60 text-white shadow-[0_6px_30px_rgba(0,0,0,0.9)] backdrop-blur-md">
+          <div className="absolute bottom-[108%] left-1/2 -translate-x-1/2 z-[1200] mb-1 animate-in fade-in zoom-in-95 duration-200 pointer-events-none">
+            <div className="relative w-max max-w-[210px] px-3 py-1.5 rounded-2xl bg-[#080318]/95 border border-purple-400/60 text-white shadow-[0_6px_30px_rgba(0,0,0,0.9)] backdrop-blur-md">
               <p className="text-[11px] font-semibold leading-snug text-center tracking-tight" style={{ color: "#F3E8FF" }}>
                 {state.bubbleText}
               </p>
@@ -245,38 +262,43 @@ export const VirtualOffice: React.FC<VirtualOfficeProps> = ({
           <div className="absolute inset-0 rounded-2xl border-2 border-dashed border-purple-400 pointer-events-none animate-pulse shadow-[0_0_15px_rgba(168,85,247,0.5)]" />
         )}
 
-        {/* Single Image Element per agent: Seated Crop when isSeated, Standing Sprite otherwise */}
+        {/* Single Image Element per agent: Seated Crop when isSeated, Standing/Walking Sprite otherwise */}
         <div
-          className={`relative flex justify-center ${
-            isSeated
-              ? "w-full h-full overflow-hidden items-start animate-idle-breathe"
-              : `h-full w-auto items-center ${state.isWalking ? "animate-walk-bob-sway" : "animate-idle-breathe"}`
-          }`}
+          className="h-full w-auto flex justify-center transition-transform duration-200"
           style={{
             transform: isFlipped ? "scaleX(-1)" : "scaleX(1)",
             transformOrigin: "bottom center",
           }}
         >
-          <img
-            src={agent.image}
-            alt={agent.name}
-            className={
+          <div
+            className={`relative flex justify-center h-full w-auto ${
               isSeated
-                ? "pointer-events-none select-none max-w-none drop-shadow-[0_4px_8px_rgba(0,0,0,0.4)]"
-                : "h-full w-auto object-contain drop-shadow-[0_6px_12px_rgba(0,0,0,0.5)] pointer-events-none select-none"
-            }
-            style={
-              isSeated
-                ? {
-                    height: "178.57%", // 100 / 0.56
-                    width: "auto",
-                    maxHeight: "none",
-                    objectFit: "cover",
-                    objectPosition: "top center",
-                  }
-                : undefined
-            }
-          />
+                ? `overflow-hidden items-start ${bodyAnimClass}`
+                : `items-center ${bodyAnimClass}`
+            }`}
+          >
+            <img
+              src={agent.image}
+              alt={agent.name}
+              referrerPolicy="no-referrer"
+              className={
+                isSeated
+                  ? "pointer-events-none select-none max-w-none drop-shadow-[0_4px_8px_rgba(0,0,0,0.4)]"
+                  : "h-full w-auto object-contain drop-shadow-[0_6px_12px_rgba(0,0,0,0.5)] pointer-events-none select-none"
+              }
+              style={
+                isSeated
+                  ? {
+                      height: "178.57%", // 100 / 0.56
+                      width: "auto",
+                      maxHeight: "none",
+                      objectFit: "cover",
+                      objectPosition: "top center",
+                    }
+                  : undefined
+              }
+            />
+          </div>
         </div>
       </div>
     );
@@ -366,10 +388,11 @@ export const VirtualOffice: React.FC<VirtualOfficeProps> = ({
           aspectRatio: "1672 / 941",
         }}
       >
-        {/* Layer 0: Full office background */}
+        {/* Layer 0: Clean office background (empty chairs, no baked-in people) */}
         <img
-          src="/office/office-bg.jpg"
+          src={officeBgClean}
           alt="Office Background"
+          referrerPolicy="no-referrer"
           className="absolute inset-0 w-full h-full pointer-events-none select-none z-0"
         />
 
@@ -383,26 +406,31 @@ export const VirtualOffice: React.FC<VirtualOfficeProps> = ({
         <img
           src="/office/desk-arin.png"
           alt="Desk Arin"
+          referrerPolicy="no-referrer"
           className="absolute inset-0 w-full h-full pointer-events-none select-none z-[530]"
         />
         <img
           src="/office/desk-zayan.png"
           alt="Desk Zayan"
+          referrerPolicy="no-referrer"
           className="absolute inset-0 w-full h-full pointer-events-none select-none z-[530]"
         />
         <img
           src="/office/desk-rose.png"
           alt="Desk Rose"
+          referrerPolicy="no-referrer"
           className="absolute inset-0 w-full h-full pointer-events-none select-none z-[790]"
         />
         <img
           src="/office/desk-mira.png"
           alt="Desk Mira"
+          referrerPolicy="no-referrer"
           className="absolute inset-0 w-full h-full pointer-events-none select-none z-[870]"
         />
         <img
           src="/office/desk-naira.png"
           alt="Desk Naira"
+          referrerPolicy="no-referrer"
           className="absolute inset-0 w-full h-full pointer-events-none select-none z-[880]"
         />
 
@@ -413,7 +441,7 @@ export const VirtualOffice: React.FC<VirtualOfficeProps> = ({
         {renderDeskLabel("mira")}
         {renderDeskLabel("naira")}
 
-        {/* 5 Agent Sprites (Each renders EXACTLY ONE element with dynamic zIndex based on feet Y) */}
+        {/* 5 Agent Sprites (Each renders EXACTLY ONE element with dynamic zIndex based on Y) */}
         {renderAgent("arin")}
         {renderAgent("zayan")}
         {renderAgent("rose")}
@@ -425,18 +453,23 @@ export const VirtualOffice: React.FC<VirtualOfficeProps> = ({
       </div>
 
       <style>{`
-        @keyframes walkBobSway {
-          0%, 100% { transform: translateY(0px) rotate(0deg); }
-          25% { transform: translateY(-1.5%) rotate(-1.5deg); }
-          50% { transform: translateY(0px) rotate(0deg); }
-          75% { transform: translateY(-1.5%) rotate(1.5deg); }
+        @keyframes walkBob {
+          0%, 100% { transform: translateY(0px); }
+          50% { transform: translateY(-2.2%); }
+        }
+        @keyframes talkNod {
+          0%, 100% { transform: translateY(0px) scale(1); }
+          50% { transform: translateY(-1%) scale(1.018); }
         }
         @keyframes idleBreathe {
           0%, 100% { transform: scale(1); }
           50% { transform: scale(1.012); }
         }
-        .animate-walk-bob-sway {
-          animation: walkBobSway 0.5s linear infinite;
+        .animate-walk-bob {
+          animation: walkBob 0.36s ease-in-out infinite;
+        }
+        .animate-talk-nod {
+          animation: talkNod 0.7s ease-in-out infinite;
         }
         .animate-idle-breathe {
           animation: idleBreathe 3.5s ease-in-out infinite;

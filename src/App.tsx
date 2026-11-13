@@ -2697,6 +2697,8 @@ export function App() {
   }, []);
 
   const [developerFrom, setDeveloperFrom] = useState<AppView>("home");
+  const [privacyPolicyFrom, setPrivacyPolicyFrom] = useState<"privacy" | "about">("privacy");
+  const [termsFrom, setTermsFrom] = useState<"about" | "privacy_policy">("about");
   const [activeAboutSection, setActiveAboutSection] = useState<string | null>(null);
   const [activeTab, _setActiveTab] = useState<"home" | "chat" | "history">("home");
   const [agentTaskHistoryModalId, setAgentTaskHistoryModalId] = useState<string | null>(null);
@@ -4398,6 +4400,11 @@ export function App() {
     (window as any).__currentAppView = currentView;
     const unsub = navStore.subscribe((page) => {
       if (page) {
+        if (page === "privacy_policy") {
+          setPrivacyPolicyFrom(viewRef.current === "about" ? "about" : "privacy");
+        } else if (page === "terms") {
+          setTermsFrom(viewRef.current === "privacy_policy" ? "privacy_policy" : "about");
+        }
         setCurrentView(page as any);
       }
     });
@@ -10841,7 +10848,7 @@ export function App() {
           <h2 className="text-2xl font-black italic uppercase tracking-tighter text-white">Write</h2>
         </header>
 
-        <div className="flex-1 overflow-y-auto no-scrollbar px-5 pt-4 pb-32 space-y-6">
+        <div className="flex-1 min-h-0 overflow-y-auto no-scrollbar px-5 pt-4 pb-32 space-y-6">
           {isAdmin && globalStats && (
             <div className="bg-indigo-600/10 border border-indigo-500/30 rounded-[2rem] p-5 shadow-lg">
               <h3 className="text-[10px] font-black text-indigo-400 uppercase tracking-[3px] mb-3">Writing Stats</h3>
@@ -15183,7 +15190,7 @@ export function App() {
         initial={{ x: "100%" }}
         animate={{ x: 0 }}
         exit={{ x: "100%" }}
-        className="fixed inset-0 z-[90] bg-[#020617] overflow-y-auto no-scrollbar flex flex-col"
+        className="fixed inset-0 z-[90] bg-[#020617] overflow-hidden flex flex-col"
       >
         <header className="sticky top-0 z-20 px-6 py-5 flex items-center gap-4 shrink-0 bg-[#020617]/95 backdrop-blur-md border-b border-white/5">
           <button
@@ -15194,7 +15201,7 @@ export function App() {
           </button>
           <h2 className="text-2xl font-black italic uppercase tracking-tighter text-white">VIEW MODE</h2>
         </header>
-        <div className="flex-1 overflow-y-auto no-scrollbar px-6 pt-4 pb-32 space-y-3">
+        <div className="flex-1 min-h-0 overflow-y-auto no-scrollbar px-6 pt-4 pb-32 space-y-3">
           {viewModeOptions.map((opt) => {
             const isSel = viewMode === opt.id;
             return (
@@ -16327,6 +16334,12 @@ export function App() {
         return;
       }
 
+      if (agentTaskHistoryModalId) {
+        e.preventDefault();
+        setAgentTaskHistoryModalId(null);
+        return;
+      }
+
       if (activePcSetupSubPage) {
         e.preventDefault();
         setActivePcSetupSubPage(null);
@@ -16398,9 +16411,9 @@ export function App() {
       ) {
         parentView = "developer_tools";
       } else if (v === "privacy_policy") {
-        parentView = "privacy";
+        parentView = privacyPolicyFrom;
       } else if (v === "terms") {
-        parentView = "about";
+        parentView = termsFrom;
       } else if (v === "developer") {
         parentView = developerFrom || "home";
       } else if (v === "write") {
@@ -16417,11 +16430,14 @@ export function App() {
     return () => window.removeEventListener("keydown", handlePcEscBack);
   }, [
     isPcLayoutActive,
+    agentTaskHistoryModalId,
     activePcSetupSubPage,
     activeAboutSection,
     pcActiveNav,
     selectedHistoryConv,
     developerFrom,
+    privacyPolicyFrom,
+    termsFrom,
     isOfficeLayoutEditorOpen,
   ]);
 
@@ -16477,7 +16493,7 @@ export function App() {
             <PhoneErrorBoundary>
               <PrivacyPolicyView
                 setCurrentView={setCurrentView}
-                onBack={() => setCurrentView("privacy")}
+                onBack={() => setCurrentView(privacyPolicyFrom)}
               />
             </PhoneErrorBoundary>
           )}
@@ -16485,7 +16501,7 @@ export function App() {
             <PhoneErrorBoundary>
               <TermsView
                 setCurrentView={setCurrentView}
-                onBack={() => setCurrentView("about")}
+                onBack={() => setCurrentView(termsFrom)}
               />
             </PhoneErrorBoundary>
           )}
@@ -16517,7 +16533,7 @@ export function App() {
                 </button>
                 <h2 className="text-2xl font-black italic uppercase tracking-tighter text-[var(--text)]">Theme</h2>
               </header>
-              <div className="flex-1 overflow-y-auto no-scrollbar px-6 pt-4 pb-32 space-y-3">
+              <div className="flex-1 min-h-0 overflow-y-auto no-scrollbar px-6 pt-4 pb-32 space-y-3">
                 {[
                   {
                     id: "dark",
@@ -16586,7 +16602,7 @@ export function App() {
                     <h2 className="text-2xl font-black italic uppercase tracking-tighter text-white">Orb style</h2>
                   </header>
 
-                  <div className="flex-1 overflow-y-auto no-scrollbar px-4 sm:px-6 pt-4 pb-36">
+                  <div className="flex-1 min-h-0 overflow-y-auto no-scrollbar px-4 sm:px-6 pt-4 pb-36">
                     {/* Top Preview Card */}
                     <div className="bg-[#0F172A]/80 border border-purple-500/30 rounded-[2.5rem] p-6 mb-6 shadow-2xl flex flex-col items-center text-center">
                       <div className="py-2">
@@ -17854,9 +17870,7 @@ export function App() {
           renderRoseFlowerSvg={renderRoseFlowerSvg}
           renderChat={() => renderChat(true)}
           renderHistory={renderHistory}
-          renderCenterOverlayViews={() => (
-            <AnimatePresence mode="wait">{renderOverlaySubViews()}</AnimatePresence>
-          )}
+          renderCenterOverlayViews={() => renderOverlaySubViews()}
           renderCallOverlays={() => null}
           renderVoiceBars={() => (
             <LiveVoiceBars

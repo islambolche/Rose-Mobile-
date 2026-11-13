@@ -99,7 +99,7 @@ export const DeveloperToolsViews: React.FC<DeveloperToolsProps> = ({
   // 1. DEVELOPER TOOLS MAIN MENU
   if (currentView === 'developer_tools') {
     return (
-      <div data-current-view={currentView} data-nav-id={currentView} className="flex-1 flex flex-col overflow-hidden w-full relative bg-[#020617] text-white">
+      <div data-current-view={currentView} data-nav-id={currentView} className="flex-1 min-h-0 flex flex-col overflow-hidden w-full relative bg-[#020617] text-white">
         {/* Top Header */}
         <div className="sticky top-0 z-20 px-5 py-4 border-b border-white/5 flex items-center justify-between shrink-0 bg-[#020617]/95 backdrop-blur-md">
           <div className="flex items-center gap-3">
@@ -123,7 +123,7 @@ export const DeveloperToolsViews: React.FC<DeveloperToolsProps> = ({
         </div>
 
         {/* 4 Separate Bar-Buttons */}
-        <div className="flex-1 overflow-y-auto p-4 space-y-3 no-scrollbar pb-28">
+        <div className="flex-1 min-h-0 overflow-y-auto p-4 space-y-3 no-scrollbar pb-28">
           {/* 1 ERROR LOG */}
           <button
             data-nav-id="error_log"
@@ -261,7 +261,7 @@ export const DeveloperToolsViews: React.FC<DeveloperToolsProps> = ({
     };
 
     return (
-      <div data-current-view={currentView} data-nav-id={currentView} className="flex-1 flex flex-col overflow-hidden w-full relative bg-[#020617] text-white">
+      <div data-current-view={currentView} data-nav-id={currentView} className="flex-1 min-h-0 flex flex-col overflow-hidden w-full relative bg-[#020617] text-white">
         {/* Header */}
         <div className="sticky top-0 z-20 px-5 py-4 border-b border-white/5 flex items-center justify-between shrink-0 bg-[#020617]/95 backdrop-blur-md">
           <div className="flex items-center gap-2">
@@ -297,7 +297,7 @@ export const DeveloperToolsViews: React.FC<DeveloperToolsProps> = ({
         </div>
 
         {/* Logs List */}
-        <div className="flex-1 overflow-y-auto p-4 space-y-2.5 no-scrollbar pb-28">
+        <div className="flex-1 min-h-0 overflow-y-auto p-4 space-y-2.5 no-scrollbar pb-28">
           {logs.length === 0 ? (
             <div className="h-64 flex flex-col items-center justify-center text-center opacity-70">
               <Terminal className="w-12 h-12 text-slate-700 mb-3" />
@@ -444,7 +444,7 @@ export const DeveloperToolsViews: React.FC<DeveloperToolsProps> = ({
     };
 
     return (
-      <div data-current-view={currentView} data-nav-id={currentView} className="flex-1 flex flex-col overflow-hidden w-full relative bg-[#020617] text-white">
+      <div data-current-view={currentView} data-nav-id={currentView} className="flex-1 min-h-0 flex flex-col overflow-hidden w-full relative bg-[#020617] text-white">
         {/* Header */}
         <div className="sticky top-0 z-20 px-5 py-4 border-b border-white/5 flex items-center justify-between shrink-0 bg-[#020617]/95 backdrop-blur-md">
           <div className="flex items-center gap-2">
@@ -464,7 +464,7 @@ export const DeveloperToolsViews: React.FC<DeveloperToolsProps> = ({
         </div>
 
         {/* Status Items List */}
-        <div className="flex-1 overflow-y-auto p-4 space-y-3 no-scrollbar pb-28">
+        <div className="flex-1 min-h-0 overflow-y-auto p-4 space-y-3 no-scrollbar pb-28">
           {APP_STATUS.map((item) => (
             <div
               key={item.id}
@@ -570,7 +570,7 @@ Analyze these logs and current status. Return your analysis in EXACTLY this form
     };
 
     return (
-      <div data-current-view={currentView} data-nav-id={currentView} className="flex-1 flex flex-col overflow-hidden w-full relative bg-[#020617] text-white">
+      <div data-current-view={currentView} data-nav-id={currentView} className="flex-1 min-h-0 flex flex-col overflow-hidden w-full relative bg-[#020617] text-white">
         {/* Header */}
         <div className="sticky top-0 z-20 px-5 py-4 border-b border-white/5 flex items-center justify-between shrink-0 bg-[#020617]/95 backdrop-blur-md">
           <div className="flex items-center gap-2">
@@ -608,7 +608,7 @@ Analyze these logs and current status. Return your analysis in EXACTLY this form
         </div>
 
         {/* Content */}
-        <div className="flex-1 overflow-y-auto p-4 space-y-4 no-scrollbar pb-28">
+        <div className="flex-1 min-h-0 overflow-y-auto p-4 space-y-4 no-scrollbar pb-28">
           {!analysisResult && !isAnalyzing && (
             <div className="p-6 bg-[#0F172A]/70 border border-white/5 rounded-3xl text-center space-y-3">
               <div className="w-12 h-12 rounded-2xl bg-amber-500/10 border border-amber-500/20 text-amber-400 flex items-center justify-center mx-auto">
@@ -693,7 +693,7 @@ Analyze these logs and current status. Return your analysis in EXACTLY this form
     const appVersion = 'v1.4.0';
 
     return (
-      <div data-current-view={currentView} data-nav-id={currentView} className="flex-1 flex flex-col overflow-hidden w-full relative bg-[#020617] text-white">
+      <div data-current-view={currentView} data-nav-id={currentView} className="flex-1 min-h-0 flex flex-col overflow-hidden w-full relative bg-[#020617] text-white">
         {/* Header */}
         <div className="sticky top-0 z-20 px-5 py-4 border-b border-white/5 flex items-center justify-between shrink-0 bg-[#020617]/95 backdrop-blur-md">
           <div className="flex items-center gap-2">
@@ -713,7 +713,7 @@ Analyze these logs and current status. Return your analysis in EXACTLY this form
         </div>
 
         {/* Info Grid */}
-        <div className="flex-1 overflow-y-auto p-4 space-y-3 no-scrollbar pb-28">
+        <div className="flex-1 min-h-0 overflow-y-auto p-4 space-y-3 no-scrollbar pb-28">
           {/* App & Build */}
           <div className="p-4 bg-[#0F172A]/75 border border-white/5 rounded-2xl space-y-2">
             <span className="text-[9px] font-black uppercase tracking-wider text-purple-400 block">

@@ -4,16 +4,22 @@ import {
   DEFAULT_STAND_POSITIONS,
   DEFAULT_SEAT_POSITIONS,
   DEFAULT_ROSE_ROUTES,
+  ROSE_DESK_SIDES,
+  OFFICE_AISLES,
   loadOfficePositions,
   loadOfficeSeatPositions,
   loadOfficeRoutes,
   cleanInstructionBubbleText,
   cleanResultBubbleText,
   RouteWaypoint,
+  AgentPosition,
 } from "./officeConfig";
+
+export type AgentPoseState = "seated" | "standing" | "walking";
 
 export interface AgentVisualState {
   id: string;
+  status: AgentPoseState;
   x: number; // percentage (0 - 100)
   y: number; // percentage (0 - 100)
   facing: "left" | "right";
@@ -21,7 +27,7 @@ export interface AgentVisualState {
   isWorking: boolean;
   isSeated: boolean;
   bubbleText: string | null;
-  bubbleTimeoutId?: any;
+  bubbleTimeoutId?: ReturnType<typeof setTimeout>;
 }
 
 export type OfficeEvent =
@@ -33,12 +39,48 @@ export type OfficeEvent =
 type StateChangeListener = (states: Record<string, AgentVisualState>) => void;
 type ChatMessageListener = (agent: OfficeAgentConfig, text: string) => void;
 
+const ROLE_DEFAULT_INSTRUCTIONS: Record<string, string> = {
+  mira: "মিরা, গ্রাহকদের মেসেজগুলো দেখে নাও।",
+  arin: "আরিন, আজকের অর্ডার আর সেলস দেখো।",
+  zayan: "জায়ান, পার্সেল ও ডেলিভারি স্ট্যাটাস দেখো।",
+  naira: "নাইরা, আজকের হিসাব ও অডিট রিপোর্ট দেখো।",
+};
+
+const ROLE_ACK_TO_ROSE: Record<string, string> = {
+  mira: "জি আপু, হাসিমুখে সব কাস্টমারকে রিপ্লাই দিচ্ছি।",
+  arin: "জি ম্যাডাম! এখনই অর্ডার আর নাম্বার চেক করছি।",
+  zayan: "জি আপু, পার্সেল ও ডেলিভারি স্ট্যাটাস দেখছি।",
+  naira: "জি ম্যাডাম, ডেটা ও অডিট রিপোর্ট মিলিয়ে নিচ্ছি।",
+};
+
+const ROLE_PEER_REPLIES: Record<string, string> = {
+  mira: "দারুণ! আমি কাস্টমারদের আপডেট জানিয়ে দিচ্ছি।",
+  arin: "চলো, অর্ডার নাম্বারটা একসাথে মিলিয়ে নিই!",
+  zayan: "ঠিক আছে, আমি ডেলিভারি আপডেট রেডি রাখছি।",
+  naira: "ভালো, আমি রিপোর্টে ডেটাটা যোগ করে নিচ্ছি।",
+};
+
+const ROSE_PRAISES = [
+  "দারুণ কাজ করেছো, ধন্যবাদ!",
+  "খুব ভালো হয়েছে, এভাবেই এগিয়ে যাও।",
+  "চমৎকার রিপোর্ট, ধন্যবাদ!",
+];
+
+function isLeftSideAgent(agentId: string): boolean {
+  return agentId === "mira" || agentId === "arin";
+}
+
+function getAgentAisleX(agentId: string): number {
+  return isLeftSideAgent(agentId) ? OFFICE_AISLES.leftX : OFFICE_AISLES.rightX;
+}
+
 class OfficeEngine {
   private states: Record<string, AgentVisualState> = {};
   private listeners: Set<StateChangeListener> = new Set();
   private chatListeners: Set<ChatMessageListener> = new Set();
   private eventQueue: OfficeEvent[] = [];
   private isProcessingEvent = false;
+  private walkingAgents: Set<string> = new Set();
 
   constructor() {
     this.resetStates();
@@ -51,6 +93,7 @@ class OfficeEngine {
       const pos = seatPositions[id] || DEFAULT_SEAT_POSITIONS[id] || { x: 50, y: 60 };
       next[id] = {
         id,
+        status: "seated",
         x: pos.x,
         y: pos.y,
         facing: agent.initialFacing,
@@ -68,13 +111,14 @@ class OfficeEngine {
     const seatPositions = loadOfficeSeatPositions();
     const standPositions = loadOfficePositions();
     for (const [id] of Object.keys(OFFICE_AGENTS)) {
-      if (this.states[id] && !this.states[id].isWalking) {
-        const isSeated = this.states[id].isSeated;
+      const st = this.states[id];
+      if (st && st.status !== "walking") {
+        const isSeated = st.status === "seated";
         const pos = isSeated
-          ? (seatPositions[id] || DEFAULT_SEAT_POSITIONS[id] || { x: 50, y: 60 })
-          : (standPositions[id] || DEFAULT_STAND_POSITIONS[id] || { x: 50, y: 60 });
+          ? seatPositions[id] || DEFAULT_SEAT_POSITIONS[id] || { x: 50, y: 60 }
+          : standPositions[id] || DEFAULT_STAND_POSITIONS[id] || { x: 50, y: 60 };
         this.states[id] = {
-          ...this.states[id],
+          ...st,
           x: pos.x,
           y: pos.y,
         };
@@ -116,15 +160,32 @@ class OfficeEngine {
     this.notify();
   }
 
-  public async standUp(agentId: string, facing?: "left" | "right"): Promise<void> {
+  public setFacing(agentId: string, facing: "left" | "right") {
+    if (!this.states[agentId]) return;
+    this.states[agentId] = {
+      ...this.states[agentId],
+      facing,
+    };
+    this.notify();
+  }
+
+  public async standUp(
+    agentId: string,
+    facing?: "left" | "right",
+    overrideStandPos?: AgentPosition
+  ): Promise<void> {
     const state = this.states[agentId];
     if (!state) return;
 
     const standPositions = loadOfficePositions();
-    const standPos = standPositions[agentId] || DEFAULT_STAND_POSITIONS[agentId] || { x: state.x, y: state.y };
+    const standPos =
+      overrideStandPos ||
+      standPositions[agentId] ||
+      DEFAULT_STAND_POSITIONS[agentId] || { x: state.x, y: state.y };
 
     this.states[agentId] = {
       ...state,
+      status: "standing",
       isSeated: false,
       isWalking: false,
       x: standPos.x,
@@ -132,7 +193,7 @@ class OfficeEngine {
       facing: facing || state.facing,
     };
     this.notify();
-    await this.delay(250); // 250ms crossfade duration
+    await this.delay(180);
   }
 
   public async sitDown(agentId: string): Promise<void> {
@@ -145,6 +206,7 @@ class OfficeEngine {
 
     this.states[agentId] = {
       ...state,
+      status: "seated",
       isSeated: true,
       isWalking: false,
       x: seatPos.x,
@@ -152,10 +214,10 @@ class OfficeEngine {
       facing: agentConfig ? agentConfig.initialFacing : state.facing,
     };
     this.notify();
-    await this.delay(250); // 250ms crossfade duration
+    await this.delay(180);
   }
 
-  public say(agentId: string, text: string, autoHideMs: number = 3000): Promise<void> {
+  public say(agentId: string, text: string, autoHideMs: number = 2400): Promise<void> {
     const agent = OFFICE_AGENTS[agentId];
     if (!agent || !this.states[agentId]) return Promise.resolve();
 
@@ -189,8 +251,15 @@ class OfficeEngine {
     });
   }
 
+  private async waitUntilIdle(agentId: string): Promise<void> {
+    while (this.walkingAgents.has(agentId)) {
+      await this.delay(50);
+    }
+  }
+
   /**
-   * Walk along floor waypoints sequentially at 7% stage width / sec
+   * Walk along floor waypoints sequentially at natural speed (~1.5–2.3s per aisle segment).
+   * Enforces one active walk at a time per character with zero teleporting.
    */
   public async walkRoute(
     agentId: string,
@@ -198,87 +267,159 @@ class OfficeEngine {
     finalFacing?: "left" | "right"
   ): Promise<void> {
     if (!waypoints || waypoints.length === 0) return;
-    const state = this.states[agentId];
-    if (!state) return;
+    if (!this.states[agentId]) return;
 
-    // Start standing up if currently seated
-    if (state.isSeated) {
-      await this.standUp(agentId);
-    }
+    await this.waitUntilIdle(agentId);
+    this.walkingAgents.add(agentId);
 
-    const speed = 7.0; // 7% stage width per second
+    try {
+      const state = this.states[agentId];
+      if (!state) return;
 
-    for (let i = 0; i < waypoints.length; i++) {
-      const current = this.states[agentId];
-      if (!current) break;
+      // Stand beside desk before starting first walk segment (never cross desk)
+      if (state.status === "seated") {
+        await this.standUp(agentId, state.facing, waypoints[0]);
+      }
 
-      const target = waypoints[i];
-      const dx = target.x - current.x;
-      const dy = target.y - current.y;
-      const distance = Math.hypot(dx, dy);
+      const speed = 18.0; // ~1.5-2.3s per main aisle segment
 
-      if (distance < 0.2) continue;
+      for (let i = 0; i < waypoints.length; i++) {
+        const current = this.states[agentId];
+        if (!current) break;
 
-      const facing: "left" | "right" = dx >= 0 ? "right" : "left";
-      const durationSeconds = Math.max(0.3, distance / speed);
-      const durationMs = durationSeconds * 1000;
+        const target = waypoints[i];
+        const dx = target.x - current.x;
+        const dy = target.y - current.y;
+        const distance = Math.hypot(dx, dy);
 
-      this.states[agentId] = {
-        ...this.states[agentId],
-        facing,
-        isWalking: true,
-        isSeated: false,
-      };
-      this.notify();
+        if (distance < 0.25) continue;
 
-      const startX = current.x;
-      const startY = current.y;
-      const startTime = performance.now();
+        const facing: "left" | "right" =
+          Math.abs(dx) > 0.3 ? (dx >= 0 ? "right" : "left") : current.facing;
+        const durationMs = Math.round(
+          Math.min(2400, Math.max(350, (distance / speed) * 1000))
+        );
 
-      await new Promise<void>((resolve) => {
-        const animate = (now: number) => {
-          const elapsed = now - startTime;
-          const progress = Math.min(1, elapsed / durationMs);
-
-          // Linear interpolation for consistent walking speed
-          const curX = startX + dx * progress;
-          const curY = startY + dy * progress;
-
-          if (this.states[agentId]) {
-            this.states[agentId] = {
-              ...this.states[agentId],
-              x: curX,
-              y: curY,
-              facing,
-              isWalking: progress < 1,
-              isSeated: false,
-            };
-            this.notify();
-          }
-
-          if (progress < 1) {
-            requestAnimationFrame(animate);
-          } else {
-            resolve();
-          }
+        this.states[agentId] = {
+          ...this.states[agentId],
+          status: "walking",
+          facing,
+          isWalking: true,
+          isSeated: false,
         };
-        requestAnimationFrame(animate);
-      });
+        this.notify();
+
+        const startX = current.x;
+        const startY = current.y;
+        const startTime = performance.now();
+
+        await new Promise<void>((resolve) => {
+          const animate = (now: number) => {
+            const elapsed = now - startTime;
+            const progress = Math.min(1, elapsed / durationMs);
+
+            const curX = startX + dx * progress;
+            const curY = startY + dy * progress;
+
+            if (this.states[agentId]) {
+              this.states[agentId] = {
+                ...this.states[agentId],
+                status: progress < 1 ? "walking" : "standing",
+                x: curX,
+                y: curY,
+                facing,
+                isWalking: progress < 1,
+                isSeated: false,
+              };
+              this.notify();
+            }
+
+            if (progress < 1) {
+              requestAnimationFrame(animate);
+            } else {
+              resolve();
+            }
+          };
+          requestAnimationFrame(animate);
+        });
+      }
+
+      if (this.states[agentId]) {
+        const lastWaypoint = waypoints[waypoints.length - 1];
+        this.states[agentId] = {
+          ...this.states[agentId],
+          status: "standing",
+          x: lastWaypoint.x,
+          y: lastWaypoint.y,
+          facing: finalFacing || this.states[agentId].facing,
+          isWalking: false,
+          isSeated: false,
+        };
+        this.notify();
+      }
+    } finally {
+      this.walkingAgents.delete(agentId);
+    }
+  }
+
+  private buildAgentToRoseWaypoints(agentId: string): {
+    waypoints: RouteWaypoint[];
+    agentFacingRose: "left" | "right";
+    roseFacingAgent: "left" | "right";
+  } {
+    const standPositions = loadOfficePositions();
+    const agentStand =
+      standPositions[agentId] || DEFAULT_STAND_POSITIONS[agentId] || { x: 32, y: 60 };
+    const leftSide = isLeftSideAgent(agentId);
+    const aisleX = getAgentAisleX(agentId);
+    const roseSide = leftSide ? ROSE_DESK_SIDES.left : ROSE_DESK_SIDES.right;
+
+    return {
+      waypoints: [
+        { x: agentStand.x, y: agentStand.y },
+        { x: aisleX, y: agentStand.y },
+        { x: aisleX, y: OFFICE_AISLES.frontY },
+        { x: roseSide.x, y: OFFICE_AISLES.frontY },
+        { x: roseSide.x, y: roseSide.y },
+      ],
+      agentFacingRose: leftSide ? "right" : "left",
+      roseFacingAgent: leftSide ? "left" : "right",
+    };
+  }
+
+  private buildAgentToAgentWaypoints(
+    fromId: string,
+    toId: string,
+    routes: ReturnType<typeof loadOfficeRoutes>
+  ): {
+    waypoints: RouteWaypoint[];
+    fromFacing: "left" | "right";
+    toFacing: "left" | "right";
+  } {
+    const standPositions = loadOfficePositions();
+    const fromStand = standPositions[fromId] || DEFAULT_STAND_POSITIONS[fromId] || { x: 32, y: 60 };
+    const fromAisleX = getAgentAisleX(fromId);
+    const toAisleX = getAgentAisleX(toId);
+    const targetRoute = routes[toId] || DEFAULT_ROSE_ROUTES[toId] || DEFAULT_ROSE_ROUTES.mira;
+    const meetSpot = targetRoute.waypoints[targetRoute.waypoints.length - 1];
+
+    const waypoints: RouteWaypoint[] = [
+      { x: fromStand.x, y: fromStand.y },
+      { x: fromAisleX, y: fromStand.y },
+    ];
+
+    if (fromAisleX !== toAisleX) {
+      waypoints.push({ x: fromAisleX, y: OFFICE_AISLES.frontY });
+      waypoints.push({ x: toAisleX, y: OFFICE_AISLES.frontY });
     }
 
-    // Set final facing direction and mark walking finished
-    if (this.states[agentId]) {
-      const lastWaypoint = waypoints[waypoints.length - 1];
-      this.states[agentId] = {
-        ...this.states[agentId],
-        x: lastWaypoint.x,
-        y: lastWaypoint.y,
-        facing: finalFacing || this.states[agentId].facing,
-        isWalking: false,
-        isSeated: false,
-      };
-      this.notify();
-    }
+    waypoints.push({ x: meetSpot.x, y: meetSpot.y });
+
+    return {
+      waypoints,
+      fromFacing: targetRoute.roseFacing,
+      toFacing: targetRoute.agentFacing,
+    };
   }
 
   public emit(event: OfficeEvent) {
@@ -294,83 +435,137 @@ class OfficeEngine {
       const event = this.eventQueue.shift()!;
       try {
         const routes = loadOfficeRoutes();
-        const targetAgentId =
-          event.type === "assign"
-            ? event.to
-            : event.type === "done"
-            ? event.agent
-            : event.type === "reply"
-            ? event.to
-            : event.from;
-        const routeConfig =
-          routes[targetAgentId] || DEFAULT_ROSE_ROUTES[targetAgentId] || DEFAULT_ROSE_ROUTES.mira;
 
-        if (event.type === "assign") {
-          const targetAgent = event.to;
-          const shortInstruction = cleanInstructionBubbleText(event.text, targetAgent);
+        if (event.type === "working") {
+          this.setWorking(event.from, true);
+          continue;
+        }
 
-          // 1. Rose stands up
-          await this.standUp("rose", "right");
+        if (event.type === "assign" || event.type === "reply") {
+          const fromId = event.from || "rose";
+          const toId = event.to;
 
-          // 2. Rose walks route to target agent
-          await this.walkRoute("rose", routeConfig.waypoints, routeConfig.roseFacing);
+          if (!OFFICE_AGENTS[fromId] || !OFFICE_AGENTS[toId] || fromId === toId) {
+            continue;
+          }
 
-          // 3. Target agent stands up facing Rose
-          await this.standUp(targetAgent, routeConfig.agentFacing);
-          await this.delay(100);
+          if (fromId === "rose") {
+            // Case C: Rose goes to an agent
+            const routeConfig =
+              routes[toId] || DEFAULT_ROSE_ROUTES[toId] || DEFAULT_ROSE_ROUTES.mira;
+            const cleaned = cleanInstructionBubbleText(event.text, toId);
+            const instructionLine =
+              cleaned || ROLE_DEFAULT_INSTRUCTIONS[toId] || "এই কাজটা একটু দেখে নাও।";
+            const agentReplyLine =
+              ROLE_ACK_TO_ROSE[toId] || "জি আপু, এখনই দেখছি।";
 
-          // 4. Rose instruction bubble (3s)
-          await this.say("rose", shortInstruction, 3000);
+            // 1. Rose stands beside her desk and walks forward via front aisle -> side aisle
+            await this.standUp("rose", routeConfig.roseFacing, routeConfig.waypoints[0]);
+            await this.walkRoute("rose", routeConfig.waypoints, routeConfig.roseFacing);
 
-          // 5. Target agent acknowledgment bubble (3s)
-          await this.say(targetAgent, "ঠিক আছে", 3000);
+            // 2. Agent stands up from chair and faces Rose; both talk 3-5 seconds
+            await this.standUp(toId, routeConfig.agentFacing);
+            await this.delay(120);
 
-          // 6. Target agent sits down
-          await this.sitDown(targetAgent);
+            await this.say("rose", instructionLine, 2300);
+            await this.say(toId, agentReplyLine, 2100);
 
-          // 7. Rose walks reverse route back home to stand point (42, 52)
-          const reverseWaypoints = [...routeConfig.waypoints].reverse();
-          await this.walkRoute("rose", reverseWaypoints, "right");
+            // 3. Agent sits back down; Rose walks back via the front route and sits
+            await this.sitDown(toId);
+            const reverseWaypoints = [...routeConfig.waypoints].reverse();
+            await this.walkRoute("rose", reverseWaypoints, "right");
+            await this.sitDown("rose");
 
-          // 8. Rose sits down
-          await this.sitDown("rose");
+            this.setWorking(toId, true);
+          } else if (toId === "rose") {
+            // Case D: Agent goes to Rose; Rose stays seated and turns toward agent
+            const { waypoints, agentFacingRose, roseFacingAgent } =
+              this.buildAgentToRoseWaypoints(fromId);
+            const reportLine =
+              cleanResultBubbleText(event.text) ||
+              ROLE_ACK_TO_ROSE[fromId] ||
+              "আপু, কাজটা নিয়ে কথা ছিল।";
+            const roseReplyLine =
+              ROSE_PRAISES[Math.floor(Math.random() * ROSE_PRAISES.length)];
 
-          // 9. Mark target agent working
-          this.setWorking(targetAgent, true);
+            await this.standUp(fromId, agentFacingRose);
+            await this.walkRoute(fromId, waypoints, agentFacingRose);
 
-        } else if (event.type === "working") {
-          // Agent is working at desk
-          const agentId = event.from;
-          this.setWorking(agentId, true);
+            // Rose stays seated and turns toward the visiting agent
+            this.setFacing("rose", roseFacingAgent);
+            await this.delay(120);
 
+            await this.say(fromId, reportLine, 2400);
+            await this.say("rose", roseReplyLine, 2000);
+
+            const reverseWaypoints = [...waypoints].reverse();
+            await this.walkRoute(fromId, reverseWaypoints);
+            await this.sitDown(fromId);
+
+            // Turn Rose back to default seated orientation
+            this.setFacing("rose", OFFICE_AGENTS.rose.initialFacing);
+          } else {
+            // Case E: Agent talking to another agent (friendly & equal)
+            const { waypoints, fromFacing, toFacing } =
+              this.buildAgentToAgentWaypoints(fromId, toId, routes);
+            const openLine =
+              cleanResultBubbleText(event.text) ||
+              ROLE_PEER_REPLIES[fromId] ||
+              "একটু কথা বলবে?";
+            const peerReply =
+              ROLE_PEER_REPLIES[toId] || "হ্যাঁ অবশ্যই, বলো!";
+
+            await this.standUp(fromId, fromFacing);
+            await this.walkRoute(fromId, waypoints, fromFacing);
+
+            await this.standUp(toId, toFacing);
+            await this.delay(120);
+
+            await this.say(fromId, openLine, 2200);
+            await this.say(toId, peerReply, 2000);
+
+            await this.sitDown(toId);
+            const reverseWaypoints = [...waypoints].reverse();
+            await this.walkRoute(fromId, reverseWaypoints);
+            await this.sitDown(fromId);
+          }
         } else if (event.type === "done") {
+          // Case D: Agent finishes work and goes to Rose (Rose stays seated and turns toward agent)
           const agentId = event.agent;
-          const shortResult = cleanResultBubbleText(event.result);
+          if (!OFFICE_AGENTS[agentId] || agentId === "rose") continue;
 
-          // 1. Target agent stands up facing Rose
-          await this.standUp(agentId, routeConfig.agentFacing);
+          const { waypoints, agentFacingRose, roseFacingAgent } =
+            this.buildAgentToRoseWaypoints(agentId);
+          const rawResult = cleanResultBubbleText(event.result);
+          const hasHonorific = /আপু|ম্যাডাম|রোজ/.test(rawResult);
+          const reportLine = rawResult
+            ? hasHonorific
+              ? rawResult
+              : `আপু, ${rawResult}`
+            : "আপু, কাজটা সম্পন্ন হয়েছে।";
+          const rosePraise =
+            ROSE_PRAISES[Math.floor(Math.random() * ROSE_PRAISES.length)];
 
-          // 2. Rose stands up and walks route to target agent
-          await this.standUp("rose", "right");
-          await this.walkRoute("rose", routeConfig.waypoints, routeConfig.roseFacing);
-          await this.delay(100);
+          // 1. Agent stands up and walks via front route to Rose's desk side
+          await this.standUp(agentId, agentFacingRose);
+          await this.walkRoute(agentId, waypoints, agentFacingRose);
 
-          // 3. Target agent result bubble (3s)
-          await this.say(agentId, shortResult, 3000);
+          // 2. Rose STAYS SEATED and turns toward the agent
+          this.setFacing("rose", roseFacingAgent);
+          await this.delay(120);
 
-          // 4. Rose thanks bubble (2.5s)
-          await this.say("rose", "ধন্যবাদ! খুব চমৎকার কাজ।", 2500);
+          // 3. Agent reports briefly, Rose praises calmly (total ~4.4s)
+          await this.say(agentId, reportLine, 2400);
+          await this.say("rose", rosePraise, 2000);
 
-          // 5. Target agent sits down
+          // 4. Agent walks back the front route and sits; clear working state
+          const reverseWaypoints = [...waypoints].reverse();
+          await this.walkRoute(agentId, reverseWaypoints);
           await this.sitDown(agentId);
-
-          // 6. Rose walks reverse route back home and sits
-          const reverseWaypoints = [...routeConfig.waypoints].reverse();
-          await this.walkRoute("rose", reverseWaypoints, "right");
-          await this.sitDown("rose");
-
-          // 7. Clear working state
           this.setWorking(agentId, false);
+
+          // Restore Rose's seated orientation
+          this.setFacing("rose", OFFICE_AGENTS.rose.initialFacing);
         }
       } catch (err) {
         console.error("[OfficeEngine] Error processing event:", err);
@@ -397,4 +592,3 @@ export const officeEvents = {
   done: (agent: string, result: string) =>
     officeEngine.emit({ type: "done", agent, result }),
 };
-

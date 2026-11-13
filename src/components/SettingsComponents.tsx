@@ -102,7 +102,7 @@ export const Developer = ({
         </h2>
       </header>
 
-      <div className="flex-1 overflow-y-auto pb-[calc(80px+env(safe-area-inset-bottom,0px)+80px)] no-scrollbar bg-[#020617]">
+      <div className="flex-1 min-h-0 overflow-y-auto pb-[calc(80px+env(safe-area-inset-bottom,0px)+80px)] no-scrollbar bg-[#020617]">
         {/* Edge-to-Edge Developer Image blended into page background */}
         <div className="relative w-full bg-[#020617] overflow-hidden">
           <img

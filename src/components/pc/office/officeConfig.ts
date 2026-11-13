@@ -28,13 +28,30 @@ export interface OfficeAgentConfig {
   initialFacing: "left" | "right";
 }
 
-// Stand points (feet point stage percentages x, y where agents appear when standing):
+// Stand points beside each desk (feet point stage percentages x, y where agents stand/meet):
 export const DEFAULT_STAND_POSITIONS: Record<string, AgentPosition> = {
-  rose:  { x: 42.0, y: 52.0, scale: 1.0 },
-  arin:  { x: 34.5, y: 56.0, scale: 1.0 },
-  zayan: { x: 65.5, y: 56.0, scale: 1.0 },
-  mira:  { x: 29.0, y: 95.0, scale: 1.0 },
-  naira: { x: 73.0, y: 97.0, scale: 1.0 },
+  rose:  { x: 31, y: 63, scale: 1.0 },
+  mira:  { x: 32, y: 60, scale: 1.0 },
+  arin:  { x: 39, y: 44, scale: 1.0 },
+  zayan: { x: 61, y: 44, scale: 1.0 },
+  naira: { x: 68, y: 60, scale: 1.0 },
+};
+
+// Left and right stand spots beside Rose's desk
+export const ROSE_DESK_SIDES: Record<"left" | "right", AgentPosition> = {
+  left:  { x: 31, y: 63, scale: 1.0 },
+  right: { x: 69, y: 63, scale: 1.0 },
+};
+
+// Walkable floor aisles (never cross desks or behind chairs)
+export const OFFICE_AISLES = {
+  frontY: 90,
+  frontMinX: 8,
+  frontMaxX: 92,
+  leftX: 37,
+  rightX: 63,
+  minY: 44,
+  maxY: 90,
 };
 
 // Aliased as DEFAULT_OFFICE_POSITIONS for backwards compatibility
@@ -58,44 +75,44 @@ export const DEFAULT_LABEL_POSITIONS: Record<string, AgentPosition> = {
   naira: { x: 84.6, y: 70.5, scale: 1.0 },
 };
 
-// Rose's routes from her stand point (42, 52) to each meeting point
+// Rose's front-aisle routes from her desk side to each agent's meeting spot
 export const DEFAULT_ROSE_ROUTES: Record<string, AgentRouteConfig> = {
   arin: {
     waypoints: [
-      { x: 42, y: 52 },
-      { x: 39.5, y: 54 },
-    ],
-    roseFacing: "left",
-    agentFacing: "right",
-  },
-  zayan: {
-    waypoints: [
-      { x: 42, y: 52 },
-      { x: 58, y: 52 },
-      { x: 60.5, y: 54 },
+      { x: 31, y: 63 },
+      { x: 31, y: 90 },
+      { x: 37, y: 90 },
+      { x: 37, y: 49 },
     ],
     roseFacing: "right",
     agentFacing: "left",
   },
   mira: {
     waypoints: [
-      { x: 42, y: 52 },
-      { x: 36, y: 53 },
-      { x: 31.7, y: 60 },
-      { x: 31.7, y: 90 },
-      { x: 35, y: 95 },
+      { x: 31, y: 63 },
+      { x: 31, y: 90 },
+      { x: 37, y: 90 },
+      { x: 37, y: 60 },
+    ],
+    roseFacing: "left",
+    agentFacing: "right",
+  },
+  zayan: {
+    waypoints: [
+      { x: 69, y: 63 },
+      { x: 69, y: 90 },
+      { x: 63, y: 90 },
+      { x: 63, y: 49 },
     ],
     roseFacing: "left",
     agentFacing: "right",
   },
   naira: {
     waypoints: [
-      { x: 42, y: 52 },
-      { x: 58, y: 52 },
-      { x: 64, y: 53 },
-      { x: 68.7, y: 60 },
-      { x: 68.7, y: 90 },
-      { x: 66.5, y: 96 },
+      { x: 69, y: 63 },
+      { x: 69, y: 90 },
+      { x: 63, y: 90 },
+      { x: 63, y: 60 },
     ],
     roseFacing: "right",
     agentFacing: "left",
@@ -156,29 +173,30 @@ export const DESK_OVERLAYS: Record<string, string> = {
   naira: "/office/desk-naira.png",
 };
 
-export const STORAGE_KEY_OFFICE_POSITIONS = "rose_office_positions";
+export const STORAGE_KEY_OFFICE_POSITIONS = "rose_office_positions_v2";
 export const STORAGE_KEY_OFFICE_SEAT_POSITIONS = "rose_office_seat_positions";
 export const STORAGE_KEY_OFFICE_LABEL_POSITIONS = "rose_office_label_positions";
-export const STORAGE_KEY_OFFICE_ROUTES = "rose_office_routes";
+export const STORAGE_KEY_OFFICE_ROUTES = "rose_office_routes_v2";
 
 /**
  * Perspective height calculator:
- * Linear interpolation between 21% of stage height at y=52 and 30% of stage height at y=96.
+ * Scales sprite smoothly smaller when further back (smaller y) and larger in front (larger y).
+ * y=35 -> ~17.5%, y=44 -> ~19.4%, y=52 -> ~21%, y=90 -> ~28.8%, y=96 -> 30%.
  */
 export function calculatePerspectiveHeight(y: number): number {
-  const minY = 52;
+  const minY = 35;
   const maxY = 96;
-  const minH = 21;
-  const maxH = 30;
-  const clampedY = Math.max(52, Math.min(97, y));
+  const minH = 17.5;
+  const maxH = 30.0;
+  const clampedY = Math.max(minY, Math.min(97, y));
   const t = (clampedY - minY) / (maxY - minY);
   return minH + t * (maxH - minH);
 }
 
 /**
- * Truncates instruction text for Rose bubble (max 45 chars, strips Rose & agent name from start)
+ * Truncates instruction text for speech bubble (max 65 chars, strips leading name triggers)
  */
-export function cleanInstructionBubbleText(rawText: string, targetAgentId?: string): string {
+export function cleanInstructionBubbleText(rawText: string, _targetAgentId?: string): string {
   if (!rawText) return "";
   let text = rawText.trim();
 
@@ -187,20 +205,20 @@ export function cleanInstructionBubbleText(rawText: string, targetAgentId?: stri
   text = text.replace(stripRegex, "").trim();
 
   if (!text) text = rawText.trim();
-  if (text.length > 45) {
-    return text.substring(0, 44) + "…";
+  if (text.length > 65) {
+    return text.substring(0, 64) + "…";
   }
   return text;
 }
 
 /**
- * Truncates result text for agent speech bubble (max 60 chars)
+ * Truncates result text for agent speech bubble (max 70 chars)
  */
 export function cleanResultBubbleText(rawText: string): string {
   if (!rawText) return "";
   const text = rawText.trim();
-  if (text.length > 60) {
-    return text.substring(0, 59) + "…";
+  if (text.length > 70) {
+    return text.substring(0, 69) + "…";
   }
   return text;
 }
@@ -317,9 +335,9 @@ export const OFFICE_AGENTS: Record<string, OfficeAgentConfig> = {
     color: "#EC4899", // Pink
     image: "/office/rose.png",
     avatar: "/office/avatars/rose.png",
-    defaultX: 42,
-    defaultY: 52,
-    defaultHeight: 21,
+    defaultX: 31,
+    defaultY: 63,
+    defaultHeight: 23,
     initialFacing: "right",
   },
   mira: {
@@ -329,9 +347,9 @@ export const OFFICE_AGENTS: Record<string, OfficeAgentConfig> = {
     color: "#10B981", // Green
     image: "/office/mira.png",
     avatar: "/office/avatars/mira.png",
-    defaultX: 29,
-    defaultY: 95,
-    defaultHeight: 30,
+    defaultX: 32,
+    defaultY: 60,
+    defaultHeight: 23,
     initialFacing: "right",
   },
   naira: {
@@ -341,9 +359,9 @@ export const OFFICE_AGENTS: Record<string, OfficeAgentConfig> = {
     color: "#A855F7", // Purple
     image: "/office/naira.png",
     avatar: "/office/avatars/naira.png",
-    defaultX: 73,
-    defaultY: 97,
-    defaultHeight: 30,
+    defaultX: 68,
+    defaultY: 60,
+    defaultHeight: 23,
     initialFacing: "left",
   },
   arin: {
@@ -353,9 +371,9 @@ export const OFFICE_AGENTS: Record<string, OfficeAgentConfig> = {
     color: "#3B82F6", // Blue
     image: "/office/arin.png",
     avatar: "/office/avatars/arin.png",
-    defaultX: 34.5,
-    defaultY: 56,
-    defaultHeight: 22,
+    defaultX: 39,
+    defaultY: 44,
+    defaultHeight: 19,
     initialFacing: "right",
   },
   zayan: {
@@ -365,9 +383,9 @@ export const OFFICE_AGENTS: Record<string, OfficeAgentConfig> = {
     color: "#F97316", // Orange
     image: "/office/zayan.png",
     avatar: "/office/avatars/zayan.png",
-    defaultX: 65.5,
-    defaultY: 56,
-    defaultHeight: 22,
+    defaultX: 61,
+    defaultY: 44,
+    defaultHeight: 19,
     initialFacing: "left",
   },
 };

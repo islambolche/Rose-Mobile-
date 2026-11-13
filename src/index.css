@@ -300,3 +300,22 @@
   }
 }
 
+/* PC center stage: keep Settings sub-pages below top nav bar with sticky headers */
+.rose-pc-center-stage > .fixed.inset-0 {
+  position: relative !important;
+  inset: auto !important;
+  flex: 1 1 0% !important;
+  min-height: 0 !important;
+  width: 100% !important;
+  height: 100% !important;
+  max-height: 100% !important;
+}
+
+.rose-pc-center-stage > .fixed.inset-0 > header.sticky,
+.rose-pc-center-stage > .fixed.inset-0 > div > header.sticky,
+.rose-pc-center-stage > div > .sticky.top-0 {
+  position: sticky !important;
+  top: 0 !important;
+  z-index: 30 !important;
+  flex-shrink: 0 !important;
+}
