@@ -11,7 +11,7 @@ const CONTACTS_STORAGE_KEY = 'rose_contacts';
 const LEGACY_CONTACTS_STORAGE_KEY = 'iyabd_saved_contacts';
 const CONTACT_ALIAS_STORAGE_KEY = 'rose_contact_alias';
 const PENDING_PHONE_STATE_KEY = 'rose_pending_phone_state';
-const PENDING_TIMEOUT_MS = 5 * 60 * 1000; // 5 minutes
+const PENDING_TIMEOUT_MS = 30 * 1000; // 30 seconds
 const DEDUPE_WINDOW_MS = 2000;
 
 export type PhoneActionType =
@@ -947,20 +947,46 @@ function getPendingState(): PendingPhoneState | null {
   return null;
 }
 
+function isConfirmPromptState(state: PendingPhoneState | null): boolean {
+  return Boolean(
+    state &&
+      (state.type === 'awaiting_confirm' ||
+        state.type === 'awaiting_post_video_tap' ||
+        state.type === 'awaiting_fallback_normal_call')
+  );
+}
+
 function setPendingState(state: PendingPhoneState | null): void {
   memoryPendingState = state;
-  if (typeof window === 'undefined' || !window.localStorage) return;
-  try {
-    if (state) {
-      localStorage.setItem(PENDING_PHONE_STATE_KEY, JSON.stringify(state));
-    } else {
-      localStorage.removeItem(PENDING_PHONE_STATE_KEY);
-    }
-  } catch {}
+  if (typeof window !== 'undefined' && window.localStorage) {
+    try {
+      if (state) {
+        localStorage.setItem(PENDING_PHONE_STATE_KEY, JSON.stringify(state));
+      } else {
+        localStorage.removeItem(PENDING_PHONE_STATE_KEY);
+      }
+    } catch {}
+  }
+  if (typeof window !== 'undefined') {
+    try {
+      window.dispatchEvent(
+        new CustomEvent('rose-pending-phone-state-changed', {
+          detail: {
+            hasPending: Boolean(state),
+            hasPendingConfirm: isConfirmPromptState(state),
+          },
+        })
+      );
+    } catch {}
+  }
 }
 
 export function hasPendingPhoneInteraction(): boolean {
   return Boolean(getPendingState());
+}
+
+export function hasPendingConfirmAction(): boolean {
+  return isConfirmPromptState(getPendingState());
 }
 
 function getRecentDedupeReply(signature: string): string | null {
@@ -1690,15 +1716,54 @@ export const whatsappMessage = whatsapp_message;
 // Confirmation & Multi-Turn Pending Replies
 // ============================================================================
 
-function isAffirmativeReply(text: string): boolean {
-  return /^(?:হ্যাঁ|হ্যা|হাঁ|হুঁ|হু|জি|জ্বি|yes|yeah|yep|yup|sure|ok|okay|আচ্ছা|ঠিক\s*আছে|ঠিক|অবশ্যই|দাও|দিন|দে|করো|কর|পাঠাও|পাঠিয়ে\s*দাও|কল\s*দাও|চাপো|চাপ|পোস্ট\s*করো|আপলোড\s*করো|খোলো|খুঁজো|একদম|চলবে)(?:\s+(?:দাও|করো|চাপো|পাঠাও|খোলো))?[।.!\s]*$/i.test(
-    text.trim()
-  );
+function normalizeConfirmReplyTokens(text: string): { normalized: string; tokens: string[] } {
+  const normalized = String(text || '')
+    .toLowerCase()
+    .replace(/[।॥.,!?;:'"‘’“”()[\]{}—–\-_/\\|~`@#$%^&*+=<>…]+/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+  const tokens = normalized ? normalized.split(' ') : [];
+  return { normalized, tokens };
 }
 
-function isNegativeReply(text: string): boolean {
-  return /^(?:না|নাহ|no|nope|nah|cancel|stop|থাক|বাদ\s*দাও|দরকার\s*নেই|লাগবে\s*না|চাপতে\s*হবে\s*না|আমি\s*নিজেই?\s*চাপব|নিজে\s*চাপব|ক্যানসেল|বন্ধ\s*করো|করো\s*না|দিও\s*না)[।.!\s]*$/i.test(
-    text.trim()
+export function isAffirmativeReply(text: string): boolean {
+  const { normalized, tokens } = normalizeConfirmReplyTokens(text);
+  if (!normalized) return false;
+  if (/(?:^|\s)ঠিক\s+আছে(?:\s|$)/.test(normalized)) return true;
+  const yesWords = new Set([
+    'হ্যাঁ',
+    'হ্যা',
+    'হা',
+    'হাঁ',
+    'হুম',
+    'হুঁ',
+    'হু',
+    'জি',
+    'জ্বি',
+    'দাও',
+    'দিন',
+    'দে',
+    'করো',
+    'কর',
+    'ওকে',
+    'ok',
+    'okay',
+    'yes',
+    'ya',
+    'ha',
+    'haa',
+    'hmm',
+  ]);
+  return tokens.some((tok) => yesWords.has(tok));
+}
+
+export function isNegativeReply(text: string): boolean {
+  const { normalized, tokens } = normalizeConfirmReplyTokens(text);
+  if (!normalized) return false;
+  const noWords = new Set(['না', 'নাহ', 'থাক', 'বাদ', 'no', 'cancel']);
+  if (tokens.some((tok) => noWords.has(tok))) return true;
+  return /(?:^|\s)(?:দরকার\s+নেই|লাগবে\s+না|চাপতে\s+হবে\s+না|নিজেই?\s+চাপব|বন্ধ\s+করো|করো\s+না|দিও\s+না)(?:\s|$)/.test(
+    normalized
   );
 }
 
@@ -1775,15 +1840,9 @@ export async function handlePendingPhoneUserReply(
 
   // 1. Confirmation for call / WhatsApp / Messenger / post_video / app_search
   if (pending.type === 'awaiting_confirm') {
-    if (isAffirmativeReply(raw)) {
-      return handlePendingPhoneConfirmation('yes');
-    }
-    if (isNegativeReply(raw)) {
-      return handlePendingPhoneConfirmation('no');
-    }
     // If they gave edited message text while confirming a WhatsApp message (e.g. "না, লিখো আমি বের হচ্ছি")
     if (pending.actionType === 'whatsapp_message') {
-      const editMatch = raw.match(/(?:লিখো|লেখো|পাঠাও|বদলিয়ে|বদলে|change\s*to)\s*[:\-]?\s*(.+)$/i);
+      const editMatch = raw.match(/(?:লিখো|লেখো|বদলিয়ে|বদলে|change\s*to)\s*[:\-]?\s*(.+)$/i);
       if (editMatch && editMatch[1]) {
         const newBody = editMatch[1].trim();
         return {
@@ -1792,16 +1851,22 @@ export async function handlePendingPhoneUserReply(
         };
       }
     }
+    if (isNegativeReply(raw)) {
+      return handlePendingPhoneConfirmation('no');
+    }
+    if (isAffirmativeReply(raw)) {
+      return handlePendingPhoneConfirmation('yes');
+    }
     return { handled: false };
   }
 
   // 1b. Post-video Upload/Post auto-tap confirmation
   if (pending.type === 'awaiting_post_video_tap') {
-    if (isAffirmativeReply(raw)) {
-      return handlePendingPhoneConfirmation('yes');
-    }
     if (isNegativeReply(raw)) {
       return handlePendingPhoneConfirmation('no');
+    }
+    if (isAffirmativeReply(raw)) {
+      return handlePendingPhoneConfirmation('yes');
     }
     return { handled: false };
   }
@@ -1820,11 +1885,11 @@ export async function handlePendingPhoneUserReply(
 
   // 2. Normal phone call fallback confirmation after WhatsApp call failed
   if (pending.type === 'awaiting_fallback_normal_call') {
-    if (isAffirmativeReply(raw)) {
-      return handlePendingPhoneConfirmation('yes');
-    }
     if (isNegativeReply(raw)) {
       return handlePendingPhoneConfirmation('no');
+    }
+    if (isAffirmativeReply(raw)) {
+      return handlePendingPhoneConfirmation('yes');
     }
     return { handled: false };
   }
@@ -1998,15 +2063,17 @@ export async function executePhoneToolActionByName(
     return { ok: true, message: msg };
   }
 
-  if (name === 'phone_confirm') {
-    const rawDec = String(args.decision || '').trim().toLowerCase();
+  if (name === 'confirm_action' || name === 'phone_confirm') {
+    const rawDec = String(args.answer ?? args.decision ?? '').trim().toLowerCase();
     const decision: 'yes' | 'no' =
-      rawDec === 'no' || rawDec === 'false' || rawDec === 'cancel' ? 'no' : 'yes';
+      rawDec === 'no' || rawDec === 'false' || rawDec === 'cancel' || isNegativeReply(rawDec)
+        ? 'no'
+        : 'yes';
     const res = await handlePendingPhoneConfirmation(decision);
     if (res.handled && res.reply) {
       return { ok: true, message: res.reply };
     }
-    return { ok: false, message: 'কোনো কল বা মেসেজ অনুমতির অপেক্ষায় নেই।' };
+    return { ok: false, message: 'কোনো কাজের অনুমতির অপেক্ষায় নেই।' };
   }
 
   if (name === 'save_contact_alias') {

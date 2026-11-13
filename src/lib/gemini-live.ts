@@ -456,28 +456,58 @@ export class GeminiLiveSession {
   private pipCanvas: HTMLCanvasElement | null = null;
   private pipStream: MediaStream | null = null;
   
+  private roseCallPluginStarted = false;
+
+  private startRoseCallPlugin() {
+    if (this.roseCallPluginStarted) return;
+    try {
+      const plugin = (window as any)?.Capacitor?.Plugins?.RoseCall;
+      if (plugin && typeof plugin.start === 'function') {
+        this.roseCallPluginStarted = true;
+        Promise.resolve(plugin.start()).catch(() => {});
+      }
+    } catch {}
+  }
+
+  private stopRoseCallPlugin() {
+    if (!this.roseCallPluginStarted) return;
+    this.roseCallPluginStarted = false;
+    try {
+      const plugin = (window as any)?.Capacitor?.Plugins?.RoseCall;
+      if (plugin && typeof plugin.stop === 'function') {
+        Promise.resolve(plugin.stop()).catch(() => {});
+      }
+    } catch {}
+  }
+
   public enterPiP() {
-    if (!this.pipVideoElement) {
-      this.pipVideoElement = document.createElement('video');
-      this.pipVideoElement.muted = true;
-      this.pipVideoElement.playsInline = true;
-      this.pipCanvas = document.createElement('canvas');
-      this.pipCanvas.width = 320;
-      this.pipCanvas.height = 320;
-      this.pipStream = (this.pipCanvas as any).captureStream(5);
-      this.pipVideoElement.srcObject = this.pipStream;
-      this.pipVideoElement.play();
-      this.drawPiP();
-    }
-    this.pipVideoElement.requestPictureInPicture();
+    try {
+      if (!this.pipVideoElement) {
+        this.pipVideoElement = document.createElement('video');
+        this.pipVideoElement.muted = true;
+        this.pipVideoElement.playsInline = true;
+        this.pipCanvas = document.createElement('canvas');
+        this.pipCanvas.width = 320;
+        this.pipCanvas.height = 320;
+        this.pipStream = (this.pipCanvas as any).captureStream(5);
+        this.pipVideoElement.srcObject = this.pipStream;
+        Promise.resolve(this.pipVideoElement.play()).catch(() => {});
+        this.drawPiP();
+      }
+      Promise.resolve(this.pipVideoElement.requestPictureInPicture?.()).catch(() => {});
+    } catch {}
   }
 
   public exitPiP() {
-    if (document.pictureInPictureElement) {
-      document.exitPictureInPicture();
-    }
+    try {
+      if (document.pictureInPictureElement) {
+        Promise.resolve(document.exitPictureInPicture()).catch(() => {});
+      }
+    } catch {}
     if (this.pipVideoElement) {
-      this.pipVideoElement.pause();
+      try {
+        this.pipVideoElement.pause();
+      } catch {}
       this.pipVideoElement = null;
       this.pipCanvas = null;
       this.pipStream = null;
@@ -512,7 +542,18 @@ export class GeminiLiveSession {
       });
       navigator.mediaSession.playbackState = 'playing';
       navigator.mediaSession.setActionHandler('stop', () => this.stop());
-      navigator.mediaSession.setActionHandler('pause', () => this.stop());
+      // Do NOT stop live session/mic/AudioContext when minimized or transient pause fires
+      navigator.mediaSession.setActionHandler('pause', () => {
+        try {
+          if (this.audioCtx && this.audioCtx.state === 'suspended') {
+            this.audioCtx.resume().catch(() => {});
+          }
+          if (this.playbackAudioCtx && this.playbackAudioCtx.state === 'suspended') {
+            this.playbackAudioCtx.resume().catch(() => {});
+          }
+          navigator.mediaSession.playbackState = 'playing';
+        } catch {}
+      });
     }
   }
 
@@ -667,6 +708,29 @@ export class GeminiLiveSession {
     if (!this.playbackAudioCtx || this.wasStoppedByUser) return;
     this.teardownBackgroundAudioElement();
 
+    this.visChangeHandler = () => {
+      if (this.wasStoppedByUser || !this.isCurrentSession()) return;
+      // Keep mic, AudioContext, and session alive when minimized or restored
+      const keepContextsAlive = () => {
+        if (this.wasStoppedByUser || !this.isCurrentSession()) return;
+        if (!this.isFallbackMode && this.audioCtx && this.audioCtx.state === 'suspended') {
+          this.audioCtx.resume().catch(() => {});
+        }
+        if (this.playbackAudioCtx && this.playbackAudioCtx.state === 'suspended') {
+          this.playbackAudioCtx.resume().catch(() => {});
+        }
+      };
+      keepContextsAlive();
+      if (document.visibilityState === 'hidden') {
+        setTimeout(keepContextsAlive, 250);
+        setTimeout(keepContextsAlive, 800);
+        if (this.options.floatingCallEnabled) {
+          this.enterPiP();
+        }
+      }
+    };
+    document.addEventListener('visibilitychange', this.visChangeHandler);
+
     let route: 'direct' | 'background' = 'direct';
     if (this.options.backgroundCallEnabled) {
       try {
@@ -680,15 +744,6 @@ export class GeminiLiveSession {
           this.destination = dest;
           this.audioElement = audioEl;
           this.setupMediaSession();
-          this.visChangeHandler = () => {
-            if (document.visibilityState === 'visible') {
-              if (this.audioCtx && this.audioCtx.state === 'suspended') this.audioCtx.resume();
-              if (this.playbackAudioCtx && this.playbackAudioCtx.state === 'suspended') this.playbackAudioCtx.resume();
-            } else if (document.visibilityState === 'hidden' && this.options.floatingCallEnabled) {
-              this.enterPiP();
-            }
-          };
-          document.addEventListener('visibilitychange', this.visChangeHandler);
           route = 'background';
         } else {
           try {
@@ -699,7 +754,19 @@ export class GeminiLiveSession {
         }
       } catch (e) {
         console.warn('[GeminiLive] Background audio element could not play, using direct route:', e);
-        this.teardownBackgroundAudioElement();
+        if (this.audioElement) {
+          try {
+            this.audioElement.pause();
+            this.audioElement.srcObject = null;
+          } catch {}
+          this.audioElement = null;
+        }
+        if (this.destination) {
+          try {
+            this.destination.disconnect();
+          } catch {}
+          this.destination = null;
+        }
         route = 'direct';
       }
     }
@@ -952,8 +1019,12 @@ export class GeminiLiveSession {
     // 1. Initialize Single AudioContext, Microphone & AnalyserNode immediately
     const audioReady = await this.initAudioAndAnalyzers();
     if (!audioReady || this.wasStoppedByUser) {
+      this.stopRoseCallPlugin();
       return;
     }
+
+    // Notify Android foreground call service plugin (no-op if missing)
+    this.startRoseCallPlugin();
 
     // Start Watchdog (10s no-reply after user transcription + 15s stuck PROCESSING/SPEAKING)
     this.startWatchdog();
@@ -970,10 +1041,14 @@ export class GeminiLiveSession {
       this.options.onError?.(formatted.bengali, formatted.original);
       this.updateState('off');
       this.socketStatus = 'closed';
+      this.stopRoseCallPlugin();
       return;
     }
 
-    if (this.wasStoppedByUser) return;
+    if (this.wasStoppedByUser) {
+      this.stopRoseCallPlugin();
+      return;
+    }
 
     // 3. Try Path 1 (Live WebSocket) unless Street Mode is enabled (Street Mode requires transcript wake-word verification before speaking)
     if (this.liveModels.length > 0 && !getMicListeningSettings().streetMode) {
@@ -1003,6 +1078,7 @@ export class GeminiLiveSession {
         voiceDebugStore.recordError(failMsg);
         this.options.onError?.(failMsg);
         this.updateState('off');
+        this.stopRoseCallPlugin();
         return;
       }
       this.activateFallbackPath(apiKey);
@@ -2126,6 +2202,7 @@ export class GeminiLiveSession {
           name === 'messenger_recipient' ||
           name === 'post_video' ||
           name === 'app_search' ||
+          name === 'confirm_action' ||
           name === 'phone_confirm' ||
           name === 'save_contact_alias'
         ) {
@@ -2141,7 +2218,10 @@ export class GeminiLiveSession {
               output: {
                 ok: phoneRes.ok,
                 message: phoneRes.message,
-                instruction: `Say ONLY this exact sentence in Bengali once verbatim, with nothing before or after: "${phoneRes.message}"`,
+                instruction:
+                  name === 'confirm_action' || name === 'phone_confirm'
+                    ? `Say ONLY this single short sentence with the result, nothing extra: "${phoneRes.message}"`
+                    : `Say ONLY this exact sentence in Bengali once verbatim, with nothing before or after: "${phoneRes.message}"`,
                 ...(phoneRes.contacts ? { contacts: phoneRes.contacts } : {}),
               },
             },
@@ -3912,6 +3992,7 @@ export class GeminiLiveSession {
   }
 
   public stop() {
+    this.stopRoseCallPlugin();
     this.exitPiP();
     this.sessionLifecycleState = 'closed';
     this.wasStoppedByUser = true;

@@ -200,7 +200,13 @@ import { PcSetupPage, PcSetupPageId } from "./components/PcSetupViews";
 import { buildRoseSystemInstruction } from "./lib/roseConfig";
 import { sendPcCommand } from "./lib/pcCommand";
 import { sendTypedChat, NO_GEMINI_KEY_MSG, formatRealGeminiError, getStoredGroqKey } from "./lib/typedChat";
-import { executePhoneToolAction, executePhoneToolActionByName, routePhoneActionFromText } from "./lib/phone";
+import {
+  executePhoneToolAction,
+  executePhoneToolActionByName,
+  routePhoneActionFromText,
+  hasPendingConfirmAction,
+  handlePendingPhoneConfirmation,
+} from "./lib/phone";
 import { Folder, ShieldCheck } from "lucide-react";
 
 const APP_VERSION = "v1.4.0";
@@ -3303,6 +3309,37 @@ export function App() {
     document.addEventListener("visibilitychange", onVisChange);
     return () => document.removeEventListener("visibilitychange", onVisChange);
   }, []);
+
+  const [hasPendingPhoneConfirm, setHasPendingPhoneConfirm] = useState<boolean>(() =>
+    hasPendingConfirmAction()
+  );
+  const [pendingConfirmTick, setPendingConfirmTick] = useState<number>(0);
+
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    const syncPending = (e?: Event) => {
+      const detail = (e as CustomEvent)?.detail;
+      const next =
+        detail && typeof detail.hasPendingConfirm === "boolean"
+          ? detail.hasPendingConfirm
+          : hasPendingConfirmAction();
+      setHasPendingPhoneConfirm(next);
+      if (next) {
+        setPendingConfirmTick((t) => t + 1);
+      }
+    };
+    window.addEventListener("rose-pending-phone-state-changed", syncPending as EventListener);
+    return () =>
+      window.removeEventListener("rose-pending-phone-state-changed", syncPending as EventListener);
+  }, []);
+
+  useEffect(() => {
+    if (!hasPendingPhoneConfirm) return;
+    const timer = setTimeout(() => {
+      setHasPendingPhoneConfirm(hasPendingConfirmAction());
+    }, 30200);
+    return () => clearTimeout(timer);
+  }, [hasPendingPhoneConfirm, pendingConfirmTick]);
 
   useEffect(() => {
     if (typeof window === "undefined") return;
@@ -7175,6 +7212,7 @@ export function App() {
                 if (
                   toolName === "phone" ||
                   toolName === "phone_call" ||
+                  toolName === "confirm_action" ||
                   toolName === "phone_confirm" ||
                   toolName === "save_contact_alias" ||
                   toolName === "call_contact" ||
@@ -7199,6 +7237,7 @@ export function App() {
                     toolName === "messenger_recipient" ||
                     toolName === "post_video" ||
                     toolName === "app_search" ||
+                    toolName === "confirm_action" ||
                     toolName === "phone_confirm" ||
                     toolName === "save_contact_alias"
                   ) {
@@ -7399,6 +7438,24 @@ export function App() {
   useEffect(() => {
     pushSharedMessageRef.current = pushSharedMessage;
   }, [pushSharedMessage]);
+
+  const handlePendingPhoneDecisionButton = useCallback(async (decision: "yes" | "no") => {
+    const res = await handlePendingPhoneConfirmation(decision);
+    setHasPendingPhoneConfirm(hasPendingConfirmAction());
+    if (res.handled && res.reply) {
+      pushSharedMessageRef.current({
+        role: "rose",
+        text: res.reply,
+        replyMode: liveSessionRef.current ? "voice" : "text",
+      });
+      if (liveSessionRef.current) {
+        try {
+          liveSessionRef.current.interruptPlayback();
+          liveSessionRef.current.injectSystemInstructionToSpeak(res.reply);
+        } catch {}
+      }
+    }
+  }, []);
 
   const stopListening = useCallback(() => {
     callStartAttemptRef.current += 1;
@@ -7987,6 +8044,12 @@ export function App() {
       if (document.visibilityState === "visible") {
         if (isAssistantEnabledRef.current) {
           requestWakeLock();
+          if (inputAudioCtxRef.current && inputAudioCtxRef.current.state === "suspended") {
+            inputAudioCtxRef.current.resume().catch(() => {});
+          }
+          if (outputAudioCtxRef.current && outputAudioCtxRef.current.state === "suspended") {
+            outputAudioCtxRef.current.resume().catch(() => {});
+          }
           // Point 1: Keep call running, ensure mic is active if not in live session mode
           // (Live session handles its own mic state)
           if (!liveSessionRef.current) {
@@ -7998,6 +8061,15 @@ export function App() {
           }
         }
       } else {
+        // Do NOT stop mic, AudioContext, or session when minimized
+        if (isAssistantEnabledRef.current || liveSessionRef.current) {
+          if (inputAudioCtxRef.current && inputAudioCtxRef.current.state === "suspended") {
+            inputAudioCtxRef.current.resume().catch(() => {});
+          }
+          if (outputAudioCtxRef.current && outputAudioCtxRef.current.state === "suspended") {
+            outputAudioCtxRef.current.resume().catch(() => {});
+          }
+        }
         releaseWakeLock();
       }
     };
@@ -11039,7 +11111,22 @@ export function App() {
             </div>
           ) : (
             <>
-              {chatHistory.map((msg, idx) => {
+              {(() => {
+                let lastRoseBubbleIdx = -1;
+                for (let i = chatHistory.length - 1; i >= 0; i--) {
+                  const m = chatHistory[i];
+                  const t = String(m.text ?? m.content ?? "");
+                  const isSys =
+                    m.role === "system" ||
+                    (m as any).isError ||
+                    t.toLowerCase().includes("gemini error") ||
+                    t === "Mic heard nothing";
+                  if (!isSys && m.role !== "user") {
+                    lastRoseBubbleIdx = i;
+                    break;
+                  }
+                }
+                return chatHistory.map((msg, idx) => {
                 const msgText = String(msg.text ?? msg.content ?? "");
                 const isSystem = msg.role === "system" || (msg as any).isError || msgText.toLowerCase().includes("gemini error") || msgText === "Mic heard nothing";
                 const timeStr = msg.time || (msg.timestamp ? (typeof msg.timestamp === 'string' ? msg.timestamp : new Date(msg.timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })) : "");
@@ -11219,6 +11306,24 @@ export function App() {
                         )}
                       </div>
                     </div>
+                    {!isUser && hasPendingPhoneConfirm && idx === lastRoseBubbleIdx && (
+                      <div className="flex items-center gap-3 mt-2.5 pl-12 w-full max-w-[320px]">
+                        <button
+                          type="button"
+                          onClick={() => void handlePendingPhoneDecisionButton("yes")}
+                          className="flex-1 py-3 px-4 rounded-2xl bg-emerald-600 hover:bg-emerald-500 text-white text-base font-bold shadow-lg active:scale-95 transition-all flex items-center justify-center gap-1.5"
+                        >
+                          হ্যাঁ ✓
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => void handlePendingPhoneDecisionButton("no")}
+                          className="flex-1 py-3 px-4 rounded-2xl bg-rose-600/85 hover:bg-rose-500 text-white text-base font-bold shadow-lg active:scale-95 transition-all flex items-center justify-center gap-1.5"
+                        >
+                          না ✕
+                        </button>
+                      </div>
+                    )}
                     {!isUser && (msg as any).providerLabel && (
                       <span className="text-[10px] text-slate-400 font-normal mt-1 px-1 text-left pl-9">
                         {(msg as any).providerLabel}
@@ -11231,7 +11336,8 @@ export function App() {
                     )}
                   </div>
                 );
-              })}
+              });
+              })()}
 
               {/* Temporary interim speech recognition text in gray bubble */}
               {hasInterim && (

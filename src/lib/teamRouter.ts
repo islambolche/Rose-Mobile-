@@ -9,7 +9,7 @@ import {
 import { officeEvents } from '../components/pc/office/officeEngine';
 import { isAdmin } from './admin';
 import { openPage } from './nav';
-import { routePhoneActionFromText } from './phone';
+import { routePhoneActionFromText, isAffirmativeReply, isNegativeReply } from './phone';
 
 export interface RouteTaskResult {
   matched: boolean;
@@ -73,19 +73,19 @@ export async function routeUserMessageForTeamTask(
   if (!rawText) return { matched: false };
   const lower = rawText.toLowerCase();
 
-  // 1. Pending Clear Chat check (15s)
-  if (options.pendingClearChatState?.active && (Date.now() - options.pendingClearChatState.timestamp < 15000)) {
-    if (/^(হ্যাঁ|হ্যা|yes|sure|ok|অবশ্যই|হাঁ)/i.test(rawText)) {
+  // 1. Pending Clear Chat check (30s)
+  if (options.pendingClearChatState?.active && (Date.now() - options.pendingClearChatState.timestamp < 30000)) {
+    if (isNegativeReply(rawText)) {
+      if (options.setPendingClearChatState) options.setPendingClearChatState({ active: false, timestamp: 0 });
+      return { matched: true, type: 'clear_chat_execute', roseReply: 'ঠিক আছে, চ্যাট মুছলাম না।' };
+    } else if (isAffirmativeReply(rawText)) {
       if (options.clearChatCallback) options.clearChatCallback();
       if (options.setPendingClearChatState) options.setPendingClearChatState({ active: false, timestamp: 0 });
       return { matched: true, type: 'clear_chat_execute', roseReply: 'সব চ্যাট মুছে দিলাম।' };
-    } else if (/^(না|no|dont|cancel|থাক)/i.test(rawText)) {
-      if (options.setPendingClearChatState) options.setPendingClearChatState({ active: false, timestamp: 0 });
-      return { matched: true, type: 'clear_chat_execute', roseReply: 'ঠিক আছে, চ্যাট মুছলাম না।' };
     }
   }
 
-  // 1b. Phone actions ("phone": call_contact, call_number, open_app, and 15s confirmation / contact choice)
+  // 1b. Phone actions ("phone": call_contact, call_number, open_app, and 30s confirmation / contact choice)
   // In live voice calls, the live model handles phone tools directly; skipping router here prevents duplicate speech.
   if (!options.isVoiceCall) {
     const phoneRoute = await routePhoneActionFromText(rawText);
