@@ -7181,14 +7181,24 @@ export function App() {
                   toolName === "call_number" ||
                   toolName === "send_whatsapp" ||
                   toolName === "whatsapp_call" ||
+                  toolName === "whatsapp_send" ||
                   toolName === "whatsapp_message" ||
+                  toolName === "messenger_send" ||
+                  toolName === "messenger_recipient" ||
+                  toolName === "post_video" ||
+                  toolName === "app_search" ||
                   toolName === "search_contacts"
                 ) {
                   let phoneRes;
                   if (
                     toolName === "phone_call" ||
                     toolName === "whatsapp_call" ||
+                    toolName === "whatsapp_send" ||
                     toolName === "whatsapp_message" ||
+                    toolName === "messenger_send" ||
+                    toolName === "messenger_recipient" ||
+                    toolName === "post_video" ||
+                    toolName === "app_search" ||
                     toolName === "phone_confirm" ||
                     toolName === "save_contact_alias"
                   ) {
@@ -8920,10 +8930,54 @@ export function App() {
         const rawClean = (text || "").trim();
         const speaker = role === 'assistant' ? 'rose' : 'user';
         const streamId = speaker === "user" ? "live-stream-user" : "live-stream-rose";
+        const isPlaceholderText = (t: string) =>
+          t === "শুনছি..." || t === "শুনছি…" || t === "…" || t === "...";
+        const hasForeignScript = (t: string) => {
+          if (!t) return false;
+          try {
+            return /[^\p{Script=Bengali}\p{Script=Latin}\p{N}\p{P}\p{Z}\p{S}\s]/u.test(t);
+          } catch {
+            return /[\u0600-\u06FF\u0750-\u077F\u08A0-\u08FF\u0900-\u097F\u0A00-\u0DFF\u0E00-\u0EFF\u0F00-\u1FFF\u2C00-\uD7FF\uF900-\uFEFF\u0400-\u04FF\u0370-\u03FF\u0590-\u05FF]/.test(t);
+          }
+        };
 
-        // Remove placeholder if Rose starts speaking or if user turn completes with empty text
-        if (isFinal && !rawClean && speaker === 'user') {
+        // Remove placeholder if Rose starts speaking or if user turn completes with empty/foreign text
+        if (
+          speaker === 'user' &&
+          isFinal &&
+          (!rawClean || isPlaceholderText(rawClean) || hasForeignScript(rawClean))
+        ) {
+          setInterimSpeechText("");
           setChatHistory((prev) => prev.filter((m) => m.id !== streamId));
+          return;
+        }
+
+        if (speaker === 'user' && !isFinal && hasForeignScript(rawClean)) {
+          updateLiveCaption(speaker, "…");
+          setInterimSpeechText("…");
+          const placeholderTime = new Date().toLocaleTimeString([], {
+            hour: "2-digit",
+            minute: "2-digit",
+          });
+          setChatHistory((prev) => {
+            const existingIdx = prev.findIndex((m) => m.id === streamId);
+            if (existingIdx !== -1) {
+              return prev.map((m, idx) =>
+                idx === existingIdx ? { ...m, text: "…", content: "…" } : m
+              );
+            }
+            return [
+              ...prev,
+              {
+                id: streamId,
+                role: speaker,
+                text: "…",
+                content: "…",
+                time: placeholderTime,
+                replyMode: "voice",
+              },
+            ];
+          });
           return;
         }
 
@@ -8936,11 +8990,11 @@ export function App() {
             : rawClean;
         if (!cleanText) return;
         
-        // If Rose starts speaking, clear any user "শুনছি..." / "শুনছি…" placeholder that never got real text
+        // If Rose starts speaking, clear any user placeholder that never got real text
         if (speaker === 'rose') {
           setChatHistory((prev) =>
             prev.filter(
-              (m) => !(m.id === 'live-stream-user' && (m.text === 'শুনছি...' || m.text === 'শুনছি…'))
+              (m) => !(m.id === 'live-stream-user' && isPlaceholderText((m.text || '').trim()))
             )
           );
         }
@@ -8955,7 +9009,7 @@ export function App() {
         if (isFinal) {
           setChatHistory((prev) => {
             const cleanedPrev = prev.filter(
-              (m) => !(m.id === streamId && (m.text === "শুনছি..." || m.text === "শুনছি…"))
+              (m) => !(m.id === streamId && isPlaceholderText((m.text || '').trim()))
             );
             const existingIdx = cleanedPrev.findIndex((m) => m.id === streamId);
             const last = cleanedPrev[cleanedPrev.length - 1];
@@ -9077,7 +9131,7 @@ export function App() {
                   setPendingNavClarifyState: (st) => { pendingNavClarifyStateRef.current = st; },
                 });
               }
-              if (res.matched && res.roseReply && !assistantAlreadyReplied) {
+              if (res.matched && res.roseReply && res.type !== 'phone' && !assistantAlreadyReplied) {
                 session.interruptPlayback();
                 session.injectSystemInstructionToSpeak(res.roseReply);
               }

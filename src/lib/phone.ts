@@ -14,7 +14,16 @@ const PENDING_PHONE_STATE_KEY = 'rose_pending_phone_state';
 const PENDING_TIMEOUT_MS = 5 * 60 * 1000; // 5 minutes
 const DEDUPE_WINDOW_MS = 2000;
 
-export type PhoneActionType = 'phone_call' | 'whatsapp_call' | 'whatsapp_message';
+export type PhoneActionType =
+  | 'phone_call'
+  | 'whatsapp_call'
+  | 'whatsapp_message'
+  | 'messenger_send'
+  | 'post_video'
+  | 'app_search';
+
+export type PostVideoPlatform = 'youtube' | 'facebook' | 'instagram' | 'tiktok';
+export type SearchAppId = 'youtube' | 'facebook' | 'instagram' | 'tiktok' | 'google';
 
 export interface RoseContact {
   name: string;
@@ -29,6 +38,12 @@ type PendingPhoneState =
       contact: RoseContact;
       video?: boolean;
       messageText?: string;
+      platform?: PostVideoPlatform;
+      pkg?: string;
+      title?: string;
+      postText?: string;
+      searchApp?: SearchAppId;
+      searchQuery?: string;
       timestamp: number;
     }
   | {
@@ -51,6 +66,19 @@ type PendingPhoneState =
   | {
       type: 'awaiting_message_text';
       contact: RoseContact;
+      timestamp: number;
+    }
+  | {
+      type: 'awaiting_messenger_recipient';
+      messageText: string;
+      timestamp: number;
+    }
+  | {
+      type: 'awaiting_post_video_tap';
+      platformLabel: string;
+      pkg: string;
+      title: string;
+      text: string;
       timestamp: number;
     }
   | {
@@ -97,6 +125,63 @@ export function getRosePhonePlugin(): any {
   if (typeof window === 'undefined') return null;
   return (window as any).Capacitor?.Plugins?.RosePhone || null;
 }
+
+const POST_VIDEO_PLATFORM_MAP: Record<PostVideoPlatform, { pkg: string; label: string }> = {
+  youtube: { pkg: 'com.google.android.youtube', label: 'YouTube' },
+  facebook: { pkg: 'com.facebook.katana', label: 'Facebook' },
+  instagram: { pkg: 'com.instagram.android', label: 'Instagram' },
+  tiktok: { pkg: 'com.zhiliaoapp.musically', label: 'TikTok' },
+};
+
+const SEARCH_APP_META: Record<SearchAppId, { label: string; webUrl: (q: string) => string }> = {
+  youtube: {
+    label: 'YouTube',
+    webUrl: (q) => `https://www.youtube.com/results?search_query=${encodeURIComponent(q)}`,
+  },
+  facebook: {
+    label: 'Facebook',
+    webUrl: (q) => `https://www.facebook.com/search/top?q=${encodeURIComponent(q)}`,
+  },
+  instagram: {
+    label: 'Instagram',
+    webUrl: (q) => `https://www.instagram.com/explore/search/keyword/?q=${encodeURIComponent(q)}`,
+  },
+  tiktok: {
+    label: 'TikTok',
+    webUrl: (q) => `https://www.tiktok.com/search?q=${encodeURIComponent(q)}`,
+  },
+  google: {
+    label: 'Google',
+    webUrl: (q) => `https://www.google.com/search?q=${encodeURIComponent(q)}`,
+  },
+};
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+async function checkAccessibilityOn(plugin: any): Promise<boolean> {
+  if (!plugin || typeof plugin.isAccessibilityOn !== 'function') return false;
+  try {
+    const res = await plugin.isAccessibilityOn();
+    if (typeof res === 'boolean') return res;
+    return Boolean(res?.enabled ?? res?.on ?? res?.isOn ?? res?.active ?? res?.value);
+  } catch {
+    return false;
+  }
+}
+
+function didClickTextSucceed(res: any): boolean {
+  if (typeof res === 'boolean') return res;
+  if (res && typeof res === 'object') {
+    if ('clicked' in res) return Boolean(res.clicked);
+    if ('success' in res) return Boolean(res.success);
+    if ('ok' in res) return Boolean(res.ok);
+  }
+  return true;
+}
+
+const ACCESSIBILITY_NEEDED_MSG = 'অটো-চাপার জন্য Accessibility চালু করো';
 
 /**
  * Convert Bangla digits (০-৯) to English digits (0-9).
@@ -925,29 +1010,71 @@ async function performNativeWhatsAppCall(contact: RoseContact, video: boolean): 
   const plugin = getRosePhonePlugin();
 
   if (isNativeRoseApp() && plugin && typeof plugin.whatsappCall === 'function') {
+    let targetContact: RoseContact = contact;
+
+    // Fetch exact display name & number via RosePhone.searchContacts when available
+    if (typeof plugin.searchContacts === 'function' && (contact.name || contact.number)) {
+      try {
+        const query = contact.name || contact.number;
+        const scRes = await plugin.searchContacts({ query });
+        const rawMatches: any[] = Array.isArray(scRes?.contacts) ? scRes.contacts : [];
+        if (rawMatches.length > 0) {
+          const exact =
+            rawMatches.find(
+              (c) => String(c?.name || '').trim().toLowerCase() === String(contact.name || '').trim().toLowerCase()
+            ) || rawMatches[0];
+          const exactName = String(exact?.name || contact.name || '').trim();
+          const exactNumber = String(exact?.number || contact.number || '').trim();
+          if (exactName || exactNumber) {
+            targetContact = {
+              name: exactName || exactNumber,
+              number: exactNumber,
+              source: 'device',
+            };
+          }
+        }
+      } catch {
+        // Use already-resolved contact on searchContacts failure
+      }
+    }
+
+    const dialNumber =
+      formatDialableNumber(targetContact.number) || String(targetContact.number || '').trim();
+
     try {
-      await plugin.whatsappCall({ name: contact.name, video });
-      return `${contact.name}-কে হোয়াটসঅ্যাপে ${video ? 'ভিডিও ' : ''}কল দিচ্ছি।`;
+      await plugin.whatsappCall({
+        name: targetContact.name,
+        number: dialNumber,
+        video,
+      });
+      await sleep(1500);
+      if (typeof plugin.clickText === 'function' && (await checkAccessibilityOn(plugin))) {
+        try {
+          await plugin.clickText({ labels: ['Call', 'কল', 'Voice call', 'Video call'] });
+        } catch {}
+      }
+      return `${targetContact.name}-কে WhatsApp-এ ${video ? 'ভিডিও ' : ''}কল দিচ্ছি।`;
     } catch (err: any) {
       const msg = String(err?.message || err || '').trim();
-      logDevError({ area: 'other', message: `RosePhone.whatsappCall error (${contact.name}, video=${video}): ${msg}` });
-      // Requirement: If whatsappCall fails, say "WhatsApp-এ এই মানুষ পাওয়া যায়নি" and offer a normal phone call.
-      if (contact.number) {
+      logDevError({
+        area: 'other',
+        message: `RosePhone.whatsappCall error (${targetContact.name}, ${dialNumber}, video=${video}): ${msg}`,
+      });
+      if (targetContact.number) {
         setPendingState({
           type: 'awaiting_fallback_normal_call',
-          contact,
+          contact: targetContact,
           timestamp: Date.now(),
         });
-        return 'WhatsApp-এ এই মানুষ পাওয়া যায়নি। নরমাল ফোন কল দেব? হ্যাঁ বললে দেব।';
       }
-      return 'WhatsApp-এ এই মানুষ পাওয়া যায়নি।';
+      return 'WhatsApp-এ পেলাম না, সাধারণ কল দেব?';
     }
   }
 
   if (contact.number) {
     return openCallOrWhatsAppLink(contact.number, 'whatsapp');
   }
-  return 'WhatsApp-এ এই মানুষ পাওয়া যায়নি।';
+  return 'WhatsApp-এ পেলাম না, সাধারণ কল দেব?';
 }
 
 async function performNativeWhatsAppMessage(contact: RoseContact, text: string): Promise<string> {
@@ -960,17 +1087,170 @@ async function performNativeWhatsAppMessage(contact: RoseContact, text: string):
   if (isNativeRoseApp() && plugin && typeof plugin.whatsappMessage === 'function') {
     try {
       await plugin.whatsappMessage({ number: formatted, text });
-      return 'লেখা রেডি, শুধু Send চাপো।';
+      await sleep(2000);
+      if (typeof plugin.clickText === 'function' && (await checkAccessibilityOn(plugin))) {
+        try {
+          const clicked = await plugin.clickText({ labels: ['Send', 'পাঠান'] });
+          if (didClickTextSucceed(clicked)) {
+            return contact.name && contact.name !== contact.number
+              ? `${contact.name}-কে WhatsApp-এ মেসেজ পাঠিয়েছি।`
+              : 'WhatsApp-এ মেসেজ পাঠিয়েছি।';
+          }
+        } catch {}
+      }
+      return 'লেখা রেডি, Send চাপো।';
     } catch (err: any) {
       const msg = String(err?.message || err || '').trim();
       logDevError({ area: 'other', message: `RosePhone.whatsappMessage error (${formatted}): ${msg}` });
       openExternal(`https://wa.me/${formatted}${text ? `?text=${encodeURIComponent(text)}` : ''}`);
-      return 'লেখা রেডি, শুধু Send চাপো।';
+      return 'লেখা রেডি, Send চাপো।';
     }
   }
 
   openExternal(`https://wa.me/${formatted}${text ? `?text=${encodeURIComponent(text)}` : ''}`);
-  return 'লেখা রেডি, শুধু Send চাপো।';
+  return 'লেখা রেডি, Send চাপো।';
+}
+
+async function performNativeMessengerShare(text: string): Promise<string> {
+  const plugin = getRosePhonePlugin();
+  if (!isNativeRoseApp() || !plugin || typeof plugin.shareTextTo !== 'function') {
+    return ONLY_IN_ROSE_APP_MSG;
+  }
+  try {
+    await plugin.shareTextTo({ package: 'com.facebook.orca', text });
+    setPendingState({
+      type: 'awaiting_messenger_recipient',
+      messageText: text,
+      timestamp: Date.now(),
+    });
+    return 'যাকে পাঠাবে তার নাম বলো';
+  } catch (err: any) {
+    const msg = String(err?.message || err || '').trim();
+    logDevError({ area: 'other', message: `RosePhone.shareTextTo(messenger) error: ${msg}` });
+    return 'Messenger খোলা যায়নি।';
+  }
+}
+
+async function performMessengerRecipientTap(recipientName: string): Promise<string> {
+  const cleanName = String(recipientName || '').trim();
+  if (!cleanName) {
+    return 'যাকে পাঠাবে তার নাম বলো';
+  }
+
+  const plugin = getRosePhonePlugin();
+  if (!isNativeRoseApp() || !plugin) {
+    return ONLY_IN_ROSE_APP_MSG;
+  }
+
+  const accOn = await checkAccessibilityOn(plugin);
+  if (!accOn) {
+    try {
+      await plugin.openAccessibilitySettings?.();
+    } catch {}
+    return ACCESSIBILITY_NEEDED_MSG;
+  }
+
+  try {
+    await sleep(600);
+    await plugin.typeText?.({ text: cleanName });
+    await sleep(1000);
+    await plugin.clickText?.({ labels: [cleanName] });
+    await sleep(1000);
+    await plugin.clickText?.({ labels: ['Send', 'পাঠান'] });
+    return `${cleanName}-কে Messenger-এ মেসেজ পাঠিয়েছি।`;
+  } catch (err: any) {
+    const msg = String(err?.message || err || '').trim();
+    logDevError({ area: 'other', message: `Messenger auto-tap error (${cleanName}): ${msg}` });
+    return 'Messenger-এ নাম নির্বাচন করে Send চাপো।';
+  }
+}
+
+async function performNativePostVideoShare(params: {
+  platform: PostVideoPlatform;
+  pkg: string;
+  title: string;
+  postText: string;
+}): Promise<string> {
+  const plugin = getRosePhonePlugin();
+  const meta = POST_VIDEO_PLATFORM_MAP[params.platform];
+  if (!isNativeRoseApp() || !plugin || typeof plugin.pickVideoAndShare !== 'function') {
+    return ONLY_IN_ROSE_APP_MSG;
+  }
+
+  try {
+    if (typeof plugin.copyText === 'function') {
+      await plugin.copyText({ text: params.postText });
+    } else if (typeof navigator !== 'undefined' && navigator.clipboard?.writeText) {
+      await navigator.clipboard.writeText(params.postText).catch(() => {});
+    }
+    await plugin.pickVideoAndShare({
+      package: params.pkg,
+      title: params.title,
+      text: params.postText,
+    });
+    setPendingState({
+      type: 'awaiting_post_video_tap',
+      platformLabel: meta.label,
+      pkg: params.pkg,
+      title: params.title,
+      text: params.postText,
+      timestamp: Date.now(),
+    });
+    return 'ভিডিও বাছো; লেখা কপি করা আছে। Post/Upload আমি চাপব কি না বলো।';
+  } catch (err: any) {
+    const msg = String(err?.message || err || '').trim();
+    logDevError({ area: 'other', message: `RosePhone.pickVideoAndShare error (${params.pkg}): ${msg}` });
+    return `${meta.label}-এ ভিডিও শেয়ার খোলা যায়নি।`;
+  }
+}
+
+async function performPostVideoAutoTap(platformLabel: string): Promise<string> {
+  const plugin = getRosePhonePlugin();
+  if (!isNativeRoseApp() || !plugin) {
+    return ONLY_IN_ROSE_APP_MSG;
+  }
+
+  const accOn = await checkAccessibilityOn(plugin);
+  if (!accOn) {
+    try {
+      await plugin.openAccessibilitySettings?.();
+    } catch {}
+    return ACCESSIBILITY_NEEDED_MSG;
+  }
+
+  const labels = ['Upload', 'Post', 'Share', 'Next', 'পোস্ট', 'শেয়ার', 'আপলোড'];
+  try {
+    for (let step = 0; step < 4; step++) {
+      const res = await plugin.clickText?.({ labels });
+      if (!didClickTextSucceed(res)) {
+        break;
+      }
+      if (step < 3) {
+        await sleep(2000);
+      }
+    }
+    return `${platformLabel}-এ পোস্ট সম্পন্ন করার চেষ্টা করেছি।`;
+  } catch (err: any) {
+    const msg = String(err?.message || err || '').trim();
+    logDevError({ area: 'other', message: `post_video clickText error: ${msg}` });
+    return 'নিজেই Post বা Upload বোতাম চাপো।';
+  }
+}
+
+async function performNativeAppSearch(app: SearchAppId, query: string): Promise<string> {
+  const meta = SEARCH_APP_META[app];
+  const plugin = getRosePhonePlugin();
+  if (isNativeRoseApp() && plugin && typeof plugin.openSearch === 'function') {
+    try {
+      await plugin.openSearch({ app, query });
+      return `${meta.label}-এ ‘${query}’ খুঁজছি।`;
+    } catch (err: any) {
+      const msg = String(err?.message || err || '').trim();
+      logDevError({ area: 'other', message: `RosePhone.openSearch error (${app}, ${query}): ${msg}` });
+    }
+  }
+  openExternal(meta.webUrl(query));
+  return `${meta.label}-এ ‘${query}’ খুঁজছি।`;
 }
 
 function buildConfirmationPrompt(
@@ -1008,7 +1288,7 @@ function buildConfirmationPrompt(
       video: Boolean(video),
       timestamp: Date.now(),
     });
-    return `${displayName}-কে হোয়াটসঅ্যাপে ${video ? 'ভিডিও ' : ''}কল দেব? হ্যাঁ বললে দেব।`;
+    return `${displayName}-কে WhatsApp-এ ${video ? 'ভিডিও ' : ''}কল দেব? হ্যাঁ বললে দেব।`;
   }
 
   setPendingState({
@@ -1113,6 +1393,214 @@ export async function whatsapp_message(params: {
   return initiatePhoneAction({ actionType: 'whatsapp_message', person, messageText });
 }
 
+export const whatsapp_send = whatsapp_message;
+
+export async function messenger_send(params: {
+  message?: string;
+  text?: string;
+}): Promise<string> {
+  const body = String(params?.message || params?.text || '').trim();
+  if (!body) {
+    return 'Messenger-এ কী মেসেজ পাঠাবে বলো।';
+  }
+  setPendingState({
+    type: 'awaiting_confirm',
+    actionType: 'messenger_send',
+    contact: { name: 'Messenger', number: '', source: 'local' },
+    messageText: body,
+    timestamp: Date.now(),
+  });
+  return `Messenger-এ এটা পাঠাব: '${body}'। ঠিক আছে?`;
+}
+
+export async function messenger_recipient(name: string): Promise<string> {
+  const pending = getPendingState();
+  if (!pending || pending.type !== 'awaiting_messenger_recipient') {
+    return 'আগে Messenger-এ মেসেজ পাঠাতে বলো।';
+  }
+  setPendingState(null);
+  return performMessengerRecipientTap(name);
+}
+
+function normalizePostPlatform(raw: string): PostVideoPlatform | null {
+  const lower = String(raw || '').trim().toLowerCase();
+  if (!lower) return null;
+  if (/youtube|ইউটিউব|yt\b/i.test(lower)) return 'youtube';
+  if (/facebook|ফেসবুক|ফেইসবুক|\bfb\b/i.test(lower)) return 'facebook';
+  if (/instagram|ইনস্টাগ্রাম|ইন্সটাগ্রাম|\binsta\b/i.test(lower)) return 'instagram';
+  if (/tiktok|টিকটক/i.test(lower)) return 'tiktok';
+  return null;
+}
+
+function normalizeSearchApp(raw: string): SearchAppId | null {
+  const lower = String(raw || '').trim().toLowerCase();
+  if (!lower) return null;
+  if (/youtube|ইউটিউব|\byt\b/i.test(lower)) return 'youtube';
+  if (/facebook|ফেসবুক|ফেইসবুক|\bfb\b/i.test(lower)) return 'facebook';
+  if (/instagram|ইনস্টাগ্রাম|ইন্সটাগ্রাম|\binsta\b/i.test(lower)) return 'instagram';
+  if (/tiktok|টিকটক/i.test(lower)) return 'tiktok';
+  if (/google|গুগল/i.test(lower)) return 'google';
+  return null;
+}
+
+async function generatePostVideoCopy(
+  platformLabel: string,
+  topic: string
+): Promise<{ title: string; description: string; hashtags: string }> {
+  const cleanTopic = String(topic || '').trim() || 'আমার নতুন ভিডিও';
+  const prompt = `Write a catchy short video post for ${platformLabel} about: "${cleanTopic}".
+Return ONLY valid JSON with keys "title", "description", "hashtags" (title max 70 chars, description 1-2 short lines in natural Bengali matching topic, hashtags space-separated like "#tag1 #tag2 #tag3").`;
+
+  const geminiKey = (getGeminiKey() || '').replace(/["'\r\n\t\s]+/g, '').trim();
+  const groqKey = getStoredGroqKey();
+
+  const tryParse = (raw: string): { title: string; description: string; hashtags: string } | null => {
+    try {
+      const m = raw.match(/\{[\s\S]*\}/);
+      if (!m) return null;
+      const obj = JSON.parse(m[0]);
+      const title = String(obj?.title || '').trim();
+      const description = String(obj?.description || '').trim();
+      const hashtags = String(obj?.hashtags || '').trim();
+      if (title && description) {
+        return {
+          title,
+          description,
+          hashtags: hashtags || `#${platformLabel.toLowerCase()} #video #trending`,
+        };
+      }
+    } catch {}
+    return null;
+  };
+
+  if (geminiKey && !isGeminiIn429Cooldown(geminiKey)) {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), 5000);
+    try {
+      const model = await resolveChatModel(geminiKey, controller.signal);
+      const url = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${geminiKey}`;
+      const res = await fetch(url, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'x-goog-api-key': geminiKey },
+        body: JSON.stringify({
+          contents: [{ role: 'user', parts: [{ text: prompt }] }],
+          generationConfig: { responseMimeType: 'application/json', temperature: 0.7, maxOutputTokens: 220 },
+        }),
+        signal: controller.signal,
+      });
+      if (res.ok) {
+        const data = await res.json();
+        const text = data?.candidates?.[0]?.content?.parts?.find((p: any) => typeof p?.text === 'string')?.text || '';
+        const parsed = tryParse(text);
+        if (parsed) return parsed;
+      }
+    } catch {
+    } finally {
+      clearTimeout(timer);
+    }
+  }
+
+  if (groqKey) {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), 5000);
+    try {
+      let groqModel = getSelectedGroqModelFromSettings();
+      if (!groqModel) {
+        const disc = await getDynamicGroqChatModels(groqKey, false);
+        groqModel = disc.models?.[0] || 'llama-3.3-70b-versatile';
+      }
+      const res = await fetch('https://api.groq.com/openai/v1/chat/completions', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${groqKey}` },
+        body: JSON.stringify({
+          model: groqModel,
+          messages: [{ role: 'user', content: prompt }],
+          temperature: 0.7,
+          max_tokens: 220,
+        }),
+        signal: controller.signal,
+      });
+      if (res.ok) {
+        const data = await res.json();
+        const parsed = tryParse(data?.choices?.[0]?.message?.content || '');
+        if (parsed) return parsed;
+      }
+    } catch {
+    } finally {
+      clearTimeout(timer);
+    }
+  }
+
+  const slug = cleanTopic.replace(/[^\p{L}\p{N}]+/gu, '').slice(0, 18) || 'Video';
+  return {
+    title: cleanTopic.slice(0, 70),
+    description: `${cleanTopic} নিয়ে আমার নতুন ভিডিও, দেখুন আর মতামত জানান।`,
+    hashtags: `#${slug} #${platformLabel} #Trending`,
+  };
+}
+
+export async function post_video(params: {
+  platform?: string;
+  topic?: string;
+  title?: string;
+  description?: string;
+  hashtags?: string;
+}): Promise<string> {
+  const platform = normalizePostPlatform(params?.platform || '');
+  if (!platform) {
+    return 'কোন প্ল্যাটফর্মে ভিডিও দেবে বলো: YouTube, Facebook, Instagram নাকি TikTok?';
+  }
+  const meta = POST_VIDEO_PLATFORM_MAP[platform];
+  const topic = String(params?.topic || '').trim();
+
+  let title = String(params?.title || '').trim();
+  let description = String(params?.description || '').trim();
+  let hashtags = String(params?.hashtags || '').trim();
+
+  if (!title || !description || !hashtags) {
+    const generated = await generatePostVideoCopy(meta.label, topic || meta.label);
+    if (!title) title = generated.title;
+    if (!description) description = generated.description;
+    if (!hashtags) hashtags = generated.hashtags;
+  }
+
+  const allText = `${title}\n\n${description}\n\n${hashtags}`;
+  setPendingState({
+    type: 'awaiting_confirm',
+    actionType: 'post_video',
+    contact: { name: meta.label, number: '', source: 'local' },
+    platform,
+    pkg: meta.pkg,
+    title,
+    postText: allText,
+    timestamp: Date.now(),
+  });
+
+  return `${meta.label}-এর জন্য লিখেছি — শিরোনাম: ${title}। বিবরণ: ${description}। হ্যাশট্যাগ: ${hashtags}। ঠিক আছে? হ্যাঁ বললে কপি করে ভিডিও বাছার পর্দা খুলব।`;
+}
+
+export async function app_search(app: string, query: string): Promise<string> {
+  const normalizedApp = normalizeSearchApp(app);
+  const cleanQuery = String(query || '').trim();
+  if (!normalizedApp) {
+    return 'কোন অ্যাপে খুঁজব বলো: YouTube, Facebook, Instagram, TikTok নাকি Google?';
+  }
+  if (!cleanQuery) {
+    return `${SEARCH_APP_META[normalizedApp].label}-এ কী খুঁজব বলো।`;
+  }
+
+  const meta = SEARCH_APP_META[normalizedApp];
+  setPendingState({
+    type: 'awaiting_confirm',
+    actionType: 'app_search',
+    contact: { name: meta.label, number: '', source: 'local' },
+    searchApp: normalizedApp,
+    searchQuery: cleanQuery,
+    timestamp: Date.now(),
+  });
+  return `${meta.label}-এ '${cleanQuery}' খুঁজব? হ্যাঁ বললে খুলব।`;
+}
+
 export async function call_contact(
   name: string,
   channel: 'whatsapp' | 'tel' = 'tel',
@@ -1203,13 +1691,13 @@ export const whatsappMessage = whatsapp_message;
 // ============================================================================
 
 function isAffirmativeReply(text: string): boolean {
-  return /^(?:হ্যাঁ|হ্যা|হাঁ|হুঁ|হু|জি|জ্বি|yes|yeah|yep|yup|sure|ok|okay|আচ্ছা|ঠিক\s*আছে|ঠিক|অবশ্যই|দাও|দিন|দে|করো|কর|পাঠাও|পাঠিয়ে\s*দাও|কল\s*দাও|একদম|চলবে)[।.!\s]*$/i.test(
+  return /^(?:হ্যাঁ|হ্যা|হাঁ|হুঁ|হু|জি|জ্বি|yes|yeah|yep|yup|sure|ok|okay|আচ্ছা|ঠিক\s*আছে|ঠিক|অবশ্যই|দাও|দিন|দে|করো|কর|পাঠাও|পাঠিয়ে\s*দাও|কল\s*দাও|চাপো|চাপ|পোস্ট\s*করো|আপলোড\s*করো|খোলো|খুঁজো|একদম|চলবে)(?:\s+(?:দাও|করো|চাপো|পাঠাও|খোলো))?[।.!\s]*$/i.test(
     text.trim()
   );
 }
 
 function isNegativeReply(text: string): boolean {
-  return /^(?:না|নাহ|no|nope|nah|cancel|stop|থাক|বাদ\s*দাও|দরকার\s*নেই|লাগবে\s*না|ক্যানসেল|বন্ধ\s*করো|করো\s*না|দিও\s*না)[।.!\s]*$/i.test(
+  return /^(?:না|নাহ|no|nope|nah|cancel|stop|থাক|বাদ\s*দাও|দরকার\s*নেই|লাগবে\s*না|চাপতে\s*হবে\s*না|আমি\s*নিজেই?\s*চাপব|নিজে\s*চাপব|ক্যানসেল|বন্ধ\s*করো|করো\s*না|দিও\s*না)[।.!\s]*$/i.test(
     text.trim()
   );
 }
@@ -1234,7 +1722,33 @@ export async function handlePendingPhoneConfirmation(decision: 'yes' | 'no'): Pr
       const reply = await performNativeWhatsAppCall(pending.contact, Boolean(pending.video));
       return { handled: true, reply };
     }
+    if (pending.actionType === 'messenger_send') {
+      const reply = await performNativeMessengerShare(pending.messageText || '');
+      return { handled: true, reply };
+    }
+    if (pending.actionType === 'post_video' && pending.platform && pending.pkg) {
+      const reply = await performNativePostVideoShare({
+        platform: pending.platform,
+        pkg: pending.pkg,
+        title: pending.title || '',
+        postText: pending.postText || '',
+      });
+      return { handled: true, reply };
+    }
+    if (pending.actionType === 'app_search' && pending.searchApp && pending.searchQuery) {
+      const reply = await performNativeAppSearch(pending.searchApp, pending.searchQuery);
+      return { handled: true, reply };
+    }
     const reply = await performNativePhoneCall(pending.contact);
+    return { handled: true, reply };
+  }
+
+  if (pending.type === 'awaiting_post_video_tap') {
+    setPendingState(null);
+    if (decision === 'no') {
+      return { handled: true, reply: 'ঠিক আছে, ভিডিও বাছার পর নিজেই Post বা Upload চাপো।' };
+    }
+    const reply = await performPostVideoAutoTap(pending.platformLabel);
     return { handled: true, reply };
   }
 
@@ -1259,7 +1773,7 @@ export async function handlePendingPhoneUserReply(
   const pending = getPendingState();
   if (!pending) return { handled: false };
 
-  // 1. Confirmation for call / WhatsApp call / WhatsApp message
+  // 1. Confirmation for call / WhatsApp / Messenger / post_video / app_search
   if (pending.type === 'awaiting_confirm') {
     if (isAffirmativeReply(raw)) {
       return handlePendingPhoneConfirmation('yes');
@@ -1279,6 +1793,29 @@ export async function handlePendingPhoneUserReply(
       }
     }
     return { handled: false };
+  }
+
+  // 1b. Post-video Upload/Post auto-tap confirmation
+  if (pending.type === 'awaiting_post_video_tap') {
+    if (isAffirmativeReply(raw)) {
+      return handlePendingPhoneConfirmation('yes');
+    }
+    if (isNegativeReply(raw)) {
+      return handlePendingPhoneConfirmation('no');
+    }
+    return { handled: false };
+  }
+
+  // 1c. Messenger recipient name after shareTextTo
+  if (pending.type === 'awaiting_messenger_recipient') {
+    if (isNegativeReply(raw)) {
+      setPendingState(null);
+      return { handled: true, reply: 'ঠিক আছে, বাতিল করলাম।' };
+    }
+    const recipient = cleanContactQueryName(raw) || raw;
+    setPendingState(null);
+    const reply = await performMessengerRecipientTap(recipient);
+    return { handled: true, reply };
   }
 
   // 2. Normal phone call fallback confirmation after WhatsApp call failed
@@ -1424,10 +1961,40 @@ export async function executePhoneToolActionByName(
     return { ok: true, message: msg };
   }
 
-  if (name === 'whatsapp_message') {
+  if (name === 'whatsapp_send' || name === 'whatsapp_message') {
     const person = String(args.person || args.name || args.number || '').trim();
     const message = String(args.message || args.text || '').trim();
     const msg = await whatsapp_message({ person, message });
+    return { ok: true, message: msg };
+  }
+
+  if (name === 'messenger_send') {
+    const message = String(args.message || args.text || '').trim();
+    const msg = await messenger_send({ message });
+    return { ok: true, message: msg };
+  }
+
+  if (name === 'messenger_recipient') {
+    const recipient = String(args.name || args.person || args.recipient || '').trim();
+    const msg = await messenger_recipient(recipient);
+    return { ok: true, message: msg };
+  }
+
+  if (name === 'post_video') {
+    const msg = await post_video({
+      platform: String(args.platform || '').trim(),
+      topic: String(args.topic || '').trim(),
+      title: args.title ? String(args.title).trim() : undefined,
+      description: args.description ? String(args.description).trim() : undefined,
+      hashtags: args.hashtags ? String(args.hashtags).trim() : undefined,
+    });
+    return { ok: true, message: msg };
+  }
+
+  if (name === 'app_search') {
+    const app = String(args.app || args.platform || '').trim();
+    const query = String(args.query || args.text || '').trim();
+    const msg = await app_search(app, query);
     return { ok: true, message: msg };
   }
 
@@ -1657,6 +2224,25 @@ export async function routePhoneActionFromText(
     return { matched: true, reply };
   }
 
+  // 4b. Explicit Messenger message intent
+  const isMessengerReq = /(?:messenger|মেসেঞ্জার|মেসেঞ্জারে)/i.test(text);
+  const hasMsgSendVerb =
+    /(?:মেসেজ|ম্যাসেজ|বার্তা|লেখো|লিখো|লিখে\s*দাও|পাঠাও|পাঠিয়ে\s*দাও|সেন্ড|\bmessage\b|\bmsg\b|\bsend\b|\btext\b)/i.test(
+      text
+    );
+  if (isMessengerReq && hasMsgSendVerb) {
+    const messengerBodyMatch = text.match(
+      /(?:messenger|মেসেঞ্জারে?|মেসেঞ্জার)\s*(?:এ|-?এ)?\s*(?:মেসেজ|ম্যাসেজ|বার্তা|message|msg|text)?\s*(?:পাঠাও|পাঠিয়ে\s*দাও|লেখো|লিখো|দাও|করো|send)?\s*(?:যে|বলে|লিখে|:|-)?\s*(.+)$/i
+    );
+    const extractedBody = String(messengerBodyMatch?.[1] || '')
+      .replace(/^(?:যে|বলে|লিখে|হলো|হল|:|-)\s*/i, '')
+      .trim();
+    if (extractedBody && !/^(?:মেসেজ|ম্যাসেজ|পাঠাও|দাও|করো|send)$/i.test(extractedBody)) {
+      const reply = await messenger_send({ message: extractedBody });
+      return { matched: true, reply };
+    }
+  }
+
   // 5. Call / WhatsApp call intent (always confirms before dialing)
   const extractedNumber = extractPhoneNumberFromText(text);
   const hasCallVerb =
@@ -1695,7 +2281,52 @@ export async function routePhoneActionFromText(
     }
   }
 
-  // 6. Open app intent
+  // 6. Explicit app search intent (YouTube, Facebook, Instagram, TikTok, Google)
+  const searchMatch = text.match(
+    /(youtube|ইউটিউব|ইউটিউবে|facebook|ফেসবুক|ফেসবুকে|instagram|ইনস্টাগ্রাম|ইন্সটাগ্রামে?|tiktok|টিকটক|টিকটকে|google|গুগল|গুগলে)(?:-?এ|তে)?\s+(?:.+?\s+)?(?:খোঁজো|খুজো|সার্চ\s*করো|সার্চ|দেখাও|\bsearch\b|\bfind\b)\s*[:\-]?\s*(.*)$/i
+  ) || text.match(
+    /(?:search|খোঁজো|খুজো|সার্চ\s*করো)\s+(.+?)\s+(?:on|in)\s+(youtube|facebook|instagram|tiktok|google)/i
+  );
+  if (searchMatch) {
+    let appRaw = '';
+    let queryRaw = '';
+    if (/youtube|facebook|instagram|tiktok|google|ইউটিউব|ফেসবুক|ইনস্টাগ্রাম|ইন্সটাগ্রাম|টিকটক|গুগল/i.test(searchMatch[1])) {
+      appRaw = searchMatch[1];
+      queryRaw = searchMatch[2] || '';
+      if (!queryRaw) {
+        queryRaw = text
+          .replace(/(?:youtube|ইউটিউব|ইউটিউবে|facebook|ফেসবুক|ফেসবুকে|instagram|ইনস্টাগ্রাম|ইন্সটাগ্রামে?|tiktok|টিকটক|টিকটকে|google|গুগল|গুগলে)(?:-?এ|তে)?/gi, '')
+          .replace(/(?:নিয়ে|নিয়ে|সার্চ\s*করো|সার্চ|খোঁজো|খুজো|দেখাও|\bsearch\b|\bfind\b|রোজ|rose)/gi, '')
+          .trim();
+      }
+    } else {
+      queryRaw = searchMatch[1] || '';
+      appRaw = searchMatch[2] || '';
+    }
+    const normSearchApp = normalizeSearchApp(appRaw);
+    if (normSearchApp && queryRaw.trim()) {
+      const reply = await app_search(normSearchApp, queryRaw.trim());
+      return { matched: true, reply };
+    }
+  }
+
+  // 7. Video post intent (YouTube, Facebook, Instagram, TikTok)
+  const hasVideoPostVerb =
+    /(?:ভিডিও|রিলস?|শর্টস?|\bvideo\b|\breels?\b|\bshorts?\b)/i.test(text) &&
+    /(?:পোস্ট|আপলোড|শেয়ার|শেয়ার|ছাড়ো|ছাড়ো|\bpost\b|\bupload\b|\bshare\b)/i.test(text);
+  if (hasVideoPostVerb) {
+    const normPlat = normalizePostPlatform(text);
+    if (normPlat) {
+      const topic = text
+        .replace(/(?:youtube|ইউটিউব|ইউটিউবে|facebook|ফেসবুক|ফেসবুকে|instagram|ইনস্টাগ্রাম|ইন্সটাগ্রামে?|tiktok|টিকটক|টিকটকে)(?:-?এ|তে)?/gi, '')
+        .replace(/(?:ভিডিও|রিলস?|শর্টস?|পোস্ট|আপলোড|শেয়ার|শেয়ার|ছাড়ো|ছাড়ো|করো|দাও|নিয়ে|নিয়ে|একটা|\bvideo\b|\bpost\b|\bupload\b|\bshare\b|রোজ|rose)/gi, '')
+        .trim();
+      const reply = await post_video({ platform: normPlat, topic: topic || normPlat });
+      return { matched: true, reply };
+    }
+  }
+
+  // 8. Open app intent
   const hasOpenVerb = /(খোলো|খোল|খুলো|খুলে\s*দাও|চালু\s*করো|চালাও|ওপেন\s*করো|ওপেন|\bopen\b|\blaunch\b)/i.test(text);
   if (hasOpenVerb && !hasCallVerb) {
     const resolvedApp = resolveAppKey(text);

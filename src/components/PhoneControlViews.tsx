@@ -199,6 +199,15 @@ export const PERMISSIONS_CONFIG: PermissionItemConfig[] = [
     buttonLabel: 'Instagram খোলো',
     actionUrl: 'https://www.instagram.com/',
   },
+  {
+    id: 'app_perm_accessibility',
+    num: 14,
+    name: 'ACCESSIBILITY (অটো-চাপা)',
+    desc: 'WhatsApp, Messenger এবং ভিডিও পোস্টে Send/Call/Upload বোতাম অটো-চাপার জন্য Accessibility অনুমতি প্রয়োজন।',
+    icon: Zap,
+    type: 'apk',
+    buttonLabel: 'চালু করো',
+  },
 ];
 
 export type PermissionStatusType = 'চালু' | 'বন্ধ' | 'জিজ্ঞেস করা হয়নি' | 'APK-তে আসবে' | 'API সংযোগ পরে আসবে';
@@ -283,6 +292,7 @@ export const AppPermissionsView = ({ setCurrentView, setToast }: any) => {
       app_perm_facebook: 'API সংযোগ পরে আসবে',
       app_perm_tiktok: 'API সংযোগ পরে আসবে',
       app_perm_instagram: 'API সংযোগ পরে আসবে',
+      app_perm_accessibility: isApp ? 'বন্ধ' : 'APK-তে আসবে',
     };
   });
   const [isProcessing, setIsProcessing] = useState(false);
@@ -327,6 +337,7 @@ export const AppPermissionsView = ({ setCurrentView, setToast }: any) => {
         app_perm_facebook: 'API সংযোগ পরে আসবে',
         app_perm_tiktok: 'API সংযোগ পরে আসবে',
         app_perm_instagram: 'API সংযোগ পরে আসবে',
+        app_perm_accessibility: 'বন্ধ',
       };
 
       if (rosePhone && typeof rosePhone.checkPermissions === 'function') {
@@ -344,6 +355,19 @@ export const AppPermissionsView = ({ setCurrentView, setToast }: any) => {
         }
       }
 
+      if (rosePhone && typeof rosePhone.isAccessibilityOn === 'function') {
+        try {
+          const accRes = await rosePhone.isAccessibilityOn();
+          const isAccOn =
+            typeof accRes === 'boolean'
+              ? accRes
+              : Boolean(accRes?.enabled ?? accRes?.on ?? accRes?.isOn ?? accRes?.active ?? accRes?.value);
+          updated.app_perm_accessibility = isAccOn ? 'চালু' : 'বন্ধ';
+        } catch {
+          updated.app_perm_accessibility = 'বন্ধ';
+        }
+      }
+
       setStatuses(prev => ({ ...prev, ...updated }));
       return;
     }
@@ -358,6 +382,7 @@ export const AppPermissionsView = ({ setCurrentView, setToast }: any) => {
       app_perm_facebook: 'API সংযোগ পরে আসবে',
       app_perm_tiktok: 'API সংযোগ পরে আসবে',
       app_perm_instagram: 'API সংযোগ পরে আসবে',
+      app_perm_accessibility: 'APK-তে আসবে',
     };
 
     // 1. Camera
@@ -595,6 +620,20 @@ export const AppPermissionsView = ({ setCurrentView, setToast }: any) => {
 
       if (perm.id === 'app_perm_clipboard') {
         setToast?.(CLIPBOARD_APP_NOTE);
+        return;
+      }
+
+      if (perm.id === 'app_perm_accessibility') {
+        if (rosePhone && typeof rosePhone.openAccessibilitySettings === 'function') {
+          try {
+            await rosePhone.openAccessibilitySettings();
+            setToast?.('Accessibility সেটিংস খোলা হচ্ছে — ROSE চালু করো');
+          } catch {
+            setToast?.('Accessibility সেটিংস খোলা যায়নি');
+          }
+        } else {
+          setToast?.('Accessibility প্লাগইন পাওয়া যায়নি');
+        }
         return;
       }
 
@@ -928,6 +967,11 @@ export const AppPermissionsView = ({ setCurrentView, setToast }: any) => {
                     >
                       {isProcessing ? (
                         <span>অনুরোধ করা হচ্ছে...</span>
+                      ) : isApp && perm.id === 'app_perm_accessibility' ? (
+                        <>
+                          <Zap className="w-4 h-4 text-purple-200" />
+                          <span>চালু করো</span>
+                        </>
                       ) : isApp && isWhatsAppOrMessenger ? (
                         <>
                           <span>খোলো</span>
@@ -1047,6 +1091,7 @@ export const AppPermissionsView = ({ setCurrentView, setToast }: any) => {
             const Icon = perm.icon;
             const status = statuses[perm.id] || 'জিজ্ঞেস করা হয়নি';
             const isWhatsAppOrMessenger = perm.id === 'app_perm_whatsapp' || perm.id === 'app_perm_messenger';
+            const isAccessibilityBar = perm.id === 'app_perm_accessibility';
             const isNativePerm = Boolean(NATIVE_PERM_ALIAS_BY_ID[perm.id]);
             const isClipboardInApp = isApp && perm.id === 'app_perm_clipboard';
             const isDeniedTwice = isApp && isNativePerm && (status === 'বন্ধ' || Boolean(permanentlyDenied[perm.id]));
@@ -1133,11 +1178,23 @@ export const AppPermissionsView = ({ setCurrentView, setToast }: any) => {
                   </p>
                 )}
 
-                {(isNativePerm || isWhatsAppOrMessenger) && (
+                {(isNativePerm || isWhatsAppOrMessenger || isAccessibilityBar) && (
                   <div
                     className="mt-3 pt-3 border-t border-white/10 flex flex-wrap items-center gap-2"
                     onClick={(e) => e.stopPropagation()}
                   >
+                    {isAccessibilityBar && (
+                      <button
+                        type="button"
+                        disabled={isProcessing || isGrantingAll}
+                        onClick={() => handleAction(perm)}
+                        className="px-4 py-2 rounded-xl bg-gradient-to-r from-purple-600 to-indigo-600 hover:from-purple-500 hover:to-indigo-500 disabled:opacity-60 text-white font-black text-xs tracking-wide active:scale-95 transition-all inline-flex items-center gap-1.5"
+                      >
+                        <Zap className="w-3.5 h-3.5 text-purple-200" />
+                        <span>চালু করো</span>
+                      </button>
+                    )}
+
                     {isNativePerm && (
                       <button
                         type="button"

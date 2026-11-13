@@ -446,6 +446,9 @@ export class GeminiLiveSession {
   public activeMode: 'live' | 'fallback' = 'fallback';
   private userStartedSpeakingEmitted = false;
   private skipGrounding = false;
+  private speechLangMode: 'bn-BD' | 'bn-IN' | 'none' = 'bn-BD';
+  private inputTranscriptionLangRejected = false;
+  private lastSetupRejectedForLang = false;
 
   constructor(private options: GeminiLiveOptions) {}
 
@@ -891,6 +894,10 @@ export class GeminiLiveSession {
     this.watchdogReconnectedForTurn = false;
     this.liveUserBuffer = '';
     this.liveAssistantBuffer = '';
+    this.suppressedForeignTranscript = false;
+    this.speechLangMode = 'bn-BD';
+    this.inputTranscriptionLangRejected = false;
+    this.lastSetupRejectedForLang = false;
     this.phoneToolHandledForTurn = false;
     this.pendingEndCallAfterSpeech = false;
     this.endCallReceivedAudioAfterTool = false;
@@ -1501,6 +1508,19 @@ export class GeminiLiveSession {
           }
         }
 
+        if (!ok && !this.wasStoppedByUser && this.lastSetupRejectedForLang && Date.now() + 600 < deadline) {
+          this.lastSetupRejectedForLang = false;
+          const langRetryTimeout = Math.min(2200, deadline - Date.now());
+          ok = await this.trySingleLiveModel(
+            apiKey,
+            modelName,
+            langRetryTimeout,
+            true,
+            false,
+            candidateVoice
+          );
+        }
+
         if (!ok && !this.wasStoppedByUser && Date.now() + 600 < deadline) {
           const stdTimeout = Math.min(2400, deadline - Date.now());
           // Retry without affectiveDialog automatically if unsupported/errored, with no user-visible error
@@ -1508,6 +1528,19 @@ export class GeminiLiveSession {
             apiKey,
             modelName,
             stdTimeout,
+            true,
+            false,
+            candidateVoice
+          );
+        }
+
+        if (!ok && !this.wasStoppedByUser && this.lastSetupRejectedForLang && Date.now() + 600 < deadline) {
+          this.lastSetupRejectedForLang = false;
+          const langRetryTimeout2 = Math.min(2200, deadline - Date.now());
+          ok = await this.trySingleLiveModel(
+            apiKey,
+            modelName,
+            langRetryTimeout2,
             true,
             false,
             candidateVoice
@@ -1610,7 +1643,8 @@ export class GeminiLiveSession {
           finish(false);
           return;
         }
-        const STT_LANG_PROMPT = "ব্যবহারকারী বাংলা বা ইংরেজিতে কথা বলেন, শুধু বাংলা বা ইংরেজিতে লেখো, কোরিয়ান বা অন্য ভাষায় নয়। অস্পষ্ট হলে বাংলায় লেখো। ভয়েস কলে সর্বোচ্চ ২-৩ ছোট বাক্যে উত্তর দাও।";
+        const STT_LANG_PROMPT =
+          'The user speaks Bengali (sometimes English words). Always understand and transcribe as Bengali or English, never Arabic, Thai or other languages. ভয়েস কলে সর্বোচ্চ ২-৩ ছোট বাক্যে উত্তর দাও।';
         const rawLiveInst = `${STT_LANG_PROMPT}\n\n${ensureNoThoughtSystemInstruction(
           this.getEffectiveSystemInstruction()
         )}\n\n${getRoseTechInstruction()}`;
@@ -1620,15 +1654,20 @@ export class GeminiLiveSession {
           voiceNameOverride ||
           (isAdmin() ? ADMIN_PREFERRED_VOICES[0] : this.options.voiceName || 'Sulafat');
 
-        const generationConfig: any = {
-          responseModalities: ['AUDIO'],
-          speechConfig: {
-            voiceConfig: {
-              prebuiltVoiceConfig: {
-                voiceName: selectedVoiceName,
-              },
+        const speechConfigPayload: any = {
+          voiceConfig: {
+            prebuiltVoiceConfig: {
+              voiceName: selectedVoiceName,
             },
           },
+        };
+        if (this.speechLangMode !== 'none') {
+          speechConfigPayload.languageCode = this.speechLangMode;
+        }
+
+        const generationConfig: any = {
+          responseModalities: ['AUDIO'],
+          speechConfig: speechConfigPayload,
         };
 
         if (useAlphaEndpoint) {
@@ -1636,6 +1675,7 @@ export class GeminiLiveSession {
         }
 
         const micSettings = getMicListeningSettings();
+        const inputSttLang = this.speechLangMode === 'bn-IN' ? 'bn-IN' : 'bn-BD';
 
         const setupPayload: any = {
           model: `models/${modelName}`,
@@ -1650,7 +1690,9 @@ export class GeminiLiveSession {
           tools: this.skipGrounding
             ? ROSE_TEAM_TOOLS.filter((t: any) => !t.googleSearch)
             : ROSE_TEAM_TOOLS,
-          inputAudioTranscription: {},
+          inputAudioTranscription: this.inputTranscriptionLangRejected
+            ? {}
+            : { languageCodes: [inputSttLang, 'en-US'] },
           outputAudioTranscription: {},
           realtimeInputConfig: {
             automaticActivityDetection: {
@@ -1757,6 +1799,47 @@ export class GeminiLiveSession {
             }
 
             const lowerReason = safeErr.toLowerCase();
+            if (
+              !settled &&
+              (lowerReason.includes('language') ||
+                lowerReason.includes('speech_config') ||
+                lowerReason.includes('input_audio_transcription') ||
+                lowerReason.includes('bn-bd') ||
+                lowerReason.includes('bn-in') ||
+                Number(rawErrCode) === 1007)
+            ) {
+              let downgraded = false;
+              if (
+                lowerReason.includes('input_audio_transcription') ||
+                lowerReason.includes('language_codes') ||
+                lowerReason.includes('languagecodes')
+              ) {
+                if (!this.inputTranscriptionLangRejected) {
+                  this.inputTranscriptionLangRejected = true;
+                  downgraded = true;
+                }
+              }
+              if (this.speechLangMode === 'bn-BD') {
+                this.speechLangMode = 'bn-IN';
+                downgraded = true;
+              } else if (this.speechLangMode === 'bn-IN') {
+                this.speechLangMode = 'none';
+                downgraded = true;
+              } else if (!this.inputTranscriptionLangRejected) {
+                this.inputTranscriptionLangRejected = true;
+                downgraded = true;
+              }
+              if (downgraded) {
+                this.lastSetupRejectedForLang = true;
+                console.warn('[GeminiLive] Language/transcription config rejected; falling back:', {
+                  speechLangMode: this.speechLangMode,
+                  inputTranscriptionLangRejected: this.inputTranscriptionLangRejected,
+                });
+                finish(false);
+                return;
+              }
+            }
+
             const isFatalQuotaOrAuth =
               Number(rawErrCode) === 429 ||
               Number(rawErrCode) === 401 ||
@@ -1870,6 +1953,43 @@ export class GeminiLiveSession {
         }
 
         if (!settled) {
+          if (
+            event?.code === 1007 ||
+            lowerClose.includes('language') ||
+            lowerClose.includes('speech_config') ||
+            lowerClose.includes('input_audio_transcription') ||
+            lowerClose.includes('bn-bd') ||
+            lowerClose.includes('bn-in')
+          ) {
+            let downgraded = false;
+            if (
+              lowerClose.includes('input_audio_transcription') ||
+              lowerClose.includes('language_codes') ||
+              lowerClose.includes('languagecodes')
+            ) {
+              if (!this.inputTranscriptionLangRejected) {
+                this.inputTranscriptionLangRejected = true;
+                downgraded = true;
+              }
+            }
+            if (this.speechLangMode === 'bn-BD') {
+              this.speechLangMode = 'bn-IN';
+              downgraded = true;
+            } else if (this.speechLangMode === 'bn-IN') {
+              this.speechLangMode = 'none';
+              downgraded = true;
+            } else if (!this.inputTranscriptionLangRejected) {
+              this.inputTranscriptionLangRejected = true;
+              downgraded = true;
+            }
+            if (downgraded) {
+              this.lastSetupRejectedForLang = true;
+              console.warn('[GeminiLive] Handshake closed (1007/lang); falling back:', {
+                speechLangMode: this.speechLangMode,
+                inputTranscriptionLangRejected: this.inputTranscriptionLangRejected,
+              });
+            }
+          }
           finish(false);
         } else if (this.isCurrentSession(socket, socketSeq, expectedSessionId)) {
           if (isQuotaOrAuthClose && this.lastError) {
@@ -2000,11 +2120,19 @@ export class GeminiLiveSession {
           name === 'phone' ||
           name === 'phone_call' ||
           name === 'whatsapp_call' ||
+          name === 'whatsapp_send' ||
           name === 'whatsapp_message' ||
+          name === 'messenger_send' ||
+          name === 'messenger_recipient' ||
+          name === 'post_video' ||
+          name === 'app_search' ||
           name === 'phone_confirm' ||
           name === 'save_contact_alias'
         ) {
           this.phoneToolHandledForTurn = true;
+          this.liveAssistantBuffer = '';
+          this.isRoseTurnActive = false;
+          this.interruptPlayback();
           const phoneRes = await executePhoneToolActionByName(name, args || {});
           functionResponses.push({
             id: callId,
@@ -2013,6 +2141,7 @@ export class GeminiLiveSession {
               output: {
                 ok: phoneRes.ok,
                 message: phoneRes.message,
+                instruction: `Say ONLY this exact sentence in Bengali once verbatim, with nothing before or after: "${phoneRes.message}"`,
                 ...(phoneRes.contacts ? { contacts: phoneRes.contacts } : {}),
               },
             },
@@ -2253,6 +2382,18 @@ export class GeminiLiveSession {
   private liveUserBuffer = '';
   private liveAssistantBuffer = '';
   private liveStreetAllowed = true;
+  private suppressedForeignTranscript = false;
+
+  private hasDisallowedTranscriptScript(text: string): boolean {
+    if (!text) return false;
+    try {
+      return /[^\p{Script=Bengali}\p{Script=Latin}\p{N}\p{P}\p{Z}\p{S}\s]/u.test(text);
+    } catch {
+      return /[\u0600-\u06FF\u0750-\u077F\u08A0-\u08FF\u0900-\u097F\u0A00-\u0DFF\u0E00-\u0EFF\u0F00-\u1FFF\u2C00-\uD7FF\uF900-\uFEFF\u0400-\u04FF\u0370-\u03FF\u0590-\u05FF]/.test(
+        text
+      );
+    }
+  }
 
   private handleLiveServerContent(content: any) {
     if (!this.isCurrentSession()) return;
@@ -2260,21 +2401,34 @@ export class GeminiLiveSession {
     if (content.inputTranscription?.text) {
       const cleanedChunk = content.inputTranscription.text.replace(/<[^>]*>|\[[^\]]*\]/g, '');
       if (cleanedChunk.length > 0) {
-        this.liveUserBuffer += cleanedChunk;
-        const combined = this.liveUserBuffer.trim();
-        if (combined.length > 0) {
-          this.liveStreetAllowed = passesStreetModeFilter(
-            combined,
-            this.options.assistantName,
-            isPushToTalkCurrentlyActive()
-          );
-          if (this.liveStreetAllowed) {
-            this.lastHeardText = combined;
-            if (this.currentState !== 'speaking') {
-              this.awaitingReplySince = Date.now();
+        if (this.hasDisallowedTranscriptScript(cleanedChunk)) {
+          this.suppressedForeignTranscript = true;
+          if (!this.liveUserBuffer.trim()) {
+            this.options.onTranscription?.('user', '…', false);
+          }
+        } else {
+          this.liveUserBuffer += cleanedChunk;
+          const combined = this.liveUserBuffer.trim();
+          if (combined.length > 0) {
+            if (this.hasDisallowedTranscriptScript(combined)) {
+              this.suppressedForeignTranscript = true;
+              this.options.onTranscription?.('user', '…', false);
+            } else {
+              this.suppressedForeignTranscript = false;
+              this.liveStreetAllowed = passesStreetModeFilter(
+                combined,
+                this.options.assistantName,
+                isPushToTalkCurrentlyActive()
+              );
+              if (this.liveStreetAllowed) {
+                this.lastHeardText = combined;
+                if (this.currentState !== 'speaking') {
+                  this.awaitingReplySince = Date.now();
+                }
+                voiceDebugStore.recordFirstTranscript(combined);
+                this.options.onTranscription?.('user', combined, false);
+              }
             }
-            voiceDebugStore.recordFirstTranscript(combined);
-            this.options.onTranscription?.('user', combined, false);
           }
         }
       }
@@ -2356,18 +2510,18 @@ export class GeminiLiveSession {
     if (content.turnComplete) {
       this.awaitingReplySince = 0;
       this.watchdogReconnectedForTurn = false;
-      if (this.liveUserBuffer.trim()) {
-        const finalUser = this.liveUserBuffer.trim();
+      const finalUserCandidate = this.liveUserBuffer.trim();
+      if (finalUserCandidate && !this.hasDisallowedTranscriptScript(finalUserCandidate)) {
         this.liveStreetAllowed = passesStreetModeFilter(
-          finalUser,
+          finalUserCandidate,
           this.options.assistantName,
           consumePushToTalkTurnFlag()
         );
         if (this.liveStreetAllowed) {
-          voiceDebugStore.recordFirstTranscript(finalUser);
-          this.options.onTranscription?.('user', finalUser, true);
+          voiceDebugStore.recordFirstTranscript(finalUserCandidate);
+          this.options.onTranscription?.('user', finalUserCandidate, true);
         }
-      } else if (this.userStartedSpeakingEmitted) {
+      } else if (this.userStartedSpeakingEmitted || this.suppressedForeignTranscript) {
         this.options.onTranscription?.('user', '', true);
       }
       if (this.liveStreetAllowed && this.liveAssistantBuffer.trim()) {
@@ -2381,6 +2535,7 @@ export class GeminiLiveSession {
       const hadAssistantTextInTurn = Boolean(this.liveAssistantBuffer.trim());
       this.liveUserBuffer = '';
       this.liveAssistantBuffer = '';
+      this.suppressedForeignTranscript = false;
       this.phoneToolHandledForTurn = false;
       this.liveStreetAllowed = true;
       this.isRoseTurnActive = false;

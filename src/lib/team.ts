@@ -224,13 +224,18 @@ You CAN clear the chat with app_action clear_chat after the user says yes. Never
 PHONE & WHATSAPP CALL RULE (CRITICAL):
 1. Tools available:
    - phone_call(person): Start a normal phone call confirmation flow for a contact name or phone number.
-   - whatsapp_call(person, video?): Start a WhatsApp audio or video call confirmation flow.
-   - whatsapp_message(person, message): Write a short natural message in the user's language, read it back ("<name>-কে এটা পাঠাব: '<text>'। ঠিক আছে?"), and wait for user's yes before opening WhatsApp.
-   - phone_confirm(decision): Execute or cancel the pending call/message ONLY after the user says হ্যাঁ/yes/না/no.
+   - whatsapp_call(person, video?): Start a WhatsApp audio or video call confirmation flow (with accessibility auto-tap).
+   - whatsapp_send(person, message): Write a short natural message in the user's language, read it back ("<name>-কে এটা পাঠাব: '<text>'। ঠিক আছে?"), wait for user's yes, open WhatsApp and auto-tap Send if accessibility is on.
+   - messenger_send(message): Read back the message and ask confirmation ("Messenger-এ এটা পাঠাব: '<text>'। ঠিক আছে?"). After user says yes, shareTextTo opens Messenger and asks "যাকে পাঠাবে তার নাম বলো".
+   - messenger_recipient(name): After messenger_send asked "যাকে পাঠাবে তার নাম বলো", call this with the spoken recipient name to type, select, and send on Messenger.
+   - post_video(platform, topic, title?, description?, hashtags?): Write catchy title, description, and hashtags for youtube/facebook/instagram/tiktok, read them back and ask confirmation. After user says yes, copyText & pickVideoAndShare run and say "ভিডিও বাছো; লেখা কপি করা আছে। Post/Upload আমি চাপব কি না বলো।". After user says yes again, phone_confirm("yes") auto-taps Upload/Post/Share/Next.
+   - app_search(app, query): Confirm once and open in-app search for youtube, facebook, instagram, tiktok, or google.
+   - phone_confirm(decision): Execute or cancel any pending confirmation (calls, WhatsApp, Messenger, post_video copy/picker, post_video Upload/Post auto-tap, or app_search) ONLY after the user says হ্যাঁ/yes/না/no.
    - save_contact_alias(spoken_name, saved_name): Save an alias when user teaches one (e.g. "আম্মু মানে Ammu Home").
    - phone(action): For open_app or search_contacts.
-2. ALWAYS require the user's yes before any call or message. Never claim a call or message was placed until phone_confirm("yes") runs.
-3. Speak ONLY the exact single message/question returned by the tool (e.g. "<name>-কে ফোন কল দেব? হ্যাঁ বললে দেব।", "কোনটা? ১. ... ২. ...", "এই নামে কাউকে পেলাম না। ফোনে নামটা কীভাবে সেভ করা আছে বলো?", "WhatsApp-এ এই মানুষ পাওয়া যায়নি। নরমাল ফোন কল দেব? হ্যাঁ বললে দেব।", "লেখা রেডি, শুধু Send চাপো।").
+2. ALWAYS call the phone/social tool SILENTLY first before speaking a single word. NEVER say "কল করছি", "কল দিচ্ছি", "পাঠাচ্ছি", "খুলছি", or any reply before the tool result returns.
+3. ALWAYS require the user's yes before placing any call, sending any message, opening share/search, or auto-tapping Post/Upload. Never claim an action ran until the confirmation tool returns success.
+4. After the tool returns, speak ONLY the exact single message/question returned by the tool ONCE verbatim, with nothing extra before or after.
 
 END CALL RULE (CRITICAL):
 You CAN end the live voice call yourself using the end_call tool. When the user asks to hang up, stop, or end the call (e.g. ফোন কাটো, কল বন্ধ করো, রাখো, bye, end call), call end_call and say one short goodbye (e.g. "ঠিক আছে, রাখছি।"). You must NEVER say "I can't end the call" or "আমি কল কাটতে পারি না".
@@ -270,8 +275,8 @@ export const ROSE_PHONE_FUNCTION_DECLARATIONS = [
     },
   },
   {
-    name: 'whatsapp_message',
-    description: 'Prepare a short WhatsApp message in the user language and ask confirmation before opening WhatsApp.',
+    name: 'whatsapp_send',
+    description: 'Write a short WhatsApp message in the user language, read it back for confirmation, then open WhatsApp and auto-tap Send if accessibility is enabled.',
     parameters: {
       type: 'OBJECT',
       properties: {
@@ -288,8 +293,86 @@ export const ROSE_PHONE_FUNCTION_DECLARATIONS = [
     },
   },
   {
+    name: 'messenger_send',
+    description: 'Prepare a Messenger message, read it back for confirmation, then share to Messenger and ask who to send it to.',
+    parameters: {
+      type: 'OBJECT',
+      properties: {
+        message: {
+          type: 'STRING',
+          description: 'Short, natural message text to share to Messenger',
+        },
+      },
+      required: ['message'],
+    },
+  },
+  {
+    name: 'messenger_recipient',
+    description: 'After messenger_send opened Messenger and asked "যাকে পাঠাবে তার নাম বলো", call this with the recipient name spoken by the user.',
+    parameters: {
+      type: 'OBJECT',
+      properties: {
+        name: {
+          type: 'STRING',
+          description: 'Recipient name spoken by the user',
+        },
+      },
+      required: ['name'],
+    },
+  },
+  {
+    name: 'post_video',
+    description: 'Write title, description and hashtags for a video post on youtube, facebook, instagram, or tiktok, read them back for confirmation, copy them and open video share picker.',
+    parameters: {
+      type: 'OBJECT',
+      properties: {
+        platform: {
+          type: 'STRING',
+          enum: ['youtube', 'facebook', 'instagram', 'tiktok'],
+          description: 'Target social platform',
+        },
+        topic: {
+          type: 'STRING',
+          description: 'Video topic described by the user',
+        },
+        title: {
+          type: 'STRING',
+          description: 'Short catchy video title',
+        },
+        description: {
+          type: 'STRING',
+          description: 'Video post description in user language',
+        },
+        hashtags: {
+          type: 'STRING',
+          description: 'Space-separated relevant hashtags',
+        },
+      },
+      required: ['platform', 'topic'],
+    },
+  },
+  {
+    name: 'app_search',
+    description: 'Confirm once and search inside youtube, facebook, instagram, tiktok, or google.',
+    parameters: {
+      type: 'OBJECT',
+      properties: {
+        app: {
+          type: 'STRING',
+          enum: ['youtube', 'facebook', 'instagram', 'tiktok', 'google'],
+          description: 'Target app to search in',
+        },
+        query: {
+          type: 'STRING',
+          description: 'Search query text',
+        },
+      },
+      required: ['app', 'query'],
+    },
+  },
+  {
     name: 'phone_confirm',
-    description: 'Confirm or cancel a pending phone call, WhatsApp call, or WhatsApp message ONLY after the user explicitly replies yes/হ্যাঁ or no/না.',
+    description: 'Confirm or cancel ANY pending phone/social action (phone_call, whatsapp_call, whatsapp_send, messenger_send, post_video copy/picker, post_video Upload/Post auto-tap, or app_search) ONLY after user replies yes/হ্যাঁ or no/না.',
     parameters: {
       type: 'OBJECT',
       properties: {

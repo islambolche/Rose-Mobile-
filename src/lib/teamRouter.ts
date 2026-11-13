@@ -86,13 +86,16 @@ export async function routeUserMessageForTeamTask(
   }
 
   // 1b. Phone actions ("phone": call_contact, call_number, open_app, and 15s confirmation / contact choice)
-  const phoneRoute = await routePhoneActionFromText(rawText);
-  if (phoneRoute.matched && phoneRoute.reply) {
-    return {
-      matched: true,
-      type: 'phone',
-      roseReply: phoneRoute.reply,
-    };
+  // In live voice calls, the live model handles phone tools directly; skipping router here prevents duplicate speech.
+  if (!options.isVoiceCall) {
+    const phoneRoute = await routePhoneActionFromText(rawText);
+    if (phoneRoute.matched && phoneRoute.reply) {
+      return {
+        matched: true,
+        type: 'phone',
+        roseReply: phoneRoute.reply,
+      };
+    }
   }
 
   // 2. App vs Phone Settings

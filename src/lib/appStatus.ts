@@ -79,8 +79,48 @@ export const APP_STATUS: AppStatusItem[] = [
     name: 'Phone Control & Permissions',
     nameBn: 'ফোন কন্ট্রোল ও অ্যাপ অনুমতি',
     category: 'Phone',
-    status: 'in progress',
-    description: 'ক্যামেরা, মাইক, লোকেশন পারমিশন যুক্ত; ওয়েব ও ডিপলিঙ্ক কাজ করছে।'
+    status: 'done',
+    description: 'ক্যামেরা, মাইক, লোকেশন, কন্টাক্ট, ফোন কল ও Accessibility (অটো-চাপা) স্ট্যাটাস ও অনুমতি চালু।'
+  },
+  {
+    id: 'phone_call_whatsapp',
+    name: 'Phone Call & WhatsApp Call/Message',
+    nameBn: 'ফোন কল ও হোয়াটসঅ্যাপ কল/মেসেজ',
+    category: 'Phone',
+    status: 'done',
+    description: 'অ্যালিয়াসসহ কন্টাক্ট ম্যাচিং, phone_call, whatsapp_call ও whatsapp_send (অটো-ট্যাপসহ) সম্পন্ন।'
+  },
+  {
+    id: 'messenger_auto_send',
+    name: 'Messenger Share & Auto-Tap',
+    nameBn: 'মেসেঞ্জার মেসেজ ও অটো-সেন্ড',
+    category: 'Social',
+    status: 'done',
+    description: 'Messenger-এ মেসেজ শেয়ার, প্রাপকের নাম টাইপ/সিলেক্ট ও Send অটো-ট্যাপ কার্যকর।'
+  },
+  {
+    id: 'video_post_share',
+    name: 'Video Share to YouTube/FB/IG/TikTok',
+    nameBn: 'ভিডিও শেয়ার ও অটো-পোস্ট (YT/FB/IG/TikTok)',
+    category: 'Social',
+    status: 'done',
+    description: 'শিরোনাম, বিবরণ ও হ্যাশট্যাগ তৈরি, কপি, ভিডিও পিকার এবং কনফার্ম করলে Upload/Post অটো-ট্যাপ সম্পন্ন।'
+  },
+  {
+    id: 'app_search_tool',
+    name: 'In-App Search Tool',
+    nameBn: 'অ্যাপ সার্চ (YT/FB/IG/TikTok/Google)',
+    category: 'Social',
+    status: 'done',
+    description: 'YouTube, Facebook, Instagram, TikTok ও Google-এ সরাসরি সার্চ চালু।'
+  },
+  {
+    id: 'accessibility_auto_tap',
+    name: 'Accessibility Auto-Tap',
+    nameBn: 'অ্যাক্সেসিবিলিটি অটো-চাপা',
+    category: 'Phone',
+    status: 'done',
+    description: 'isAccessibilityOn যাচাই, সেটিংস খোলা ও Send/Call/Post বোতাম অটো-ট্যাপ সম্পন্ন।'
   },
   {
     id: 'pc_setup',
