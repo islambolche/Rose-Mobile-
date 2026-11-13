@@ -1,4 +1,4 @@
-import { getGeminiKey, isApiBackendAvailable, setApiBackendAvailable } from './geminiKey';
+import { getGeminiKey, setApiBackendAvailable } from './geminiKey';
 
 export const resolveClientGeminiKey = (explicitKey?: string): string => {
   const cleanExplicit = String(explicitKey || '')
@@ -21,116 +21,15 @@ export const resolveClientGeminiKey = (explicitKey?: string): string => {
   return '';
 };
 
-const normalizeDirectContents = (contents: any, prompt?: any) => {
-  if (!contents && prompt) {
-    return [{ role: 'user', parts: [{ text: String(prompt) }] }];
-  }
-  if (typeof contents === 'string') {
-    return [{ role: 'user', parts: [{ text: contents }] }];
-  }
-  if (!Array.isArray(contents)) return [];
-
-  return contents.map((item: any) => {
-    if (typeof item === 'string') {
-      return { role: 'user', parts: [{ text: item }] };
-    }
-    if (item && item.text && !item.parts) {
-      return {
-        role: item.role === 'assistant' || item.role === 'rose' ? 'model' : item.role || 'user',
-        parts: [{ text: String(item.text) }],
-      };
-    }
-    if (item && Array.isArray(item.parts)) {
-      const mappedParts = item.parts.map((p: any) => {
-        if (p && p.inline_data && !p.inlineData) {
-          return {
-            inlineData: {
-              mimeType: p.inline_data.mime_type || p.inline_data.mimeType || 'audio/webm',
-              data: p.inline_data.data,
-            },
-          };
-        }
-        return p;
-      });
-      return {
-        ...item,
-        role: item.role === 'assistant' || item.role === 'rose' ? 'model' : item.role || 'user',
-        parts: mappedParts,
-      };
-    }
-    return item;
-  });
-};
-
-const normalizeDirectSystemInstruction = (sys: any) => {
-  if (!sys) return undefined;
-  if (typeof sys === 'string') {
-    const clean = sys.trim();
-    return clean ? { parts: [{ text: clean }] } : undefined;
-  }
-  return sys;
-};
-
-const normalizeDirectBody = (payload: any) => {
-  const body: any = {
-    contents: normalizeDirectContents(payload?.contents, payload?.prompt),
-  };
-  const sys = normalizeDirectSystemInstruction(payload?.systemInstruction);
-  if (sys) body.systemInstruction = sys;
-  if (payload?.generationConfig) body.generationConfig = payload.generationConfig;
-  if (Array.isArray(payload?.tools) && payload.tools.length > 0) body.tools = payload.tools;
-  if (payload?.toolConfig) body.toolConfig = payload.toolConfig;
-  return body;
-};
-
-const isMissingApiRouteResponse = (res: Response): boolean => {
-  if (res.status === 404 || res.status === 405) return true;
-  const ct = String(res.headers.get('content-type') || '').toLowerCase();
-  // Vercel static fallback often serves index.html (text/html) for unknown paths
-  if (ct.includes('text/html') && !res.ok) return true;
-  return false;
-};
-
-const stripRiffHeaderFromBase64 = (rawB64: string): string => {
-  try {
-    const bin = atob(rawB64);
-    if (
-      bin.length > 44 &&
-      bin.charCodeAt(0) === 0x52 && // R
-      bin.charCodeAt(1) === 0x49 && // I
-      bin.charCodeAt(2) === 0x46 && // F
-      bin.charCodeAt(3) === 0x46 // F
-    ) {
-      const stripped = bin.slice(44);
-      let out = '';
-      const chunk = 0x8000;
-      for (let i = 0; i < stripped.length; i += chunk) {
-        out += stripped.slice(i, i + chunk);
-      }
-      return btoa(out);
-    }
-  } catch {}
-  return rawB64;
-};
-
 export async function fetchGeminiModelsWithFallback(
   apiKey?: string,
   signal?: AbortSignal
 ): Promise<Response> {
   const cleanKey = resolveClientGeminiKey(apiKey);
-  try {
-    const res = await fetch('https://generativelanguage.googleapis.com/v1beta/models', {
-      method: 'GET',
-      headers: cleanKey ? { 'x-goog-api-key': cleanKey } : {},
-      signal,
-    });
-    if (res.ok) return res;
-  } catch {}
-
   const proxyUrl = `/api/gemini/models${cleanKey ? `?apiKey=${encodeURIComponent(cleanKey)}` : ''}`;
-  const proxyRes = await fetch(proxyUrl, { method: 'GET', signal });
-  if (proxyRes.ok) setApiBackendAvailable(true);
-  return proxyRes;
+  const res = await fetch(proxyUrl, { method: 'GET', signal });
+  if (res.ok) setApiBackendAvailable(true);
+  return res;
 }
 
 export async function fetchGeminiGenerateWithFallback(
@@ -138,30 +37,15 @@ export async function fetchGeminiGenerateWithFallback(
   signal?: AbortSignal
 ): Promise<Response> {
   const cleanKey = resolveClientGeminiKey(payload?.apiKey);
-  const rawModel = String(payload?.model || 'gemini-1.5-flash').replace(/^models\//, '').trim();
-  const directBody = normalizeDirectBody(payload);
-  try {
-    const res = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${rawModel}:generateContent`, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        ...(cleanKey ? { 'x-goog-api-key': cleanKey } : {}),
-      },
-      body: JSON.stringify(directBody),
-      signal,
-    });
-    if (res.ok) return res;
-  } catch {}
-
   const bodyPayload = cleanKey ? { ...payload, apiKey: cleanKey } : payload;
-  const proxyRes = await fetch('/api/gemini/generate', {
+  const res = await fetch('/api/gemini/generate', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(bodyPayload),
     signal,
   });
-  if (proxyRes.ok) setApiBackendAvailable(true);
-  return proxyRes;
+  if (res.ok) setApiBackendAvailable(true);
+  return res;
 }
 
 export async function fetchGeminiStreamWithFallback(
@@ -169,30 +53,15 @@ export async function fetchGeminiStreamWithFallback(
   signal?: AbortSignal
 ): Promise<Response> {
   const cleanKey = resolveClientGeminiKey(payload?.apiKey);
-  const rawModel = String(payload?.model || 'gemini-1.5-flash').replace(/^models\//, '').trim();
-  const directBody = normalizeDirectBody(payload);
-  try {
-    const res = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${rawModel}:streamGenerateContent?alt=sse`, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        ...(cleanKey ? { 'x-goog-api-key': cleanKey } : {}),
-      },
-      body: JSON.stringify(directBody),
-      signal,
-    });
-    if (res.ok) return res;
-  } catch {}
-
   const bodyPayload = cleanKey ? { ...payload, apiKey: cleanKey } : payload;
-  const proxyRes = await fetch('/api/gemini/stream', {
+  const res = await fetch('/api/gemini/stream', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(bodyPayload),
     signal,
   });
-  if (proxyRes.ok) setApiBackendAvailable(true);
-  return proxyRes;
+  if (res.ok) setApiBackendAvailable(true);
+  return res;
 }
 
 export async function fetchGeminiTtsWithFallback(
@@ -200,43 +69,13 @@ export async function fetchGeminiTtsWithFallback(
   signal?: AbortSignal
 ): Promise<Response> {
   const cleanKey = resolveClientGeminiKey(payload?.apiKey);
-  const rawModel = String(payload?.model || '').replace(/^models\//, '').trim();
-  const targetModel =
-    rawModel && rawModel.toLowerCase().includes('tts')
-      ? rawModel
-      : 'gemini-2.5-flash-preview-tts';
-  const directBody = {
-    ...normalizeDirectBody(payload),
-    generationConfig: {
-      ...(payload?.generationConfig || {}),
-      responseModalities: ["AUDIO"]
-    }
-  };
-  try {
-    const res = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${targetModel}:generateContent`, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        ...(cleanKey ? { 'x-goog-api-key': cleanKey } : {}),
-      },
-      body: JSON.stringify(directBody),
-      signal,
-    });
-    if (res.ok) return res;
-  } catch {}
-
-  const bodyPayload = cleanKey
-    ? { ...payload, model: targetModel, apiKey: cleanKey }
-    : { ...payload, model: targetModel };
-
-  const proxyRes = await fetch('/api/gemini/tts', {
+  const bodyPayload = cleanKey ? { ...payload, apiKey: cleanKey } : payload;
+  const res = await fetch('/api/gemini/tts', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(bodyPayload),
     signal,
   });
-  if (proxyRes.ok) setApiBackendAvailable(true);
-  return proxyRes;
+  if (res.ok) setApiBackendAvailable(true);
+  return res;
 }
-
-
