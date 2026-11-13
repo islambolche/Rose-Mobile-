@@ -767,7 +767,7 @@ export class GeminiLiveSession {
   private sentSmartVadDisabledConfig = false;
   private preSpeechRing: Float32Array[] = [];
   private preSpeechSamplesCount = 0;
-  private readonly PRE_SPEECH_TARGET_SAMPLES = 4800; // 300 ms at 16 kHz
+  private readonly PRE_SPEECH_TARGET_SAMPLES = 16000; // 1000 ms at 16 kHz
   private bargeInSpeechMs = 0;
   private isWarmOnly = false;
   private warmReady = false;
@@ -2497,6 +2497,16 @@ export class GeminiLiveSession {
 
         const pcm16Bytes = downsampleToPCM16(float32Samples, sourceSampleRate, 16000);
         if (pcm16Bytes.byteLength === 0) return;
+
+        const view = new DataView(pcm16Bytes.buffer, pcm16Bytes.byteOffset, pcm16Bytes.byteLength);
+        const sampleCount = Math.floor(pcm16Bytes.byteLength / 2);
+        const float3216k = new Float32Array(sampleCount);
+        for (let i = 0; i < sampleCount; i++) {
+          float3216k[i] = view.getInt16(i * 2, true) / 32768.0;
+        }
+        if (!this.smartTurnOpen) {
+          this.pushPreSpeechFrame(float3216k);
+        }
 
         let binary = '';
         for (let i = 0; i < pcm16Bytes.byteLength; i++) {

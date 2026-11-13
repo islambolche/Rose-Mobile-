@@ -118,35 +118,10 @@ export async function fetchGeminiModelsWithFallback(
   signal?: AbortSignal
 ): Promise<Response> {
   const cleanKey = resolveClientGeminiKey(apiKey);
-
-  if (isApiBackendAvailable() !== false) {
-    const proxyUrl = `/api/gemini/models${cleanKey ? `?apiKey=${encodeURIComponent(cleanKey)}` : ''}`;
-    try {
-      const proxyRes = await fetch(proxyUrl, { method: 'GET', signal });
-      if (isMissingApiRouteResponse(proxyRes)) {
-        setApiBackendAvailable(false);
-        if (!cleanKey) {
-          return new Response(JSON.stringify({ error: { code: 401, message: 'Add your Gemini key in Settings > Connections.' } }), {
-            status: 401,
-            headers: { 'Content-Type': 'application/json' },
-          });
-        }
-      } else {
-        if (proxyRes.ok) setApiBackendAvailable(true);
-        return proxyRes;
-      }
-    } catch (err: any) {
-      if (err?.name === 'AbortError' || !cleanKey) throw err;
-    }
-  }
-
-  return await fetch('https://generativelanguage.googleapis.com/v1beta/models?pageSize=200', {
-    method: 'GET',
-    headers: {
-      'x-goog-api-key': cleanKey,
-    },
-    signal,
-  });
+  const proxyUrl = `/api/gemini/models${cleanKey ? `?apiKey=${encodeURIComponent(cleanKey)}` : ''}`;
+  const proxyRes = await fetch(proxyUrl, { method: 'GET', signal });
+  if (proxyRes.ok) setApiBackendAvailable(true);
+  return proxyRes;
 }
 
 export async function fetchGeminiGenerateWithFallback(
@@ -154,49 +129,15 @@ export async function fetchGeminiGenerateWithFallback(
   signal?: AbortSignal
 ): Promise<Response> {
   const cleanKey = resolveClientGeminiKey(payload?.apiKey);
-
-  if (isApiBackendAvailable() !== false) {
-    try {
-      const proxyRes = await fetch('/api/gemini/generate', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(payload),
-        signal,
-      });
-      if (isMissingApiRouteResponse(proxyRes)) {
-        setApiBackendAvailable(false);
-        if (!cleanKey) {
-          return new Response(JSON.stringify({ error: { code: 401, message: 'Add your Gemini key in Settings > Connections.' } }), {
-            status: 401,
-            headers: { 'Content-Type': 'application/json' },
-          });
-        }
-      } else {
-        if (proxyRes.ok) setApiBackendAvailable(true);
-        return proxyRes;
-      }
-    } catch (err: any) {
-      if (err?.name === 'AbortError' || !cleanKey) throw err;
-    }
-  }
-
-  let cleanModel = String(payload?.model || 'gemini-4-hydrogen').replace(/^models\//, '').trim();
-  if (!cleanModel || !cleanModel.startsWith('gemini') || cleanModel.includes('native-audio') || cleanModel.includes('live')) {
-    cleanModel = 'gemini-4-hydrogen';
-  }
-
-  return await fetch(
-    `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(cleanModel)}:generateContent`,
-    {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'x-goog-api-key': cleanKey,
-      },
-      body: JSON.stringify(normalizeDirectBody(payload)),
-      signal,
-    }
-  );
+  const bodyPayload = cleanKey ? { ...payload, apiKey: cleanKey } : payload;
+  const proxyRes = await fetch('/api/gemini/generate', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(bodyPayload),
+    signal,
+  });
+  if (proxyRes.ok) setApiBackendAvailable(true);
+  return proxyRes;
 }
 
 export async function fetchGeminiStreamWithFallback(
@@ -204,49 +145,15 @@ export async function fetchGeminiStreamWithFallback(
   signal?: AbortSignal
 ): Promise<Response> {
   const cleanKey = resolveClientGeminiKey(payload?.apiKey);
-
-  if (isApiBackendAvailable() !== false) {
-    try {
-      const proxyRes = await fetch('/api/gemini/stream', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(payload),
-        signal,
-      });
-      if (isMissingApiRouteResponse(proxyRes)) {
-        setApiBackendAvailable(false);
-        if (!cleanKey) {
-          return new Response(JSON.stringify({ error: { code: 401, message: 'Add your Gemini key in Settings > Connections.' } }), {
-            status: 401,
-            headers: { 'Content-Type': 'application/json' },
-          });
-        }
-      } else {
-        if (proxyRes.ok) setApiBackendAvailable(true);
-        return proxyRes;
-      }
-    } catch (err: any) {
-      if (err?.name === 'AbortError' || !cleanKey) throw err;
-    }
-  }
-
-  let cleanModel = String(payload?.model || 'gemini-4-hydrogen').replace(/^models\//, '').trim();
-  if (!cleanModel || !cleanModel.startsWith('gemini') || cleanModel.includes('native-audio') || cleanModel.includes('live')) {
-    cleanModel = 'gemini-4-hydrogen';
-  }
-
-  return await fetch(
-    `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(cleanModel)}:streamGenerateContent?alt=sse`,
-    {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'x-goog-api-key': cleanKey,
-      },
-      body: JSON.stringify(normalizeDirectBody(payload)),
-      signal,
-    }
-  );
+  const bodyPayload = cleanKey ? { ...payload, apiKey: cleanKey } : payload;
+  const proxyRes = await fetch('/api/gemini/stream', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(bodyPayload),
+    signal,
+  });
+  if (proxyRes.ok) setApiBackendAvailable(true);
+  return proxyRes;
 }
 
 export async function fetchGeminiTtsWithFallback(
@@ -259,90 +166,18 @@ export async function fetchGeminiTtsWithFallback(
     rawModel && rawModel.toLowerCase().includes('tts')
       ? rawModel
       : 'gemini-2.5-flash-preview-tts';
-  const voicesToTry: string[] =
-    Array.isArray(payload?.voices) && payload.voices.length > 0
-      ? payload.voices.map((v: any) => String(v || '').trim()).filter(Boolean)
-      : [String(payload?.voiceName || 'Leda').trim() || 'Leda'];
+  const bodyPayload = cleanKey
+    ? { ...payload, model: targetModel, apiKey: cleanKey }
+    : { ...payload, model: targetModel };
 
-  if (cleanKey) {
-    let lastRes: Response | null = null;
-    for (const voiceName of voicesToTry) {
-      const res = await fetch(
-        `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(targetModel)}:generateContent`,
-        {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-            'x-goog-api-key': cleanKey,
-          },
-          body: JSON.stringify({
-            contents: [{ parts: [{ text: String(payload?.text || '') }] }],
-            generationConfig: {
-              responseModalities: ['AUDIO'],
-              speechConfig: {
-                voiceConfig: {
-                  prebuiltVoiceConfig: { voiceName },
-                },
-              },
-            },
-          }),
-          signal,
-        }
-      );
-
-      lastRes = res;
-      if (!res.ok) {
-        if (res.status === 400) continue;
-        return res;
-      }
-
-      const data = await res.json().catch(() => null);
-      const rawB64 = data?.candidates?.[0]?.content?.parts?.find((p: any) => p?.inlineData)?.inlineData?.data;
-      if (rawB64) {
-        return new Response(
-          JSON.stringify({
-            audio: stripRiffHeaderFromBase64(rawB64),
-            modelUsed: targetModel,
-            voiceUsed: voiceName,
-          }),
-          {
-            status: 200,
-            headers: { 'Content-Type': 'application/json' },
-          }
-        );
-      }
-    }
-
-    if (lastRes) {
-      return lastRes;
-    }
-  }
-
-  if (isApiBackendAvailable() !== false) {
-    try {
-      const proxyRes = await fetch('/api/gemini/tts', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ ...payload, model: targetModel }),
-        signal,
-      });
-      if (isMissingApiRouteResponse(proxyRes)) {
-        setApiBackendAvailable(false);
-      } else {
-        if (proxyRes.ok) setApiBackendAvailable(true);
-        return proxyRes;
-      }
-    } catch (err: any) {
-      if (err?.name === 'AbortError') throw err;
-    }
-  }
-
-  return new Response(
-    JSON.stringify({ error: { message: 'No audio returned from Gemini TTS', code: 500 } }),
-    {
-      status: 500,
-      headers: { 'Content-Type': 'application/json' },
-    }
-  );
+  const proxyRes = await fetch('/api/gemini/tts', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(bodyPayload),
+    signal,
+  });
+  if (proxyRes.ok) setApiBackendAvailable(true);
+  return proxyRes;
 }
+
 

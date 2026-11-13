@@ -2,7 +2,8 @@ import { supabase } from './supabase';
 import { getPcDeviceId, sendPcCommand } from '../pc/pcClient';
 import { PC_TASK_FUNCTION_DECLARATION, executePcTaskTool, getPcTasks } from '../pc/pcTaskManager';
 import { officeEvents } from '../components/pc/office/officeEngine';
-import { getGeminiKey } from './geminiKey';
+import { getGeminiKey, ensureGeminiReady } from './geminiKey';
+import { fetchGeminiGenerateWithFallback } from './geminiDirect';
 
 export type OfficeAgentId = 'rose' | 'mira' | 'arin' | 'zayan' | 'naira';
 export type OfficeTaskKind = 'task' | 'status';
@@ -827,7 +828,8 @@ async function runOfficeAgentWithGemini(row: OfficeTaskRow): Promise<string> {
     if (bp) businessProfileStr = bp;
   } catch {}
 
-  if (!apiKey) {
+  const hasGemini = await ensureGeminiReady(apiKey);
+  if (!hasGemini) {
     if (row.kind === 'status') {
       if (agentLiveTasks || agentRecentTasks) {
         return `আমি ${agentBengali}। আমার সাম্প্রতিক কাজ:\n${agentLiveTasks || agentRecentTasks}`;
@@ -885,16 +887,11 @@ async function runOfficeAgentWithGemini(row: OfficeTaskRow): Promise<string> {
       ];
     }
 
-    const response = await fetch(
-      `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${encodeURIComponent(
-        apiKey
-      )}`,
-      {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(requestBody),
-      }
-    );
+    const response = await fetchGeminiGenerateWithFallback({
+      model: 'gemini-2.5-flash',
+      ...requestBody,
+      ...(apiKey ? { apiKey } : {}),
+    });
 
     if (!response.ok) {
       throw new Error(`Gemini HTTP ${response.status}`);
@@ -937,16 +934,11 @@ async function runOfficeAgentWithGemini(row: OfficeTaskRow): Promise<string> {
       };
 
       try {
-        const followRes = await fetch(
-          `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${encodeURIComponent(
-            apiKey
-          )}`,
-          {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify(followUpBody),
-          }
-        );
+        const followRes = await fetchGeminiGenerateWithFallback({
+          model: 'gemini-2.5-flash',
+          ...followUpBody,
+          ...(apiKey ? { apiKey } : {}),
+        });
         if (followRes.ok) {
           const followData = await followRes.json();
           const followText = followData?.candidates?.[0]?.content?.parts

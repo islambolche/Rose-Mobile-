@@ -128,7 +128,7 @@ export const AuthScreen: React.FC<AuthScreenProps> = ({ onLoginSuccess }) => {
 
   return (
     <div className="fixed inset-0 overflow-y-auto flex flex-col justify-end">
-      <img src="/rose-bg.webp" alt="Rose" className="fixed inset-0 w-full h-full object-cover object-[center_0%] scale-[1.05] z-0" />
+      <img src="/rose-mobile.png" alt="Rose" className="fixed inset-0 w-full h-full object-cover object-[center_top] scale-[1.05] z-0" />
       <div className="fixed bottom-0 left-0 right-0 h-[50%] z-[1] bg-gradient-to-t from-[#030614] to-transparent opacity-[0.92]" />
 
       <div className="relative z-[2] px-4 pb-[calc(env(safe-area-inset-bottom)+20px)] flex flex-col gap-[12px] h-[42vh] justify-end">

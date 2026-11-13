@@ -84,7 +84,7 @@ const resolveGeminiApiKey = (customKey?: string): string => {
     : (serverSecretVault.freeKey || serverSecretVault.paidKey);
   const rawEnvKey = (process.env.GEMINI_API_KEY || '').trim();
   const usableEnvKey = rawEnvKey && !rawEnvKey.startsWith('AQ.') && rawEnvKey !== 'placeholder' ? rawEnvKey : '';
-  return cleanCustom || activeServerKey || usableEnvKey || '';
+  return cleanCustom || usableEnvKey || activeServerKey || '';
 };
 
 const getGenAIClient = (customKey?: string, apiVersion?: string) => {
@@ -1131,47 +1131,20 @@ app.post('/api/gemini/tts', async (req, res) => {
       for (let vIdx = 0; vIdx < voicesToTry.length; vIdx++) {
         const candidateVoice = voicesToTry[vIdx];
         try {
-          const upstreamRes = await fetch(
-            `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(m)}:generateContent`,
-            {
-              method: 'POST',
-              headers: {
-                'Content-Type': 'application/json',
-                'x-goog-api-key': effectiveKey,
-              },
-              body: JSON.stringify({
-                contents: [{ parts: [{ text: ttsPrompt }] }],
-                generationConfig: {
-                  responseModalities: ['AUDIO'],
-                  speechConfig: {
-                    voiceConfig: {
-                      prebuiltVoiceConfig: { voiceName: candidateVoice },
-                    },
-                  },
+          const response = await client.models.generateContent({
+            model: m,
+            contents: [{ parts: [{ text: ttsPrompt }] }],
+            config: {
+              responseModalities: [Modality.AUDIO],
+              speechConfig: {
+                voiceConfig: {
+                  prebuiltVoiceConfig: { voiceName: candidateVoice },
                 },
-              }),
-            }
-          );
+              },
+            },
+          });
 
-          const rawText = await upstreamRes.text().catch(() => '');
-          let data: any = null;
-          try {
-            data = rawText ? JSON.parse(rawText) : null;
-          } catch {}
-
-          if (!upstreamRes.ok) {
-            lastStatus = upstreamRes.status;
-            lastErrorText = data?.error?.message || rawText || `HTTP ${upstreamRes.status}`;
-            if (upstreamRes.status === 400 && vIdx + 1 < voicesToTry.length) {
-              continue;
-            }
-            if (upstreamRes.status === 404) {
-              return false;
-            }
-            break;
-          }
-
-          const rawB64 = data?.candidates?.[0]?.content?.parts?.find((p: any) => p?.inlineData)?.inlineData?.data;
+          const rawB64 = response?.candidates?.[0]?.content?.parts?.find((p: any) => p?.inlineData)?.inlineData?.data;
           if (rawB64) {
             const buf = Buffer.from(rawB64, 'base64');
             if (buf.length > 44 && buf.toString('ascii', 0, 4) === 'RIFF') {
@@ -1441,6 +1414,7 @@ const ensureSharedBusinessState = () => {
 
 const getSanitizedBusinessState = () => {
   const state = ensureSharedBusinessState();
+  const effectiveFreeKey = serverSecretVault.freeKey || resolveGeminiApiKey();
   return {
     ...state,
     activeGeminiProfile: serverSecretVault.activeProfile,
@@ -1448,10 +1422,10 @@ const getSanitizedBusinessState = () => {
       free: {
         ...(state.geminiProfiles?.free || {}),
         key: '', // Never leak raw key to client
-        hasKey: Boolean(serverSecretVault.freeKey),
-        maskedKey: maskApiKey(serverSecretVault.freeKey),
-        verificationStatus: state.geminiProfiles?.free?.verificationStatus || (serverSecretVault.freeKey ? "VERIFIED" : "NOT CONFIGURED"),
-        status: state.geminiProfiles?.free?.status || (serverSecretVault.freeKey ? "connected" : "not_configured"),
+        hasKey: Boolean(effectiveFreeKey),
+        maskedKey: maskApiKey(effectiveFreeKey),
+        verificationStatus: state.geminiProfiles?.free?.verificationStatus || (effectiveFreeKey ? "VERIFIED" : "NOT CONFIGURED"),
+        status: state.geminiProfiles?.free?.status || (effectiveFreeKey ? "connected" : "not_configured"),
       },
       paid: {
         ...(state.geminiProfiles?.paid || {}),

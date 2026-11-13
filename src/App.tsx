@@ -1394,9 +1394,10 @@ const VoiceCheckView = ({
     try {
       const controller = new AbortController();
       const timeoutId = setTimeout(() => controller.abort(), 4000);
-      const res = await fetch("https://generativelanguage.googleapis.com/v1beta/models", {
-        method: "GET",
-        headers: { "x-goog-api-key": rawKey },
+      const res = await fetch("/api/gemini/verify", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ apiKey: rawKey }),
         signal: controller.signal,
       });
       clearTimeout(timeoutId);
@@ -2101,6 +2102,9 @@ const VoiceCheckView = ({
             </p>
             <p className="text-[11px] text-slate-400 font-medium">
               Language: <span className="text-white font-bold">{currentLangObj.label}</span> · Speed: <span className="text-white font-bold">{prefs.speechSpeed.toFixed(2)}x</span>
+            </p>
+            <p className="text-[11px] text-purple-300 font-bold">
+              Pre-roll: 1000 ms · positiveSpeechThreshold: 0.5, negativeSpeechThreshold: 0.35, minSpeechFrames: 3, preSpeechPadFrames: 10, redemptionFrames: 8
             </p>
             {effectiveLastError && (
               <p className="text-[11px] text-red-400 font-bold break-words">
@@ -5573,12 +5577,15 @@ export function App() {
 
         try {
           let url = "";
-          const method = "GET";
+          let method = "GET";
           const headers: Record<string, string> = {};
+          let body: string | undefined = undefined;
 
           if (type === "gemini") {
-            url = "https://generativelanguage.googleapis.com/v1beta/models";
-            headers["x-goog-api-key"] = cleanKey;
+            url = "/api/gemini/verify";
+            method = "POST";
+            headers["Content-Type"] = "application/json";
+            body = JSON.stringify({ apiKey: cleanKey });
           } else if (type === "groq") {
             url = "https://api.groq.com/openai/v1/models";
             headers["Authorization"] = `Bearer ${cleanKey}`;
@@ -5590,6 +5597,7 @@ export function App() {
           const res = await fetch(url, {
             method,
             headers,
+            ...(body ? { body } : {}),
             signal: controller.signal
           });
           clearTimeout(timeoutId);
@@ -8163,10 +8171,12 @@ export function App() {
   useEffect(() => {
     const preWarmModels = () => {
       const key = (getGeminiKey() || apiKeysRef.current.gemini || "").replace(/["'\r\n\t\s]+/g, "").trim();
-      if (key) {
-        void discoverVoiceModelsFromListModels(key).catch(() => {});
-        void discoverAvailableTtsModels(key, false).catch(() => {});
-      }
+      void ensureGeminiReady(key).then((ready) => {
+        if (ready) {
+          void discoverVoiceModelsFromListModels(key).catch(() => {});
+          void discoverAvailableTtsModels(key, false).catch(() => {});
+        }
+      });
     };
     preWarmModels();
 
@@ -11688,34 +11698,52 @@ export function App() {
     setVoiceSettingsTestResult(null);
     const token = cancelAllSpeechAndAudio(true);
     const sampleText = "হ্যালো, আমি রোজ। আপনার দিনটি কেমন কাটছে?";
+    const voiceLabel = getVoicePreset(prefsRef.current.voiceName).voiceName || "Leda";
+    const sampleCacheKey = `rose_test_voice_sample_${voiceLabel}`;
 
     try {
-      const cleanKey = (getGeminiKey() || apiKeysRef.current.gemini || "").replace(/["'\r\n\t\s]+/g, "").trim();
+      let b64Audio = await getAudioCacheDB(sampleCacheKey);
       let geminiSpoke = false;
       let geminiErrMsg = "";
 
-      if (cleanKey || (await ensureGeminiReady(cleanKey))) {
-        try {
-          const voiceLabel = getVoicePreset(prefsRef.current.voiceName).voiceName || "Leda";
-          const data = await directGeminiTTS({
-            text: sampleText,
-            voiceName: voiceLabel,
-            apiKey: cleanKey,
-          });
-          if (data?.audio && speechTokenRef.current === token) {
-            geminiSpoke = await playPrefetchedGeminiAudio(
-              data.audio,
-              token,
-              6000,
-              vol,
-              overrideSpeed
-            );
+      if (!b64Audio) {
+        const cleanKey = (getGeminiKey() || apiKeysRef.current.gemini || "").replace(/["'\r\n\t\s]+/g, "").trim();
+        if (cleanKey || (await ensureGeminiReady(cleanKey))) {
+          try {
+            const data = await directGeminiTTS({
+              text: sampleText,
+              voiceName: voiceLabel,
+              apiKey: cleanKey,
+            });
+            if (data?.audio) {
+              const audioData = data.audio;
+              b64Audio = audioData;
+              await saveAudioCacheDB(sampleCacheKey, audioData);
+            }
+          } catch (err: any) {
+            geminiErrMsg = String(err?.message || "");
           }
-        } catch (err: any) {
-          geminiErrMsg = String(err?.message || "");
+        } else {
+          geminiErrMsg = "Gemini key নেই";
         }
-      } else {
-        geminiErrMsg = "Gemini key নেই";
+      }
+
+      const speed = overrideSpeed ?? prefsRef.current.speechSpeed ?? 1.0;
+      const pitch = overridePitch ?? ttsPitch ?? 1.15;
+      if (typeof overridePitch === "number" && !isNaN(overridePitch)) {
+        try {
+          localStorage.setItem("rose_tts_pitch", String(overridePitch));
+        } catch {}
+      }
+
+      if (b64Audio && speechTokenRef.current === token) {
+        geminiSpoke = await playPrefetchedGeminiAudio(
+          b64Audio!,
+          token,
+          6000,
+          vol,
+          speed
+        );
       }
 
       if (geminiSpoke) {
@@ -11724,22 +11752,22 @@ export function App() {
         return;
       }
 
-      if (typeof overridePitch === "number" && !isNaN(overridePitch)) {
-        try {
-          localStorage.setItem("rose_tts_pitch", String(overridePitch));
-        } catch {}
-      }
+      const isQuotaError = geminiErrMsg.includes("429") || geminiErrMsg.toLowerCase().includes("quota") || geminiErrMsg.toLowerCase().includes("exhausted");
+      const failMsg = isQuotaError
+        ? "আজকের ফ্রি ভয়েস সীমা শেষ, অন্য মডেলে চালানো হচ্ছে"
+        : geminiErrMsg || "আজকের ফ্রি ভয়েস সীমা শেষ, অন্য মডেলে চালানো হচ্ছে";
+
+      setVoiceSettingsTestResult(failMsg);
+      setToast(failMsg);
 
       const browserSpoke = await speakSentenceWithPhoneVoice(sampleText, token);
       if (browserSpoke) {
         setVoiceSettingsTestResult("ব্রাউজার");
         setToast("ব্রাউজার");
       } else {
-        const failMsg = geminiErrMsg.includes("TTS মডেল পাওয়া যায়নি")
-          ? "TTS মডেল পাওয়া যায়নি"
-          : geminiErrMsg || "অডিও চালু হয়নি";
-        setVoiceSettingsTestResult(failMsg);
-        setToast(failMsg);
+        const finalMsg = isQuotaError ? "আজকের ফ্রি ভয়েস সীমা শেষ… কাল আবার চালু হবে" : failMsg;
+        setVoiceSettingsTestResult(finalMsg);
+        setToast(finalMsg);
       }
     } finally {
       setIsTestingVoiceSettings(false);
@@ -17923,9 +17951,12 @@ export function App() {
             transition={{ duration: 0.25, ease: "easeOut" }}
             className="fixed inset-0 z-[120] bg-[#090417] text-white flex flex-col justify-between p-6 sm:p-8 overflow-hidden select-none"
           >
+            {/* Background Rose Image */}
+            <img src="/rose-mobile.png" alt="Rose" className="absolute inset-0 w-full h-full object-cover object-[center_top] pointer-events-none z-0" />
+            <div className="absolute inset-0 bg-[#090417]/80 backdrop-blur-[2px] pointer-events-none z-[1]" />
             {/* Background Starry Overlay */}
-            <div className="absolute inset-0 bg-[radial-gradient(circle_at_50%_30%,rgba(139,92,246,0.3),transparent_70%)] pointer-events-none" />
-            <div className="absolute inset-0 bg-[radial-gradient(circle_at_50%_85%,rgba(20,184,166,0.2),transparent_65%)] pointer-events-none" />
+            <div className="absolute inset-0 bg-[radial-gradient(circle_at_50%_30%,rgba(139,92,246,0.3),transparent_70%)] pointer-events-none z-[2]" />
+            <div className="absolute inset-0 bg-[radial-gradient(circle_at_50%_85%,rgba(20,184,166,0.2),transparent_65%)] pointer-events-none z-[2]" />
 
             {/* Top Bar */}
             <div className="relative z-10 flex items-center justify-between">

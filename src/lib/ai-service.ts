@@ -2080,13 +2080,24 @@ export const directGeminiTTS = async (payload: any) => {
     throw err;
   }
 
+  const todayStr = new Date().toISOString().slice(0, 10);
+  const workingModelKey = `rose_tts_working_model_${todayStr}`;
+  const savedWorkingModel = localStorage.getItem(workingModelKey);
+
   const candidateModels: string[] = [];
   const pushIfValidTtsModel = (m?: string) => {
     const clean = String(m || '').replace(/^models\//, '').trim();
-    if (clean && clean.toLowerCase().includes('tts') && !candidateModels.includes(clean)) {
+    if (!clean || !clean.toLowerCase().includes('tts')) return;
+    const failedKey = `rose_tts_failed_${clean}_${todayStr}`;
+    if (localStorage.getItem(failedKey)) return;
+    if (!candidateModels.includes(clean)) {
       candidateModels.push(clean);
     }
   };
+
+  if (savedWorkingModel) {
+    pushIfValidTtsModel(savedWorkingModel);
+  }
 
   // 1. User's custom saved TTS model in localStorage (only if it contains "tts")
   pushIfValidTtsModel(getCustomTtsModel());
@@ -2109,7 +2120,7 @@ export const directGeminiTTS = async (payload: any) => {
   }
 
   // 5. Fallback TTS models whose names contain "tts" (never a normal chat model)
-  for (const fallbackTts of ['gemini-2.5-flash-preview-tts', 'gemini-2.5-pro-preview-tts']) {
+  for (const fallbackTts of ['gemini-2.5-flash-preview-tts', 'gemini-2.5-pro-preview-tts', 'gemini-3.8-flash-lite-tts']) {
     pushIfValidTtsModel(fallbackTts);
   }
 
@@ -2119,7 +2130,7 @@ export const directGeminiTTS = async (payload: any) => {
     ? [...ADMIN_PREFERRED_VOICES]
     : [selectedVoiceName];
 
-  const modelsToTry = candidateModels.slice(0, 3);
+  const modelsToTry = candidateModels.slice(0, 4);
   const attempts: Array<{ model: string; status: number | string; message: string }> = [];
   let lastError: any = null;
 
@@ -2153,15 +2164,23 @@ export const directGeminiTTS = async (payload: any) => {
           cleanKey
         ).trim();
         const usedModelLabel = targetModel;
+        if (res.status === 429 || res.status === 404 || res.status >= 500 || googleMsg.toLowerCase().includes('quota') || googleMsg.toLowerCase().includes('exhausted')) {
+          try {
+            localStorage.setItem(`rose_tts_failed_${targetModel}_${todayStr}`, 'true');
+          } catch {}
+        }
         attempts.push({
           model: usedModelLabel,
           status: res.status,
           message: googleMsg,
         });
-        const err: any = new Error(`${usedModelLabel} (HTTP ${res.status}): ${googleMsg}`);
+        const friendlyMsg = (res.status === 429 || googleMsg.toLowerCase().includes('quota') || googleMsg.toLowerCase().includes('exhausted'))
+          ? 'আজকের ফ্রি ভয়েস সীমা শেষ, অন্য মডেলে চালানো হচ্ছে'
+          : googleMsg;
+        const err: any = new Error(`${usedModelLabel} (HTTP ${res.status}): ${friendlyMsg}`);
         err.status = res.status;
         err.modelTried = usedModelLabel;
-        err.googleMessage = googleMsg;
+        err.googleMessage = friendlyMsg;
         err.attempts = [...attempts];
         lastError = err;
         continue;
@@ -2170,6 +2189,9 @@ export const directGeminiTTS = async (payload: any) => {
       const finalModel = data.modelUsed || targetModel;
       const finalVoice = data.voiceUsed || selectedVoiceName;
       setLastUsedTtsModel(finalModel);
+      try {
+        localStorage.setItem(`rose_tts_working_model_${todayStr}`, finalModel);
+      } catch {}
       if (adminActive) {
         console.log('[ADMIN TTS] Used:', {
           model: finalModel,

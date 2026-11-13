@@ -201,21 +201,12 @@ export const SMART_VAD_CDN_CONFIG = {
 };
 
 export function getSmartListenVadOptions(sensitivity: SmartListenSensitivity = 'normal') {
-  if (sensitivity === 'strict') {
-    return {
-      positiveSpeechThreshold: 0.75,
-      negativeSpeechThreshold: 0.6,
-      minSpeechMs: 150,
-      redemptionMs: 450,
-      preSpeechPadMs: 300,
-    };
-  }
   return {
-    positiveSpeechThreshold: 0.6,
-    negativeSpeechThreshold: 0.45,
-    minSpeechMs: 150,
-    redemptionMs: 450,
-    preSpeechPadMs: 300,
+    positiveSpeechThreshold: 0.5,
+    negativeSpeechThreshold: 0.35,
+    minSpeechFrames: 3,
+    preSpeechPadFrames: 10,
+    redemptionFrames: 8,
   };
 }
 

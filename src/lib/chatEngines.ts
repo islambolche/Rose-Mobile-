@@ -879,11 +879,12 @@ export const verifyProviderKey = async (
   try {
     let res: Response;
     if (providerId === 'gemini') {
-      res = await fetch('https://generativelanguage.googleapis.com/v1beta/models', {
-        method: 'GET',
+      res = await fetch('/api/gemini/verify', {
+        method: 'POST',
         headers: {
-          'x-goog-api-key': testKey,
+          'Content-Type': 'application/json',
         },
+        body: JSON.stringify({ apiKey: testKey }),
         signal: controller.signal,
       });
 

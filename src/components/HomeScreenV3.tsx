@@ -165,7 +165,7 @@ export const HomeScreenV3 = ({
         
         {/* Input Row */}
         <div style={{ minHeight: '56px', padding: '8px', display: 'flex', flexDirection: 'row', gap: '8px', alignItems: 'center', flexShrink: 0, borderTop: '1px solid rgba(255,255,255,0.05)' }}>
-          <img src="/rose.jpg" style={{ width: '36px', height: '36px', borderRadius: '50%', objectFit: 'cover', objectPosition: '50% 18%', flexShrink: 0 }} />
+          <img src="/agents/rose-avatar.png" style={{ width: '36px', height: '36px', borderRadius: '50%', objectFit: 'cover', flexShrink: 0 }} />
           <input 
             value={inputText} onChange={(e) => setInputText(e.target.value)}
             onKeyDown={(e) => e.key === 'Enter' && handleSend()}
@@ -186,7 +186,7 @@ export const HomeScreenV3 = ({
 
       {/* 3. IMAGE AREA */}
       <div style={{ position: 'relative', width: '100vw', height: '100vw', flexShrink: 0, paddingBottom: 'env(safe-area-inset-bottom)', display: keyboardOpen ? 'none' : 'flex' }}>
-        <img src="/rose.jpg" alt="Rose" style={{ width: '100%', height: '100%', objectFit: 'contain' }} />
+        <img src="/rose-mobile.png" alt="Rose" style={{ width: '100%', height: '100%', objectFit: 'cover', objectPosition: 'center top' }} />
         
         {/* Mic Waves */}
         {voiceActive && (

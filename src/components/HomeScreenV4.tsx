@@ -59,7 +59,7 @@ export const HomeScreenV4 = ({
     <div style={{ position: 'fixed', top: 0, left: 0, width: '100vw', height: `${viewportHeight}px`, display: 'flex', flexDirection: 'column', overflow: 'hidden', background: 'linear-gradient(180deg, #050a24 0%, #0a0f3a 60%, #1a0b4a 100%)', color: 'white', fontFamily: 'sans-serif' }}>
       {!keyboardOpen && (
         <div style={{ width: '100vw', aspectRatio: '941 / 650', overflow: 'hidden', flexShrink: 0 }}>
-            <img src="/rose-top.jpg" onError={(e) => (e.target as HTMLImageElement).src = '/rose.jpg'} style={{ width: '100%', height: '100%', objectFit: 'contain', objectPosition: 'top' }} />
+            <img src="/rose-mobile.png" style={{ width: '100%', height: '100%', objectFit: 'cover', objectPosition: 'center top' }} />
         </div>
       )}
 
@@ -79,7 +79,7 @@ export const HomeScreenV4 = ({
         {live.error && <div style={{ color: 'red', fontSize: '11px', padding: '5px' }}>{live.error}</div>}
 
         <div style={{ margin: '10px', height: '60px', borderRadius: '30px', border: '2px solid rgba(130,110,255,0.9)', background: 'rgba(12,14,60,0.95)', boxShadow: '0 0 16px rgba(120,90,255,0.5)', display: 'flex', flexDirection: 'row', alignItems: 'center', padding: '6px', gap: '8px', flexShrink: 0 }}>
-          <div style={{ width: '44px', height: '44px', borderRadius: '50%', background: 'white', display: 'flex', alignItems: 'center', justifyContent: 'center', fontWeight: 'bold', color: 'black', flexShrink: 0 }}>R</div>
+          <img src="/agents/rose-avatar.png" style={{ width: '44px', height: '44px', borderRadius: '50%', objectFit: 'cover', flexShrink: 0 }} />
           <input value={inputText} onChange={(e) => setInputText(e.target.value)} onKeyDown={(e) => e.key === 'Enter' && handleSend()} onFocus={handleFocus} onBlur={handleBlur} placeholder="Type a message..." style={{ flex: 1, minWidth: 0, height: '44px', background: 'transparent', border: 'none', color: 'white', fontSize: '17px', padding: '0 10px' }} />
           <button onClick={handleSend} style={{ width: '44px', height: '44px', borderRadius: '50%', background: inputText.trim() ? 'linear-gradient(135deg, #7c3aed, #c026d3)' : 'rgba(255,255,255,0.1)', flexShrink: 0 }}><Send size={20}/></button>
           <button onClick={() => setShowDeleteConfirm(true)} style={{ width: '40px', height: '40px', borderRadius: '50%', background: 'rgba(255,77,109,0.15)', display: 'flex', alignItems: 'center', justifyContent: 'center', color: '#ff4d6d', flexShrink: 0, border: 'none', marginLeft: '4px', marginRight: '-2px' }}><Trash2 size={16}/></button>

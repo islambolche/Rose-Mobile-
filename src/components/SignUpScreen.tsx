@@ -73,7 +73,7 @@ export const SignUpScreen: React.FC<SignUpScreenProps> = ({ onBack, onSuccess })
   return (
     <div className="fixed inset-0 overflow-y-auto flex flex-col justify-end">
       {/* Background */}
-      <img src="/rose-bg.webp" alt="Rose" className="fixed inset-0 w-full h-full object-cover object-[center_0%] z-0" />
+      <img src="/rose-mobile.png" alt="Rose" className="fixed inset-0 w-full h-full object-cover object-[center_top] z-0" />
       <div className="fixed bottom-0 left-0 right-0 h-[60%] z-[1] bg-gradient-to-t from-[#030614] to-transparent" />
 
       {/* Foreground */}
