@@ -191,6 +191,7 @@ import {
   isLiveSessionActive,
   stopActiveGlobalLiveSession,
   discoverVoiceModelsFromListModels,
+  getLiveVoiceCheckStatus,
 } from "./lib/gemini-live";
 import {
   getMicListeningSettings,
@@ -1760,6 +1761,12 @@ const VoiceCheckView = ({
 
   const currentVoiceObj = GEMINI_VOICES.find((v) => v.id === prefs.voiceName) || GEMINI_VOICES[0];
   const currentLangObj = LANGUAGES.find((l) => l.id === prefs.language) || LANGUAGES[0];
+  const liveVoiceCheck = getLiveVoiceCheckStatus(
+    buildRoseSystemInstruction(settings, prefs, true),
+    prefs.language,
+    currentVoiceObj.id || prefs.voiceName || "Leda"
+  );
+  const effectiveLastError = voiceTestError || liveVoiceCheck.lastError;
 
   return (
     <motion.div
@@ -2083,10 +2090,23 @@ const VoiceCheckView = ({
           </div>
 
           {/* Current voice summary */}
-          <div className="bg-[#0F172A]/40 border border-white/5 rounded-2xl p-3.5 text-center">
+          <div className="bg-[#0F172A]/40 border border-white/5 rounded-2xl p-3.5 space-y-1.5 text-center">
             <p className="text-[11px] text-slate-400 font-medium">
-              Selected Voice: <span className="text-white font-bold">{currentVoiceObj.name}</span> · Language: <span className="text-white font-bold">{currentLangObj.label}</span> · Speed: <span className="text-white font-bold">{prefs.speechSpeed.toFixed(2)}x</span>
+              Live model: <span className="text-white font-bold">{liveVoiceCheck.liveModelName}</span> · Voice: <span className="text-white font-bold">{liveVoiceCheck.voiceName} ({currentVoiceObj.name})</span>
             </p>
+            <p className="text-[11px] text-emerald-400 font-bold">
+              {liveVoiceCheck.systemPromptLength > 0
+                ? `System prompt: OK (${liveVoiceCheck.systemPromptLength} chars)`
+                : "System prompt: Empty (0 chars)"}
+            </p>
+            <p className="text-[11px] text-slate-400 font-medium">
+              Language: <span className="text-white font-bold">{currentLangObj.label}</span> · Speed: <span className="text-white font-bold">{prefs.speechSpeed.toFixed(2)}x</span>
+            </p>
+            {effectiveLastError && (
+              <p className="text-[11px] text-red-400 font-bold break-words">
+                Last error: {effectiveLastError}
+              </p>
+            )}
           </div>
 
           {/* Hidden Developer Details (unlocked by 7 taps + PIN) */}

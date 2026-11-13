@@ -374,7 +374,9 @@ wss.on('connection', async (clientWs, req) => {
       responseModalities: genCfg.responseModalities || setup.responseModalities || [Modality.AUDIO],
     };
     if (genCfg.speechConfig || setup.speechConfig) {
-      sdkConfig.speechConfig = genCfg.speechConfig || setup.speechConfig;
+      const rawSpeechCfg = { ...(genCfg.speechConfig || setup.speechConfig) };
+      delete rawSpeechCfg.languageCode;
+      sdkConfig.speechConfig = rawSpeechCfg;
     }
     if (enableAffective) {
       sdkConfig.enableAffectiveDialog = true;
@@ -388,8 +390,16 @@ wss.on('connection', async (clientWs, req) => {
     if (setup.thinkingConfig || genCfg.thinkingConfig) {
       sdkConfig.thinkingConfig = setup.thinkingConfig || genCfg.thinkingConfig;
     }
-    if (setup.systemInstruction) {
-      sdkConfig.systemInstruction = setup.systemInstruction;
+    const sysInstObj = setup.systemInstruction || setup.system_instruction;
+    if (sysInstObj) {
+      const sysText =
+        typeof sysInstObj === 'string'
+          ? sysInstObj
+          : Array.isArray(sysInstObj?.parts)
+            ? sysInstObj.parts.map((p: any) => p?.text || '').join('\n')
+            : '';
+      sdkConfig.systemInstruction = { parts: [{ text: sysText }] };
+      console.log(`[Live WS] System prompt: OK (${sysText.length} chars)`);
     }
     if (Array.isArray(setup.tools) && setup.tools.length > 0) {
       sdkConfig.tools = setup.tools;

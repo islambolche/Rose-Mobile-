@@ -543,6 +543,101 @@ export function stopActiveGlobalLiveSession(): void {
   }
 }
 
+export interface LiveVoiceCheckStatus {
+  liveModelName: string;
+  voiceName: string;
+  systemPromptLength: number;
+  lastError: string | null;
+}
+
+const VOICE_CHECK_STATUS_STORAGE_KEY = 'rose_voice_check_status_v1';
+
+let latestLiveVoiceCheckStatus: LiveVoiceCheckStatus = {
+  liveModelName: '',
+  voiceName: '',
+  systemPromptLength: 0,
+  lastError: null,
+};
+
+function updateLiveVoiceCheckStatus(partial: Partial<LiveVoiceCheckStatus>) {
+  latestLiveVoiceCheckStatus = {
+    ...latestLiveVoiceCheckStatus,
+    ...partial,
+  };
+  try {
+    if (typeof window !== 'undefined' && window.localStorage) {
+      localStorage.setItem(VOICE_CHECK_STATUS_STORAGE_KEY, JSON.stringify(latestLiveVoiceCheckStatus));
+    }
+  } catch {}
+}
+
+export function buildFullLiveSystemPrompt(baseInstruction?: string, language?: string): string {
+  const STT_LANG_PROMPT =
+    'The user speaks Bengali (sometimes English words). Always understand and transcribe as Bengali or English, never Arabic, Thai or other languages. ভয়েস কলে সর্বোচ্চ ২-৩ ছোট বাক্যে উত্তর দাও।';
+  const base = (baseInstruction || '').trim() || 'তুমি রোজ। ব্যবহারকারীর ব্যক্তিগত সহকারী।';
+  const sharedCtx = getSharedPhoneAndHistoryContextBlock();
+  const withTeam = `${base}\n\n${TEAM_SYSTEM_INSTRUCTION}${sharedCtx ? `\n\n${sharedCtx}` : ''}`;
+  const overridden = applyAdminSystemInstructionOverride(withTeam, { isLiveVoice: true });
+  const rawLiveInst = `${ensureNoThoughtSystemInstruction(overridden)}\n\n${STT_LANG_PROMPT}\n\n${getRoseTechInstruction()}`;
+  return ensureLanguageFirstLineLock(
+    applyAdminSystemInstructionOverride(rawLiveInst, { isLiveVoice: true }),
+    language
+  );
+}
+
+export function getLiveVoiceCheckStatus(
+  fallbackBaseInstruction?: string,
+  fallbackLanguage?: string,
+  fallbackVoiceName?: string
+): LiveVoiceCheckStatus {
+  let stored: Partial<LiveVoiceCheckStatus> = {};
+  try {
+    if (typeof window !== 'undefined' && window.localStorage) {
+      const raw = localStorage.getItem(VOICE_CHECK_STATUS_STORAGE_KEY);
+      if (raw) {
+        stored = JSON.parse(raw) || {};
+      }
+    }
+  } catch {}
+
+  const active = activeGlobalLiveSession;
+  const resolvedModel =
+    (active as any)?.connectedModelName ||
+    latestLiveVoiceCheckStatus.liveModelName ||
+    stored.liveModelName ||
+    getCachedResolvedLiveModel() ||
+    memoryCachedVoiceModels?.liveModels?.[0] ||
+    'Auto (gemini-live)';
+
+  const resolvedVoice =
+    latestLiveVoiceCheckStatus.voiceName ||
+    stored.voiceName ||
+    fallbackVoiceName ||
+    (isAdmin() ? ADMIN_PREFERRED_VOICES[0] : 'Leda');
+
+  const computedPromptLen = buildFullLiveSystemPrompt(fallbackBaseInstruction, fallbackLanguage).length;
+  const resolvedPromptLen =
+    latestLiveVoiceCheckStatus.systemPromptLength > 0
+      ? latestLiveVoiceCheckStatus.systemPromptLength
+      : typeof stored.systemPromptLength === 'number' && stored.systemPromptLength > 0
+        ? stored.systemPromptLength
+        : computedPromptLen;
+
+  const resolvedError =
+    active?.lastError ??
+    latestLiveVoiceCheckStatus.lastError ??
+    stored.lastError ??
+    voiceDebugStore.getSnapshot().lastError ??
+    null;
+
+  return {
+    liveModelName: resolvedModel,
+    voiceName: resolvedVoice,
+    systemPromptLength: resolvedPromptLen,
+    lastError: resolvedError,
+  };
+}
+
 export class GeminiLiveSession {
   public sessionId: string = `live_${++globalLiveSessionCounter}_${Date.now()}`;
   private sessionLifecycleState: 'active' | 'closing' | 'closed' = 'active';
@@ -632,19 +727,6 @@ export class GeminiLiveSession {
   public activeMode: 'live' | 'fallback' = 'fallback';
   private userStartedSpeakingEmitted = false;
   private skipGrounding = false;
-  private speechLangMode: string = 'bn-IN';
-  private inputTranscriptionLangRejected = false;
-  private lastSetupRejectedForLang = false;
-
-  private resolveInitialSpeechLang(): string {
-    const raw = String(this.options.language || '').trim();
-    if (!raw || raw.toLowerCase() === 'auto' || raw.toLowerCase().startsWith('bn')) {
-      return 'bn-IN';
-    }
-    if (raw.toLowerCase().startsWith('en')) return 'en-US';
-    if (raw.toLowerCase().startsWith('hi')) return 'hi-IN';
-    return raw;
-  }
 
   private flushBufferedInitialMicChunks() {
     if (
@@ -1887,11 +1969,7 @@ export class GeminiLiveSession {
     if (adminMode) {
       this.options.ownerName = ADMIN_DISPLAY_NAME;
     }
-    const base = this.options.systemInstruction || 'You are Rose, a helpful assistant.';
-    const sharedCtx = getSharedPhoneAndHistoryContextBlock();
-    const withTeam = `${base}\n\n${TEAM_SYSTEM_INSTRUCTION}${sharedCtx ? `\n\n${sharedCtx}` : ''}`;
-    const overridden = applyAdminSystemInstructionOverride(withTeam, { isLiveVoice: true });
-    return ensureLanguageFirstLineLock(overridden, this.options.language);
+    return buildFullLiveSystemPrompt(this.options.systemInstruction, this.options.language);
   }
 
   public async start() {
@@ -1922,7 +2000,9 @@ export class GeminiLiveSession {
     this.isProcessingClip = false;
     this.isRecordingClip = false;
     this.isBrowserTtsSpeaking = false;
-    this.resumptionHandle = lastGlobalResumptionHandle;
+    // Start a fresh call with a clean session handle so the Bengali system prompt and priming turn always apply
+    this.resumptionHandle = null;
+    saveGlobalResumptionHandle(null);
     this.connectedModelName = null;
     this.awaitingReplySince = 0;
     this.watchdogReconnectedForTurn = false;
@@ -1930,9 +2010,6 @@ export class GeminiLiveSession {
     this.liveAssistantBuffer = '';
     this.suppressedForeignTranscript = false;
     this.pendingMicPcmBase64Queue = [];
-    this.speechLangMode = this.resolveInitialSpeechLang();
-    this.inputTranscriptionLangRejected = false;
-    this.lastSetupRejectedForLang = false;
     this.phoneToolHandledForTurn = false;
     this.pendingEndCallAfterSpeech = false;
     this.endCallReceivedAudioAfterTool = false;
@@ -2640,19 +2717,6 @@ export class GeminiLiveSession {
           }
         }
 
-        if (!ok && !this.wasStoppedByUser && this.lastSetupRejectedForLang && Date.now() + 600 < deadline) {
-          this.lastSetupRejectedForLang = false;
-          const langRetryTimeout = Math.min(2200, deadline - Date.now());
-          ok = await this.trySingleLiveModel(
-            apiKey,
-            modelName,
-            langRetryTimeout,
-            true,
-            false,
-            candidateVoice
-          );
-        }
-
         if (!ok && !this.wasStoppedByUser && Date.now() + 600 < deadline) {
           const stdTimeout = Math.min(2400, deadline - Date.now());
           // Retry without affectiveDialog automatically if unsupported/errored, with no user-visible error
@@ -2660,19 +2724,6 @@ export class GeminiLiveSession {
             apiKey,
             modelName,
             stdTimeout,
-            true,
-            false,
-            candidateVoice
-          );
-        }
-
-        if (!ok && !this.wasStoppedByUser && this.lastSetupRejectedForLang && Date.now() + 600 < deadline) {
-          this.lastSetupRejectedForLang = false;
-          const langRetryTimeout2 = Math.min(2200, deadline - Date.now());
-          ok = await this.trySingleLiveModel(
-            apiKey,
-            modelName,
-            langRetryTimeout2,
             true,
             false,
             candidateVoice
@@ -2697,6 +2748,11 @@ export class GeminiLiveSession {
         if (ok) {
           this.connectedModelName = modelName;
           setCachedResolvedLiveModel(modelName);
+          updateLiveVoiceCheckStatus({
+            liveModelName: modelName,
+            voiceName: candidateVoice,
+            lastError: null,
+          });
           if (adminActive) {
             console.log('[ADMIN LIVE] Used:', {
               model: modelName,
@@ -2793,34 +2849,28 @@ export class GeminiLiveSession {
           finish(false);
           return;
         }
-        const STT_LANG_PROMPT =
-          'The user speaks Bengali (sometimes English words). Always understand and transcribe as Bengali or English, never Arabic, Thai or other languages. ভয়েস কলে সর্বোচ্চ ২-৩ ছোট বাক্যে উত্তর দাও।';
-        const rawLiveInst = `${ensureNoThoughtSystemInstruction(
-          this.getEffectiveSystemInstruction()
-        )}\n\n${STT_LANG_PROMPT}\n\n${getRoseTechInstruction()}`;
-        const finalLiveInst = ensureLanguageFirstLineLock(
-          applyAdminSystemInstructionOverride(rawLiveInst, { isLiveVoice: true }),
-          this.options.language
-        );
+        const finalLiveInst = this.getEffectiveSystemInstruction();
 
         const selectedVoiceName =
           voiceNameOverride ||
           (isAdmin() ? ADMIN_PREFERRED_VOICES[0] : this.options.voiceName || 'Sulafat');
 
-        const speechConfigPayload: any = {
-          voiceConfig: {
-            prebuiltVoiceConfig: {
-              voiceName: selectedVoiceName,
-            },
-          },
-        };
-        if (this.speechLangMode !== 'none') {
-          speechConfigPayload.languageCode = this.speechLangMode;
-        }
+        console.log(`[GeminiLive] System prompt: OK (${finalLiveInst.length} chars)`);
+        updateLiveVoiceCheckStatus({
+          liveModelName: modelName,
+          voiceName: selectedVoiceName,
+          systemPromptLength: finalLiveInst.length,
+        });
 
         const generationConfig: any = {
           responseModalities: ['AUDIO'],
-          speechConfig: speechConfigPayload,
+          speechConfig: {
+            voiceConfig: {
+              prebuiltVoiceConfig: {
+                voiceName: selectedVoiceName,
+              },
+            },
+          },
         };
 
         if (useAlphaEndpoint) {
@@ -2835,7 +2885,6 @@ export class GeminiLiveSession {
           micSettings.smartListen &&
           !micSettings.streetMode;
         this.sentSmartVadDisabledConfig = useSmartVadConfig;
-        const inputSttLang = this.speechLangMode && this.speechLangMode !== 'none' ? this.speechLangMode : 'bn-IN';
 
         const setupPayload: any = {
           model: `models/${modelName}`,
@@ -2850,9 +2899,7 @@ export class GeminiLiveSession {
           tools: this.skipGrounding
             ? ROSE_TEAM_TOOLS.filter((t: any) => !t.googleSearch)
             : ROSE_TEAM_TOOLS,
-          inputAudioTranscription: this.inputTranscriptionLangRejected
-            ? {}
-            : { languageCodes: [inputSttLang, 'en-US'] },
+          inputAudioTranscription: {},
           outputAudioTranscription: {},
           realtimeInputConfig: useSmartVadConfig
             ? {
@@ -2945,6 +2992,7 @@ export class GeminiLiveSession {
             const formattedErr = parseAndFormatGeminiError(rawErrCode, safeErr);
             this.lastError = formattedErr.bengali;
             voiceDebugStore.recordError(formattedErr.bengali);
+            updateLiveVoiceCheckStatus({ lastError: formattedErr.bengali });
             
             // Check if VAD / Smart Listening config was rejected
             const lowerErrForVad = safeErr.toLowerCase();
@@ -2983,45 +3031,6 @@ export class GeminiLiveSession {
             }
 
             const lowerReason = safeErr.toLowerCase();
-            if (
-              !settled &&
-              (lowerReason.includes('language') ||
-                lowerReason.includes('speech_config') ||
-                lowerReason.includes('speechconfig') ||
-                lowerReason.includes('input_audio_transcription') ||
-                lowerReason.includes('bn-bd') ||
-                lowerReason.includes('bn-in') ||
-                Number(rawErrCode) === 1007)
-            ) {
-              let downgraded = false;
-              if (
-                lowerReason.includes('input_audio_transcription') ||
-                lowerReason.includes('language_codes') ||
-                lowerReason.includes('languagecodes')
-              ) {
-                if (!this.inputTranscriptionLangRejected) {
-                  this.inputTranscriptionLangRejected = true;
-                  downgraded = true;
-                }
-              }
-              if (this.speechLangMode !== 'none') {
-                this.speechLangMode = 'none';
-                downgraded = true;
-              } else if (!this.inputTranscriptionLangRejected) {
-                this.inputTranscriptionLangRejected = true;
-                downgraded = true;
-              }
-              if (downgraded) {
-                this.lastSetupRejectedForLang = true;
-                console.warn('[GeminiLive] Language/transcription config rejected; retrying without languageCode:', {
-                  speechLangMode: this.speechLangMode,
-                  inputTranscriptionLangRejected: this.inputTranscriptionLangRejected,
-                });
-                finish(false);
-                return;
-              }
-            }
-
             const isFatalQuotaOrAuth =
               Number(rawErrCode) === 429 ||
               Number(rawErrCode) === 401 ||
@@ -3063,6 +3072,35 @@ export class GeminiLiveSession {
 
           if (msg.setupComplete) {
             this.isSetupComplete = true;
+            updateLiveVoiceCheckStatus({ lastError: null });
+            const rawLang = String(this.options.language || '').trim().toLowerCase();
+            const primingText =
+              !rawLang || rawLang === 'auto' || rawLang.startsWith('bn')
+                ? 'মনে রেখো: এই কলে তুমি শুধু বাংলায় কথা বলবে।'
+                : rawLang.startsWith('en')
+                  ? 'Remember: in this call you will speak only in English.'
+                  : rawLang.startsWith('hi')
+                    ? 'याद रखो: इस कॉल में तुम केवल हिंदी में बात करोगी।'
+                    : rawLang.startsWith('ur')
+                      ? 'یاد رکھو: اس کال میں تم صرف اردو میں بات کرو گی۔'
+                      : rawLang.startsWith('ar')
+                        ? 'تذكري: في هذه المكالمة ستتحدثين باللغة العربية فقط.'
+                        : 'মনে রেখো: এই কলে তুমি শুধু বাংলায় কথা বলবে।';
+            try {
+              socket?.send(
+                JSON.stringify({
+                  clientContent: {
+                    turns: [
+                      {
+                        role: 'user',
+                        parts: [{ text: primingText }],
+                      },
+                    ],
+                    turnComplete: false,
+                  },
+                })
+              );
+            } catch {}
             this.flushBufferedInitialMicChunks();
             finish(true);
             return;
@@ -3153,41 +3191,6 @@ export class GeminiLiveSession {
             this.options.onToast?.(`Smart Listening বন্ধ: ${safeReason || 'সার্ভার এই কনফিগ নেয়নি'}`);
             finish(false);
             return;
-          }
-          if (
-            event?.code === 1007 ||
-            lowerClose.includes('language') ||
-            lowerClose.includes('speech_config') ||
-            lowerClose.includes('speechconfig') ||
-            lowerClose.includes('input_audio_transcription') ||
-            lowerClose.includes('bn-bd') ||
-            lowerClose.includes('bn-in')
-          ) {
-            let downgraded = false;
-            if (
-              lowerClose.includes('input_audio_transcription') ||
-              lowerClose.includes('language_codes') ||
-              lowerClose.includes('languagecodes')
-            ) {
-              if (!this.inputTranscriptionLangRejected) {
-                this.inputTranscriptionLangRejected = true;
-                downgraded = true;
-              }
-            }
-            if (this.speechLangMode !== 'none') {
-              this.speechLangMode = 'none';
-              downgraded = true;
-            } else if (!this.inputTranscriptionLangRejected) {
-              this.inputTranscriptionLangRejected = true;
-              downgraded = true;
-            }
-            if (downgraded) {
-              this.lastSetupRejectedForLang = true;
-              console.warn('[GeminiLive] Handshake closed (1007/lang); retrying without languageCode:', {
-                speechLangMode: this.speechLangMode,
-                inputTranscriptionLangRejected: this.inputTranscriptionLangRejected,
-              });
-            }
           }
           finish(false);
         } else if (this.isCurrentSession(socket, socketSeq, expectedSessionId)) {

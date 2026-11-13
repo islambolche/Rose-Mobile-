@@ -22,7 +22,12 @@ import { APP_MANUAL } from "./appManual";
 import { getSharedPhoneAndHistoryContextBlock } from "./phone";
 
 export const BENGALI_FIRST_LINE_LOCK =
-  "তুমি সবসময় শুধু বাংলায় কথা বলবে। ইংরেজিতে কখনো উত্তর দেবে না, যদি না ব্যবহারকারী স্পষ্টভাবে ইংরেজি চায়।";
+  "তুমি রোজ। সবসময় শুধু বাংলায় কথা বলবে, প্রথম শব্দ থেকেই। ইংরেজিতে কখনো উত্তর দেবে না, যদি না ব্যবহারকারী স্পষ্টভাবে ইংরেজি চায়।";
+
+const PREVIOUS_BENGALI_LOCKS = [
+  "তুমি সবসময় শুধু বাংলায় কথা বলবে। ইংরেজিতে কখনো উত্তর দেবে না, যদি না ব্যবহারকারী স্পষ্টভাবে ইংরেজি চায়।",
+  BENGALI_FIRST_LINE_LOCK,
+];
 
 export function getLanguageFirstLineLock(language?: string): string {
   const raw = String(language || "").trim().toLowerCase();
@@ -30,26 +35,29 @@ export function getLanguageFirstLineLock(language?: string): string {
     return BENGALI_FIRST_LINE_LOCK;
   }
   if (raw.startsWith("en")) {
-    return "Always speak and reply in English unless the user explicitly asks for another language.";
+    return "You are Rose. Always speak only in English, from the very first word, unless the user explicitly asks for another language.";
   }
   if (raw.startsWith("hi")) {
-    return "हमेशा केवल हिंदी में बात करें, जब तक कि उपयोगकर्ता स्पष्ट रूप से किसी अन्य भाषा में न पूछे।";
+    return "तुम रोज़ हो। पहले शब्द से ही हमेशा केवल हिंदी में बात करो, जब तक कि उपयोगकर्ता स्पष्ट रूप से किसी अन्य भाषा में न पूछे।";
   }
   if (raw.startsWith("ur")) {
-    return "ہمیشہ صرف اردو میں بات کریں، جب تک کہ صارف واضح طور پر کسی دوسری زبان کا نہ کہے۔";
+    return "تم روز ہو۔ پہلے لفظ سے ہی ہمیشہ صرف اردو میں بات کرو، جب تک کہ صارف واضح طور پر کسی دوسری زبان کا نہ کہے۔";
   }
   if (raw.startsWith("ar")) {
-    return "تحدث دائماً باللغة العربية فقط، ما لم يطلب المستخدم لغة أخرى صراحةً.";
+    return "أنتِ روز. تحدثي دائماً باللغة العربية فقط منذ الكلمة الأولى، ما لم يطلب المستخدم لغة أخرى صراحةً.";
   }
   return BENGALI_FIRST_LINE_LOCK;
 }
 
 export function ensureLanguageFirstLineLock(instructionText: string, language?: string): string {
   const firstLine = getLanguageFirstLineLock(language);
-  const body = String(instructionText || "")
-    .split(firstLine)
-    .join("")
-    .trim();
+  let body = String(instructionText || "");
+  for (const lock of [firstLine, ...PREVIOUS_BENGALI_LOCKS]) {
+    if (lock) {
+      body = body.split(lock).join("");
+    }
+  }
+  body = body.trim();
   return body ? `${firstLine}\n${body}` : firstLine;
 }
 
