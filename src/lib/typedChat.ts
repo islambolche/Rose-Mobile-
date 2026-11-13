@@ -10,7 +10,11 @@ import { executeOfficeTaskTool } from './officeSync';
 export const NO_GEMINI_KEY_MSG = 'Gemini key সেভ করা নেই। Settings → CONNECTIONS-এ কী বসাও।';
 export const QUOTA_429_MSG = 'আজকের ফ্রি সীমা শেষ। পরে চেষ্টা করো বা নতুন কী দাও।';
 
-const TOTAL_CHAT_TIMEOUT_MS = 20000;
+const TOTAL_CHAT_TIMEOUT_MS = 25000; // 25s timeout for normal chat
+const WORKING_MODEL_KEY = 'working_gemini_text_model';
+const WORKING_MODEL_TIME_KEY = 'working_gemini_text_model_ms';
+const WORKING_MODEL_TTL_MS = 60 * 60 * 1000; // 1 hour
+
 const GEMINI_429_COOLDOWN_MS = 10 * 60 * 1000; // 10 minutes
 const GEMINI_429_STORAGE_KEY = 'rose_gemini_429_cooldown';
 
@@ -178,12 +182,9 @@ export function extractRealErrorDetails(rawInput: any, fallbackStatus?: number):
           cleanMessage = apiErr.message.trim();
         }
       }
-    } catch {
-      // keep cleanMessage as-is
-    }
+    } catch {}
   }
 
-  // Strip any lingering JSON block from the short message
   cleanMessage = cleanMessage.replace(/\{[\s\S]*\}/g, '').replace(/\s+/g, ' ').trim();
 
   if (!status && /\b429\b|resource_exhausted|quota exceeded|rate limit/i.test(cleanMessage || rawText)) {
@@ -219,7 +220,7 @@ export function formatRealGeminiError(err: any, fallbackStatus?: number): string
   }
 
   if (err?.isTimeout || err?.name === 'AbortError' || /timed?\s*out|abort/i.test(rawMsg)) {
-    return 'সময় শেষ (Timeout) — ২০ সেকেন্ডের মধ্যে উত্তর আসেনি। আবার চেষ্টা করো।';
+    return 'সময় শেষ (Timeout) — ২৫ সেকেন্ডের মধ্যে উত্তর আসেনি। আবার চেষ্টা করো।';
   }
 
   if (status === 400 || status === 401 || status === 403) {
@@ -253,7 +254,7 @@ export async function getValidFlashModels(apiKey: string, signal?: AbortSignal):
 
   try {
     const res = await fetchGeminiModelsWithFallback(apiKey, signal);
-    if (!res.ok) return ['gemini-4-hydrogen', 'gemini-3.1-flash-lite', 'gemini-2.5-flash'];
+    if (!res.ok) return ['gemini-flash-latest', 'gemini-2.5-flash', 'gemini-2.5-flash-lite', 'gemini-flash-lite-latest'];
     const data = await res.json();
     const models = Array.isArray(data?.models) ? data.models : [];
 
@@ -281,18 +282,6 @@ export async function getValidFlashModels(apiKey: string, signal?: AbortSignal):
       }
     }
 
-    valid.sort((a, b) => {
-      const aFlash = a.toLowerCase().includes('flash') ? 1 : 0;
-      const bFlash = b.toLowerCase().includes('flash') ? 1 : 0;
-      if (aFlash !== bFlash) return bFlash - aFlash;
-
-      const vA = parseFloat(a.match(/[\d.]+/)?.[0] || '0');
-      const vB = parseFloat(b.match(/[\d.]+/)?.[0] || '0');
-      if (vA !== vB) return vB - vA;
-
-      return b.localeCompare(a);
-    });
-
     if (valid.length > 0) {
       try {
         localStorage.setItem('gemini_cached_chat_models', JSON.stringify({ models: valid, timestamp: Date.now() }));
@@ -302,45 +291,88 @@ export async function getValidFlashModels(apiKey: string, signal?: AbortSignal):
   } catch (e) {
     console.warn('[TypedChat] Model discovery failed:', e);
   }
-  return ['gemini-4-hydrogen', 'gemini-3.1-flash-lite', 'gemini-2.5-flash'];
+  return ['gemini-flash-latest', 'gemini-2.5-flash', 'gemini-2.5-flash-lite', 'gemini-flash-lite-latest'];
 }
 
-export async function resolveChatModel(apiKey: string, signal?: AbortSignal): Promise<string> {
-  const chosen = (localStorage.getItem('chat_model') || '').replace(/^models\//, '').trim();
-  if (chosen && !chosen.includes('gemini-2.5')) {
-    return chosen;
+export function getOrderedFlashModels(allModels: string[]): string[] {
+  const preferredOrder = [
+    'gemini-flash-latest',
+    'gemini-2.5-flash',
+    'gemini-2.5-flash-lite',
+    'gemini-flash-lite-latest',
+  ];
+
+  const valid = allModels.filter((m) => {
+    const lower = m.toLowerCase();
+    return (
+      lower.includes('flash') &&
+      !lower.includes('tts') &&
+      !lower.includes('live') &&
+      !lower.includes('audio') &&
+      !lower.includes('image') &&
+      !lower.includes('embedding')
+    );
+  });
+
+  const ordered: string[] = [];
+  for (const p of preferredOrder) {
+    if (valid.includes(p) && !ordered.includes(p)) {
+      ordered.push(p);
+    }
   }
+
+  const remaining = valid.filter((m) => !ordered.includes(m));
+  remaining.sort((a, b) => {
+    const vA = parseFloat(a.match(/[\d.]+/)?.[0] || '0');
+    const vB = parseFloat(b.match(/[\d.]+/)?.[0] || '0');
+    if (vA !== vB) return vB - vA;
+    return b.localeCompare(a);
+  });
+
+  for (const r of remaining) {
+    if (!ordered.includes(r)) ordered.push(r);
+  }
+
+  if (ordered.length === 0) {
+    return ['gemini-flash-latest', 'gemini-2.5-flash', 'gemini-2.5-flash-lite', 'gemini-flash-lite-latest'];
+  }
+  return ordered;
+}
+
+export async function resolveChatModel(apiKey: string, signal?: AbortSignal): Promise<string[]> {
+  // Check working model in localStorage
+  try {
+    const workingModel = localStorage.getItem(WORKING_MODEL_KEY);
+    const workingTime = Number(localStorage.getItem(WORKING_MODEL_TIME_KEY) || 0);
+    if (workingModel && Date.now() - workingTime < WORKING_MODEL_TTL_MS) {
+      const cleanWorking = workingModel.replace(/^models\//, '').trim();
+      const validModels = await getValidFlashModels(apiKey, signal);
+      const ordered = getOrderedFlashModels(validModels);
+      // Put working model first if valid
+      if (ordered.includes(cleanWorking)) {
+        return [cleanWorking, ...ordered.filter((m) => m !== cleanWorking)];
+      } else if (cleanWorking) {
+        return [cleanWorking, ...ordered];
+      }
+    }
+  } catch {}
 
   const validModels = await getValidFlashModels(apiKey, signal);
-  if (chosen && validModels.includes(chosen) && !chosen.includes('gemini-2.5')) {
-    return chosen;
-  }
-
-  if (validModels.length > 0) {
-    const best = validModels.find((m) => m.toLowerCase().includes('flash') && !m.includes('gemini-2.5')) || validModels[0];
-    localStorage.setItem('chat_model', best);
-    return best;
-  }
-
-  return chosen || 'gemini-4-hydrogen';
+  return getOrderedFlashModels(validModels);
 }
 
-function shouldFallbackGeminiError(err: any): boolean {
+function shouldRetryGeminiError(err: any): boolean {
   const status = Number(err?.status || 0);
   const msg = String(err?.message || err?.rawBody || '').toLowerCase();
-  if (
-    status === 429 ||
+  return (
     status === 503 ||
     status === 500 ||
+    status === 429 ||
     status === 408 ||
-    status === 404 ||
     err?.isTimeout ||
     err?.name === 'AbortError' ||
     /\b429\b|\b503\b|\b500\b|resource_exhausted|quota|rate limit|timed?\s*out|abort|unavailable|overloaded/i.test(msg)
-  ) {
-    return true;
-  }
-  return false;
+  );
 }
 
 function is429Error(err: any): boolean {
@@ -391,7 +423,6 @@ export async function sendTypedChat(
   const masterController = new AbortController();
   const startTime = Date.now();
   const deadline = startTime + TOTAL_CHAT_TIMEOUT_MS;
-  let currentModel = (localStorage.getItem('chat_model') || 'gemini-4-hydrogen').replace(/^models\//, '').trim();
 
   const errorTrace: Record<string, any> = {};
 
@@ -399,15 +430,13 @@ export async function sendTypedChat(
   const timeoutPromise = new Promise<never>((_, reject) => {
     timeoutId = setTimeout(() => {
       masterController.abort();
-      const tErr: any = new Error('HTTP 408: Request timed out after 20 seconds');
+      const tErr: any = new Error('HTTP 408: Request timed out after 25 seconds');
       tErr.status = 408;
       tErr.isTimeout = true;
-      tErr.modelUsed = currentModel;
       reject(tErr);
     }, TOTAL_CHAT_TIMEOUT_MS);
   });
 
-  // Clean last 20 messages (exclude system/error messages and avoid duplicating trailing userText)
   const cleanHistory = history.filter((m) => {
     if (!m || m.role === 'system' || (m as any).isError) return false;
     const t = String(m.content || m.text || '').trim();
@@ -442,25 +471,15 @@ export async function sendTypedChat(
       throw noGroqErr;
     }
 
-    const remainingMs = deadline - Date.now();
-    if (remainingMs <= 800) {
-      const tErr: any = new Error('Groq fallback timed out');
-      tErr.status = 408;
-      tErr.isTimeout = true;
-      throw tErr;
-    }
-
     let groqModel = getSelectedGroqModelFromSettings();
-    let availableGroqModels: string[] = [];
-
     if (!groqModel) {
       const disc = await getDynamicGroqChatModels(groqKey, false);
-      availableGroqModels = disc.models || [];
+      const availableGroqModels = disc.models || [];
       groqModel = availableGroqModels[0] || 'llama-3.3-70b-versatile';
     }
 
     const executeGroqCall = async (targetGroqModel: string): Promise<string> => {
-      const stepTime = Math.min(9000, Math.max(1500, deadline - Date.now() - 200));
+      const stepTime = Math.min(10000, Math.max(2000, deadline - Date.now() - 200));
       const { signal, cleanup } = createStepSignal(masterController.signal, stepTime);
       try {
         const groqMessages: Array<{ role: 'system' | 'user' | 'assistant'; content: string }> = [
@@ -532,48 +551,14 @@ export async function sendTypedChat(
         status: firstGroqErr?.status || 0,
         error: firstGroqErr?.parsedJson || firstGroqErr?.rawBody || firstGroqErr?.message || String(firstGroqErr),
       };
-
-      // If the selected Groq model was not found / decommissioned (400/404), try the first available model from Groq's model list
-      if ((firstGroqErr?.status === 400 || firstGroqErr?.status === 404) && deadline - Date.now() > 2000) {
-        const disc = await getDynamicGroqChatModels(groqKey, true);
-        const firstAvailable = disc.models?.find((m) => m !== groqModel) || disc.models?.[0];
-        if (firstAvailable && firstAvailable !== groqModel) {
-          try {
-            const reply = await executeGroqCall(firstAvailable);
-            try {
-              localStorage.setItem('active_model_groq', firstAvailable);
-            } catch {}
-            return {
-              text: reply,
-              modelUsed: firstAvailable,
-              provider: 'groq',
-              providerLabel: 'Groq দিয়ে উত্তর',
-            };
-          } catch (secondGroqErr: any) {
-            errorTrace.groq_fallback = {
-              model: firstAvailable,
-              status: secondGroqErr?.status || 0,
-              error: secondGroqErr?.parsedJson || secondGroqErr?.rawBody || secondGroqErr?.message || String(secondGroqErr),
-            };
-            throw secondGroqErr;
-          }
-        }
-      }
       throw firstGroqErr;
     }
   };
 
-  const runChatFlow = async (): Promise<{ text: string; modelUsed: string; provider?: 'gemini' | 'groq'; providerLabel?: string }> => {
-    // Requirement 4: Remember for 10 minutes that Gemini returned 429, and go straight to Groq during that time
+  const runChatFlow = async (): Promise<{ text: string; modelUsed: string; provider?: 'gemini' | 'groq'; providerLabel?: string; pcTaskId?: string }> => {
     const geminiCooldownKey = apiKey || 'server';
     const in429Cooldown = hasGemini ? isGeminiIn429Cooldown(geminiCooldownKey) : false;
     if ((!hasGemini || in429Cooldown) && groqKey) {
-      if (in429Cooldown) {
-        console.log('[TypedChat] Gemini in 10-min 429 cooldown — going straight to Groq');
-        errorTrace.gemini_cooldown = {
-          reason: 'Gemini returned HTTP 429 within the last 10 minutes; routed directly to Groq',
-        };
-      }
       try {
         return await tryGroqFallback();
       } catch (groqErr: any) {
@@ -582,9 +567,10 @@ export async function sendTypedChat(
       }
     }
 
-    // Step 1: Gemini (current model)
-    currentModel = await resolveChatModel(apiKey, masterController.signal);
-    console.log('[TypedChat] Trying primary Gemini model:', currentModel);
+    const candidateModels = hasGemini ? await resolveChatModel(apiKey, masterController.signal) : [];
+    if (candidateModels.length === 0) {
+      candidateModels.push('gemini-flash-latest', 'gemini-2.5-flash');
+    }
 
     const geminiContents = [
       ...last20.map((m) => ({
@@ -695,102 +681,108 @@ export async function sendTypedChat(
       }
     };
 
-    let primaryGeminiErr: any = null;
-    let secondaryGeminiErr: any = null;
+    // Iterate through candidate models with retry-once per model on 503/500/429/timeout
+    let lastGeminiError: any = null;
 
-    try {
-      const text = await executeGeminiFetch(currentModel, 8500);
-      return {
-        text,
-        modelUsed: currentModel,
-        provider: 'gemini',
-        ...(lastPcTaskId ? { pcTaskId: lastPcTaskId } : {}),
-      };
-    } catch (err1: any) {
-      primaryGeminiErr = err1;
-      errorTrace.gemini_primary = {
-        model: currentModel,
-        status: err1?.status || (err1?.isTimeout ? 408 : 0),
-        error: err1?.parsedJson || err1?.rawBody || err1?.message || String(err1),
-      };
-      console.warn('[TypedChat] Primary Gemini model failed:', currentModel, err1?.status || err1?.message);
-    }
+    for (let i = 0; i < candidateModels.length; i++) {
+      const model = candidateModels[i];
+      let attemptCount = 0;
+      const maxAttempts = 2; // initial try + 1 retry after 1.5s on 503/500/429/timeout
 
-    // Step 2: If primary Gemini failed with HTTP 429, 503, 500 or timeout (or 404), try another available Gemini flash model once
-    if (shouldFallbackGeminiError(primaryGeminiErr) && deadline - Date.now() > 2500) {
-      try {
-        setWaitingStatus('একটু অপেক্ষা…');
-        const validFlashModels = await getValidFlashModels(apiKey, masterController.signal);
-        const fallbackCandidates = [
-          ...validFlashModels.filter((m) => m.toLowerCase().includes('flash')),
-          'gemini-4-hydrogen',
-          'gemini-3.1-flash-lite',
-          'gemini-2.5-flash',
-        ];
-        const altModel = fallbackCandidates.find((m) => m && m !== currentModel && !m.includes('gemini-2.5'));
+      while (attemptCount < maxAttempts && deadline - Date.now() > 1000) {
+        attemptCount++;
+        try {
+          if (attemptCount > 1) {
+            setWaitingStatus('পুনরায় চেষ্টা করছি…');
+            await new Promise((r) => setTimeout(r, 1500));
+          } else if (i > 0 || attemptCount > 1) {
+            setWaitingStatus('অন্য মডেল চেষ্টা করছি…');
+          }
 
-        if (altModel && altModel !== currentModel) {
-          console.log('[TypedChat] Trying secondary Gemini flash model once:', altModel);
-          const text = await executeGeminiFetch(altModel, 6000);
-          localStorage.setItem('chat_model', altModel);
+          console.log(`[TypedChat] Trying model ${model} (attempt ${attemptCount})`);
+          const text = await executeGeminiFetch(model, 10000);
+
+          // Success! Remember working model
+          try {
+            localStorage.setItem(WORKING_MODEL_KEY, model);
+            localStorage.setItem(WORKING_MODEL_TIME_KEY, String(Date.now()));
+          } catch {}
+
           return {
             text,
-            modelUsed: altModel,
+            modelUsed: model,
             provider: 'gemini',
             ...(lastPcTaskId ? { pcTaskId: lastPcTaskId } : {}),
           };
+        } catch (err: any) {
+          lastGeminiError = err;
+          const status = err?.status || (err?.isTimeout ? 408 : 0);
+          errorTrace[`gemini_${model}_attempt_${attemptCount}`] = {
+            model,
+            attempt: attemptCount,
+            status,
+            error: err?.parsedJson || err?.rawBody || err?.message || String(err),
+          };
+
+          if (!shouldRetryGeminiError(err)) {
+            // Non-retryable error (e.g. 400, 401, 403) -> abort gemini loop
+            break;
+          }
+
+          if (attemptCount >= maxAttempts) {
+            // Failed both attempts for this model, clear working model if it was this one
+            try {
+              if (localStorage.getItem(WORKING_MODEL_KEY) === model) {
+                localStorage.removeItem(WORKING_MODEL_KEY);
+                localStorage.removeItem(WORKING_MODEL_TIME_KEY);
+              }
+            } catch {}
+          }
         }
-      } catch (err2: any) {
-        secondaryGeminiErr = err2;
-        errorTrace.gemini_fallback = {
-          model: err2?.modelUsed || 'gemini-flash-fallback',
-          status: err2?.status || (err2?.isTimeout ? 408 : 0),
-          error: err2?.parsedJson || err2?.rawBody || err2?.message || String(err2),
-        };
-        console.warn('[TypedChat] Secondary Gemini flash model also failed:', err2?.status || err2?.message);
+      }
+
+      // If non-retryable error, don't try other Gemini models
+      if (lastGeminiError && !shouldRetryGeminiError(lastGeminiError)) {
+        break;
       }
     }
 
-    const geminiHit429 = is429Error(primaryGeminiErr) || is429Error(secondaryGeminiErr);
+    const geminiHit429 = is429Error(lastGeminiError);
     if (geminiHit429 && hasGemini) {
       markGemini429Cooldown(geminiCooldownKey);
     }
 
-    // Step 3: If Gemini also fails → use Groq (if a Groq key is saved)
+    // All Gemini models failed -> try Groq if key is saved
     if (groqKey && deadline - Date.now() > 1200) {
       try {
-        setWaitingStatus('একটু অপেক্ষা…');
-        console.log('[TypedChat] Falling back to Groq...');
+        setWaitingStatus('Groq বিকল্প চেষ্টা করছি…');
+        console.log('[TypedChat] All Gemini models failed. Falling back to Groq...');
         return await tryGroqFallback();
       } catch (groqErr: any) {
         groqErr.geminiHad429 = geminiHit429;
-        groqErr.primaryGeminiErr = primaryGeminiErr;
-        groqErr.secondaryGeminiErr = secondaryGeminiErr;
+        groqErr.lastGeminiError = lastGeminiError;
         throw groqErr;
       }
     }
 
-    const finalGeminiErr = secondaryGeminiErr || primaryGeminiErr || new Error('HTTP 503: Cannot reach Gemini');
-    finalGeminiErr.geminiHad429 = geminiHit429;
-    throw finalGeminiErr;
+    const finalErr = lastGeminiError || new Error('HTTP 503: All Gemini models busy');
+    finalErr.geminiHad429 = geminiHit429;
+    throw finalErr;
   };
 
   try {
     return await Promise.race([runChatFlow(), timeoutPromise]);
   } catch (err: any) {
-    const geminiHad429 = Boolean(err?.geminiHad429 || is429Error(err) || is429Error(err?.primaryGeminiErr));
-    const groqAttempted = Boolean(errorTrace.groq_primary || errorTrace.groq_fallback);
-    const groqStatus = Number(errorTrace.groq_fallback?.status || errorTrace.groq_primary?.status || 0);
-    const geminiStatus = Number(
-      errorTrace.gemini_fallback?.status ||
-        errorTrace.gemini_primary?.status ||
-        err?.status ||
-        0
-    );
+    const geminiHad429 = Boolean(err?.geminiHad429 || is429Error(err) || is429Error(err?.lastGeminiError));
+    const groqAttempted = Boolean(errorTrace.groq_primary);
+    const groqStatus = Number(errorTrace.groq_primary?.status || 0);
+    const geminiStatus = Number(err?.status || err?.lastGeminiError?.status || 0);
 
     let shortBengaliMsg = '';
     if (err?.isNoKey) {
       shortBengaliMsg = NO_GEMINI_KEY_MSG;
+    } else if (!groqKey) {
+      shortBengaliMsg = 'Gemini এখন ব্যস্ত, একটু পরে আবার চেষ্টা করো';
     } else if (geminiHad429) {
       if (groqAttempted) {
         if (groqStatus === 429) {
@@ -813,13 +805,13 @@ export async function sendTypedChat(
       if (groqAttempted) {
         shortBengaliMsg = 'সময় শেষ (Timeout), Groq কী-ও কাজ করছে না';
       } else {
-        shortBengaliMsg = 'সময় শেষ (Timeout) — ২০ সেকেন্ডের মধ্যে উত্তর আসেনি।';
+        shortBengaliMsg = 'সময় শেষ (Timeout) — ২৫ সেকেন্ডের মধ্যে উত্তর আসেনি।';
       }
     } else if (geminiStatus === 503 || geminiStatus === 500) {
       if (groqAttempted) {
         shortBengaliMsg = `Gemini সার্ভার ব্যস্ত (HTTP ${geminiStatus}), Groq কী-ও কাজ করছে না`;
       } else {
-        shortBengaliMsg = `Gemini সার্ভার এখন ব্যস্ত (HTTP ${geminiStatus})। পরে চেষ্টা করো।`;
+        shortBengaliMsg = `Gemini সার্ভার এখন ব্যস্ত (HTTP ${geminiStatus})। একটু পরে আবার চেষ্টা করো।`;
       }
     } else {
       shortBengaliMsg = formatRealGeminiError(err, geminiStatus);
@@ -840,7 +832,7 @@ export async function sendTypedChat(
     finalErr.shortBengaliMsg = shortBengaliMsg;
     finalErr.rawJson = rawJsonStr;
     finalErr.status = err?.status || geminiStatus;
-    finalErr.modelUsed = err?.modelUsed || currentModel;
+    finalErr.modelUsed = err?.modelUsed || 'gemini';
     finalErr.rawError = err;
     throw finalErr;
   } finally {
