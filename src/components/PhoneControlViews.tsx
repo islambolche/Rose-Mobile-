@@ -852,7 +852,7 @@ export const AppPermissionsView = ({ setCurrentView, setToast }: any) => {
             </div>
           </header>
 
-          <main className="flex-1 p-5 max-w-lg w-full mx-auto space-y-5 pb-36">
+          <main className="flex-1 p-5 w-full space-y-5 pb-36">
             {/* Permission Detail Card */}
             <div className="p-6 rounded-[2.5rem] bg-[#0F172A]/90 border border-purple-500/30 shadow-2xl space-y-5">
               <div className="flex items-center justify-between pb-4 border-b border-white/10">
@@ -1025,7 +1025,7 @@ export const AppPermissionsView = ({ setCurrentView, setToast }: any) => {
         </div>
       </header>
 
-      <div className="px-5 py-4 space-y-4 pb-36 max-w-lg w-full mx-auto">
+      <div className="px-5 py-4 space-y-4 pb-36 w-full">
         {isApp ? (
           <div className="space-y-3">
             <button
@@ -1278,7 +1278,7 @@ export const QuickActionsView = ({ setCurrentView, setToast }: any) => {
         <h2 className="text-xl font-black italic uppercase tracking-tighter text-white">1. Quick actions</h2>
       </header>
 
-      <div className="px-5 space-y-4 pb-36 max-w-lg w-full mx-auto">
+      <div className="px-5 space-y-4 pb-36 w-full">
         <div className="p-5 bg-[#0F172A]/80 border border-purple-500/30 rounded-[2.5rem] shadow-2xl text-center space-y-2">
           <Zap className="w-10 h-10 text-purple-400 mx-auto" />
           <h4 className="text-base font-black uppercase text-white">Device Shortcuts</h4>

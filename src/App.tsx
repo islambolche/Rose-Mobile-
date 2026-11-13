@@ -2960,6 +2960,36 @@ export function App() {
     }
   }, [appTheme]);
 
+  const [useDesktopPhoneFrame, setUseDesktopPhoneFrame] = useState<boolean>(() => {
+    if (typeof window === "undefined") return false;
+    if ((window as any).Capacitor?.isNativePlatform?.()) return false;
+    return Boolean(window.matchMedia?.("(pointer: fine)")?.matches) && window.innerWidth >= 900;
+  });
+
+  useEffect(() => {
+    const checkDesktopFrame = () => {
+      if (typeof window === "undefined") {
+        setUseDesktopPhoneFrame(false);
+        return;
+      }
+      if ((window as any).Capacitor?.isNativePlatform?.()) {
+        setUseDesktopPhoneFrame(false);
+        return;
+      }
+      const isDesktop =
+        Boolean(window.matchMedia?.("(pointer: fine)")?.matches) && window.innerWidth >= 900;
+      setUseDesktopPhoneFrame(isDesktop);
+    };
+    checkDesktopFrame();
+    window.addEventListener("resize", checkDesktopFrame);
+    const pointerMq = window.matchMedia?.("(pointer: fine)");
+    pointerMq?.addEventListener?.("change", checkDesktopFrame);
+    return () => {
+      window.removeEventListener("resize", checkDesktopFrame);
+      pointerMq?.removeEventListener?.("change", checkDesktopFrame);
+    };
+  }, []);
+
   const [onlyFemaleVoices, setOnlyFemaleVoices] = useState<boolean>(() => {
     try {
       const saved = localStorage.getItem("iyabd_only_female_voices");
@@ -16755,7 +16785,7 @@ export function App() {
 
   return (
     <div
-      className="rose-desktop-stage"
+      className={useDesktopPhoneFrame ? "rose-desktop-stage rose-is-desktop-frame" : "rose-desktop-stage"}
       style={
         {
           "--brand-accent": ROSE_BRAND.accent,
@@ -16767,13 +16797,15 @@ export function App() {
         } as React.CSSProperties
       }
     >
-      <div className="rose-desktop-backdrop" aria-hidden="true">
-        <img
-          src={ROSE_BRAND.homeBackground}
-          alt={ROSE_BRAND.name}
-          className="rose-desktop-backdrop-img"
-        />
-      </div>
+      {useDesktopPhoneFrame && (
+        <div className="rose-desktop-backdrop" aria-hidden="true">
+          <img
+            src={ROSE_BRAND.homeBackground}
+            alt={ROSE_BRAND.name}
+            className="rose-desktop-backdrop-img"
+          />
+        </div>
+      )}
       <div
         className={'rose-mobile-frame bg-[var(--bg)] text-[var(--text)] font-sans flex flex-col overflow-hidden transition-all duration-500 ' + (!settings.masterAccess ? "grayscale contrast-75" : "")}
       >
