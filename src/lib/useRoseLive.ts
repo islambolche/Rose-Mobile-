@@ -60,19 +60,7 @@ export function useRoseLive(getOpts: () => Opts) {
       const apiKey = String(o.apiKey || getGeminiKey() || "").replace(/[\r\n\t\s"']+/g, "").trim();
       const rawModel = (o.model || "gemini-1.5-flash").replace(/^models\//, "").trim();
       const fullModel = `models/${rawModel}`;
-      const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-      const host = window.location.host;
-      const wsParams = new URLSearchParams({
-        assistantName: o.assistantName || 'Rose AI',
-        ownerName: o.ownerName || 'MD YOUSUF KHAN',
-        voiceName: o.voiceName || 'Sulafat',
-        personality: o.personality || 'Normal',
-        language: o.language || 'bn-BD',
-        responseStyle: o.responseStyle || 'Balanced',
-        model: rawModel,
-      });
-      if (apiKey) wsParams.set('apiKey', apiKey);
-      const wsUrl = `${protocol}//${host}/api/live?${wsParams.toString()}`;
+      const wsUrl = `wss://generativelanguage.googleapis.com/ws/google.ai.generativelanguage.v1beta.GenerativeService.BidiGenerateContent?key=${encodeURIComponent(apiKey)}`;
 
       const ws = new WebSocket(wsUrl);
       let ready = false;

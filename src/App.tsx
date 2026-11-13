@@ -1399,10 +1399,9 @@ const VoiceCheckView = ({
     try {
       const controller = new AbortController();
       const timeoutId = setTimeout(() => controller.abort(), 4000);
-      const res = await fetch("/api/gemini/verify", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ apiKey: rawKey }),
+      const res = await fetch("https://generativelanguage.googleapis.com/v1beta/models", {
+        method: "GET",
+        headers: { "x-goog-api-key": rawKey },
         signal: controller.signal,
       });
       clearTimeout(timeoutId);
@@ -5614,10 +5613,9 @@ export function App() {
           let body: string | undefined = undefined;
 
           if (type === "gemini") {
-            url = "/api/gemini/verify";
-            method = "POST";
-            headers["Content-Type"] = "application/json";
-            body = JSON.stringify({ apiKey: cleanKey });
+            url = "https://generativelanguage.googleapis.com/v1beta/models";
+            method = "GET";
+            headers["x-goog-api-key"] = cleanKey;
           } else if (type === "groq") {
             url = "https://api.groq.com/openai/v1/models";
             headers["Authorization"] = `Bearer ${cleanKey}`;

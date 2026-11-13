@@ -288,42 +288,13 @@ export function safelyOpenUrl(url: string) {
  * Helper to call the Termux API bridge on the backend
  */
 async function callTermuxApi(action: string, args: any): Promise<boolean> {
-  try {
-    const res = await fetch('/api/termux/action', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ action, args })
-    });
-    if (!res.ok) return false;
-    const data = await res.json();
-    return !!data.success;
-  } catch (e) {
-    return false;
-  }
+  return false;
 }
 
 /**
  * Sync contacts from Termux API into local storage
  */
-export async function syncTermuxContacts() {
-  try {
-    const res = await fetch('/api/termux/action', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ action: 'contacts' })
-    });
-    if (res.ok) {
-      const data = await res.json();
-      if (data.success && Array.isArray(data.output)) {
-        const list = data.output.map((c: any) => ({
-          name: c.name,
-          tel: c.number
-        }));
-        localStorage.setItem('iyabd_saved_contacts', JSON.stringify(list));
-        return list.length;
-      }
-    }
-  } catch (e) {}
+export async function syncTermuxContacts(): Promise<number> {
   return 0;
 }
 

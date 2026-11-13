@@ -27,61 +27,7 @@ export const hasUsableGeminiKey = (overrideKey?: string): boolean => {
 };
 
 export const fetchServerGeminiStatus = async (forceRefresh = false): Promise<boolean> => {
-  if (typeof window === 'undefined') return false;
-  if (!forceRefresh && apiBackendAvailable === false && serverGeminiConfigured === false) {
-    return false;
-  }
-  const now = Date.now();
-  if (
-    !forceRefresh &&
-    serverGeminiConfigured !== null &&
-    now - lastServerCheckAt < SERVER_STATUS_CACHE_TTL_MS
-  ) {
-    return serverGeminiConfigured;
-  }
-  if (!forceRefresh && serverStatusPromise) {
-    return serverStatusPromise;
-  }
-
-  serverStatusPromise = (async () => {
-    try {
-      const controller = new AbortController();
-      const timer = setTimeout(() => controller.abort(), 5000);
-      const res = await fetch('/api/gemini/status', { signal: controller.signal });
-      clearTimeout(timer);
-      const ct = String(res.headers.get('content-type') || '').toLowerCase();
-      if (res.ok && ct.includes('application/json')) {
-        const data = await res.json().catch(() => null);
-        if (data && typeof data === 'object' && 'configured' in data) {
-          apiBackendAvailable = true;
-          const configured = Boolean(data?.configured);
-          serverGeminiConfigured = configured;
-          serverGeminiMaskedKey = typeof data?.maskedKey === 'string' ? data.maskedKey : '';
-          lastServerCheckAt = Date.now();
-          try {
-            window.dispatchEvent(
-              new CustomEvent('gemini_server_status_updated', {
-                detail: { configured, maskedKey: serverGeminiMaskedKey },
-              })
-            );
-          } catch {}
-          return configured;
-        }
-      }
-      if (res.status === 404 || res.status === 405 || (ct.includes('text/html') && !res.ok)) {
-        apiBackendAvailable = false;
-      }
-    } catch {}
-    if (serverGeminiConfigured === null) {
-      serverGeminiConfigured = false;
-    }
-    lastServerCheckAt = Date.now();
-    return serverGeminiConfigured;
-  })().finally(() => {
-    serverStatusPromise = null;
-  });
-
-  return serverStatusPromise;
+  return false;
 };
 
 export const ensureGeminiReady = async (overrideKey?: string): Promise<boolean> => {

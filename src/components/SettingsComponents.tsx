@@ -216,13 +216,7 @@ export const testLiveVoiceModelConnection = async (
   return new Promise((resolve) => {
     let settled = false;
     const rawModel = trimmed.replace(/^models\//, "").trim();
-    const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-    const host = window.location.host;
-    const wsParams = new URLSearchParams({
-      model: rawModel,
-    });
-    if (apiKey) wsParams.set('apiKey', apiKey);
-    const wsUrl = `${protocol}//${host}/api/live?${wsParams.toString()}`;
+    const wsUrl = `wss://generativelanguage.googleapis.com/ws/google.ai.generativelanguage.v1beta.GenerativeService.BidiGenerateContent?key=${encodeURIComponent(apiKey)}`;
 
     let ws: WebSocket | null = null;
     const finish = (result: { ok: boolean; error?: string }) => {

@@ -2820,8 +2820,7 @@ export class GeminiLiveSession {
       const directWsUrl = cleanLiveKey
         ? `wss://generativelanguage.googleapis.com/ws/google.ai.generativelanguage.v1beta.GenerativeService.BidiGenerateContent?key=${encodeURIComponent(cleanLiveKey)}`
         : `wss://generativelanguage.googleapis.com/ws/google.ai.generativelanguage.v1beta.GenerativeService.BidiGenerateContent`;
-      const proxyWsUrl = `${protocol}//${host}/api/live?${wsParams.toString()}`;
-      let wsUrl = proxyWsUrl;
+      let wsUrl = directWsUrl;
       let triedProxy = false;
 
       let socket: WebSocket | null = null;
