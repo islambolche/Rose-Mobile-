@@ -468,7 +468,7 @@ let ortConfigured = false;
 function ensureOrtConfigured() {
   if (ortConfigured) return;
   try {
-    ort.env.wasm.wasmPaths = '/';
+    ort.env.wasm.wasmPaths = SMART_VAD_CDN_CONFIG.onnxWASMBasePath;
     ort.env.wasm.numThreads = 1;
     ort.env.logLevel = 'error';
     ortConfigured = true;

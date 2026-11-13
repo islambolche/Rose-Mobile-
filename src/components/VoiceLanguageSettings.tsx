@@ -37,6 +37,7 @@ import { UnifiedSettings, saveUnifiedSettings, AssistantPersonality, ReplyLength
 import { directGeminiTTS } from "../lib/ai-service";
 import { getElevenLabsKey } from "../lib/voiceEngine";
 import { ensureGeminiReady } from "../lib/geminiKey";
+import { fetchGeminiGenerateWithFallback } from "../lib/geminiDirect";
 import {
   getMicListeningSettings,
   saveMicListeningSettings,
@@ -622,18 +623,11 @@ export const VoiceLanguageSettings: React.FC<VoiceLanguageSettingsProps> = ({
                       const key = (settings.geminiApiKey || localStorage.getItem("gemini_api_key") || "").replace(/[\r\n\t\s"']+/g, "").trim();
                       if (!(await ensureGeminiReady(key))) { showToast("Add your Gemini key in Settings > Connections."); return; }
                       try {
-                          const url = '/api/gemini/generate';
-                          const res = await fetch(url, {
-                            method: "POST",
-                            headers: {
-                              "Content-Type": "application/json",
-                            },
-                            body: JSON.stringify({
-                                model: "gemini-4-hydrogen",
-                                contents: [{ role: "user", parts: [{ text: "হাই" }] }],
-                                generationConfig: { maxOutputTokens: 30 },
-                                ...(key ? { apiKey: key } : {}),
-                            })
+                          const res = await fetchGeminiGenerateWithFallback({
+                            model: "gemini-4-hydrogen",
+                            contents: [{ role: "user", parts: [{ text: "হাই" }] }],
+                            generationConfig: { maxOutputTokens: 30 },
+                            ...(key ? { apiKey: key } : {}),
                           });
                           const raw = await res.text().catch(() => "");
                           let data: any = null;

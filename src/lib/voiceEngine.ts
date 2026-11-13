@@ -8,6 +8,7 @@ import {
   isModelExhausted,
 } from "./quotaManager";
 import { getGeminiKey } from "./geminiKey";
+import { fetchGeminiGenerateWithFallback } from "./geminiDirect";
 import {
   TEXT_MODELS,
   discoverAvailableFlashModels,
@@ -217,25 +218,24 @@ export async function generateVoiceAnswer(payload: {
     triedModels.add(modelCandidate);
     const answerStartTime = Date.now();
     const cleanModel = modelCandidate.replace(/^models\//, "").trim();
-    const url = "/api/gemini/generate";
 
-    const res = await fetchWithTimeoutAndRetry(
-      url,
-      {
-        method: "POST",
-        headers: { 
-          "Content-Type": "application/json",
-        },
-        body: JSON.stringify({
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), 7000);
+    let res: Response;
+    try {
+      res = await fetchGeminiGenerateWithFallback(
+        {
           model: cleanModel,
           contents: history,
           systemInstruction: strictSystemInstruction.trim() || undefined,
           generationConfig: { maxOutputTokens: 150 },
           apiKey: userKey,
-        }),
-      },
-      7000
-    );
+        },
+        controller.signal
+      );
+    } finally {
+      clearTimeout(timer);
+    }
 
     const rawText = await res.text().catch(() => "");
     let data: any = null;

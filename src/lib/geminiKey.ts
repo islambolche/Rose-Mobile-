@@ -6,7 +6,14 @@ let serverGeminiConfigured: boolean | null = null;
 let serverGeminiMaskedKey: string = '';
 let serverStatusPromise: Promise<boolean> | null = null;
 let lastServerCheckAt = 0;
+let apiBackendAvailable: boolean | null = null;
 const SERVER_STATUS_CACHE_TTL_MS = 15000;
+
+export const isApiBackendAvailable = (): boolean | null => apiBackendAvailable;
+
+export const setApiBackendAvailable = (available: boolean): void => {
+  apiBackendAvailable = available;
+};
 
 export const isServerGeminiConfigured = (): boolean => serverGeminiConfigured === true;
 
@@ -21,6 +28,9 @@ export const hasUsableGeminiKey = (overrideKey?: string): boolean => {
 
 export const fetchServerGeminiStatus = async (forceRefresh = false): Promise<boolean> => {
   if (typeof window === 'undefined') return false;
+  if (!forceRefresh && apiBackendAvailable === false && serverGeminiConfigured === false) {
+    return false;
+  }
   const now = Date.now();
   if (
     !forceRefresh &&
@@ -39,20 +49,27 @@ export const fetchServerGeminiStatus = async (forceRefresh = false): Promise<boo
       const timer = setTimeout(() => controller.abort(), 5000);
       const res = await fetch('/api/gemini/status', { signal: controller.signal });
       clearTimeout(timer);
-      if (res.ok) {
+      const ct = String(res.headers.get('content-type') || '').toLowerCase();
+      if (res.ok && ct.includes('application/json')) {
         const data = await res.json().catch(() => null);
-        const configured = Boolean(data?.configured);
-        serverGeminiConfigured = configured;
-        serverGeminiMaskedKey = typeof data?.maskedKey === 'string' ? data.maskedKey : '';
-        lastServerCheckAt = Date.now();
-        try {
-          window.dispatchEvent(
-            new CustomEvent('gemini_server_status_updated', {
-              detail: { configured, maskedKey: serverGeminiMaskedKey },
-            })
-          );
-        } catch {}
-        return configured;
+        if (data && typeof data === 'object' && 'configured' in data) {
+          apiBackendAvailable = true;
+          const configured = Boolean(data?.configured);
+          serverGeminiConfigured = configured;
+          serverGeminiMaskedKey = typeof data?.maskedKey === 'string' ? data.maskedKey : '';
+          lastServerCheckAt = Date.now();
+          try {
+            window.dispatchEvent(
+              new CustomEvent('gemini_server_status_updated', {
+                detail: { configured, maskedKey: serverGeminiMaskedKey },
+              })
+            );
+          } catch {}
+          return configured;
+        }
+      }
+      if (res.status === 404 || res.status === 405 || (ct.includes('text/html') && !res.ok)) {
+        apiBackendAvailable = false;
       }
     } catch {}
     if (serverGeminiConfigured === null) {

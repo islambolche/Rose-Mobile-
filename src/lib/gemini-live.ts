@@ -1,5 +1,10 @@
 import { logVoiceEvent } from './voiceLogger';
 import { getGeminiKey, ensureGeminiReady } from './geminiKey';
+import {
+  fetchGeminiModelsWithFallback,
+  fetchGeminiStreamWithFallback,
+  fetchGeminiGenerateWithFallback,
+} from './geminiDirect';
 
 const StartSensitivity = { START_SENSITIVITY_HIGH: 'START_SENSITIVITY_HIGH' } as const;
 const EndSensitivity = { END_SENSITIVITY_HIGH: 'END_SENSITIVITY_HIGH' } as const;
@@ -223,15 +228,11 @@ interface DiscoveredVoiceModels {
 
 async function discoverVoiceModelsFromListModels(apiKey: string): Promise<DiscoveredVoiceModels> {
   const cleanKey = String(apiKey || '').replace(/[\r\n\t\s"']+/g, '').trim();
-  const url = `/api/gemini/models${cleanKey ? `?apiKey=${encodeURIComponent(cleanKey)}` : ''}`;
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), 7000);
 
   try {
-    const res = await fetch(url, {
-      method: 'GET',
-      signal: controller.signal,
-    });
+    const res = await fetchGeminiModelsWithFallback(cleanKey, controller.signal);
     clearTimeout(timer);
 
     const rawText = await res.text().catch(() => '');
@@ -1179,6 +1180,7 @@ export class GeminiLiveSession {
         },
         ortConfig: (ortInst) => {
           try {
+            ortInst.env.wasm.wasmPaths = SMART_VAD_CDN_CONFIG.onnxWASMBasePath;
             ortInst.env.wasm.numThreads = 1;
             ortInst.env.logLevel = 'error';
           } catch {}
@@ -3964,8 +3966,6 @@ export class GeminiLiveSession {
         for (const flashModel of candidates) {
           if (this.wasStoppedByUser) return;
           const cleanClipKey = String(apiKey || '').replace(/[\r\n\t\s"']+/g, '').trim();
-          const streamUrl = '/api/gemini/stream';
-          const fallbackUrl = '/api/gemini/generate';
 
           const makeClipPayload = (withThinkingConfig: boolean) => ({
             model: flashModel,
@@ -3974,24 +3974,10 @@ export class GeminiLiveSession {
           });
 
           try {
-            let res = await fetch(streamUrl, {
-              method: 'POST',
-              headers: {
-                'Content-Type': 'application/json',
-              },
-              body: JSON.stringify(makeClipPayload(true)),
-              signal: clipController.signal,
-            });
+            let res = await fetchGeminiStreamWithFallback(makeClipPayload(true), clipController.signal);
 
             if (res.status === 400 && !this.wasStoppedByUser) {
-              res = await fetch(streamUrl, {
-                method: 'POST',
-                headers: {
-                  'Content-Type': 'application/json',
-                },
-                body: JSON.stringify(makeClipPayload(false)),
-                signal: clipController.signal,
-              });
+              res = await fetchGeminiStreamWithFallback(makeClipPayload(false), clipController.signal);
             }
 
             if (!res.ok) {
@@ -4063,18 +4049,14 @@ export class GeminiLiveSession {
             }
 
             if (!rawResponseText && !this.wasStoppedByUser) {
-              const genRes = await fetch(fallbackUrl, {
-                method: 'POST',
-                headers: {
-                  'Content-Type': 'application/json',
-                },
-                body: JSON.stringify({
+              const genRes = await fetchGeminiGenerateWithFallback(
+                {
                   model: flashModel,
                   ...buildClipBody(false),
                   ...(cleanClipKey ? { apiKey: cleanClipKey } : {}),
-                }),
-                signal: clipController.signal,
-              });
+                },
+                clipController.signal
+              );
               const rawText = await genRes.text().catch(() => '');
               let data: any = null;
               try {

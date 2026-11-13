@@ -83,6 +83,7 @@ export const PAGES: PageDef[] = [
   { id: 'pc_history', parent: 'pc_setup' },
   { id: 'safety', parent: 'pc_setup' },
   { id: 'local_ai', parent: 'pc_setup' },
+  { id: 'pc_business_auto', parent: 'pc_setup' },
   { id: 'view_mode', parent: 'pc_setup' },
   { id: 'office_team', parent: 'pc_setup' },
   { id: 'system_status', parent: 'pc_setup' },
@@ -169,6 +170,7 @@ const PAGE_TO_NAV_ID: Record<string, string> = {
   pc_history: 'pc_history',
   safety: 'safety',
   local_ai: 'local_ai',
+  pc_business_auto: 'pc_business_auto',
   view_mode: 'view_mode',
   office_team: 'office_team',
   system_status: 'system_status',
@@ -411,7 +413,7 @@ export const APP_PERMISSIONS_LIST = [
 
 export const PC_SETUP_LIST = [
   'pc_helper', 'pc_control', 'pc_files', 'confirmations', 'pc_history',
-  'safety', 'local_ai', 'view_mode', 'office_team', 'system_status',
+  'safety', 'local_ai', 'pc_business_auto', 'view_mode', 'office_team', 'system_status',
   'office_test', 'office_layout'
 ];
 

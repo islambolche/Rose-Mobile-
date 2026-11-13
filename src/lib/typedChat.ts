@@ -1,4 +1,5 @@
 import { getGeminiKey, ensureGeminiReady } from './geminiKey';
+import { fetchGeminiModelsWithFallback, fetchGeminiGenerateWithFallback } from './geminiDirect';
 import { buildRoseSystemInstruction } from './roseConfig';
 import { getDynamicGroqChatModels, getProviderKey } from './chatEngines';
 import { cleanAssistantReplyText } from './ai-service';
@@ -250,10 +251,7 @@ export async function getValidFlashModels(apiKey: string, signal?: AbortSignal):
   } catch {}
 
   try {
-    const url = `/api/gemini/models${apiKey ? `?apiKey=${encodeURIComponent(apiKey)}` : ''}`;
-    const res = await fetch(url, {
-      signal,
-    });
+    const res = await fetchGeminiModelsWithFallback(apiKey, signal);
     if (!res.ok) return ['gemini-4-hydrogen', 'gemini-3.1-flash-lite', 'gemini-2.5-flash'];
     const data = await res.json();
     const models = Array.isArray(data?.models) ? data.models : [];
@@ -616,18 +614,14 @@ export async function sendTypedChat(
 
       const { signal, cleanup } = createStepSignal(masterController.signal, Math.min(maxStepMs, remainingMs));
       try {
-        const res = await fetch('/api/gemini/generate', {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-          },
-          body: JSON.stringify({
+        const res = await fetchGeminiGenerateWithFallback(
+          {
             model: targetModel,
             ...geminiBody,
             ...(apiKey ? { apiKey } : {}),
-          }),
-          signal,
-        });
+          },
+          signal
+        );
 
         if (!res.ok) {
           const errText = await res.text().catch(() => '');

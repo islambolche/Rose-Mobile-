@@ -477,7 +477,7 @@ export const ConnectionsView = ({
       const finalStatus: KeyStatus =
         checkResult.status === 'NOT SET' ? 'SAVED – NOT TESTED' : checkResult.status;
       const pillLabel =
-        finalStatus === 'READY' || finalStatus === 'CONNECTED' ? 'CONNECTED' : finalStatus;
+        finalStatus === 'READY' ? 'READY ✓' : finalStatus === 'CONNECTED' ? 'CONNECTED' : finalStatus;
 
       setStatusMap((prev) => ({ ...prev, [id]: finalStatus }));
       writeLocalKey(provider.statusStorageKey, finalStatus);
@@ -486,9 +486,12 @@ export const ConnectionsView = ({
       } catch {}
 
       const reason = checkResult.errorText || (checkResult.httpStatus ? `HTTP ${checkResult.httpStatus}` : '');
-      const fullMsg = reason
-        ? `${provider.displayName}: ${pillLabel} (${reason})`
-        : `${provider.displayName}: ${pillLabel}`;
+      const fullMsg =
+        id === 'gemini' && reason
+          ? `${provider.displayName}: ${reason}`
+          : reason
+            ? `${provider.displayName}: ${pillLabel} (${reason})`
+            : `${provider.displayName}: ${pillLabel}`;
 
       console.log('[Connections] TEST RESULT:', {
         provider: id,
@@ -569,7 +572,7 @@ export const ConnectionsView = ({
         <div className="flex items-center gap-1.5 px-3 py-1 bg-emerald-500/15 border border-emerald-500/40 rounded-full shrink-0">
           <Check className="w-3 h-3 text-emerald-400" />
           <span className="text-[10px] font-black uppercase tracking-widest text-emerald-400">
-            CONNECTED
+            READY ✓
           </span>
         </div>
       );
@@ -871,10 +874,12 @@ export const ConnectionsView = ({
           {/* Result / Error Box */}
           {(testResults[selectedItem.id] || selectedErrorMsg) && (
             <div className={`p-3.5 border rounded-2xl text-xs font-medium text-center shadow-lg transition-all break-words ${
-              statusMap[selectedItem.id] === 'READY' || statusMap[selectedItem.id] === 'CONNECTED'
-                ? 'bg-emerald-950/80 border-emerald-500/50 text-emerald-300'
-                : statusMap[selectedItem.id] === 'LIMIT REACHED' || statusMap[selectedItem.id] === 'SAVED – NOT TESTED'
+              (testResults[selectedItem.id] || selectedErrorMsg).includes('limit full') ||
+              statusMap[selectedItem.id] === 'LIMIT REACHED' ||
+              statusMap[selectedItem.id] === 'SAVED – NOT TESTED'
                 ? 'bg-amber-950/80 border-amber-500/50 text-amber-300'
+                : statusMap[selectedItem.id] === 'READY' || statusMap[selectedItem.id] === 'CONNECTED'
+                ? 'bg-emerald-950/80 border-emerald-500/50 text-emerald-300'
                 : 'bg-red-950/80 border-red-500/50 text-red-300'
             }`}>
               {testResults[selectedItem.id] || selectedErrorMsg}

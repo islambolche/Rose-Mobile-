@@ -42,6 +42,7 @@ import {
 import { CREATOR_PROFILE } from "../lib/creator-profile";
 import { getSavedWorkingTextModel, TEXT_MODELS, sanitizeOutApiKey } from "../lib/ai-service";
 import { ensureGeminiReady } from "../lib/geminiKey";
+import { fetchGeminiGenerateWithFallback } from "../lib/geminiDirect";
 
 interface SettingsModalProps {
   isOpen: boolean;
@@ -274,18 +275,11 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({ isOpen, onClose, o
     try {
       const model = getSavedWorkingTextModel() || TEXT_MODELS[0] || 'gemini-4-hydrogen';
       const cleanM = model.replace(/^models\//, "").trim();
-      const url = '/api/gemini/generate';
-      const res = await fetch(url, {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-        },
-        body: JSON.stringify({
-          model: cleanM,
-          contents: [{ role: "user", parts: [{ text: "hi" }] }],
-          generationConfig: { maxOutputTokens: 10 },
-          ...(key ? { apiKey: key } : {}),
-        }),
+      const res = await fetchGeminiGenerateWithFallback({
+        model: cleanM,
+        contents: [{ role: "user", parts: [{ text: "hi" }] }],
+        generationConfig: { maxOutputTokens: 10 },
+        ...(key ? { apiKey: key } : {}),
       });
       const rawText = await res.text().catch(() => "");
       let data: any = null;

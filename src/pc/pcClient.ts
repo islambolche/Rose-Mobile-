@@ -110,7 +110,8 @@ function normalizeRow(row: any): PcCommandRow {
 
 export async function sendPcCommand(
   action: string,
-  args: Record<string, any> = {}
+  args: Record<string, any> = {},
+  options?: { needsConfirm?: boolean }
 ): Promise<string> {
   if (!supabase) {
     throw new Error("Supabase সংযোগ নেই");
@@ -125,6 +126,7 @@ export async function sendPcCommand(
   const ts = Date.now();
   const args_json = JSON.stringify(args ?? {});
   const sig = await sign(`${id}|${device_id}|${action}|${args_json}|${ts}`);
+  const needsConfirm = Boolean(options?.needsConfirm);
 
   const { error } = await supabase.from("pc_commands").insert([
     {
@@ -134,7 +136,8 @@ export async function sendPcCommand(
       args_json,
       ts,
       sig,
-      status: "pending",
+      ...(needsConfirm ? { needs_confirm: true } : {}),
+      status: needsConfirm ? "awaiting_confirm" : "pending",
       source: "mobile",
     },
   ]);

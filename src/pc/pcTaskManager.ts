@@ -7,13 +7,19 @@ import {
   PcCommandRow,
 } from "./pcClient";
 import { supabase } from "../lib/supabase";
+import {
+  recordBusinessRun,
+  updateBusinessRunByCommandId,
+} from "./businessAuto";
 
 export type PcTaskUiStatus = "চলছে" | "শেষ" | "ব্যর্থ" | "অনুমতি লাগবে";
+export type PcTaskKind = "general" | "fb_ad_draft" | "fb_ad_publish";
 
 export interface PcTaskRecord {
   id: string;
   task: string;
   action: string;
+  kind?: PcTaskKind;
   rawStatus: string;
   uiStatus: PcTaskUiStatus;
   summary?: string;
@@ -63,11 +69,17 @@ export const PC_TASK_FUNCTION_DECLARATION = {
 const STORAGE_KEY = "rose_pc_task_cards";
 const MAX_STORED_TASKS = 25;
 const BG_WAIT_TIMEOUT_MS = 10 * 60 * 1000; // 10 minutes
+const FB_AD_PUBLISH_PROMPT_TTL_MS = 5 * 60 * 1000;
 
 let pcTasks: PcTaskRecord[] = loadStoredTasks();
 const listeners = new Set<(tasks: PcTaskRecord[]) => void>();
 const activeWaiters = new Set<string>();
 const externalConfirmWatchers = new Map<string, ReturnType<typeof setInterval>>();
+let pendingFbAdPublishConfirm: {
+  draftTaskId: string;
+  summary: string;
+  timestamp: number;
+} | null = null;
 
 function loadStoredTasks(): PcTaskRecord[] {
   if (typeof window === "undefined") return [];
@@ -258,9 +270,15 @@ function watchAwaitingConfirmExternally(id: string, taskText: string): void {
       stopExternalConfirmWatcher(id);
       if (nextStatus === "approved" || nextStatus === "running" || nextStatus === "pending") {
         upsertTask({ id, rawStatus: nextStatus });
+        updateBusinessRunByCommandId(id, { status: "running" });
         void startBackgroundWaitForTask(id, taskText);
       } else if (nextStatus === "rejected") {
         upsertTask({ id, rawStatus: "rejected", error: "বাতিল করা হয়েছে" });
+        updateBusinessRunByCommandId(id, {
+          status: "rejected",
+          error: "বাতিল করা হয়েছে",
+          finishedAt: Date.now(),
+        });
       } else if (nextStatus === "done") {
         const parsedRow: PcCommandRow = {
           ...(data as any),
@@ -277,10 +295,20 @@ function watchAwaitingConfirmExternally(id: string, taskText: string): void {
         };
         const summary = formatPcTaskResultMessage(parsedRow);
         upsertTask({ id, rawStatus: "done", summary });
+        updateBusinessRunByCommandId(id, {
+          status: "done",
+          summary,
+          finishedAt: Date.now(),
+        });
         announcePcTaskMessage(summary, id, "done");
       } else if (nextStatus === "failed" || nextStatus === "error") {
         const errMsg = String(data.error || "কাজটা করা যায়নি").trim();
         upsertTask({ id, rawStatus: nextStatus, error: errMsg });
+        updateBusinessRunByCommandId(id, {
+          status: "failed",
+          error: errMsg,
+          finishedAt: Date.now(),
+        });
         announcePcTaskMessage(`ল্যাপটপের কাজটা ব্যর্থ হয়েছে: ${errMsg}`, id, nextStatus);
       }
     } catch {}
@@ -309,12 +337,33 @@ export async function startBackgroundWaitForTask(
       stopExternalConfirmWatcher(id);
       const summary = formatPcTaskResultMessage(row);
       upsertTask({ id, rawStatus: "done", summary });
-      announcePcTaskMessage(summary, id, "done");
+      updateBusinessRunByCommandId(id, {
+        status: "done",
+        summary,
+        finishedAt: Date.now(),
+      });
+      const existingTask = pcTasks.find((t) => t.id === id);
+      if (existingTask?.kind === "fb_ad_draft") {
+        pendingFbAdPublishConfirm = {
+          draftTaskId: id,
+          summary,
+          timestamp: Date.now(),
+        };
+        const promptMsg = /চালু\s*করব\??\s*$/.test(summary)
+          ? summary
+          : `${summary.replace(/[।?!\s]+$/, "")}। চালু করব?`;
+        announcePcTaskMessage(promptMsg, id, "done");
+      } else {
+        announcePcTaskMessage(summary, id, "done");
+      }
       return;
     }
 
     if (finalStatus === "awaiting_confirm") {
       upsertTask({ id, rawStatus: "awaiting_confirm" });
+      updateBusinessRunByCommandId(id, {
+        status: "awaiting_confirm",
+      });
       announcePcTaskMessage(
         "এটা ব্যাংক/পেমেন্ট/পাসওয়ার্ডের কাজ, করব?",
         id,
@@ -327,6 +376,11 @@ export async function startBackgroundWaitForTask(
     if (finalStatus === "rejected") {
       stopExternalConfirmWatcher(id);
       upsertTask({ id, rawStatus: "rejected", error: "বাতিল করা হয়েছে" });
+      updateBusinessRunByCommandId(id, {
+        status: "rejected",
+        error: "বাতিল করা হয়েছে",
+        finishedAt: Date.now(),
+      });
       announcePcTaskMessage("ঠিক আছে, কাজটা বাতিল করলাম।", id, "rejected");
       return;
     }
@@ -336,6 +390,11 @@ export async function startBackgroundWaitForTask(
       row?.error || row?.result?.error || row?.result?.message || "কাজটা করা যায়নি"
     ).trim();
     upsertTask({ id, rawStatus: finalStatus || "failed", error: errMsg });
+    updateBusinessRunByCommandId(id, {
+      status: "failed",
+      error: errMsg,
+      finishedAt: Date.now(),
+    });
     announcePcTaskMessage(`ল্যাপটপের কাজটা ব্যর্থ হয়েছে: ${errMsg}`, id, "failed");
   } catch (err: any) {
     stopExternalConfirmWatcher(id);
@@ -343,16 +402,36 @@ export async function startBackgroundWaitForTask(
       err?.message || "সময় শেষ — PC Helper থেকে উত্তর আসেনি"
     ).trim();
     upsertTask({ id, rawStatus: "failed", error: errMsg });
+    updateBusinessRunByCommandId(id, {
+      status: "failed",
+      error: errMsg,
+      finishedAt: Date.now(),
+    });
     announcePcTaskMessage(errMsg, id, "failed");
   } finally {
     activeWaiters.delete(id);
   }
 }
 
+function isFacebookAdPublishTask(taskText: string): boolean {
+  const lower = taskText.toLowerCase();
+  return lower.includes("ads manager draft") && lower.includes("publish");
+}
+
+function isFacebookAdSetupTask(taskText: string): boolean {
+  const lower = taskText.toLowerCase();
+  if (isFacebookAdPublishTask(taskText)) return false;
+  return (
+    lower.includes("adsmanager.facebook.com") ||
+    /(?:facebook|ফেসবুক|ফেসবুকে)\s*(?:ad|ads|অ্যাড|এড|বুস্ট|boost)/i.test(taskText) ||
+    /(?:অ্যাড|এড)\s*(?:চালা|তৈরি|বানা|সেটআপ)/i.test(taskText)
+  );
+}
+
 export async function executePcTaskTool(
   rawArgs: Record<string, any> = {}
 ): Promise<{ ok: boolean; message: string; taskId?: string }> {
-  const task = String(
+  const rawTask = String(
     rawArgs?.task || rawArgs?.instruction || rawArgs?.command || ""
   ).trim();
   const quickActionRaw =
@@ -370,22 +449,62 @@ export async function executePcTaskTool(
     };
   }
 
+  let finalTask = rawTask;
+  let taskKind: PcTaskKind = "general";
+  let needsConfirm = false;
+
+  if (!quickActionRaw && rawTask) {
+    if (isFacebookAdPublishTask(rawTask)) {
+      taskKind = "fb_ad_publish";
+      finalTask = "In the open Ads Manager draft, click Publish.";
+      needsConfirm = true;
+    } else if (isFacebookAdSetupTask(rawTask)) {
+      taskKind = "fb_ad_draft";
+      if (!rawTask.toLowerCase().includes("adsmanager.facebook.com")) {
+        finalTask = `Open https://adsmanager.facebook.com in Chrome. Create a new ad using the user's instructions: ${rawTask}. Fill everything (campaign, audience, budget, creative, text). STOP before the final Publish/Pay button and finish with a Bengali summary of the full ad setup.`;
+      }
+    }
+  }
+
   const actionName = quickActionRaw || "agent_task";
   const payloadArgs = quickActionRaw
     ? actionArgs
-    : { task: task || quickActionRaw || "" };
-  const displayTask = task || quickActionRaw || "PC task";
+    : { task: finalTask || quickActionRaw || "" };
+  const displayTask = finalTask || quickActionRaw || "PC task";
 
   try {
-    const id = await sendPcCommand(actionName, payloadArgs);
+    const id = await sendPcCommand(actionName, payloadArgs, { needsConfirm });
     upsertTask({
       id,
       task: displayTask,
       action: actionName,
-      rawStatus: "pending",
-      uiStatus: "চলছে",
+      kind: taskKind,
+      rawStatus: needsConfirm ? "awaiting_confirm" : "pending",
+      uiStatus: needsConfirm ? "অনুমতি লাগবে" : "চলছে",
       createdAt: Date.now(),
     });
+    if (taskKind === "fb_ad_draft" || taskKind === "fb_ad_publish") {
+      recordBusinessRun({
+        id: `biz_${id}`,
+        commandId: id,
+        kind: "facebook_ad",
+        title:
+          taskKind === "fb_ad_publish"
+            ? "Facebook Ad Publish"
+            : "Facebook Ad Setup",
+        trigger: "voice_chat",
+        status: needsConfirm ? "awaiting_confirm" : "running",
+        startedAt: Date.now(),
+      });
+    }
+    if (needsConfirm) {
+      watchAwaitingConfirmExternally(id, displayTask);
+      return {
+        ok: true,
+        taskId: id,
+        message: "পাবলিশের জন্য ৪ CONFIRMATIONS-এ অনুমতি দাও।",
+      };
+    }
     void startBackgroundWaitForTask(id, displayTask);
     return {
       ok: true,
@@ -437,20 +556,85 @@ export async function rejectPcTask(
 
 export function getLatestAwaitingConfirmPcTask(): PcTaskRecord | null {
   for (let i = pcTasks.length - 1; i >= 0; i--) {
-    if (pcTasks[i].rawStatus === "awaiting_confirm") {
+    if (
+      pcTasks[i].rawStatus === "awaiting_confirm" &&
+      pcTasks[i].kind !== "fb_ad_publish"
+    ) {
       return pcTasks[i];
     }
   }
   return null;
 }
 
+function getActiveFbAdPublishPrompt() {
+  if (!pendingFbAdPublishConfirm) return null;
+  if (Date.now() - pendingFbAdPublishConfirm.timestamp > FB_AD_PUBLISH_PROMPT_TTL_MS) {
+    pendingFbAdPublishConfirm = null;
+    return null;
+  }
+  return pendingFbAdPublishConfirm;
+}
+
 export function hasPendingPcTaskConfirm(): boolean {
-  return getLatestAwaitingConfirmPcTask() !== null;
+  return getActiveFbAdPublishPrompt() !== null || getLatestAwaitingConfirmPcTask() !== null;
+}
+
+async function triggerFbAdPublishSecondStep(): Promise<{ ok: boolean; reply: string }> {
+  const publishInstruction = "In the open Ads Manager draft, click Publish.";
+  const online = await isOnline();
+  if (!online) {
+    return { ok: false, reply: "তোমার ল্যাপটপে Rose Helper চালু নেই" };
+  }
+  try {
+    const id = await sendPcCommand(
+      "agent_task",
+      { task: publishInstruction },
+      { needsConfirm: true }
+    );
+    upsertTask({
+      id,
+      task: publishInstruction,
+      action: "agent_task",
+      kind: "fb_ad_publish",
+      rawStatus: "awaiting_confirm",
+      uiStatus: "অনুমতি লাগবে",
+      createdAt: Date.now(),
+    });
+    recordBusinessRun({
+      id: `biz_${id}`,
+      commandId: id,
+      kind: "facebook_ad",
+      title: "Facebook Ad Publish",
+      trigger: "voice_chat",
+      status: "awaiting_confirm",
+      startedAt: Date.now(),
+    });
+    watchAwaitingConfirmExternally(id, publishInstruction);
+    return {
+      ok: true,
+      reply: "পাবলিশ করার জন্য ৪ CONFIRMATIONS-এ অনুমতি দাও।",
+    };
+  } catch (err: any) {
+    return {
+      ok: false,
+      reply: String(err?.message || "পাবলিশ পাঠানো যায়নি"),
+    };
+  }
 }
 
 export async function handlePendingPcTaskDecision(
   decision: "yes" | "no"
 ): Promise<{ handled: boolean; reply?: string }> {
+  const fbPrompt = getActiveFbAdPublishPrompt();
+  if (fbPrompt) {
+    pendingFbAdPublishConfirm = null;
+    if (decision === "no") {
+      return { handled: true, reply: "ঠিক আছে, অ্যাড চালু করলাম না।" };
+    }
+    const pubRes = await triggerFbAdPublishSecondStep();
+    return { handled: true, reply: pubRes.reply };
+  }
+
   const pending = getLatestAwaitingConfirmPcTask();
   if (!pending) return { handled: false };
   if (decision === "no") {

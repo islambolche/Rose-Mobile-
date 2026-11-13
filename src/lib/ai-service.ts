@@ -1,6 +1,12 @@
 import { prepareHistory, extractLastUserText } from './ai-utils';
 import { getGeminiKey, ensureGeminiReady } from './geminiKey';
 import {
+  fetchGeminiModelsWithFallback,
+  fetchGeminiGenerateWithFallback,
+  fetchGeminiStreamWithFallback,
+  fetchGeminiTtsWithFallback,
+} from './geminiDirect';
+import {
   isAdmin,
   ADMIN_PREFERRED_VOICES,
   formatAdminTtsPrompt,
@@ -280,10 +286,7 @@ export const discoverAvailableFlashModels = async (
         controller.abort();
       } catch (e) {}
     }, 6000);
-    const url = `/api/gemini/models${cleanKey ? `?apiKey=${encodeURIComponent(cleanKey)}` : ''}`;
-    const res = await fetch(url, {
-      signal: controller.signal,
-    });
+    const res = await fetchGeminiModelsWithFallback(cleanKey, controller.signal);
     clearTimeout(timer);
     if (!res.ok) return [];
     const data = await res.json();
@@ -355,12 +358,9 @@ export const discoverLightestFlashModel = async (apiKey?: string): Promise<strin
   const cleanKey = String(apiKey || getGeminiKey() || '').replace(/[\r\n\t\s"']+/g, '').trim();
   if (!(await ensureGeminiReady(cleanKey))) return '';
   try {
-    const url = `/api/gemini/models${cleanKey ? `?apiKey=${encodeURIComponent(cleanKey)}` : ''}`;
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), 6000);
-    const res = await fetch(url, {
-      signal: controller.signal,
-    });
+    const res = await fetchGeminiModelsWithFallback(cleanKey, controller.signal);
     clearTimeout(timer);
     if (!res.ok) return '';
     const data = await res.json();
@@ -399,9 +399,8 @@ export const discoverLightestFlashModel = async (apiKey?: string): Promise<strin
   return '';
 };
 
-const fetchWithSignalTimeout = async (
-  input: RequestInfo | URL,
-  init: RequestInit,
+const execGeminiWithSignalTimeout = async (
+  runner: (signal: AbortSignal) => Promise<Response>,
   timeoutMs: number,
   modelName = TEXT_MODELS[0] || 'gemini',
   reqStartTime = Date.now(),
@@ -434,7 +433,7 @@ const fetchWithSignalTimeout = async (
   }, timeoutMs);
 
   try {
-    return await fetch(input, { ...init, signal: controller.signal });
+    return await runner(controller.signal);
   } catch (err: any) {
     const elapsedSeconds = ((Date.now() - reqStartTime) / 1000).toFixed(1);
     const reason = controller.signal.reason || externalSignal?.reason;
@@ -955,7 +954,6 @@ const callGeminiTextEndpoint = async (params: {
     tools || [{ googleSearch: {} }]
   );
 
-  const url = '/api/gemini/generate';
   const reqStartTime = Date.now();
   const perReqTimeout = Math.min(GEMINI_PER_REQUEST_TIMEOUT_MS, Math.max(1000, timeoutMs));
 
@@ -968,15 +966,8 @@ const callGeminiTextEndpoint = async (params: {
     ...(cleanKey ? { apiKey: cleanKey } : {}),
   });
 
-  let res = await fetchWithSignalTimeout(
-    url,
-    {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify(buildProxyPayload(directBody)),
-    },
+  let res = await execGeminiWithSignalTimeout(
+    (sig) => fetchGeminiGenerateWithFallback(buildProxyPayload(directBody), sig),
     perReqTimeout,
     cleanModel,
     reqStartTime,
@@ -995,15 +986,8 @@ const callGeminiTextEndpoint = async (params: {
       tools || [{ googleSearch: {} }]
     );
     const remainingMs = Math.max(2000, perReqTimeout - (Date.now() - reqStartTime));
-    const retryRes = await fetchWithSignalTimeout(
-      url,
-      {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify(buildProxyPayload(fallbackBody)),
-      },
+    const retryRes = await execGeminiWithSignalTimeout(
+      (sig) => fetchGeminiGenerateWithFallback(buildProxyPayload(fallbackBody), sig),
       remainingMs,
       cleanModel,
       reqStartTime,
@@ -1022,15 +1006,8 @@ const callGeminiTextEndpoint = async (params: {
         tools || [{ googleSearch: {} }]
       );
       const remMs2 = Math.max(2000, perReqTimeout - (Date.now() - reqStartTime));
-      const retryRes2 = await fetchWithSignalTimeout(
-        url,
-        {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-          },
-          body: JSON.stringify(buildProxyPayload(minimalBody)),
-        },
+      const retryRes2 = await execGeminiWithSignalTimeout(
+        (sig) => fetchGeminiGenerateWithFallback(buildProxyPayload(minimalBody), sig),
         remMs2,
         cleanModel,
         reqStartTime,
@@ -1407,7 +1384,6 @@ export const directGeminiStream = async (
 
     const reqStartTime = Date.now();
     const startMinimal = isMinimalBodyStoredForModel(primaryModel);
-    const streamUrl = '/api/gemini/stream';
 
     let accumulatedRawText = '';
     let emittedAnyChunk = false;
@@ -1433,15 +1409,8 @@ export const directGeminiStream = async (
         currentTools || [{ googleSearch: {} }]
       );
 
-      let res = await fetchWithSignalTimeout(
-        streamUrl,
-        {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-          },
-          body: JSON.stringify(toProxyStreamPayload(directBody)),
-        },
+      let res = await execGeminiWithSignalTimeout(
+        (sig) => fetchGeminiStreamWithFallback(toProxyStreamPayload(directBody), sig),
         GEMINI_PER_REQUEST_TIMEOUT_MS,
         primaryModel,
         reqStartTime,
@@ -1459,15 +1428,8 @@ export const directGeminiStream = async (
           currentTools || [{ googleSearch: {} }]
         );
         const remainingMs = Math.max(2000, GEMINI_PER_REQUEST_TIMEOUT_MS - (Date.now() - reqStartTime));
-        res = await fetchWithSignalTimeout(
-          streamUrl,
-          {
-            method: 'POST',
-            headers: {
-              'Content-Type': 'application/json',
-            },
-            body: JSON.stringify(toProxyStreamPayload(fallbackBody)),
-          },
+        res = await execGeminiWithSignalTimeout(
+          (sig) => fetchGeminiStreamWithFallback(toProxyStreamPayload(fallbackBody), sig),
           remainingMs,
           primaryModel,
           reqStartTime,
@@ -1620,21 +1582,17 @@ export const runGeminiSpeedTest = async (
   for (const model of testModels) {
     const start = Date.now();
     try {
-      const url = '/api/gemini/generate';
-      const res = await fetchWithSignalTimeout(
-        url,
-        {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-          },
-          body: JSON.stringify({
-            model,
-            contents: [{ role: 'user', parts: [{ text: 'Hi' }] }],
-            generationConfig: { maxOutputTokens: 10 },
-            ...(cleanKey ? { apiKey: cleanKey } : {}),
-          }),
-        },
+      const res = await execGeminiWithSignalTimeout(
+        (sig) =>
+          fetchGeminiGenerateWithFallback(
+            {
+              model,
+              contents: [{ role: 'user', parts: [{ text: 'Hi' }] }],
+              generationConfig: { maxOutputTokens: 10 },
+              ...(cleanKey ? { apiKey: cleanKey } : {}),
+            },
+            sig
+          ),
         12000,
         model,
         start,
@@ -1846,11 +1804,8 @@ export const discoverAvailableTtsModels = async (
   try {
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), 8000);
-    const url = `/api/gemini/models${cleanKey ? `?apiKey=${encodeURIComponent(cleanKey)}` : ''}`;
 
-    const res = await fetch(url, {
-      signal: controller.signal,
-    });
+    const res = await fetchGeminiModelsWithFallback(cleanKey, controller.signal);
     clearTimeout(timer);
 
     const data = res.ok ? await res.json().catch(() => null) : null;
@@ -2032,20 +1987,16 @@ export const directGeminiTTS = async (payload: any) => {
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), GEMINI_TTS_PER_REQUEST_TIMEOUT_MS);
     try {
-      const res = await fetch('/api/gemini/tts', {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify({
+      const res = await fetchGeminiTtsWithFallback(
+        {
           model: targetModel || undefined,
           text: ttsPromptText,
           voiceName: selectedVoiceName,
           voices: voicesToTry,
           ...(cleanKey ? { apiKey: cleanKey } : {}),
-        }),
-        signal: controller.signal,
-      });
+        },
+        controller.signal
+      );
       clearTimeout(timer);
 
       const rawBodyText = await res.text().catch(() => '');

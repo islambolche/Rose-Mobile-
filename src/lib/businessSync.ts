@@ -4,6 +4,7 @@ import {
   GeminiProfileType,
 } from "../types/business";
 import { TEXT_MODELS, discoverAvailableFlashModels, getSavedWorkingTextModel, sanitizeOutApiKey } from "./ai-service";
+import { fetchGeminiGenerateWithFallback } from "./geminiDirect";
 
 const STORAGE_KEY = "rose_shared_business_db";
 const BROADCAST_CHANNEL_NAME = "rose_business_sync_channel";
@@ -134,18 +135,11 @@ export async function validateGeminiApiKey(
   const testModel = async (m: string) => {
     tried.add(m);
     const cleanM = m.replace(/^models\//, "").trim();
-    const url = "/api/gemini/generate";
-    const res = await fetch(url, {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-      },
-      body: JSON.stringify({
-        model: cleanM,
-        contents: [{ role: "user", parts: [{ text: "hi" }] }],
-        generationConfig: { maxOutputTokens: 10 },
-        apiKey: cleanKey,
-      }),
+    const res = await fetchGeminiGenerateWithFallback({
+      model: cleanM,
+      contents: [{ role: "user", parts: [{ text: "hi" }] }],
+      generationConfig: { maxOutputTokens: 10 },
+      apiKey: cleanKey,
     });
 
     const rawText = await res.text().catch(() => "");

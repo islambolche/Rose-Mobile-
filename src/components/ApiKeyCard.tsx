@@ -57,7 +57,7 @@ export const ApiKeyCard: React.FC<ApiKeyCardProps> = ({
       return (
         <div className="flex items-center gap-1.5 px-3 py-1 bg-emerald-500/15 border border-emerald-500/40 rounded-full shrink-0">
           <Check className="w-3 h-3 text-emerald-400" />
-          <span className="text-[10px] font-black uppercase tracking-widest text-emerald-400">CONNECTED</span>
+          <span className="text-[10px] font-black uppercase tracking-widest text-emerald-400">READY ✓</span>
         </div>
       );
     }

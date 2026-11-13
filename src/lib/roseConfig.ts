@@ -179,11 +179,7 @@ SETTINGS (main list):
 5 PC HISTORY (pc_history)
 6 SAFETY (safety)
 7 LOCAL AI (local_ai)
-8 VIEW MODE (view_mode)
-9 OFFICE TEAM (office_team)
-10 SYSTEM STATUS (system_status)
-11 OFFICE TEST (office_test)
-12 OFFICE LAYOUT (office_layout)
+8 BUSINESS AUTO (pc_business_auto)
 
 9 PRIVACY CONTROLS: Microphone Permission, Approximate Location, Chat History, Rose's Memory, API Key security, Privacy Policy & Terms, Account & Data Delete
 

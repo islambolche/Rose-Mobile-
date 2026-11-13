@@ -1,6 +1,7 @@
 import { logDevError } from './devLog';
 import { openExternal } from './openExternal';
 import { getGeminiKey, ensureGeminiReady } from './geminiKey';
+import { fetchGeminiGenerateWithFallback } from './geminiDirect';
 import { getStoredGroqKey, getSelectedGroqModelFromSettings, isGeminiIn429Cooldown, resolveChatModel } from './typedChat';
 import { getDynamicGroqChatModels } from './chatEngines';
 
@@ -755,12 +756,8 @@ Return ONLY a JSON array of strings, nothing else.`;
     const timer = setTimeout(() => controller.abort(), 4500);
     try {
       const model = await resolveChatModel(geminiKey, controller.signal);
-      const res = await fetch('/api/gemini/generate', {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify({
+      const res = await fetchGeminiGenerateWithFallback(
+        {
           model,
           contents: [{ role: 'user', parts: [{ text: prompt }] }],
           generationConfig: {
@@ -769,9 +766,9 @@ Return ONLY a JSON array of strings, nothing else.`;
             maxOutputTokens: 120,
           },
           ...(geminiKey ? { apiKey: geminiKey } : {}),
-        }),
-        signal: controller.signal,
-      });
+        },
+        controller.signal
+      );
       if (res.ok) {
         const data = await res.json();
         const text =
@@ -1683,17 +1680,15 @@ Return ONLY valid JSON with keys "title", "description", "hashtags" (title max 7
     const timer = setTimeout(() => controller.abort(), 5000);
     try {
       const model = await resolveChatModel(geminiKey, controller.signal);
-      const res = await fetch('/api/gemini/generate', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
+      const res = await fetchGeminiGenerateWithFallback(
+        {
           model,
           contents: [{ role: 'user', parts: [{ text: prompt }] }],
           generationConfig: { responseMimeType: 'application/json', temperature: 0.7, maxOutputTokens: 220 },
           ...(geminiKey ? { apiKey: geminiKey } : {}),
-        }),
-        signal: controller.signal,
-      });
+        },
+        controller.signal
+      );
       if (res.ok) {
         const data = await res.json();
         const text =

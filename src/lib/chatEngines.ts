@@ -1,4 +1,5 @@
 import { getGeminiKey, setGeminiKey, ensureGeminiReady, isServerGeminiConfigured } from './geminiKey';
+import { fetchGeminiModelsWithFallback, fetchGeminiGenerateWithFallback } from './geminiDirect';
 import {
   directGeminiGenerate,
   TEXT_MODELS,
@@ -345,11 +346,8 @@ export const getDynamicGeminiChatModels = async (
   try {
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), 8000);
-    const url = `/api/gemini/models${cleanKey ? `?apiKey=${encodeURIComponent(cleanKey)}` : ''}`;
 
-    const res = await fetch(url, {
-      signal: controller.signal,
-    });
+    const res = await fetchGeminiModelsWithFallback(cleanKey, controller.signal);
     clearTimeout(timer);
 
     if (!res.ok) {
@@ -460,11 +458,8 @@ export const getDynamicGeminiLiveModels = async (
   try {
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), 8000);
-    const url = `/api/gemini/models${cleanKey ? `?apiKey=${encodeURIComponent(cleanKey)}` : ''}`;
 
-    const res = await fetch(url, {
-      signal: controller.signal
-    });
+    const res = await fetchGeminiModelsWithFallback(cleanKey, controller.signal);
     clearTimeout(timer);
 
     if (!res.ok) {
@@ -589,28 +584,14 @@ export const callGeminiDirectChat = async (params: {
     return b;
   };
 
-  const url = '/api/gemini/generate';
-
   try {
     const bodyObj = buildChatBody(true, true);
-    let res = await fetch(url, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify(bodyObj),
-    });
+    let res = await fetchGeminiGenerateWithFallback(bodyObj);
 
     // If model does not support thinkingBudget: 0 or thinkingConfig, retry without it
     if (res.status === 400) {
       const fallbackObj = buildChatBody(false, false);
-      res = await fetch(url, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify(fallbackObj),
-      });
+      res = await fetchGeminiGenerateWithFallback(fallbackObj);
     }
 
     const rawText = await res.text().catch(() => '');
@@ -898,32 +879,81 @@ export const verifyProviderKey = async (
   try {
     let res: Response;
     if (providerId === 'gemini') {
-      res = await fetch('/api/gemini/verify', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ apiKey: testKey }),
+      res = await fetch('https://generativelanguage.googleapis.com/v1beta/models', {
+        method: 'GET',
+        headers: {
+          'x-goog-api-key': testKey,
+        },
         signal: controller.signal,
       });
-    } else {
-      const headers: Record<string, string> = {
-        Authorization: `Bearer ${testKey}`,
-      };
-      if (providerId === 'openrouter') {
-        const origin =
-          typeof window !== 'undefined' && /^https?:\/\//i.test(window.location.origin)
-            ? window.location.origin
-            : 'https://rose-mobile.vercel.app';
-        headers['HTTP-Referer'] = origin;
-        headers['X-Title'] = 'Rose AI Assistant';
+
+      if (res.ok) {
+        await setProviderStatus(providerId, 'READY');
+        return {
+          ok: true,
+          status: 'READY',
+          httpStatus: res.status,
+          errorText: 'READY ✓',
+        };
       }
 
-      const testUrl = `${provider.baseURL}/models`;
-      res = await fetch(testUrl, {
-        method: 'GET',
-        headers,
-        signal: controller.signal,
-      });
+      if (res.status === 429) {
+        await setProviderStatus(providerId, 'READY');
+        return {
+          ok: true,
+          status: 'READY',
+          httpStatus: 429,
+          errorText: 'READY (limit full, পরে আবার)',
+        };
+      }
+
+      if (res.status === 400 || res.status === 401 || res.status === 403) {
+        await setProviderStatus(providerId, 'INVALID');
+        return {
+          ok: false,
+          status: 'INVALID',
+          httpStatus: res.status,
+          errorText: 'কী ভুল',
+        };
+      }
+
+      const raw = await res.text().catch(() => '');
+      let errJson: any = null;
+      try {
+        errJson = raw ? JSON.parse(raw) : null;
+      } catch {}
+      const extractedMsg =
+        errJson?.error?.message ||
+        (typeof errJson?.error === 'string' ? errJson.error : '') ||
+        errJson?.message ||
+        raw ||
+        res.statusText ||
+        '';
+      const shortReason = sanitizeReason(extractedMsg);
+      await setProviderStatus(providerId, 'SAVED – NOT TESTED');
+      return {
+        ok: false,
+        status: 'SAVED – NOT TESTED',
+        httpStatus: res.status,
+        errorText: `HTTP ${res.status}${shortReason ? ': ' + shortReason : ''}`,
+      };
     }
+
+    const headers: Record<string, string> = {
+      Authorization: `Bearer ${testKey}`,
+    };
+    let testUrl = `${provider.baseURL}/models`;
+    if (providerId === 'openrouter') {
+      testUrl = 'https://openrouter.ai/api/v1/key';
+    } else if (providerId === 'groq') {
+      testUrl = 'https://api.groq.com/openai/v1/models';
+    }
+
+    res = await fetch(testUrl, {
+      method: 'GET',
+      headers,
+      signal: controller.signal,
+    });
 
     const raw = await res.text().catch(() => '');
     let errJson: any = null;
@@ -978,6 +1008,14 @@ export const verifyProviderKey = async (
       errorText: `HTTP ${res.status}${shortReason ? ': ' + shortReason : ''}`,
     };
   } catch (netErr: any) {
+    if (providerId === 'gemini') {
+      await setProviderStatus(providerId, 'SAVED – NOT TESTED');
+      return {
+        ok: false,
+        status: 'SAVED – NOT TESTED',
+        errorText: 'ইন্টারনেট দেখো',
+      };
+    }
     const isAbort = netErr?.name === 'AbortError';
     const rawNet = isAbort ? 'Timeout (12s)' : netErr?.message || String(netErr || 'Network error');
     const shortNet = sanitizeReason(rawNet);

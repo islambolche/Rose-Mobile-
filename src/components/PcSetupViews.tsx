@@ -32,6 +32,10 @@ import {
   AppWindow,
   ChevronDown,
   ChevronUp,
+  MessageCircle,
+  Clock,
+  Briefcase,
+  Sparkles,
 } from "lucide-react";
 import { supabase } from "../lib/supabase";
 import {
@@ -48,6 +52,17 @@ import {
   PcCommandRow,
   PcDeviceRow,
 } from "../pc/pcClient";
+import {
+  getBusinessAutoSettings,
+  updateBusinessAutoSettings,
+  runBusinessChannelNow,
+  subscribeBusinessAuto,
+  getBusinessRuns,
+  isBusinessTaskRunning,
+  BusinessIntervalMinutes,
+  BusinessRunRecord,
+  BusinessAutoSettings,
+} from "../pc/businessAuto";
 
 export type PcSetupPageId =
   | "pc-helper"
@@ -56,7 +71,8 @@ export type PcSetupPageId =
   | "pc-confirmations"
   | "pc-history"
   | "pc-safety"
-  | "pc-local-ai";
+  | "pc-local-ai"
+  | "pc-business-auto";
 
 interface PcSetupPageProps {
   pageId: PcSetupPageId;
@@ -147,6 +163,7 @@ export const PcSetupPage: React.FC<PcSetupPageProps> = ({ pageId, onBack, onToas
               {pageId === "pc-history" && "5 PC HISTORY"}
               {pageId === "pc-safety" && "6 SAFETY"}
               {pageId === "pc-local-ai" && "7 LOCAL AI"}
+              {pageId === "pc-business-auto" && "8 BUSINESS AUTO"}
             </h2>
             <p className="text-[10px] font-semibold uppercase text-purple-300 tracking-wider">
               PC Setup
@@ -191,6 +208,8 @@ export const PcSetupPage: React.FC<PcSetupPageProps> = ({ pageId, onBack, onToas
         {pageId === "pc-safety" && <PcSafetyView />}
 
         {pageId === "pc-local-ai" && <PcLocalAiView />}
+
+        {pageId === "pc-business-auto" && <PcBusinessAutoView onToast={onToast} />}
       </main>
     </div>
   );
@@ -1068,6 +1087,7 @@ const PcConfirmationsView: React.FC<{ onToast: (msg: string) => void }> = ({ onT
 /* 5. PC HISTORY VIEW */
 const PcHistoryView: React.FC = () => {
   const [history, setHistory] = useState<PcCommandRow[]>([]);
+  const [businessRuns, setBusinessRuns] = useState<BusinessRunRecord[]>(() => getBusinessRuns());
   const [expandedId, setExpandedId] = useState<string | null>(null);
 
   const fetchHistory = useCallback(async () => {
@@ -1084,6 +1104,12 @@ const PcHistoryView: React.FC = () => {
   useEffect(() => {
     void fetchHistory();
   }, [fetchHistory]);
+
+  useEffect(() => {
+    return subscribeBusinessAuto(() => {
+      setBusinessRuns(getBusinessRuns());
+    });
+  }, []);
 
   const statusBadgeClass = (status: string): string => {
     switch (status) {
@@ -1103,66 +1129,140 @@ const PcHistoryView: React.FC = () => {
     }
   };
 
+  const triggerLabel = (trigger: BusinessRunRecord["trigger"]): string => {
+    if (trigger === "auto") return "AUTO";
+    if (trigger === "voice_chat") return "VOICE/CHAT";
+    return "RUN NOW";
+  };
+
+  const kindLabel = (kind: BusinessRunRecord["kind"]): string => {
+    if (kind === "whatsapp") return "WHATSAPP";
+    if (kind === "messenger") return "MESSENGER";
+    return "FACEBOOK AD";
+  };
+
   return (
-    <div className="space-y-3">
-      {history.length === 0 ? (
-        <p className="p-8 text-center text-xs text-slate-400">No command history logged yet.</p>
-      ) : (
-        history.map((cmd) => {
-          const isExpanded = expandedId === cmd.id;
-          const parsedResult = parseJsonSafe(cmd.result);
-          const summaryText = parsedResult?.summary;
-          return (
-            <button
-              key={cmd.id}
-              type="button"
-              onClick={() => setExpandedId(isExpanded ? null : cmd.id)}
-              className="w-full text-left p-4 rounded-2xl bg-[#0F172A] border border-white/10 hover:border-purple-500/30 space-y-2 transition-all"
+    <div className="space-y-4">
+      {businessRuns.length > 0 && (
+        <div className="space-y-2.5">
+          <p className="text-[10px] font-black uppercase tracking-widest text-purple-300 px-1">
+            Business Automation Runs ({businessRuns.length})
+          </p>
+          {businessRuns.map((run) => (
+            <div
+              key={run.id}
+              className="w-full text-left p-4 rounded-2xl bg-gradient-to-br from-[#0F172A] to-purple-950/30 border border-purple-500/30 space-y-2"
             >
               <div className="flex items-center justify-between text-xs gap-2">
-                <div className="min-w-0">
-                  <span className="font-black text-white uppercase block truncate">{cmd.action}</span>
-                  <span className="text-[10px] font-mono text-slate-400">
-                    {formatTime(cmd.ts)}
-                  </span>
+                <div className="min-w-0 flex items-center gap-2.5">
+                  <div className="w-8 h-8 rounded-xl bg-purple-600/20 border border-purple-500/30 flex items-center justify-center shrink-0">
+                    {run.kind === "facebook_ad" ? (
+                      <Sparkles className="w-4 h-4 text-amber-300" />
+                    ) : (
+                      <MessageCircle
+                        className={`w-4 h-4 ${
+                          run.kind === "whatsapp" ? "text-emerald-400" : "text-sky-400"
+                        }`}
+                      />
+                    )}
+                  </div>
+                  <div className="min-w-0">
+                    <div className="flex items-center gap-1.5 flex-wrap">
+                      <span className="font-black text-white uppercase truncate">{run.title}</span>
+                      <span className="px-2 py-0.5 rounded-full bg-white/10 text-[9px] font-bold text-slate-300 uppercase">
+                        {kindLabel(run.kind)} · {triggerLabel(run.trigger)}
+                      </span>
+                    </div>
+                    <span className="text-[10px] font-mono text-slate-400 block">
+                      {formatTime(run.finishedAt ?? run.startedAt)}
+                    </span>
+                  </div>
                 </div>
-                <div className="flex items-center gap-2 shrink-0">
-                  <span
-                    className={`px-2.5 py-0.5 rounded-full text-[9px] font-black uppercase ${statusBadgeClass(
-                      String(cmd.status)
-                    )}`}
-                  >
-                    {cmd.status}
-                  </span>
-                  {isExpanded ? (
-                    <ChevronUp className="w-4 h-4 text-slate-400" />
-                  ) : (
-                    <ChevronDown className="w-4 h-4 text-slate-400" />
-                  )}
-                </div>
+                <span
+                  className={`px-2.5 py-0.5 rounded-full text-[9px] font-black uppercase shrink-0 ${statusBadgeClass(
+                    String(run.status)
+                  )}`}
+                >
+                  {run.status}
+                </span>
               </div>
 
-              {cmd.error && <p className="text-[11px] font-mono text-red-400">Error: {cmd.error}</p>}
-              {!cmd.error && summaryText && (
-                <p className="text-xs text-slate-300 line-clamp-2">{summaryText}</p>
+              {run.error && <p className="text-[11px] font-mono text-red-400">Error: {run.error}</p>}
+              {run.summary && (
+                <p className="text-xs text-slate-200 leading-relaxed whitespace-pre-wrap">
+                  {run.summary}
+                </p>
               )}
-
-              {isExpanded && (
-                <div className="pt-2 border-t border-white/10 space-y-2">
-                  <p className="text-[11px] font-mono text-slate-400 break-all">Args: {cmd.args_json}</p>
-                  {parsedResult !== null && parsedResult !== undefined && (
-                    <pre className="p-2.5 rounded-xl bg-black/50 text-[10px] font-mono text-purple-300 overflow-x-auto whitespace-pre-wrap">
-                      {typeof parsedResult === "string"
-                        ? parsedResult
-                        : JSON.stringify(parsedResult, null, 2)}
-                    </pre>
-                  )}
-                </div>
-              )}
-            </button>
-          );
-        })
+            </div>
+          ))}
+        </div>
       )}
+
+      <div className="space-y-3">
+        {businessRuns.length > 0 && history.length > 0 && (
+          <p className="text-[10px] font-black uppercase tracking-widest text-slate-400 px-1 pt-1">
+            All PC Commands ({history.length})
+          </p>
+        )}
+        {history.length === 0 && businessRuns.length === 0 ? (
+          <p className="p-8 text-center text-xs text-slate-400">No command history logged yet.</p>
+        ) : (
+          history.map((cmd) => {
+            const isExpanded = expandedId === cmd.id;
+            const parsedResult = parseJsonSafe(cmd.result);
+            const summaryText = parsedResult?.summary;
+            return (
+              <button
+                key={cmd.id}
+                type="button"
+                onClick={() => setExpandedId(isExpanded ? null : cmd.id)}
+                className="w-full text-left p-4 rounded-2xl bg-[#0F172A] border border-white/10 hover:border-purple-500/30 space-y-2 transition-all"
+              >
+                <div className="flex items-center justify-between text-xs gap-2">
+                  <div className="min-w-0">
+                    <span className="font-black text-white uppercase block truncate">{cmd.action}</span>
+                    <span className="text-[10px] font-mono text-slate-400">
+                      {formatTime(cmd.ts)}
+                    </span>
+                  </div>
+                  <div className="flex items-center gap-2 shrink-0">
+                    <span
+                      className={`px-2.5 py-0.5 rounded-full text-[9px] font-black uppercase ${statusBadgeClass(
+                        String(cmd.status)
+                      )}`}
+                    >
+                      {cmd.status}
+                    </span>
+                    {isExpanded ? (
+                      <ChevronUp className="w-4 h-4 text-slate-400" />
+                    ) : (
+                      <ChevronDown className="w-4 h-4 text-slate-400" />
+                    )}
+                  </div>
+                </div>
+
+                {cmd.error && <p className="text-[11px] font-mono text-red-400">Error: {cmd.error}</p>}
+                {!cmd.error && summaryText && (
+                  <p className="text-xs text-slate-300 line-clamp-2">{summaryText}</p>
+                )}
+
+                {isExpanded && (
+                  <div className="pt-2 border-t border-white/10 space-y-2">
+                    <p className="text-[11px] font-mono text-slate-400 break-all">Args: {cmd.args_json}</p>
+                    {parsedResult !== null && parsedResult !== undefined && (
+                      <pre className="p-2.5 rounded-xl bg-black/50 text-[10px] font-mono text-purple-300 overflow-x-auto whitespace-pre-wrap">
+                        {typeof parsedResult === "string"
+                          ? parsedResult
+                          : JSON.stringify(parsedResult, null, 2)}
+                      </pre>
+                    )}
+                  </div>
+                )}
+              </button>
+            );
+          })
+        )}
+      </div>
     </div>
   );
 };
@@ -1200,6 +1300,265 @@ const PcLocalAiView: React.FC = () => {
 
       <div className="p-4 rounded-2xl bg-black/40 border border-white/5 text-xs font-mono text-purple-300">
         Endpoint: http://localhost:11434 (Default)
+      </div>
+    </div>
+  );
+};
+
+/* 8. BUSINESS AUTO VIEW */
+const INTERVAL_OPTIONS: BusinessIntervalMinutes[] = [5, 10, 15, 30];
+
+const PcBusinessAutoView: React.FC<{ onToast: (msg: string) => void }> = ({ onToast }) => {
+  const [settings, setSettings] = useState<BusinessAutoSettings>(() => getBusinessAutoSettings());
+  const [runningState, setRunningState] = useState(() => isBusinessTaskRunning());
+
+  useEffect(() => {
+    return subscribeBusinessAuto(() => {
+      setSettings(getBusinessAutoSettings());
+      setRunningState(isBusinessTaskRunning());
+    });
+  }, []);
+
+  const handleToggleWhatsapp = () => {
+    const next = !settings.whatsappEnabled;
+    updateBusinessAutoSettings({ whatsappEnabled: next });
+    onToast(next ? "WHATSAPP REPLY: On" : "WHATSAPP REPLY: Off");
+  };
+
+  const handleToggleMessenger = () => {
+    const next = !settings.messengerEnabled;
+    updateBusinessAutoSettings({ messengerEnabled: next });
+    onToast(next ? "MESSENGER REPLY: On" : "MESSENGER REPLY: Off");
+  };
+
+  const handleIntervalChange = (mins: BusinessIntervalMinutes) => {
+    updateBusinessAutoSettings({ intervalMinutes: mins });
+    onToast(`Check every ${mins} min`);
+  };
+
+  const handleReplyStyleChange = (val: string) => {
+    updateBusinessAutoSettings({ replyStyle: val });
+  };
+
+  const handleRunNow = async (channel: "whatsapp" | "messenger") => {
+    if (runningState.running) {
+      onToast("আগের কাজটি এখনো চলছে — অপেক্ষা করো।");
+      return;
+    }
+    onToast(channel === "whatsapp" ? "WhatsApp চেক শুরু হচ্ছে…" : "Messenger চেক শুরু হচ্ছে…");
+    const res = await runBusinessChannelNow(channel, "manual");
+    onToast(res.message);
+  };
+
+  const renderStatusPill = (status: string, isThisRunning: boolean) => {
+    if (isThisRunning || status === "running") {
+      return (
+        <span className="px-2.5 py-0.5 rounded-full text-[9px] font-black uppercase bg-indigo-500/20 text-indigo-300 animate-pulse">
+          RUNNING
+        </span>
+      );
+    }
+    if (status === "done") {
+      return (
+        <span className="px-2.5 py-0.5 rounded-full text-[9px] font-black uppercase bg-emerald-500/20 text-emerald-300">
+          DONE
+        </span>
+      );
+    }
+    if (status === "failed") {
+      return (
+        <span className="px-2.5 py-0.5 rounded-full text-[9px] font-black uppercase bg-red-500/20 text-red-300">
+          FAILED
+        </span>
+      );
+    }
+    if (status === "awaiting_confirm") {
+      return (
+        <span className="px-2.5 py-0.5 rounded-full text-[9px] font-black uppercase bg-amber-500/20 text-amber-300">
+          CONFIRM
+        </span>
+      );
+    }
+    return (
+      <span className="px-2.5 py-0.5 rounded-full text-[9px] font-black uppercase bg-slate-700/60 text-slate-300">
+        IDLE
+      </span>
+    );
+  };
+
+  return (
+    <div className="space-y-5">
+      {/* Shared Timer + Reply Style */}
+      <div className="p-5 rounded-3xl bg-[#0F172A]/90 border border-purple-500/30 space-y-4">
+        <div className="flex items-center gap-3 pb-3 border-b border-white/10">
+          <div className="w-10 h-10 rounded-2xl bg-purple-600/20 border border-purple-500/30 flex items-center justify-center text-purple-300 shrink-0">
+            <Briefcase className="w-5 h-5" />
+          </div>
+          <div>
+            <h3 className="text-sm font-black uppercase text-white tracking-wider">
+              TIMER & REPLY STYLE
+            </h3>
+            <p className="text-[11px] text-slate-400">
+              Uses your saved Business Profile on PC Chrome
+            </p>
+          </div>
+        </div>
+
+        <div className="space-y-2">
+          <div className="flex items-center justify-between">
+            <span className="text-xs font-black uppercase tracking-wider text-slate-300 flex items-center gap-1.5">
+              <Clock className="w-3.5 h-3.5 text-purple-400" />
+              Check every
+            </span>
+            <span className="text-[11px] font-bold text-purple-300">
+              {settings.intervalMinutes} min
+            </span>
+          </div>
+          <div className="grid grid-cols-4 gap-2">
+            {INTERVAL_OPTIONS.map((mins) => {
+              const active = settings.intervalMinutes === mins;
+              return (
+                <button
+                  key={mins}
+                  type="button"
+                  onClick={() => handleIntervalChange(mins)}
+                  className={`py-2.5 rounded-2xl text-xs font-black transition-all active:scale-95 border ${
+                    active
+                      ? "bg-purple-600 border-purple-400 text-white shadow-lg shadow-purple-600/30"
+                      : "bg-black/40 border-white/10 text-slate-300 hover:border-purple-500/40"
+                  }`}
+                >
+                  {mins} min
+                </button>
+              );
+            })}
+          </div>
+        </div>
+
+        <div className="space-y-2">
+          <label className="text-xs font-black uppercase tracking-wider text-slate-300 block">
+            REPLY STYLE
+          </label>
+          <input
+            type="text"
+            value={settings.replyStyle}
+            onChange={(e) => handleReplyStyleChange(e.target.value)}
+            placeholder="ভদ্র, ছোট, বাংলায়"
+            className="w-full px-4 py-3 rounded-2xl bg-black/50 border border-white/10 focus:border-purple-500 outline-none text-sm text-white placeholder-slate-500"
+          />
+        </div>
+      </div>
+
+      {/* WHATSAPP REPLY */}
+      <div className="p-5 rounded-3xl bg-[#0F172A]/90 border border-emerald-500/30 space-y-4">
+        <div className="flex items-center justify-between gap-3">
+          <div className="flex items-center gap-3">
+            <div className="w-10 h-10 rounded-2xl bg-emerald-500/15 border border-emerald-500/30 flex items-center justify-center text-emerald-400 shrink-0">
+              <MessageCircle className="w-5 h-5" />
+            </div>
+            <div>
+              <h3 className="text-sm font-black uppercase text-white tracking-wider">
+                WHATSAPP REPLY
+              </h3>
+              <p className="text-[11px] text-slate-400">
+                Check every {settings.intervalMinutes} min
+              </p>
+            </div>
+          </div>
+
+          <button
+            type="button"
+            onClick={handleToggleWhatsapp}
+            className={`px-4 py-2 rounded-full text-xs font-black uppercase transition-all active:scale-95 ${
+              settings.whatsappEnabled
+                ? "bg-emerald-600 text-white shadow-lg shadow-emerald-600/30"
+                : "bg-white/10 text-slate-300"
+            }`}
+          >
+            {settings.whatsappEnabled ? "ON" : "OFF"}
+          </button>
+        </div>
+
+        <button
+          type="button"
+          disabled={runningState.running}
+          onClick={() => void handleRunNow("whatsapp")}
+          className="w-full py-3 rounded-2xl bg-emerald-600 hover:bg-emerald-500 disabled:opacity-50 text-white font-black text-xs uppercase tracking-wider flex items-center justify-center gap-2 active:scale-[0.98] transition-all shadow-lg"
+        >
+          <Play className="w-4 h-4" />
+          {runningState.running && runningState.channel === "whatsapp" ? "RUNNING..." : "RUN NOW"}
+        </button>
+
+        <div className="p-3.5 rounded-2xl bg-black/40 border border-white/5 space-y-1.5">
+          <div className="flex items-center justify-between gap-2">
+            <span className="text-[10px] font-bold uppercase tracking-wider text-slate-400">
+              Last run: {formatTime(settings.whatsappStats.lastRunAt)}
+            </span>
+            {renderStatusPill(
+              settings.whatsappStats.lastStatus,
+              runningState.running && runningState.channel === "whatsapp"
+            )}
+          </div>
+          <p className="text-xs text-slate-200 leading-relaxed whitespace-pre-wrap">
+            {settings.whatsappStats.lastSummary || "এখনো কোনো রিপ্লাই রান হয়নি।"}
+          </p>
+        </div>
+      </div>
+
+      {/* MESSENGER REPLY */}
+      <div className="p-5 rounded-3xl bg-[#0F172A]/90 border border-sky-500/30 space-y-4">
+        <div className="flex items-center justify-between gap-3">
+          <div className="flex items-center gap-3">
+            <div className="w-10 h-10 rounded-2xl bg-sky-500/15 border border-sky-500/30 flex items-center justify-center text-sky-400 shrink-0">
+              <MessageCircle className="w-5 h-5" />
+            </div>
+            <div>
+              <h3 className="text-sm font-black uppercase text-white tracking-wider">
+                MESSENGER REPLY
+              </h3>
+              <p className="text-[11px] text-slate-400">
+                Check every {settings.intervalMinutes} min
+              </p>
+            </div>
+          </div>
+
+          <button
+            type="button"
+            onClick={handleToggleMessenger}
+            className={`px-4 py-2 rounded-full text-xs font-black uppercase transition-all active:scale-95 ${
+              settings.messengerEnabled
+                ? "bg-sky-600 text-white shadow-lg shadow-sky-600/30"
+                : "bg-white/10 text-slate-300"
+            }`}
+          >
+            {settings.messengerEnabled ? "ON" : "OFF"}
+          </button>
+        </div>
+
+        <button
+          type="button"
+          disabled={runningState.running}
+          onClick={() => void handleRunNow("messenger")}
+          className="w-full py-3 rounded-2xl bg-sky-600 hover:bg-sky-500 disabled:opacity-50 text-white font-black text-xs uppercase tracking-wider flex items-center justify-center gap-2 active:scale-[0.98] transition-all shadow-lg"
+        >
+          <Play className="w-4 h-4" />
+          {runningState.running && runningState.channel === "messenger" ? "RUNNING..." : "RUN NOW"}
+        </button>
+
+        <div className="p-3.5 rounded-2xl bg-black/40 border border-white/5 space-y-1.5">
+          <div className="flex items-center justify-between gap-2">
+            <span className="text-[10px] font-bold uppercase tracking-wider text-slate-400">
+              Last run: {formatTime(settings.messengerStats.lastRunAt)}
+            </span>
+            {renderStatusPill(
+              settings.messengerStats.lastStatus,
+              runningState.running && runningState.channel === "messenger"
+            )}
+          </div>
+          <p className="text-xs text-slate-200 leading-relaxed whitespace-pre-wrap">
+            {settings.messengerStats.lastSummary || "এখনো কোনো রিপ্লাই রান হয়নি।"}
+          </p>
+        </div>
       </div>
     </div>
   );

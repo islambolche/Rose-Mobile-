@@ -244,6 +244,9 @@ You CAN end the live voice call yourself using the end_call tool. When the user 
 
 PC / LAPTOP TASK RULE (CRITICAL):
 When the user asks for anything on the computer/PC/laptop (পিসি, ল্যাপটপ, কম্পিউটার), call pc_task. Never pretend it is done before the result comes.
+When the user says "ফেসবুকে অ্যাড চালাও" (or asks to create/run a Facebook ad), call pc_task with task:
+"Open https://adsmanager.facebook.com in Chrome. Create a new ad using the user's instructions: <what the user said: product, budget, days, audience, location, image/video>. Fill everything (campaign, audience, budget, creative, text). STOP before the final Publish/Pay button and finish with a Bengali summary of the full ad setup."
+After the summary returns, read the summary and ask "চালু করব?". Only if the user says হ্যাঁ/করো, call confirm_action("yes") or send a second pc_task: "In the open Ads Manager draft, click Publish.".
 `.trim();
 
 export const ROSE_PHONE_FUNCTION_DECLARATIONS = [

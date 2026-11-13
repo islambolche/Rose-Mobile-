@@ -219,6 +219,7 @@ import {
 import { agentWorker } from "./lib/agentWorker";
 import { routeUserMessageForTeamTask, routePcCommandMessage } from "./lib/teamRouter";
 import { PcSetupPage, PcSetupPageId } from "./components/PcSetupViews";
+import { startBusinessAutoScheduler } from "./pc/businessAuto";
 import { buildRoseSystemInstruction } from "./lib/roseConfig";
 import { sendPcCommand } from "./lib/pcCommand";
 import { sendTypedChat, NO_GEMINI_KEY_MSG, formatRealGeminiError, getStoredGroqKey } from "./lib/typedChat";
@@ -1370,16 +1371,15 @@ const VoiceCheckView = ({
     try {
       const controller = new AbortController();
       const timeoutId = setTimeout(() => controller.abort(), 4000);
-      const res = await fetch("/api/gemini/verify", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ apiKey: rawKey }),
+      const res = await fetch("https://generativelanguage.googleapis.com/v1beta/models", {
+        method: "GET",
+        headers: { "x-goog-api-key": rawKey },
         signal: controller.signal,
       });
       clearTimeout(timeoutId);
       if (res.ok) return "ok";
-      const data = await res.json().catch(() => ({}));
-      if (res.status === 401 || res.status === 403 || (data?.error && (data.error.code === 400 || data.error.code === 403))) {
+      if (res.status === 429) return "ok";
+      if (res.status === 400 || res.status === 401 || res.status === 403) {
         return "invalid";
       }
       return rawKey.length > 20 ? "ok" : "invalid";
@@ -2743,6 +2743,10 @@ export function App() {
   }, []);
 
   useEffect(() => {
+    return startBusinessAutoScheduler();
+  }, []);
+
+  useEffect(() => {
     if (!agentTaskHistoryModalId) {
       setAgentTasksList([]);
       return;
@@ -3162,6 +3166,7 @@ export function App() {
         resumeStream: async () => stream,
         ortConfig: (ortInst) => {
           try {
+            ortInst.env.wasm.wasmPaths = SMART_VAD_CDN_CONFIG.onnxWASMBasePath;
             ortInst.env.wasm.numThreads = 1;
             ortInst.env.logLevel = "error";
           } catch {}
@@ -5356,26 +5361,23 @@ export function App() {
 
         try {
           let url = "";
-          let method = "GET";
-          let body: any = null;
-          let headers: any = { "Content-Type": "application/json" };
+          const method = "GET";
+          const headers: Record<string, string> = {};
 
           if (type === "gemini") {
-            url = "/api/gemini/verify";
-            method = "POST";
-            body = JSON.stringify({ apiKey: cleanKey });
+            url = "https://generativelanguage.googleapis.com/v1beta/models";
+            headers["x-goog-api-key"] = cleanKey;
           } else if (type === "groq") {
-            url = `https://api.groq.com/openai/v1/models`;
+            url = "https://api.groq.com/openai/v1/models";
             headers["Authorization"] = `Bearer ${cleanKey}`;
           } else if (type === "openai") {
-            url = `https://api.openai.com/v1/models`;
+            url = "https://api.openai.com/v1/models";
             headers["Authorization"] = `Bearer ${cleanKey}`;
           }
 
           const res = await fetch(url, {
             method,
             headers,
-            body,
             signal: controller.signal
           });
           clearTimeout(timeoutId);
@@ -5388,12 +5390,12 @@ export function App() {
 
           if (res.ok) {
             verifiedCount++;
-          } else if (status === 401 || status === 403) {
+          } else if (status === 400 || status === 401 || status === 403) {
             invalidFound = true;
-            lastErrorMsg = `ভুল API Key (${status}): ${apiMsg.slice(0, 40)}`;
+            lastErrorMsg = type === "gemini" ? "কী ভুল" : `ভুল API Key (${status}): ${apiMsg.slice(0, 40)}`;
           } else if (status === 429) {
-            lastErrorMsg = "সীমা শেষ (429), পরে চেষ্টা করুন";
-            // We count 429 as "potential ok" for storage but failed for verification
+            lastErrorMsg = type === "gemini" ? "READY (limit full, পরে আবার)" : "সীমা শেষ (429), পরে চেষ্টা করুন";
+            if (type === "gemini") verifiedCount++;
           } else {
             networkError = true;
             lastErrorMsg = `ত্রুটি (${status}): ${apiMsg.slice(0, 40)}`;
@@ -9273,7 +9275,7 @@ export function App() {
     setLiveReconnectStatus(null);
     // Requirement 4.6: Warm up TTS & API connections on call start
     try {
-      fetch("/api/gemini/status").catch(() => {});
+      fetchServerGeminiStatus().catch(() => {});
     } catch (e) {}
 
     // Requirement 2a: Create separate persistent input and output AudioContexts and call await ctx.resume()
@@ -14798,6 +14800,28 @@ export function App() {
                 </h4>
                 <p className="text-[11px] text-slate-400 font-bold uppercase tracking-widest mt-0.5">
                   OpenJarvis local model info
+                </p>
+              </div>
+            </div>
+            <ChevronRight className="w-5 h-5 text-slate-500 shrink-0" />
+          </button>
+
+          {/* 8. BUSINESS AUTO */}
+          <button
+            data-nav-id="pc_business_auto"
+            onClick={() => setActivePcSetupSubPage("pc-business-auto")}
+            className="w-full p-5 bg-[#0F172A]/80 border border-purple-500/30 rounded-[2.5rem] shadow-2xl flex items-center justify-between active:scale-[0.98] transition-all text-left"
+          >
+            <div className="flex items-center gap-4">
+              <div className="w-12 h-12 rounded-full bg-purple-600/10 border border-purple-500/20 flex items-center justify-center text-purple-400 shrink-0">
+                <Briefcase className="w-6 h-6 text-emerald-400" />
+              </div>
+              <div>
+                <h4 className="text-base font-black uppercase tracking-wider text-white leading-tight">
+                  8 BUSINESS AUTO
+                </h4>
+                <p className="text-[11px] text-slate-400 font-bold uppercase tracking-widest mt-0.5">
+                  WhatsApp & Messenger auto-reply
                 </p>
               </div>
             </div>
