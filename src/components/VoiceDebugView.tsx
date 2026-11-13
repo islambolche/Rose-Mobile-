@@ -221,7 +221,7 @@ export const VoiceDebugView: React.FC<VoiceDebugViewProps> = ({ settings, onBack
   return (
     <div className="fixed inset-0 z-[140] bg-[#020617] text-white flex flex-col font-sans select-none overflow-hidden">
       {/* Header */}
-      <header className="px-5 py-4 bg-[#0A1628]/95 border-b border-purple-500/20 backdrop-blur-md flex items-center justify-between shrink-0">
+      <header className="sticky top-0 z-20 px-5 py-4 bg-[#0A1628]/95 border-b border-purple-500/20 backdrop-blur-md flex items-center justify-between shrink-0">
         <div className="flex items-center gap-3">
           <button
             onClick={onBack}

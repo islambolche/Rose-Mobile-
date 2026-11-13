@@ -278,6 +278,17 @@ export const ConnectionsView = ({
     };
   }, []);
 
+  useEffect(() => {
+    const onPcEscBack = (e: Event) => {
+      if (subPage !== null) {
+        e.preventDefault();
+        setSubPage(null);
+      }
+    };
+    window.addEventListener('rose-pc-esc-back', onPcEscBack);
+    return () => window.removeEventListener('rose-pc-esc-back', onPcEscBack);
+  }, [subPage]);
+
   const handlePaste = async (id: AllProviderId) => {
     try {
       if (typeof navigator !== 'undefined' && navigator.clipboard && typeof navigator.clipboard.readText === 'function') {
@@ -629,7 +640,7 @@ export const ConnectionsView = ({
         exit={{ x: '100%' }}
         className="fixed inset-0 z-[90] bg-[#020617] text-white flex flex-col overflow-hidden font-sans"
       >
-        <header className="px-5 py-4 flex items-center gap-4 border-b border-purple-500/15 bg-[#020617]/95 backdrop-blur-md shrink-0">
+        <header className="sticky top-0 z-20 px-5 py-4 flex items-center gap-4 border-b border-purple-500/15 bg-[#020617]/95 backdrop-blur-md shrink-0">
           <button
             type="button"
             onClick={() => setSubPage(null)}
@@ -715,7 +726,7 @@ export const ConnectionsView = ({
         exit={{ x: '100%' }}
         className="fixed inset-0 z-[90] bg-[#020617] text-white flex flex-col overflow-hidden font-sans"
       >
-        <header className="px-5 py-4 flex items-center gap-4 border-b border-purple-500/15 bg-[#020617]/95 backdrop-blur-md shrink-0">
+        <header className="sticky top-0 z-20 px-5 py-4 flex items-center gap-4 border-b border-purple-500/15 bg-[#020617]/95 backdrop-blur-md shrink-0">
           <button
             type="button"
             onClick={() => setSubPage(null)}
@@ -807,7 +818,7 @@ export const ConnectionsView = ({
       className="fixed inset-0 z-[90] bg-[#020617] text-white flex flex-col overflow-hidden font-sans"
     >
       {/* Top Header: Back (<-) & CONNECTIONS Title */}
-      <header className="px-5 py-4 flex items-center gap-4 border-b border-purple-500/15 bg-[#020617]/95 backdrop-blur-md shrink-0">
+      <header className="sticky top-0 z-20 px-5 py-4 flex items-center gap-4 border-b border-purple-500/15 bg-[#020617]/95 backdrop-blur-md shrink-0">
         <button
           type="button"
           onClick={onBack}

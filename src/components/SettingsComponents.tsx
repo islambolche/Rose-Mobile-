@@ -1,4 +1,4 @@
-import React, { useState, useRef } from "react";
+import React, { useState, useRef, useEffect } from "react";
 import { motion } from "framer-motion";
 import { ArrowLeft, Facebook, Instagram, Youtube, Mail, Check, Loader2, ExternalLink, Cpu, PenTool, Zap, ChevronRight, RotateCw, MessageSquare } from "lucide-react";
 import { getGeminiKey, ensureGeminiReady } from "../lib/geminiKey";
@@ -88,7 +88,7 @@ export const Developer = ({
       exit={{ x: "100%" }}
       className="fixed inset-0 z-[90] h-full bg-[#020617] flex flex-col overflow-hidden"
     >
-      <header className="px-6 py-4 flex items-center gap-4 shrink-0 border-b border-white/5">
+      <header className="sticky top-0 z-20 px-6 py-4 flex items-center gap-4 shrink-0 border-b border-white/5 bg-[#020617]/95 backdrop-blur-md">
         <button
           data-nav-id="back"
           aria-label="Back"
@@ -306,6 +306,17 @@ export const LiveModelSettings = ({
   );
   const [localToast, setLocalToast] = useState<string | null>(null);
 
+  useEffect(() => {
+    const onPcEscBack = (e: Event) => {
+      if (showCustomPage) {
+        e.preventDefault();
+        setShowCustomPage(false);
+      }
+    };
+    window.addEventListener("rose-pc-esc-back", onPcEscBack);
+    return () => window.removeEventListener("rose-pc-esc-back", onPcEscBack);
+  }, [showCustomPage]);
+
   const notifyToast = (msg: string) => {
     if (setToast) {
       setToast(msg);
@@ -503,7 +514,7 @@ export const LiveModelSettings = ({
         exit={{ x: "100%" }}
         className="fixed inset-0 z-[90] bg-[#020617] text-white flex flex-col overflow-hidden"
       >
-        <header className="px-5 py-4 flex items-center gap-4 border-b border-purple-500/15 bg-[#020617]/95 backdrop-blur-md shrink-0">
+        <header className="sticky top-0 z-20 px-5 py-4 flex items-center gap-4 border-b border-purple-500/15 bg-[#020617]/95 backdrop-blur-md shrink-0">
           <button
             data-nav-id="back"
             aria-label="Back"
@@ -570,7 +581,7 @@ export const LiveModelSettings = ({
       className="fixed inset-0 z-[90] bg-[#020617] text-white flex flex-col overflow-hidden"
     >
       {/* Header */}
-      <header className="px-5 py-4 flex items-center gap-4 border-b border-purple-500/15 bg-[#020617]/95 backdrop-blur-md shrink-0">
+      <header className="sticky top-0 z-20 px-5 py-4 flex items-center gap-4 border-b border-purple-500/15 bg-[#020617]/95 backdrop-blur-md shrink-0">
         <button
           onClick={() => setCurrentView("settings")}
           className="p-2.5 bg-purple-500/10 border border-purple-500/30 rounded-2xl text-white active:scale-95 transition-transform"

@@ -239,6 +239,26 @@ export const PcLayout: React.FC<PcLayoutProps> = ({
     else statusLabel = "Voice active";
   }
 
+  const topNavRef = useRef<HTMLElement | null>(null);
+  const [topNavHeight, setTopNavHeight] = useState<number>(56);
+
+  useEffect(() => {
+    const el = topNavRef.current;
+    if (!el) return;
+    const measure = () => {
+      const h = Math.ceil(el.getBoundingClientRect().height);
+      if (h > 0) setTopNavHeight(h);
+    };
+    measure();
+    const ro = typeof ResizeObserver !== "undefined" ? new ResizeObserver(measure) : null;
+    ro?.observe(el);
+    window.addEventListener("resize", measure);
+    return () => {
+      ro?.disconnect();
+      window.removeEventListener("resize", measure);
+    };
+  }, []);
+
   const isSettingsOrSubViewOpen = currentView !== "home";
 
   return (
@@ -247,16 +267,20 @@ export const PcLayout: React.FC<PcLayoutProps> = ({
         "w-screen h-dvh bg-[#020617] text-[var(--text)] font-sans flex overflow-hidden select-none " +
         (!masterAccess ? "grayscale contrast-75" : "")
       }
+      style={{ "--pc-nav-height": `${topNavHeight}px` } as React.CSSProperties}
     >
       {/* 1. CENTER STAGE (Top bar + Expanded Virtual Office / Sub-views) */}
-      <div className="relative flex-1 min-w-0 h-full overflow-hidden flex flex-col bg-[#020617] [transform:translateZ(0)]">
+      <div className="relative flex-1 min-w-0 h-full overflow-hidden flex flex-col bg-[#020617]">
         {/* Ambient Backdrop */}
         <div className="absolute inset-0 z-0 pointer-events-none overflow-hidden" aria-hidden="true">
           <div className="absolute inset-0 bg-gradient-to-b from-[#090417]/80 via-[#020617]/90 to-[#020617]" />
         </div>
 
         {/* 2) SLIM TOP BAR (height ~56px, fits without scrollbar, icons only below 1400px with tooltips) */}
-        <header className="relative z-30 h-14 px-3 sm:px-5 bg-[#0B061C]/90 border-b border-purple-500/20 backdrop-blur-md shadow-[0_4px_25px_rgba(139,92,246,0.14)] flex items-center justify-between shrink-0 overflow-x-hidden">
+        <header
+          ref={topNavRef}
+          className="relative z-40 min-h-14 px-3 sm:px-5 bg-[#0B061C]/90 border-b border-purple-500/20 backdrop-blur-md shadow-[0_4px_25px_rgba(139,92,246,0.14)] flex items-center justify-between shrink-0 overflow-x-hidden"
+        >
           {/* Left: Navigation buttons (Icons only below 1400px, icon+label above 1400px) */}
           <nav className="flex items-center gap-1 sm:gap-1.5 shrink-0 overflow-x-hidden">
             {navItems.map((item) => {
@@ -327,12 +351,15 @@ export const PcLayout: React.FC<PcLayoutProps> = ({
           </div>
         </header>
 
-        {/* 3) MAIN CONTENT AREA (Below Top Bar) */}
-        <div className="relative z-10 flex-1 min-h-0 w-full h-full flex flex-col overflow-hidden">
+        {/* 3) MAIN CONTENT AREA (Starts strictly below Top Bar; transform traps fixed Settings overlays inside this box) */}
+        <div
+          className="relative z-10 flex-1 min-h-0 w-full flex flex-col overflow-hidden [transform:translateZ(0)]"
+          style={{ scrollPaddingTop: `${topNavHeight + 12}px` }}
+        >
           {/* Sub-views (Settings, Profile, Developer, etc.) */}
           {activeNav === ("developer" as any) || currentView === "developer" ? (
             /* DESKTOP DEVELOPER PAGE */
-            <div className="flex-1 min-h-0 w-full h-full overflow-y-auto no-scrollbar p-6 bg-[#020617]">
+            <div className="flex-1 min-h-0 w-full overflow-y-auto no-scrollbar p-6 bg-[#020617]">
               <div className="max-w-5xl mx-auto space-y-6 pb-8">
                 {/* Back button */}
                 <div className="flex items-center justify-between pb-3 border-b border-white/10">
@@ -455,14 +482,14 @@ export const PcLayout: React.FC<PcLayoutProps> = ({
             renderCenterOverlayViews()
           ) : activeNav === "chat" ? (
             /* Standalone Chat view when Chat nav pill is clicked */
-            <div className="flex-1 min-h-0 w-full h-full max-w-4xl mx-auto flex flex-col overflow-hidden p-3">
+            <div className="flex-1 min-h-0 w-full max-w-4xl mx-auto flex flex-col overflow-hidden p-3">
               {renderChat(true)}
             </div>
           ) : activeNav === "agents" ? (
             /* AGENTS PAGE */
-            <div className="flex-1 min-h-0 w-full h-full overflow-y-auto no-scrollbar p-6">
-              <div className="max-w-4xl mx-auto space-y-5 pb-8">
-                <div className="pb-3 border-b border-white/5">
+            <div className="flex-1 min-h-0 w-full overflow-y-auto no-scrollbar">
+              <div className="sticky top-0 z-20 px-6 pt-5 pb-3 bg-[#020617]/95 backdrop-blur-md border-b border-white/5">
+                <div className="max-w-4xl mx-auto">
                   <h2 className="text-xl font-black text-white uppercase tracking-wider flex items-center gap-2">
                     <Bot className="w-6 h-6 text-purple-400" />
                     Autonomous Office Agents
@@ -471,6 +498,8 @@ export const PcLayout: React.FC<PcLayoutProps> = ({
                     Meet the 5 specialized AI team members running your business office.
                   </p>
                 </div>
+              </div>
+              <div className="p-6 max-w-4xl mx-auto space-y-5 pb-8">
 
                 <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                   {OFFICE_AGENT_LIST.map((agent) => (
@@ -521,8 +550,8 @@ export const PcLayout: React.FC<PcLayoutProps> = ({
             </div>
           ) : activeNav === "tasks" ? (
             /* TASKS PAGE */
-            <div className="flex-1 h-full w-full flex flex-col items-center justify-center p-8 text-center bg-[#020617] relative overflow-hidden">
-              <div className="relative z-10 max-w-md w-full bg-[#0F172A]/85 border border-purple-500/30 rounded-[20px] p-8 shadow-2xl flex flex-col items-center">
+            <div className="flex-1 min-h-0 w-full overflow-y-auto no-scrollbar flex flex-col items-center p-8 text-center bg-[#020617] relative">
+              <div className="relative z-10 my-auto max-w-md w-full bg-[#0F172A]/85 border border-purple-500/30 rounded-[20px] p-8 shadow-2xl flex flex-col items-center">
                 <div className="w-16 h-16 rounded-full bg-purple-600/15 border border-purple-500/30 flex items-center justify-center text-purple-400 mb-4 shadow-lg shadow-purple-900/30">
                   <CheckSquare className="w-8 h-8" />
                 </div>
@@ -539,13 +568,13 @@ export const PcLayout: React.FC<PcLayoutProps> = ({
             </div>
           ) : activeNav === "history" ? (
             /* HISTORY PAGE */
-            <div className="flex-1 min-h-0 w-full h-full flex flex-col overflow-hidden max-w-4xl mx-auto p-4">
+            <div className="flex-1 min-h-0 w-full flex flex-col overflow-hidden max-w-4xl mx-auto p-4">
               {renderHistory()}
             </div>
           ) : (
             /* 3) HOME: Full-size Virtual Office filling the center with fixed 1672/941 aspect ratio stage,
                with the single Orb (~64px) at bottom center and Live Camera preview at bottom right */
-            <div className="flex-1 min-h-0 w-full h-full p-2 sm:p-3 flex items-center justify-center overflow-hidden relative">
+            <div className="flex-1 min-h-0 w-full p-2 sm:p-3 flex items-center justify-center overflow-hidden relative">
               <VirtualOffice className="w-full h-full">
                 {/* Single Orb at bottom center of the office stage (~64px) with status pill */}
                 <div className="absolute bottom-3 sm:bottom-4 left-1/2 -translate-x-1/2 z-[120] flex flex-col items-center pointer-events-auto">

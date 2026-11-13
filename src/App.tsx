@@ -1733,26 +1733,26 @@ const VoiceCheckView = ({
       exit={{ x: "100%" }}
       className="fixed inset-0 z-[90] bg-[#020617] overflow-y-auto no-scrollbar flex flex-col"
     >
-      <div className="px-5 py-6 flex flex-col min-h-full">
-        {/* Header with hidden 7-tap gesture */}
-        <header className="flex items-center gap-4 mb-7 shrink-0">
-          <button
-            onClick={() => setCurrentView("voice")}
-            className="p-2.5 bg-white/5 rounded-xl active:scale-95 transition-transform border border-white/5 text-slate-300 hover:text-white"
-            aria-label="Back to Voice & Language"
-          >
-            <ArrowLeft className="w-5 h-5" />
-          </button>
-          <div onClick={handleTitleTap} className="cursor-pointer select-none">
-            <h2 className="text-2xl font-black text-white italic tracking-tighter uppercase leading-tight">
-              Voice Check
-            </h2>
-            <p className="text-[11px] text-slate-400 font-medium mt-0.5">
-              Make sure Rose can hear you and talk to you.
-            </p>
-          </div>
-        </header>
+      {/* Header with hidden 7-tap gesture */}
+      <header className="sticky top-0 z-20 px-5 py-5 bg-[#020617]/95 backdrop-blur-md border-b border-white/5 flex items-center gap-4 shrink-0">
+        <button
+          onClick={() => setCurrentView("voice")}
+          className="p-2.5 bg-white/5 rounded-xl active:scale-95 transition-transform border border-white/5 text-slate-300 hover:text-white"
+          aria-label="Back to Voice & Language"
+        >
+          <ArrowLeft className="w-5 h-5" />
+        </button>
+        <div onClick={handleTitleTap} className="cursor-pointer select-none">
+          <h2 className="text-2xl font-black text-white italic tracking-tighter uppercase leading-tight">
+            Voice Check
+          </h2>
+          <p className="text-[11px] text-slate-400 font-medium mt-0.5">
+            Make sure Rose can hear you and talk to you.
+          </p>
+        </div>
+      </header>
 
+      <div className="px-5 py-5 flex flex-col flex-1">
         <div className="space-y-4 pb-32 flex-1">
           {/* TEST VOICE BUTTON AT TOP OF VOICE CHECK */}
           <div className="w-full p-5 bg-[#0F172A]/80 rounded-[2.5rem] border border-purple-500/30 shadow-2xl flex items-center justify-between text-left">
@@ -10831,7 +10831,7 @@ export function App() {
         exit={{ x: "100%" }}
         className="fixed inset-0 z-[85] bg-[#020617] flex flex-col"
       >
-        <header className="px-5 py-6 flex items-center gap-4 shrink-0">
+        <header className="sticky top-0 z-20 px-5 py-5 flex items-center gap-4 shrink-0 bg-[#020617]/95 backdrop-blur-md border-b border-white/5">
           <button
             onClick={() => setCurrentView("home")}
             className="p-2.5 bg-white/5 rounded-2xl flex items-center justify-center text-white active:scale-95 transition-transform"
@@ -10841,7 +10841,7 @@ export function App() {
           <h2 className="text-2xl font-black italic uppercase tracking-tighter text-white">Write</h2>
         </header>
 
-        <div className="flex-1 overflow-y-auto no-scrollbar px-5 pb-32 space-y-6">
+        <div className="flex-1 overflow-y-auto no-scrollbar px-5 pt-4 pb-32 space-y-6">
           {isAdmin && globalStats && (
             <div className="bg-indigo-600/10 border border-indigo-500/30 rounded-[2rem] p-5 shadow-lg">
               <h3 className="text-[10px] font-black text-indigo-400 uppercase tracking-[3px] mb-3">Writing Stats</h3>
@@ -11029,7 +11029,7 @@ export function App() {
       return (
         <div className="flex-1 flex flex-col overflow-hidden w-full relative bg-[#020617]">
           {/* Top Bar for Opened Conversation */}
-          <div className="px-4 py-3.5 border-b border-white/5 flex items-center justify-between shrink-0 bg-[#020617]/85 backdrop-blur-md">
+          <div className="sticky top-0 z-20 px-4 py-3.5 border-b border-white/5 flex items-center justify-between shrink-0 bg-[#020617]/95 backdrop-blur-md">
             <button
               onClick={() => setSelectedHistoryConv(null)}
               className="p-2 -ml-1 rounded-xl text-slate-300 hover:text-white active:scale-95 transition-transform flex items-center gap-1.5"
@@ -11153,7 +11153,7 @@ export function App() {
     return (
       <div className="flex-1 flex flex-col overflow-hidden w-full relative bg-[#020617]">
         {/* Header: Back arrow at top-left goes Home + Title + Clear All */}
-        <div className="px-5 py-4 border-b border-white/5 flex flex-col gap-3 shrink-0 bg-[#020617]/80 backdrop-blur-md">
+        <div className="sticky top-0 z-20 px-5 py-4 border-b border-white/5 flex flex-col gap-3 shrink-0 bg-[#020617]/95 backdrop-blur-md">
           <div className="flex items-center justify-between">
             <div className="flex items-center gap-2">
               <button
@@ -12148,17 +12148,19 @@ export function App() {
       exit={{ x: "100%" }}
       className="fixed inset-0 z-[70] bg-[#020617] overflow-y-auto no-scrollbar flex flex-col"
     >
-      {/* Sticky Back Button */}
-      <div className="sticky top-0 z-20 px-5 pt-6 pb-2 bg-[#020617]">
-        <button
-          onClick={() => setCurrentView("home")}
-          aria-label="Back"
-          className="p-3 bg-purple-500/10 border border-purple-500/30 rounded-2xl flex items-center justify-center text-white active:scale-95 transition-transform"
-        >
-          <ArrowLeft className="w-5 h-5 text-white" />
-        </button>
-      </div>
-      <div className="px-5 py-6 flex flex-col min-h-full pb-36">
+      {/* Sticky Back Button (mobile only; hidden on PC Settings main list) */}
+      {!isPcLayoutActive && (
+        <div className="sticky top-0 z-20 px-5 pt-6 pb-2 bg-[#020617]">
+          <button
+            onClick={() => setCurrentView("home")}
+            aria-label="Back"
+            className="p-3 bg-purple-500/10 border border-purple-500/30 rounded-2xl flex items-center justify-center text-white active:scale-95 transition-transform"
+          >
+            <ArrowLeft className="w-5 h-5 text-white" />
+          </button>
+        </div>
+      )}
+      <div className={`px-5 ${isPcLayoutActive ? "py-5" : "py-6"} flex flex-col min-h-full pb-36`}>
         {/* 9 Buttons in Exact Order */}
 
         {/* 9 Buttons in Exact Order */}
@@ -12619,20 +12621,20 @@ export function App() {
         exit={{ x: "100%" }}
         className="fixed inset-0 z-[90] bg-[#020617] overflow-y-auto no-scrollbar flex flex-col"
       >
-        <div className="px-5 py-6 flex flex-col min-h-full">
-          <header className="flex items-center gap-4 mb-7 shrink-0">
-            <button
-              type="button"
-              onClick={() => setCurrentView("voice")}
-              className="p-2.5 bg-white/5 rounded-xl active:scale-95 transition-transform border border-white/5 text-slate-300 hover:text-white"
-            >
-              <ArrowLeft className="w-5 h-5" />
-            </button>
-            <h2 className="text-2xl font-black text-white italic tracking-tighter uppercase leading-tight">
-              TTS MODEL
-            </h2>
-          </header>
+        <header className="sticky top-0 z-20 px-5 py-5 bg-[#020617]/95 backdrop-blur-md border-b border-white/5 flex items-center gap-4 shrink-0">
+          <button
+            type="button"
+            onClick={() => setCurrentView("voice")}
+            className="p-2.5 bg-white/5 rounded-xl active:scale-95 transition-transform border border-white/5 text-slate-300 hover:text-white"
+          >
+            <ArrowLeft className="w-5 h-5" />
+          </button>
+          <h2 className="text-2xl font-black text-white italic tracking-tighter uppercase leading-tight">
+            TTS MODEL
+          </h2>
+        </header>
 
+        <div className="px-5 py-5 flex flex-col flex-1">
           <div className="space-y-4 pb-36 flex-1">
             <div className="p-5 bg-[#0F172A]/80 rounded-[2rem] border border-purple-500/30 shadow-2xl flex items-center justify-between gap-3">
               <div className="min-w-0">
@@ -12732,19 +12734,19 @@ export function App() {
       exit={{ x: "100%" }}
       className="fixed inset-0 z-[80] bg-[#020617] overflow-y-auto no-scrollbar flex flex-col"
     >
-      <div className="px-5 py-6 flex flex-col min-h-full">
-        <header className="flex items-center gap-4 mb-8 shrink-0">
-          <button
-            onClick={() => setCurrentView("settings")}
-            className="p-2.5 bg-white/5 rounded-xl active:scale-95 transition-transform border border-white/5"
-          >
-            <ArrowLeft className="w-5 h-5 text-slate-300" />
-          </button>
-          <h2 className="text-2xl font-black text-white italic tracking-tighter uppercase leading-tight">
-            Voice & language
-          </h2>
-        </header>
+      <header className="sticky top-0 z-20 px-5 py-5 bg-[#020617]/95 backdrop-blur-md border-b border-white/5 flex items-center gap-4 shrink-0">
+        <button
+          onClick={() => setCurrentView("settings")}
+          className="p-2.5 bg-white/5 rounded-xl active:scale-95 transition-transform border border-white/5"
+        >
+          <ArrowLeft className="w-5 h-5 text-slate-300" />
+        </button>
+        <h2 className="text-2xl font-black text-white italic tracking-tighter uppercase leading-tight">
+          Voice & language
+        </h2>
+      </header>
 
+      <div className="px-5 py-5 flex flex-col flex-1">
         <div className="space-y-4 pb-36">
           {/* 0. TTS MODEL */}
           <button
@@ -13048,20 +13050,20 @@ export function App() {
       exit={{ x: "100%" }}
       className="fixed inset-0 z-[90] bg-[#020617] overflow-y-auto no-scrollbar flex flex-col"
     >
-      <div className="px-5 py-6 flex flex-col min-h-full">
-        <header className="flex items-center gap-4 mb-7 shrink-0">
-          <button
-            onClick={() => setCurrentView("voice")}
-            className="p-2.5 bg-white/5 rounded-xl active:scale-95 transition-transform border border-white/5 text-slate-300 hover:text-white"
-            aria-label="Back to Voice & Language"
-          >
-            <ArrowLeft className="w-5 h-5" />
-          </button>
-          <h2 className="text-2xl font-black text-white italic tracking-tighter uppercase leading-tight">
-            MIC & LISTENING
-          </h2>
-        </header>
+      <header className="sticky top-0 z-20 px-5 py-5 bg-[#020617]/95 backdrop-blur-md border-b border-white/5 flex items-center gap-4 shrink-0">
+        <button
+          onClick={() => setCurrentView("voice")}
+          className="p-2.5 bg-white/5 rounded-xl active:scale-95 transition-transform border border-white/5 text-slate-300 hover:text-white"
+          aria-label="Back to Voice & Language"
+        >
+          <ArrowLeft className="w-5 h-5" />
+        </button>
+        <h2 className="text-2xl font-black text-white italic tracking-tighter uppercase leading-tight">
+          MIC & LISTENING
+        </h2>
+      </header>
 
+      <div className="px-5 py-5 flex flex-col flex-1">
         <div className="space-y-4 pb-36 flex-1">
           {/* a. MIC TEST CARD */}
           <div className="w-full p-5 bg-[#0F172A]/80 rounded-[2.5rem] border border-purple-500/30 shadow-2xl space-y-4">
@@ -13437,20 +13439,20 @@ export function App() {
       exit={{ x: "100%" }}
       className="fixed inset-0 z-[90] bg-[#020617] overflow-y-auto no-scrollbar flex flex-col"
     >
-      <div className="px-5 py-6 flex flex-col min-h-full">
-        <header className="flex items-center gap-4 mb-7 shrink-0">
-          <button
-            onClick={() => setCurrentView("mic-listening")}
-            className="p-2.5 bg-white/5 rounded-xl active:scale-95 transition-transform border border-white/5 text-slate-300 hover:text-white"
-            aria-label="Back to Mic & Listening"
-          >
-            <ArrowLeft className="w-5 h-5" />
-          </button>
-          <h2 className="text-2xl font-black text-white italic tracking-tighter uppercase leading-tight">
-            SMART LISTENING
-          </h2>
-        </header>
+      <header className="sticky top-0 z-20 px-5 py-5 bg-[#020617]/95 backdrop-blur-md border-b border-white/5 flex items-center gap-4 shrink-0">
+        <button
+          onClick={() => setCurrentView("mic-listening")}
+          className="p-2.5 bg-white/5 rounded-xl active:scale-95 transition-transform border border-white/5 text-slate-300 hover:text-white"
+          aria-label="Back to Mic & Listening"
+        >
+          <ArrowLeft className="w-5 h-5" />
+        </button>
+        <h2 className="text-2xl font-black text-white italic tracking-tighter uppercase leading-tight">
+          SMART LISTENING
+        </h2>
+      </header>
 
+      <div className="px-5 py-5 flex flex-col flex-1">
         <div className="space-y-4 pb-36 flex-1">
           {/* On / Off Switch */}
           <div className="w-full p-5 bg-[#0F172A]/80 rounded-[2.5rem] border border-purple-500/30 shadow-2xl flex items-center justify-between">
@@ -13609,20 +13611,20 @@ export function App() {
       exit={{ x: "100%" }}
       className="fixed inset-0 z-[90] bg-[#020617] overflow-y-auto no-scrollbar flex flex-col"
     >
-      <div className="px-5 py-6 flex flex-col min-h-full">
-        <header className="flex items-center gap-4 mb-7 shrink-0">
-          <button
-            onClick={() => setCurrentView("mic-listening")}
-            className="p-2.5 bg-white/5 rounded-xl active:scale-95 transition-transform border border-white/5 text-slate-300 hover:text-white"
-            aria-label="Back to Mic & Listening"
-          >
-            <ArrowLeft className="w-5 h-5" />
-          </button>
-          <h2 className="text-2xl font-black text-white italic tracking-tighter uppercase leading-tight">
-            NATIVE MIC (অ্যাপ)
-          </h2>
-        </header>
+      <header className="sticky top-0 z-20 px-5 py-5 bg-[#020617]/95 backdrop-blur-md border-b border-white/5 flex items-center gap-4 shrink-0">
+        <button
+          onClick={() => setCurrentView("mic-listening")}
+          className="p-2.5 bg-white/5 rounded-xl active:scale-95 transition-transform border border-white/5 text-slate-300 hover:text-white"
+          aria-label="Back to Mic & Listening"
+        >
+          <ArrowLeft className="w-5 h-5" />
+        </button>
+        <h2 className="text-2xl font-black text-white italic tracking-tighter uppercase leading-tight">
+          NATIVE MIC (অ্যাপ)
+        </h2>
+      </header>
 
+      <div className="px-5 py-5 flex flex-col flex-1">
         <div className="space-y-4 pb-36 flex-1">
           {/* On / Off Switch */}
           <div className="w-full p-5 bg-[#0F172A]/80 rounded-[2.5rem] border border-purple-500/30 shadow-2xl flex items-center justify-between">
@@ -13815,7 +13817,7 @@ export function App() {
         className="fixed inset-0 z-[80] bg-[#020617] text-white flex flex-col overflow-hidden"
       >
         {/* Header */}
-        <header className="px-5 py-4 flex items-center gap-4 border-b border-purple-500/15 bg-[#020617]/95 backdrop-blur-md shrink-0">
+        <header className="sticky top-0 z-20 px-5 py-4 flex items-center gap-4 border-b border-purple-500/15 bg-[#020617]/95 backdrop-blur-md shrink-0">
           <button
             type="button"
             onClick={() => setCurrentView("settings")}
@@ -14178,9 +14180,9 @@ export function App() {
         initial={{ x: "100%" }}
         animate={{ x: 0 }}
         exit={{ x: "100%" }}
-        className="fixed inset-0 z-[80] bg-[var(--bg)] text-[var(--text)] p-6 sm:p-8 overflow-y-auto no-scrollbar flex flex-col"
+        className="fixed inset-0 z-[80] bg-[var(--bg)] text-[var(--text)] overflow-y-auto no-scrollbar flex flex-col"
       >
-        <header className="flex items-center gap-4 mb-8 shrink-0">
+        <header className="sticky top-0 z-20 px-6 sm:px-8 py-5 flex items-center gap-4 shrink-0 bg-[var(--bg)]/95 backdrop-blur-md border-b border-white/5">
           <button
             onClick={() => setCurrentView("settings")}
             className="p-2.5 bg-purple-500/10 border border-purple-500/30 rounded-2xl flex items-center justify-center text-[var(--text)] active:scale-95 transition-transform"
@@ -14190,7 +14192,7 @@ export function App() {
           <h2 className="text-2xl font-black italic uppercase tracking-tighter text-[var(--text)]">Look & feel</h2>
         </header>
 
-        <div className="w-full space-y-4 pb-36">
+        <div className="w-full p-6 sm:p-8 space-y-4 pb-36">
           {/* Card 1: Theme */}
           <button
             onClick={() => setCurrentView("theme-list")}
@@ -14303,9 +14305,9 @@ export function App() {
         initial={{ x: "100%" }}
         animate={{ x: 0 }}
         exit={{ x: "100%" }}
-        className="fixed inset-0 z-[85] bg-[var(--bg)] text-[var(--text)] p-6 sm:p-8 overflow-y-auto no-scrollbar flex flex-col"
+        className="fixed inset-0 z-[85] bg-[var(--bg)] text-[var(--text)] overflow-y-auto no-scrollbar flex flex-col"
       >
-        <header className="flex items-center gap-4 mb-8 shrink-0">
+        <header className="sticky top-0 z-20 px-6 sm:px-8 py-5 flex items-center gap-4 shrink-0 bg-[var(--bg)]/95 backdrop-blur-md border-b border-white/5">
           <button
             onClick={() => setCurrentView("look")}
             className="p-2.5 bg-purple-500/10 border border-purple-500/30 rounded-2xl flex items-center justify-center text-[var(--text)] active:scale-95 transition-transform"
@@ -14317,7 +14319,7 @@ export function App() {
           </h2>
         </header>
 
-        <div className="w-full space-y-4 pb-36">
+        <div className="w-full p-6 sm:p-8 space-y-4 pb-36">
           {/* (ক) Rose Alive চালু/বন্ধ */}
           <div className="w-full p-5 bg-[#0F172A]/80 rounded-[2.5rem] border border-purple-500/30 shadow-2xl flex items-center justify-between text-left">
             <div className="flex items-center gap-4 pr-3">
@@ -14640,7 +14642,7 @@ export function App() {
         exit={{ x: "100%" }}
         className="fixed inset-0 z-[80] bg-[#020617] overflow-y-auto no-scrollbar flex flex-col"
       >
-        <header className="px-5 py-6 flex items-center gap-4 shrink-0">
+        <header className="sticky top-0 z-20 px-5 py-5 flex items-center gap-4 shrink-0 bg-[#020617]/95 backdrop-blur-md border-b border-white/5">
           <button
             onClick={() => setCurrentView("settings")}
             className="p-2.5 bg-white/5 rounded-2xl active:scale-95 transition-transform"
@@ -15183,7 +15185,7 @@ export function App() {
         exit={{ x: "100%" }}
         className="fixed inset-0 z-[90] bg-[#020617] overflow-y-auto no-scrollbar flex flex-col"
       >
-        <header className="px-6 py-8 flex items-center gap-4 shrink-0">
+        <header className="sticky top-0 z-20 px-6 py-5 flex items-center gap-4 shrink-0 bg-[#020617]/95 backdrop-blur-md border-b border-white/5">
           <button
             onClick={() => setCurrentView("pc-setup")}
             className="p-2.5 bg-purple-500/10 border border-purple-500/30 rounded-2xl flex items-center justify-center text-white active:scale-95 transition-transform"
@@ -15192,7 +15194,7 @@ export function App() {
           </button>
           <h2 className="text-2xl font-black italic uppercase tracking-tighter text-white">VIEW MODE</h2>
         </header>
-        <div className="flex-1 overflow-y-auto no-scrollbar px-6 pb-32 space-y-3">
+        <div className="flex-1 overflow-y-auto no-scrollbar px-6 pt-4 pb-32 space-y-3">
           {viewModeOptions.map((opt) => {
             const isSel = viewMode === opt.id;
             return (
@@ -15329,20 +15331,20 @@ export function App() {
           exit={{ x: "100%" }}
           className="fixed inset-0 z-[80] bg-[#020617] overflow-y-auto no-scrollbar flex flex-col"
         >
-          <div className="px-5 py-6 flex flex-col min-h-full pb-36">
-            <header className="flex items-center gap-4 mb-7 shrink-0">
-              <button
-                type="button"
-                onClick={() => setActiveAboutSection(null)}
-                className="p-2.5 bg-white/5 rounded-xl active:scale-95 transition-transform border border-white/5 text-slate-300 hover:text-white"
-              >
-                <ArrowLeft className="w-5 h-5" />
-              </button>
-              <h2 className="text-xl sm:text-2xl font-black uppercase tracking-tight text-white leading-tight">
-                {selectedItem.title}
-              </h2>
-            </header>
+          <header className="sticky top-0 z-20 px-5 py-5 bg-[#020617]/95 backdrop-blur-md border-b border-white/5 flex items-center gap-4 shrink-0">
+            <button
+              type="button"
+              onClick={() => setActiveAboutSection(null)}
+              className="p-2.5 bg-white/5 rounded-xl active:scale-95 transition-transform border border-white/5 text-slate-300 hover:text-white"
+            >
+              <ArrowLeft className="w-5 h-5" />
+            </button>
+            <h2 className="text-xl sm:text-2xl font-black uppercase tracking-tight text-white leading-tight">
+              {selectedItem.title}
+            </h2>
+          </header>
 
+          <div className="px-5 py-5 flex flex-col flex-1 pb-36">
             <div className="space-y-4 text-slate-200 text-sm leading-relaxed">
               {selectedItem.id === "about-app" && (
                 <>
@@ -15687,20 +15689,20 @@ export function App() {
         exit={{ x: "100%" }}
         className="fixed inset-0 z-[80] bg-[#020617] overflow-y-auto no-scrollbar flex flex-col"
       >
-        <div className="px-5 py-6 flex flex-col min-h-full pb-36">
-          <header className="flex items-center gap-4 mb-7 shrink-0">
-            <button
-              type="button"
-              onClick={() => setCurrentView("settings")}
-              className="p-2.5 bg-white/5 rounded-xl active:scale-95 transition-transform border border-white/5 text-slate-300 hover:text-white"
-            >
-              <ArrowLeft className="w-5 h-5" />
-            </button>
-            <h2 className="text-2xl font-black italic uppercase tracking-tighter text-white leading-tight">
-              ABOUT & GUIDE
-            </h2>
-          </header>
+        <header className="sticky top-0 z-20 px-5 py-5 bg-[#020617]/95 backdrop-blur-md border-b border-white/5 flex items-center gap-4 shrink-0">
+          <button
+            type="button"
+            onClick={() => setCurrentView("settings")}
+            className="p-2.5 bg-white/5 rounded-xl active:scale-95 transition-transform border border-white/5 text-slate-300 hover:text-white"
+          >
+            <ArrowLeft className="w-5 h-5" />
+          </button>
+          <h2 className="text-2xl font-black italic uppercase tracking-tighter text-white leading-tight">
+            ABOUT & GUIDE
+          </h2>
+        </header>
 
+        <div className="px-5 py-5 flex flex-col flex-1 pb-36">
           <div className="space-y-4 flex-1">
             {aboutItems.map((item) => {
               const IconComp = item.icon;
@@ -15897,19 +15899,19 @@ export function App() {
         exit={{ x: "100%" }}
         className="fixed inset-0 z-[90] bg-[#020617] overflow-y-auto no-scrollbar flex flex-col"
       >
-        <div className="px-5 py-6 flex flex-col min-h-full">
-          <header className="flex items-center gap-4 mb-7 shrink-0">
-            <button
-              onClick={() => setCurrentView("voice")}
-              className="p-2.5 bg-white/5 rounded-xl active:scale-95 transition-transform border border-white/5 text-slate-300 hover:text-white"
-            >
-              <ArrowLeft className="w-5 h-5" />
-            </button>
-            <h2 className="text-2xl font-black italic uppercase tracking-tighter text-white leading-tight">
-              PERSONALITY
-            </h2>
-          </header>
+        <header className="sticky top-0 z-20 px-5 py-5 bg-[#020617]/95 backdrop-blur-md border-b border-white/5 flex items-center gap-4 shrink-0">
+          <button
+            onClick={() => setCurrentView("voice")}
+            className="p-2.5 bg-white/5 rounded-xl active:scale-95 transition-transform border border-white/5 text-slate-300 hover:text-white"
+          >
+            <ArrowLeft className="w-5 h-5" />
+          </button>
+          <h2 className="text-2xl font-black italic uppercase tracking-tighter text-white leading-tight">
+            PERSONALITY
+          </h2>
+        </header>
 
+        <div className="px-5 py-5 flex flex-col flex-1">
           <div className="space-y-4 pb-36 flex-1">
             {PERSONALITIES.map((p) => {
               const isSelected = settings.personality === p.id;
@@ -16102,19 +16104,19 @@ export function App() {
         exit={{ x: "100%" }}
         className="fixed inset-0 z-[90] bg-[#020617] overflow-y-auto no-scrollbar flex flex-col"
       >
-        <div className="px-5 py-6 flex flex-col min-h-full">
-          <header className="flex items-center gap-4 mb-7 shrink-0">
-            <button
-              onClick={() => setCurrentView("voice")}
-              className="p-2.5 bg-white/5 rounded-xl active:scale-95 transition-transform border border-white/5 text-slate-300 hover:text-white"
-            >
-              <ArrowLeft className="w-5 h-5" />
-            </button>
-            <h2 className="text-2xl font-black italic uppercase tracking-tighter text-white leading-tight">
-              AFFECTION
-            </h2>
-          </header>
+        <header className="sticky top-0 z-20 px-5 py-5 bg-[#020617]/95 backdrop-blur-md border-b border-white/5 flex items-center gap-4 shrink-0">
+          <button
+            onClick={() => setCurrentView("voice")}
+            className="p-2.5 bg-white/5 rounded-xl active:scale-95 transition-transform border border-white/5 text-slate-300 hover:text-white"
+          >
+            <ArrowLeft className="w-5 h-5" />
+          </button>
+          <h2 className="text-2xl font-black italic uppercase tracking-tighter text-white leading-tight">
+            AFFECTION
+          </h2>
+        </header>
 
+        <div className="px-5 py-5 flex flex-col flex-1">
           <div className="space-y-4 pb-36 flex-1">
             {AFFECTION_LEVELS.map((item) => {
               const isSelected = currentAffection === item.id;
@@ -16304,6 +16306,125 @@ export function App() {
     }
   };
 
+  // PC layout only: Pressing Esc goes one level up (same as <- back button)
+  useEffect(() => {
+    if (!isPcLayoutActive) return;
+
+    const handlePcEscBack = (e: KeyboardEvent) => {
+      if (e.key !== "Escape") return;
+
+      // Allow child views with internal sub-pages / modals (Connections FREE/PAID, LiveModel Custom, AppPermissions detail, DevTools modal, Admin User modal) to pop one level first
+      const escEvent = new CustomEvent("rose-pc-esc-back", { cancelable: true });
+      window.dispatchEvent(escEvent);
+      if (escEvent.defaultPrevented) {
+        e.preventDefault();
+        return;
+      }
+
+      if (isOfficeLayoutEditorOpen) {
+        e.preventDefault();
+        setIsOfficeLayoutEditorOpen(false);
+        return;
+      }
+
+      if (activePcSetupSubPage) {
+        e.preventDefault();
+        setActivePcSetupSubPage(null);
+        return;
+      }
+
+      if (activeAboutSection) {
+        e.preventDefault();
+        setActiveAboutSection(null);
+        return;
+      }
+
+      if (pcActiveNav === "history" && selectedHistoryConv) {
+        e.preventDefault();
+        setSelectedHistoryConv(null);
+        return;
+      }
+
+      const v = viewRef.current;
+      // On Settings main list there is no back button
+      if (!v || v === "home" || v === "settings") return;
+
+      let parentView: string | null = null;
+      if (
+        v === "connections" ||
+        v === "live-model" ||
+        v === "voice" ||
+        v === "memory" ||
+        v === "look" ||
+        v === "phone" ||
+        v === "pc-setup" ||
+        v === "about" ||
+        v === "privacy" ||
+        v === "developer_tools" ||
+        v === "admin_panel"
+      ) {
+        parentView = "settings";
+      } else if (
+        v === "tts-model" ||
+        v === "edit-assistant-name" ||
+        v === "edit-user-name" ||
+        v === "personality" ||
+        v === "affection" ||
+        v === "language-list" ||
+        v === "response-style-list" ||
+        v === "voice-model-list" ||
+        v === "voice-tuning" ||
+        v === "voice-debug" ||
+        v === "mic-listening"
+      ) {
+        parentView = "voice";
+      } else if (v === "voice-list") {
+        cancelAllSpeechAndAudio(true);
+        setPlayingVoiceId(null);
+        parentView = "voice";
+      } else if (v === "smart-listening" || v === "native-mic" || v === "voice_debug") {
+        parentView = "mic-listening";
+      } else if (v === "theme-list" || v === "orb-list" || v === "rose-alive") {
+        parentView = "look";
+      } else if (v === "quick-actions" || v === "app-permissions") {
+        parentView = "phone";
+      } else if (v === "view-mode-list") {
+        parentView = "pc-setup";
+      } else if (
+        v === "error_log" ||
+        v === "app_status" ||
+        v === "find_problems" ||
+        v === "system_info"
+      ) {
+        parentView = "developer_tools";
+      } else if (v === "privacy_policy") {
+        parentView = "privacy";
+      } else if (v === "terms") {
+        parentView = "about";
+      } else if (v === "developer") {
+        parentView = developerFrom || "home";
+      } else if (v === "write") {
+        parentView = "home";
+      }
+
+      if (parentView) {
+        e.preventDefault();
+        setCurrentView(parentView as any);
+      }
+    };
+
+    window.addEventListener("keydown", handlePcEscBack);
+    return () => window.removeEventListener("keydown", handlePcEscBack);
+  }, [
+    isPcLayoutActive,
+    activePcSetupSubPage,
+    activeAboutSection,
+    pcActiveNav,
+    selectedHistoryConv,
+    developerFrom,
+    isOfficeLayoutEditorOpen,
+  ]);
+
   const renderOverlaySubViews = () => (
     <>
           {currentView === "settings" && <PhoneErrorBoundary>{renderSettings()}</PhoneErrorBoundary>}
@@ -16387,7 +16508,7 @@ export function App() {
               exit={{ x: "100%" }}
               className="fixed inset-0 z-[90] bg-[var(--bg)] text-[var(--text)] flex flex-col"
             >
-              <header className="px-6 py-8 flex items-center gap-4 shrink-0">
+              <header className="sticky top-0 z-20 px-6 py-5 flex items-center gap-4 shrink-0 bg-[var(--bg)]/95 backdrop-blur-md border-b border-white/5">
                 <button
                   onClick={() => setCurrentView("look")}
                   className="p-2.5 bg-purple-500/10 border border-purple-500/30 rounded-2xl flex items-center justify-center text-[var(--text)] active:scale-95 transition-transform"
@@ -16396,7 +16517,7 @@ export function App() {
                 </button>
                 <h2 className="text-2xl font-black italic uppercase tracking-tighter text-[var(--text)]">Theme</h2>
               </header>
-              <div className="flex-1 overflow-y-auto no-scrollbar px-6 pb-32 space-y-3">
+              <div className="flex-1 overflow-y-auto no-scrollbar px-6 pt-4 pb-32 space-y-3">
                 {[
                   {
                     id: "dark",
@@ -16455,7 +16576,7 @@ export function App() {
                   exit={{ x: "100%" }}
                   className="fixed inset-0 z-[90] bg-[#020617] flex flex-col"
                 >
-                  <header className="px-6 py-6 flex items-center gap-4 shrink-0">
+                  <header className="sticky top-0 z-20 px-6 py-5 flex items-center gap-4 shrink-0 bg-[#020617]/95 backdrop-blur-md border-b border-white/5">
                     <button
                       onClick={() => setCurrentView("look")}
                       className="p-2.5 bg-purple-500/10 border border-purple-500/30 rounded-2xl flex items-center justify-center text-white active:scale-95 transition-transform"
@@ -16465,7 +16586,7 @@ export function App() {
                     <h2 className="text-2xl font-black italic uppercase tracking-tighter text-white">Orb style</h2>
                   </header>
 
-                  <div className="flex-1 overflow-y-auto no-scrollbar px-4 sm:px-6 pb-36">
+                  <div className="flex-1 overflow-y-auto no-scrollbar px-4 sm:px-6 pt-4 pb-36">
                     {/* Top Preview Card */}
                     <div className="bg-[#0F172A]/80 border border-purple-500/30 rounded-[2.5rem] p-6 mb-6 shadow-2xl flex flex-col items-center text-center">
                       <div className="py-2">
@@ -16573,18 +16694,18 @@ export function App() {
               exit={{ x: "100%" }}
               className="fixed inset-0 z-[90] bg-[#020617] overflow-y-auto no-scrollbar flex flex-col"
             >
-              <div className="px-5 py-6 flex flex-col min-h-full">
-                <header className="flex items-center gap-4 mb-7 shrink-0">
-                  <button
-                    onClick={() => setCurrentView("voice")}
-                    className="p-2.5 bg-white/5 rounded-xl active:scale-95 transition-transform border border-white/5 text-slate-300 hover:text-white"
-                  >
-                    <ArrowLeft className="w-5 h-5" />
-                  </button>
-                  <h2 className="text-2xl font-black italic uppercase tracking-tighter text-white leading-tight">
-                    Language
-                  </h2>
-                </header>
+              <header className="sticky top-0 z-20 px-5 py-5 bg-[#020617]/95 backdrop-blur-md border-b border-white/5 flex items-center gap-4 shrink-0">
+                <button
+                  onClick={() => setCurrentView("voice")}
+                  className="p-2.5 bg-white/5 rounded-xl active:scale-95 transition-transform border border-white/5 text-slate-300 hover:text-white"
+                >
+                  <ArrowLeft className="w-5 h-5" />
+                </button>
+                <h2 className="text-2xl font-black italic uppercase tracking-tighter text-white leading-tight">
+                  Language
+                </h2>
+              </header>
+              <div className="px-5 py-5 flex flex-col flex-1">
                 <div className="space-y-3 pb-36 flex-1">
                   {LANGUAGES.map((l) => (
                     <button
@@ -16615,18 +16736,18 @@ export function App() {
               exit={{ x: "100%" }}
               className="fixed inset-0 z-[90] bg-[#020617] overflow-y-auto no-scrollbar flex flex-col"
             >
-              <div className="px-5 py-6 flex flex-col min-h-full">
-                <header className="flex items-center gap-4 mb-7 shrink-0">
-                  <button
-                    onClick={() => setCurrentView("voice")}
-                    className="p-2.5 bg-white/5 rounded-xl active:scale-95 transition-transform border border-white/5 text-slate-300 hover:text-white"
-                  >
-                    <ArrowLeft className="w-5 h-5" />
-                  </button>
-                  <h2 className="text-2xl font-black italic uppercase tracking-tighter text-white leading-tight">
-                    RESPONSE STYLE
-                  </h2>
-                </header>
+              <header className="sticky top-0 z-20 px-5 py-5 bg-[#020617]/95 backdrop-blur-md border-b border-white/5 flex items-center gap-4 shrink-0">
+                <button
+                  onClick={() => setCurrentView("voice")}
+                  className="p-2.5 bg-white/5 rounded-xl active:scale-95 transition-transform border border-white/5 text-slate-300 hover:text-white"
+                >
+                  <ArrowLeft className="w-5 h-5" />
+                </button>
+                <h2 className="text-2xl font-black italic uppercase tracking-tighter text-white leading-tight">
+                  RESPONSE STYLE
+                </h2>
+              </header>
+              <div className="px-5 py-5 flex flex-col flex-1">
                 <div className="space-y-4 pb-36 flex-1">
                   {RESPONSE_STYLES.map((s) => {
                     const isSelected = (settings.responseStyle || "Balanced") === s.id;
@@ -16719,22 +16840,23 @@ export function App() {
               exit={{ x: "100%" }}
               className="fixed inset-0 z-[90] bg-[#020617] overflow-y-auto no-scrollbar flex flex-col"
             >
-              <div className="px-5 py-6 flex flex-col min-h-full">
-                <header className="flex items-center gap-4 mb-7 shrink-0">
-                  <button
-                    onClick={() => {
-                      cancelAllSpeechAndAudio(true);
-                      setPlayingVoiceId(null);
-                      setCurrentView("voice");
-                    }}
-                    className="p-2.5 bg-white/5 rounded-xl active:scale-95 transition-transform border border-white/5 text-slate-300 hover:text-white"
-                  >
-                    <ArrowLeft className="w-5 h-5" />
-                  </button>
-                  <h2 className="text-2xl font-black italic uppercase tracking-tighter text-white leading-tight">
-                    VOICE
-                  </h2>
-                </header>
+              <header className="sticky top-0 z-20 px-5 py-5 bg-[#020617]/95 backdrop-blur-md border-b border-white/5 flex items-center gap-4 shrink-0">
+                <button
+                  onClick={() => {
+                    cancelAllSpeechAndAudio(true);
+                    setPlayingVoiceId(null);
+                    setCurrentView("voice");
+                  }}
+                  className="p-2.5 bg-white/5 rounded-xl active:scale-95 transition-transform border border-white/5 text-slate-300 hover:text-white"
+                >
+                  <ArrowLeft className="w-5 h-5" />
+                </button>
+                <h2 className="text-2xl font-black italic uppercase tracking-tighter text-white leading-tight">
+                  VOICE
+                </h2>
+              </header>
+
+              <div className="px-5 py-5 flex flex-col flex-1">
 
                 {/* GENDER FILTER SWITCH */}
                 <div className="mb-6 px-1">
@@ -16866,18 +16988,18 @@ export function App() {
               exit={{ x: "100%" }}
               className="fixed inset-0 z-[90] bg-[#020617] overflow-y-auto no-scrollbar flex flex-col"
             >
-              <div className="px-5 py-6 flex flex-col min-h-full">
-                <header className="flex items-center gap-4 mb-7 shrink-0">
-                  <button
-                    onClick={() => setCurrentView("voice")}
-                    className="p-2.5 bg-white/5 rounded-xl active:scale-95 transition-transform border border-white/5 text-slate-300 hover:text-white"
-                  >
-                    <ArrowLeft className="w-5 h-5" />
-                  </button>
-                  <h2 className="text-2xl font-black italic uppercase tracking-tighter text-white leading-tight">
-                    Voice Mode
-                  </h2>
-                </header>
+              <header className="sticky top-0 z-20 px-5 py-5 bg-[#020617]/95 backdrop-blur-md border-b border-white/5 flex items-center gap-4 shrink-0">
+                <button
+                  onClick={() => setCurrentView("voice")}
+                  className="p-2.5 bg-white/5 rounded-xl active:scale-95 transition-transform border border-white/5 text-slate-300 hover:text-white"
+                >
+                  <ArrowLeft className="w-5 h-5" />
+                </button>
+                <h2 className="text-2xl font-black italic uppercase tracking-tighter text-white leading-tight">
+                  Voice Mode
+                </h2>
+              </header>
+              <div className="px-5 py-5 flex flex-col flex-1">
                 <div className="space-y-3 pb-36 flex-1">
                   {[
                     {
@@ -16937,18 +17059,18 @@ export function App() {
               exit={{ x: "100%" }}
               className="fixed inset-0 z-[90] bg-[#020617] overflow-y-auto no-scrollbar flex flex-col"
             >
-              <div className="px-5 py-6 flex flex-col min-h-full">
-                <header className="flex items-center gap-4 mb-7 shrink-0">
-                  <button
-                    onClick={() => setCurrentView("voice")}
-                    className="p-2.5 bg-white/5 rounded-xl active:scale-95 transition-transform border border-white/5 text-slate-300 hover:text-white"
-                  >
-                    <ArrowLeft className="w-5 h-5" />
-                  </button>
-                  <h2 className="text-2xl font-black italic uppercase tracking-tighter text-white leading-tight">
-                    Assistant name
-                  </h2>
-                </header>
+              <header className="sticky top-0 z-20 px-5 py-5 bg-[#020617]/95 backdrop-blur-md border-b border-white/5 flex items-center gap-4 shrink-0">
+                <button
+                  onClick={() => setCurrentView("voice")}
+                  className="p-2.5 bg-white/5 rounded-xl active:scale-95 transition-transform border border-white/5 text-slate-300 hover:text-white"
+                >
+                  <ArrowLeft className="w-5 h-5" />
+                </button>
+                <h2 className="text-2xl font-black italic uppercase tracking-tighter text-white leading-tight">
+                  Assistant name
+                </h2>
+              </header>
+              <div className="px-5 py-5 flex flex-col flex-1">
                 <div className="space-y-4 pb-36 flex-1">
                   <div className="w-full p-6 bg-[#0F172A]/80 rounded-[2rem] border border-purple-500/30 shadow-2xl space-y-5">
                     <input
@@ -17007,18 +17129,18 @@ export function App() {
               exit={{ x: "100%" }}
               className="fixed inset-0 z-[90] bg-[#020617] overflow-y-auto no-scrollbar flex flex-col"
             >
-              <div className="px-5 py-6 flex flex-col min-h-full">
-                <header className="flex items-center gap-4 mb-7 shrink-0">
-                  <button
-                    onClick={() => setCurrentView("voice")}
-                    className="p-2.5 bg-white/5 rounded-xl active:scale-95 transition-transform border border-white/5 text-slate-300 hover:text-white"
-                  >
-                    <ArrowLeft className="w-5 h-5" />
-                  </button>
-                  <h2 className="text-2xl font-black italic uppercase tracking-tighter text-white leading-tight">
-                    Your name
-                  </h2>
-                </header>
+              <header className="sticky top-0 z-20 px-5 py-5 bg-[#020617]/95 backdrop-blur-md border-b border-white/5 flex items-center gap-4 shrink-0">
+                <button
+                  onClick={() => setCurrentView("voice")}
+                  className="p-2.5 bg-white/5 rounded-xl active:scale-95 transition-transform border border-white/5 text-slate-300 hover:text-white"
+                >
+                  <ArrowLeft className="w-5 h-5" />
+                </button>
+                <h2 className="text-2xl font-black italic uppercase tracking-tighter text-white leading-tight">
+                  Your name
+                </h2>
+              </header>
+              <div className="px-5 py-5 flex flex-col flex-1">
                 <div className="space-y-4 pb-36 flex-1">
                   <div className="w-full p-6 bg-[#0F172A]/80 rounded-[2rem] border border-purple-500/30 shadow-2xl space-y-5">
                     <input
@@ -17068,20 +17190,20 @@ export function App() {
               exit={{ x: "100%" }}
               className="fixed inset-0 z-[90] bg-[#020617] overflow-y-auto no-scrollbar flex flex-col"
             >
-              <div className="px-5 py-6 flex flex-col min-h-full">
-                <header className="flex items-center gap-4 mb-7 shrink-0">
-                  <button
-                    onClick={() => setCurrentView("voice")}
-                    className="p-2.5 bg-white/5 rounded-xl active:scale-95 transition-transform border border-white/5 text-slate-300 hover:text-white"
-                    aria-label="Back to Voice & Language"
-                  >
-                    <ArrowLeft className="w-5 h-5" />
-                  </button>
-                  <h2 className="text-2xl font-black text-white italic tracking-tighter uppercase leading-tight">
-                    VOICE TUNING
-                  </h2>
-                </header>
+              <header className="sticky top-0 z-20 px-5 py-5 bg-[#020617]/95 backdrop-blur-md border-b border-white/5 flex items-center gap-4 shrink-0">
+                <button
+                  onClick={() => setCurrentView("voice")}
+                  className="p-2.5 bg-white/5 rounded-xl active:scale-95 transition-transform border border-white/5 text-slate-300 hover:text-white"
+                  aria-label="Back to Voice & Language"
+                >
+                  <ArrowLeft className="w-5 h-5" />
+                </button>
+                <h2 className="text-2xl font-black text-white italic tracking-tighter uppercase leading-tight">
+                  VOICE TUNING
+                </h2>
+              </header>
 
+              <div className="px-5 py-5 flex flex-col flex-1">
                 <div className="space-y-4 pb-36 flex-1">
                   {/* Top Test Voice Card in Voice Tuning */}
                   <div className="w-full p-5 bg-[#0F172A]/80 rounded-[2rem] border border-purple-500/30 shadow-2xl flex items-center justify-between">

@@ -222,7 +222,7 @@ interface BatchPermSummaryItem {
 export const PhoneControlHome = ({ setCurrentView }: any) => {
   return (
     <div data-current-view="phone_control" className="fixed inset-0 z-[80] bg-[#020617] overflow-y-auto no-scrollbar flex flex-col">
-      <header className="px-5 py-6 flex items-center gap-4 shrink-0">
+      <header className="sticky top-0 z-20 px-5 py-5 flex items-center gap-4 shrink-0 bg-[#020617]/95 backdrop-blur-md border-b border-white/5">
         <button
           data-nav-id="back"
           onClick={() => setCurrentView?.('settings')}
@@ -314,6 +314,18 @@ export const AppPermissionsView = ({ setCurrentView, setToast }: any) => {
         (window as any).__currentAppView = null;
       }
     };
+  }, [selectedSubPerm]);
+
+  useEffect(() => {
+    const onPcEscBack = (e: Event) => {
+      if (selectedSubPerm) {
+        e.preventDefault();
+        setContactsTestResult(null);
+        setSelectedSubPerm(null);
+      }
+    };
+    window.addEventListener('rose-pc-esc-back', onPcEscBack);
+    return () => window.removeEventListener('rose-pc-esc-back', onPcEscBack);
   }, [selectedSubPerm]);
 
   // Check native (in app) or browser (on web) permissions
@@ -1266,7 +1278,7 @@ export const AppPermissionsView = ({ setCurrentView, setToast }: any) => {
 export const QuickActionsView = ({ setCurrentView, setToast }: any) => {
   return (
     <div data-current-view="quick_actions" className="fixed inset-0 z-[90] bg-[#020617] overflow-y-auto no-scrollbar flex flex-col">
-      <header className="px-5 py-6 flex items-center gap-4 shrink-0">
+      <header className="sticky top-0 z-20 px-5 py-5 flex items-center gap-4 shrink-0 bg-[#020617]/95 backdrop-blur-md border-b border-white/5">
         <button
           data-nav-id="back"
           onClick={() => setCurrentView?.('phone')}
@@ -1278,7 +1290,7 @@ export const QuickActionsView = ({ setCurrentView, setToast }: any) => {
         <h2 className="text-xl font-black italic uppercase tracking-tighter text-white">1. Quick actions</h2>
       </header>
 
-      <div className="px-5 space-y-4 pb-36 w-full">
+      <div className="px-5 py-4 space-y-4 pb-36 w-full">
         <div className="p-5 bg-[#0F172A]/80 border border-purple-500/30 rounded-[2.5rem] shadow-2xl text-center space-y-2">
           <Zap className="w-10 h-10 text-purple-400 mx-auto" />
           <h4 className="text-base font-black uppercase text-white">Device Shortcuts</h4>

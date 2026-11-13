@@ -36,9 +36,9 @@ export const PrivacyPolicyView: React.FC<LegalViewProps> = ({ onBack, setCurrent
       exit={{ x: "100%" }}
       className="fixed inset-0 z-[80] bg-[#020617] overflow-y-auto no-scrollbar flex flex-col"
     >
-      <div className="px-5 py-6 flex flex-col min-h-full pb-36 max-w-3xl mx-auto w-full">
-        {/* Header */}
-        <header className="flex items-center gap-4 mb-6 shrink-0">
+      {/* Header */}
+      <header className="sticky top-0 z-20 bg-[#020617]/95 backdrop-blur-md border-b border-white/5 shrink-0">
+        <div className="max-w-3xl mx-auto w-full px-5 py-4 flex items-center gap-4">
           <button
             data-nav-id="back"
             type="button"
@@ -57,8 +57,10 @@ export const PrivacyPolicyView: React.FC<LegalViewProps> = ({ onBack, setCurrent
               Privacy Policy &nbsp;•&nbsp; {LAST_UPDATED}
             </p>
           </div>
-        </header>
+        </div>
+      </header>
 
+      <div className="px-5 py-5 flex flex-col flex-1 pb-36 max-w-3xl mx-auto w-full">
         {/* Scrollable Content */}
         <div className="space-y-6 flex-1 text-slate-200">
           {/* Bengali Section */}
@@ -124,9 +126,9 @@ export const TermsView: React.FC<LegalViewProps> = ({ onBack, setCurrentView }) 
       exit={{ x: "100%" }}
       className="fixed inset-0 z-[80] bg-[#020617] overflow-y-auto no-scrollbar flex flex-col"
     >
-      <div className="px-5 py-6 flex flex-col min-h-full pb-36 max-w-3xl mx-auto w-full">
-        {/* Header */}
-        <header className="flex items-center gap-4 mb-6 shrink-0">
+      {/* Header */}
+      <header className="sticky top-0 z-20 bg-[#020617]/95 backdrop-blur-md border-b border-white/5 shrink-0">
+        <div className="max-w-3xl mx-auto w-full px-5 py-4 flex items-center gap-4">
           <button
             data-nav-id="back"
             type="button"
@@ -145,8 +147,10 @@ export const TermsView: React.FC<LegalViewProps> = ({ onBack, setCurrentView }) 
               Terms of Service &nbsp;•&nbsp; {LAST_UPDATED}
             </p>
           </div>
-        </header>
+        </div>
+      </header>
 
+      <div className="px-5 py-5 flex flex-col flex-1 pb-36 max-w-3xl mx-auto w-full">
         {/* Scrollable Content */}
         <div className="space-y-6 flex-1 text-slate-200">
           {/* Bengali Section */}

@@ -60,45 +60,45 @@ export const MicVoiceDebugPanel: React.FC<MicVoiceDebugPanelProps> = ({ onBack, 
       exit={{ x: '100%' }}
       className="fixed inset-0 z-[95] bg-[#020617] overflow-y-auto no-scrollbar flex flex-col"
     >
-      <div className="px-5 py-6 flex flex-col min-h-full">
-        <header className="flex items-center justify-between gap-4 mb-6 shrink-0">
-          <div className="flex items-center gap-4">
-            <button
-              data-nav-id="back"
-              onClick={onBack}
-              className="p-2.5 bg-white/5 rounded-xl active:scale-95 transition-transform border border-white/5 text-slate-300 hover:text-white"
-              aria-label="Back to Mic & Listening"
-            >
-              <ArrowLeft className="w-5 h-5" />
-            </button>
-            <h2 className="text-2xl font-black text-white italic tracking-tighter uppercase leading-tight">
-              VOICE DEBUG
-            </h2>
-          </div>
+      <header className="sticky top-0 z-20 px-5 py-5 bg-[#020617]/95 backdrop-blur-md border-b border-white/5 flex items-center justify-between gap-4 shrink-0">
+        <div className="flex items-center gap-4">
+          <button
+            data-nav-id="back"
+            onClick={onBack}
+            className="p-2.5 bg-white/5 rounded-xl active:scale-95 transition-transform border border-white/5 text-slate-300 hover:text-white"
+            aria-label="Back to Mic & Listening"
+          >
+            <ArrowLeft className="w-5 h-5" />
+          </button>
+          <h2 className="text-2xl font-black text-white italic tracking-tighter uppercase leading-tight">
+            VOICE DEBUG
+          </h2>
+        </div>
 
-          <div className="flex items-center gap-2">
-            <button
-              type="button"
-              onClick={handleCopyReport}
-              className="px-3 py-2 bg-purple-600/20 border border-purple-500/40 rounded-xl text-[10px] font-black uppercase tracking-wider text-purple-300 flex items-center gap-1.5 active:scale-95 transition-transform"
-            >
-              {copied ? <Check className="w-3.5 h-3.5 text-emerald-400" /> : <Copy className="w-3.5 h-3.5" />}
-              <span>কপি</span>
-            </button>
-            <button
-              type="button"
-              onClick={() => {
-                voiceDebugStore.clearTurns();
-                setToast?.('Voice Debug পরিষ্কার করা হয়েছে');
-              }}
-              className="p-2 bg-white/5 border border-white/10 rounded-xl text-slate-400 hover:text-rose-400 active:scale-95 transition-transform"
-              title="Clear history"
-            >
-              <Trash2 className="w-4 h-4" />
-            </button>
-          </div>
-        </header>
+        <div className="flex items-center gap-2">
+          <button
+            type="button"
+            onClick={handleCopyReport}
+            className="px-3 py-2 bg-purple-600/20 border border-purple-500/40 rounded-xl text-[10px] font-black uppercase tracking-wider text-purple-300 flex items-center gap-1.5 active:scale-95 transition-transform"
+          >
+            {copied ? <Check className="w-3.5 h-3.5 text-emerald-400" /> : <Copy className="w-3.5 h-3.5" />}
+            <span>কপি</span>
+          </button>
+          <button
+            type="button"
+            onClick={() => {
+              voiceDebugStore.clearTurns();
+              setToast?.('Voice Debug পরিষ্কার করা হয়েছে');
+            }}
+            className="p-2 bg-white/5 border border-white/10 rounded-xl text-slate-400 hover:text-rose-400 active:scale-95 transition-transform"
+            title="Clear history"
+          >
+            <Trash2 className="w-4 h-4" />
+          </button>
+        </div>
+      </header>
 
+      <div className="px-5 py-5 flex flex-col flex-1">
         <div className="space-y-4 pb-36 flex-1">
           {/* Live Metrics Grid */}
           <div className="w-full p-5 bg-[#0F172A]/80 rounded-[2.5rem] border border-purple-500/30 shadow-2xl space-y-4">

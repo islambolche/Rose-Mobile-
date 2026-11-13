@@ -67,6 +67,17 @@ export const DeveloperToolsViews: React.FC<DeveloperToolsProps> = ({
     };
   }, []);
 
+  useEffect(() => {
+    const onPcEscBack = (e: Event) => {
+      if (selectedEntry) {
+        e.preventDefault();
+        setSelectedEntry(null);
+      }
+    };
+    window.addEventListener('rose-pc-esc-back', onPcEscBack);
+    return () => window.removeEventListener('rose-pc-esc-back', onPcEscBack);
+  }, [selectedEntry]);
+
   const copyToClipboard = (text: string, successMsg: string) => {
     try {
       if (navigator.clipboard && navigator.clipboard.writeText) {
@@ -90,7 +101,7 @@ export const DeveloperToolsViews: React.FC<DeveloperToolsProps> = ({
     return (
       <div data-current-view={currentView} data-nav-id={currentView} className="flex-1 flex flex-col overflow-hidden w-full relative bg-[#020617] text-white">
         {/* Top Header */}
-        <div className="px-5 py-4 border-b border-white/5 flex items-center justify-between shrink-0 bg-[#020617]/85 backdrop-blur-md">
+        <div className="sticky top-0 z-20 px-5 py-4 border-b border-white/5 flex items-center justify-between shrink-0 bg-[#020617]/95 backdrop-blur-md">
           <div className="flex items-center gap-3">
             <button
               onClick={() => setCurrentView('settings')}
@@ -252,7 +263,7 @@ export const DeveloperToolsViews: React.FC<DeveloperToolsProps> = ({
     return (
       <div data-current-view={currentView} data-nav-id={currentView} className="flex-1 flex flex-col overflow-hidden w-full relative bg-[#020617] text-white">
         {/* Header */}
-        <div className="px-5 py-4 border-b border-white/5 flex items-center justify-between shrink-0 bg-[#020617]/85 backdrop-blur-md">
+        <div className="sticky top-0 z-20 px-5 py-4 border-b border-white/5 flex items-center justify-between shrink-0 bg-[#020617]/95 backdrop-blur-md">
           <div className="flex items-center gap-2">
             <button
               onClick={() => setCurrentView('developer_tools')}
@@ -435,7 +446,7 @@ export const DeveloperToolsViews: React.FC<DeveloperToolsProps> = ({
     return (
       <div data-current-view={currentView} data-nav-id={currentView} className="flex-1 flex flex-col overflow-hidden w-full relative bg-[#020617] text-white">
         {/* Header */}
-        <div className="px-5 py-4 border-b border-white/5 flex items-center justify-between shrink-0 bg-[#020617]/85 backdrop-blur-md">
+        <div className="sticky top-0 z-20 px-5 py-4 border-b border-white/5 flex items-center justify-between shrink-0 bg-[#020617]/95 backdrop-blur-md">
           <div className="flex items-center gap-2">
             <button
               onClick={() => setCurrentView('developer_tools')}
@@ -561,7 +572,7 @@ Analyze these logs and current status. Return your analysis in EXACTLY this form
     return (
       <div data-current-view={currentView} data-nav-id={currentView} className="flex-1 flex flex-col overflow-hidden w-full relative bg-[#020617] text-white">
         {/* Header */}
-        <div className="px-5 py-4 border-b border-white/5 flex items-center justify-between shrink-0 bg-[#020617]/85 backdrop-blur-md">
+        <div className="sticky top-0 z-20 px-5 py-4 border-b border-white/5 flex items-center justify-between shrink-0 bg-[#020617]/95 backdrop-blur-md">
           <div className="flex items-center gap-2">
             <button
               onClick={() => setCurrentView('developer_tools')}
@@ -684,7 +695,7 @@ Analyze these logs and current status. Return your analysis in EXACTLY this form
     return (
       <div data-current-view={currentView} data-nav-id={currentView} className="flex-1 flex flex-col overflow-hidden w-full relative bg-[#020617] text-white">
         {/* Header */}
-        <div className="px-5 py-4 border-b border-white/5 flex items-center justify-between shrink-0 bg-[#020617]/85 backdrop-blur-md">
+        <div className="sticky top-0 z-20 px-5 py-4 border-b border-white/5 flex items-center justify-between shrink-0 bg-[#020617]/95 backdrop-blur-md">
           <div className="flex items-center gap-2">
             <button
               onClick={() => setCurrentView('developer_tools')}

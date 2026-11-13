@@ -840,6 +840,17 @@ export const AdminPanelView = ({ setCurrentView, setToast }: any) => {
     }
   };
 
+  useEffect(() => {
+    const onPcEscBack = (e: Event) => {
+      if (selectedUser) {
+        e.preventDefault();
+        setSelectedUser(null);
+      }
+    };
+    window.addEventListener('rose-pc-esc-back', onPcEscBack);
+    return () => window.removeEventListener('rose-pc-esc-back', onPcEscBack);
+  }, [selectedUser]);
+
   const filteredUsers = users.filter(u => 
     u.full_name?.toLowerCase().includes(searchTerm.toLowerCase()) ||
     u.email?.toLowerCase().includes(searchTerm.toLowerCase()) ||
