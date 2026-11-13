@@ -11844,31 +11844,16 @@ export function App() {
     const hasInterim = interimSpeechText.trim().length > 0;
     return (
       <div className="relative flex-1 min-h-0 flex flex-col overflow-hidden w-full bg-[#020617]">
-        {/* Layer 0: Fixed two-layer chat background with dark purple-black overlay */}
-        <div className="absolute inset-0 z-0 pointer-events-none select-none overflow-hidden">
-          <img
-            src={ROSE_BRAND.chatBackground}
-            alt={ROSE_BRAND.name}
-            className="absolute inset-0 w-full h-full object-cover object-top"
-            style={{ opacity: 0.06 }}
-          />
-          <img
-            src={ROSE_BRAND.chatBackground}
-            alt={ROSE_BRAND.name}
-            className="absolute inset-0 w-full h-full object-cover object-top"
-            style={{
-              opacity: 0.22,
-              WebkitMaskImage:
-                "radial-gradient(ellipse 45% 28% at 50% 28%, black 0%, black 40%, transparent 100%)",
-              maskImage:
-                "radial-gradient(ellipse 45% 28% at 50% 28%, black 0%, black 40%, transparent 100%)",
-            }}
-          />
-          <div
-            className="absolute inset-0"
-            style={{ backgroundColor: "rgba(10, 6, 24, 0.35)" }}
-          />
-        </div>
+        {/* Layer 0: Chat background image with dark overlay */}
+        <div
+          className="absolute inset-0 z-0 pointer-events-none select-none overflow-hidden"
+          style={{
+            backgroundImage: `linear-gradient(180deg, rgba(10, 8, 25, 0.70) 0%, rgba(10, 8, 25, 0.85) 100%), url('${ROSE_BRAND.chatBackground}')`,
+            backgroundSize: "cover",
+            backgroundPosition: "center top",
+            backgroundRepeat: "no-repeat",
+          }}
+        />
 
         {/* Layer 2: Header */}
         {isPcLayout ? (

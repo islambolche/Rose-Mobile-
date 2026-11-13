@@ -21,6 +21,7 @@ export interface OfficeAgentConfig {
   role: string;
   color: string;
   image: string;
+  seatedImage?: string;
   avatar: string;
   defaultX: number;
   defaultY: number;
@@ -57,22 +58,31 @@ export const OFFICE_AISLES = {
 // Aliased as DEFAULT_OFFICE_POSITIONS for backwards compatibility
 export const DEFAULT_OFFICE_POSITIONS = DEFAULT_STAND_POSITIONS;
 
-// Default seated positions (hips point x%, y% of the office):
+// Default seated positions (hips/bottom-edge point x%, y% of the office):
 export const DEFAULT_SEAT_POSITIONS: Record<string, AgentPosition> = {
   arin:  { x: 23.9, y: 35.3, scale: 1.0 },
   zayan: { x: 75.8, y: 35.3, scale: 1.0 },
-  rose:  { x: 49.9, y: 52.1, scale: 1.0 },
+  rose:  { x: 49.9, y: 46.0, scale: 1.0 },
   mira:  { x: 12.3, y: 57.9, scale: 1.0 },
   naira: { x: 89.0, y: 59.5, scale: 1.0 },
 };
 
-// Default desk name label positions (Bengali desk front glowing border):
-export const DEFAULT_LABEL_POSITIONS: Record<string, AgentPosition> = {
-  rose:  { x: 50.4, y: 64.5, scale: 1.0 },
-  mira:  { x: 15.0, y: 69.5, scale: 1.0 },
-  arin:  { x: 23.3, y: 42.5, scale: 1.0 },
-  zayan: { x: 77.0, y: 42.0, scale: 1.0 },
-  naira: { x: 84.6, y: 70.5, scale: 1.0 },
+// Default laptop/monitor lid-back name label positions (center of lid in % of office image, width = lid width %):
+export const DEFAULT_LABEL_POSITIONS: Record<string, AgentPosition & { width?: number }> = {
+  arin:  { x: 23.9, y: 34.0, width: 6.6, scale: 1.0 },
+  zayan: { x: 76.6, y: 34.0, width: 6.6, scale: 1.0 },
+  rose:  { x: 49.6, y: 49.9, width: 10.0, scale: 1.0 },
+  mira:  { x: 14.6, y: 60.6, width: 9.0, scale: 1.0 },
+  naira: { x: 80.7, y: 56.5, width: 9.0, scale: 1.0 },
+};
+
+// Laptop lid widths in % of the office image
+export const LAPTOP_LID_WIDTH_PERCENT: Record<string, number> = {
+  arin: 6.6,
+  zayan: 6.6,
+  rose: 10,
+  mira: 9,
+  naira: 9,
 };
 
 // Rose's front-aisle routes from her desk side to each agent's meeting spot
@@ -127,31 +137,39 @@ export const DESK_BENGALI_NAMES: Record<string, string> = {
   naira: "নাইরা",
 };
 
+export const DESK_LABEL_COLORS: Record<string, string> = {
+  arin: "#6CCBFF",
+  zayan: "#FFC15E",
+  rose: "#FF7AE0",
+  mira: "#9DFF7A",
+  naira: "#D6B8FF",
+};
+
 export const DESK_GLOW_COLORS: Record<string, { color: string; glow: string; textShadow: string }> = {
-  rose: {
-    color: "#F472B6",
-    glow: "#EC4899",
-    textShadow: "0 0 6px #EC4899, 0 0 14px rgba(236,72,153,0.9), 0 0 24px rgba(236,72,153,0.6)",
-  },
-  mira: {
-    color: "#34D399",
-    glow: "#10B981",
-    textShadow: "0 0 6px #10B981, 0 0 14px rgba(16,185,129,0.9), 0 0 24px rgba(16,185,129,0.6)",
-  },
   arin: {
-    color: "#60A5FA",
-    glow: "#3B82F6",
-    textShadow: "0 0 6px #3B82F6, 0 0 14px rgba(59,130,246,0.9), 0 0 24px rgba(59,130,246,0.6)",
+    color: "#6CCBFF",
+    glow: "none",
+    textShadow: "none",
   },
   zayan: {
-    color: "#FB923C",
-    glow: "#F97316",
-    textShadow: "0 0 6px #F97316, 0 0 14px rgba(249,115,22,0.9), 0 0 24px rgba(249,115,22,0.6)",
+    color: "#FFC15E",
+    glow: "none",
+    textShadow: "none",
+  },
+  rose: {
+    color: "#FF7AE0",
+    glow: "none",
+    textShadow: "none",
+  },
+  mira: {
+    color: "#9DFF7A",
+    glow: "none",
+    textShadow: "none",
   },
   naira: {
-    color: "#C084FC",
-    glow: "#A855F7",
-    textShadow: "0 0 6px #A855F7, 0 0 14px rgba(168,85,247,0.9), 0 0 24px rgba(168,85,247,0.6)",
+    color: "#D6B8FF",
+    glow: "none",
+    textShadow: "none",
   },
 };
 
@@ -174,8 +192,8 @@ export const DESK_OVERLAYS: Record<string, string> = {
 };
 
 export const STORAGE_KEY_OFFICE_POSITIONS = "rose_office_positions_v2";
-export const STORAGE_KEY_OFFICE_SEAT_POSITIONS = "rose_office_seat_positions";
-export const STORAGE_KEY_OFFICE_LABEL_POSITIONS = "rose_office_label_positions";
+export const STORAGE_KEY_OFFICE_SEAT_POSITIONS = "rose_office_seat_positions_v2";
+export const STORAGE_KEY_OFFICE_LABEL_POSITIONS = "rose_office_laptop_label_positions_v1";
 export const STORAGE_KEY_OFFICE_ROUTES = "rose_office_routes_v2";
 
 /**
@@ -333,7 +351,8 @@ export const OFFICE_AGENTS: Record<string, OfficeAgentConfig> = {
     name: "Rose",
     role: "Chief Business Manager",
     color: "#EC4899", // Pink
-    image: "/office/rose.png",
+    image: "/agents/rose-new.png",
+    seatedImage: "/agents/rose-new-seated.png",
     avatar: "/office/avatars/rose.png",
     defaultX: 31,
     defaultY: 63,

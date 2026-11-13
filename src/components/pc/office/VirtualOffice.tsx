@@ -10,7 +10,6 @@ import {
   DESK_BENGALI_NAMES,
   DESK_GLOW_COLORS,
   calculatePerspectiveHeight,
-  loadOfficeLabelPositions,
 } from "./officeConfig";
 import { officeEngine, AgentVisualState } from "./officeEngine";
 
@@ -50,9 +49,9 @@ export const VirtualOffice: React.FC<VirtualOfficeProps> = ({
     height: 0,
   });
 
-  const [labelPositions, setLabelPositions] = useState<Record<string, AgentPosition>>(() =>
-    loadOfficeLabelPositions()
-  );
+  const [labelPositions, setLabelPositions] = useState<Record<string, AgentPosition & { width?: number }>>(() => ({
+    ...DEFAULT_LABEL_POSITIONS,
+  }));
 
   useEffect(() => {
     const unsubscribe = officeEngine.subscribe((updatedStates) => {
@@ -61,32 +60,22 @@ export const VirtualOffice: React.FC<VirtualOfficeProps> = ({
     return unsubscribe;
   }, []);
 
-  // Compute exact fixed 1672 / 941 aspect ratio to fill available center space
+  // Scale fixed 1672 / 941 stage to COVER the container area (no empty gaps on any side)
   useEffect(() => {
     if (!containerRef.current) return;
 
     const updateDimensions = () => {
       if (!containerRef.current) return;
-      const { clientWidth, clientHeight } = containerRef.current;
-      if (clientWidth <= 0 || clientHeight <= 0) return;
+      const areaW = containerRef.current.clientWidth;
+      const areaH = containerRef.current.clientHeight;
+      if (areaW <= 0 || areaH <= 0) return;
 
-      const targetRatio = 1672 / 941;
-      const currentRatio = clientWidth / clientHeight;
-
-      let width = clientWidth;
-      let height = clientHeight;
-
-      if (currentRatio > targetRatio) {
-        height = clientHeight;
-        width = height * targetRatio;
-      } else {
-        width = clientWidth;
-        height = width / targetRatio;
-      }
+      const width = Math.ceil(Math.max(areaW, (areaH * 1672) / 941));
+      const height = Math.ceil((width * 941) / 1672);
 
       setStageDimensions({
-        width: Math.floor(width),
-        height: Math.floor(height),
+        width,
+        height,
       });
     };
 
@@ -94,7 +83,11 @@ export const VirtualOffice: React.FC<VirtualOfficeProps> = ({
 
     const observer = new ResizeObserver(updateDimensions);
     observer.observe(containerRef.current);
-    return () => observer.disconnect();
+    window.addEventListener("resize", updateDimensions);
+    return () => {
+      observer.disconnect();
+      window.removeEventListener("resize", updateDimensions);
+    };
   }, []);
 
   const handleDragStart = (
@@ -190,7 +183,11 @@ export const VirtualOffice: React.FC<VirtualOfficeProps> = ({
 
     // Perspective height: smaller further back (smaller y), larger in front (larger y)
     const fullHeightPercent = calculatePerspectiveHeight(posY) * scaleMultiplier;
-    const renderHeightPercent = isSeated ? fullHeightPercent * 0.56 : fullHeightPercent;
+    const renderHeightPercent = isSeated
+      ? agent.id === "rose"
+        ? 18 * scaleMultiplier
+        : fullHeightPercent * 0.56
+      : fullHeightPercent;
 
     // Depth sorting: zIndex = Math.round(posY * 10)
     const zIndex = isSeated
@@ -206,6 +203,9 @@ export const VirtualOffice: React.FC<VirtualOfficeProps> = ({
       : isSpeaking
       ? "animate-talk-nod"
       : "animate-idle-breathe";
+
+    const useDedicatedSeatedSprite = Boolean(isSeated && agent.seatedImage);
+    const activeImageSrc = useDedicatedSeatedSprite && agent.seatedImage ? agent.seatedImage : agent.image;
 
     return (
       <div
@@ -262,7 +262,7 @@ export const VirtualOffice: React.FC<VirtualOfficeProps> = ({
           <div className="absolute inset-0 rounded-2xl border-2 border-dashed border-purple-400 pointer-events-none animate-pulse shadow-[0_0_15px_rgba(168,85,247,0.5)]" />
         )}
 
-        {/* Single Image Element per agent: Seated Crop when isSeated, Standing/Walking Sprite otherwise */}
+        {/* Single Image Element per agent: Seated Sprite when isSeated, Standing/Walking Sprite otherwise */}
         <div
           className="h-full w-auto flex justify-center transition-transform duration-200"
           style={{
@@ -272,22 +272,22 @@ export const VirtualOffice: React.FC<VirtualOfficeProps> = ({
         >
           <div
             className={`relative flex justify-center h-full w-auto ${
-              isSeated
+              isSeated && !useDedicatedSeatedSprite
                 ? `overflow-hidden items-start ${bodyAnimClass}`
-                : `items-center ${bodyAnimClass}`
+                : `items-end ${bodyAnimClass}`
             }`}
           >
             <img
-              src={agent.image}
+              src={activeImageSrc}
               alt={agent.name}
               referrerPolicy="no-referrer"
               className={
-                isSeated
+                isSeated && !useDedicatedSeatedSprite
                   ? "pointer-events-none select-none max-w-none drop-shadow-[0_4px_8px_rgba(0,0,0,0.4)]"
                   : "h-full w-auto object-contain drop-shadow-[0_6px_12px_rgba(0,0,0,0.5)] pointer-events-none select-none"
               }
               style={
-                isSeated
+                isSeated && !useDedicatedSeatedSprite
                   ? {
                       height: "178.57%", // 100 / 0.56
                       width: "auto",
@@ -305,86 +305,60 @@ export const VirtualOffice: React.FC<VirtualOfficeProps> = ({
   };
 
   /**
-   * Render Bengali desk name label on thin glowing front border of each desk
+   * Render Bengali agent name on the BACK of that agent's laptop/monitor lid.
+   * Plain, sharp, flat colour text centered on the lid back.
    */
   const renderDeskLabel = (agentId: string) => {
-    const pos =
-      customLabelPositions?.[agentId] ||
-      labelPositions[agentId] ||
-      DEFAULT_LABEL_POSITIONS[agentId] ||
-      { x: 50, y: 50 };
+    const pos = DEFAULT_LABEL_POSITIONS[agentId] || { x: 50, y: 50 };
     const bengaliName = DESK_BENGALI_NAMES[agentId] || agentId;
-    const glowConfig = DESK_GLOW_COLORS[agentId] || {
-      color: "#FFFFFF",
-      glow: "#A855F7",
-      textShadow: "0 0 8px #A855F7",
-    };
-
-    // Label depths match desk depth thresholds + 5
-    const labelZIndexMap: Record<string, number> = {
-      arin: 535,
-      zayan: 535,
-      rose: 795,
-      mira: 875,
-      naira: 885,
-    };
-    const zIndex = labelZIndexMap[agentId] || 800;
-    const isSelected = isEditMode && editTarget === "label" && selectedAgentId === agentId;
-    const fontSizePx = Math.max(11, Math.round((stageDimensions.width || 1000) * 0.016));
+    const labelColor = DESK_GLOW_COLORS[agentId]?.color || "#FFFFFF";
 
     return (
-      <div
+      <span
         key={`desk-label-${agentId}`}
         data-agent-label={agentId}
-        className={`absolute -translate-x-1/2 -translate-y-1/2 flex items-center justify-center select-none ${
-          isEditMode && editTarget === "label"
-            ? "cursor-grab active:cursor-grabbing pointer-events-auto"
-            : "pointer-events-none"
-        }`}
+        lang="bn"
+        className="pointer-events-none select-none"
         style={{
+          position: "absolute",
           left: `${pos.x}%`,
           top: `${pos.y}%`,
-          zIndex: isSelected ? 1150 : zIndex,
-        }}
-        onPointerDown={(e) => {
-          if (!isEditMode || editTarget !== "label") return;
-          onSelectAgent?.(agentId);
-          handleDragStart(e, agentId, "label", pos);
+          transform: "translate(-50%, -50%)",
+          zIndex: 1050,
+          pointerEvents: "none",
+          fontFamily: '"Noto Sans Bengali", sans-serif',
+          fontWeight: 700,
+          fontStyle: "normal",
+          fontSize: "clamp(12px, 1.15vw, 20px)",
+          lineHeight: 1,
+          whiteSpace: "nowrap",
+          textAlign: "center",
+          color: labelColor,
+          background: "transparent",
+          border: "none",
+          boxShadow: "none",
+          textShadow: "none",
+          filter: "none",
+          animation: "none",
         }}
       >
-        <span
-          style={{
-            fontFamily: "'Hind Siliguri', 'Noto Sans Bengali', system-ui, sans-serif",
-            fontSize: `${fontSizePx}px`,
-            fontWeight: 700,
-            color: glowConfig.color,
-            textShadow: glowConfig.textShadow,
-            letterSpacing: "0.02em",
-            lineHeight: 1,
-          }}
-          className="transition-transform duration-150 inline-block drop-shadow-sm"
-        >
-          {bengaliName}
-        </span>
-        {isSelected && (
-          <span className="absolute -inset-1.5 rounded-lg border-2 border-dashed border-white/80 pointer-events-none animate-pulse" />
-        )}
-      </div>
+        {bengaliName}
+      </span>
     );
   };
 
   return (
     <div
       ref={containerRef}
-      className={`w-full h-full flex items-center justify-center p-2 sm:p-3 overflow-hidden select-none ${className}`}
+      className={`relative w-full h-full m-0 p-0 border-0 rounded-none shadow-none flex items-center justify-center overflow-hidden bg-[#020617] select-none ${className}`}
     >
-      {/* 1) Fixed aspect ratio OfficeStage (1672 / 941), as large as possible */}
+      {/* 1) Single inner stage with 1672:941 aspect ratio scaled to cover container */}
       <div
         ref={stageRef}
-        className="OfficeStage relative rounded-[16px] overflow-hidden border border-purple-500/30 shadow-[0_0_40px_rgba(168,85,247,0.22)] bg-[#070314] select-none"
+        className="OfficeStage relative shrink-0 m-0 p-0 border-0 rounded-none shadow-none overflow-hidden bg-[#020617] select-none"
         style={{
           width: stageDimensions.width > 0 ? `${stageDimensions.width}px` : "100%",
-          height: stageDimensions.height > 0 ? `${stageDimensions.height}px` : "auto",
+          height: stageDimensions.height > 0 ? `${stageDimensions.height}px` : "100%",
           aspectRatio: "1672 / 941",
         }}
       >
@@ -434,13 +408,6 @@ export const VirtualOffice: React.FC<VirtualOfficeProps> = ({
           className="absolute inset-0 w-full h-full pointer-events-none select-none z-[880]"
         />
 
-        {/* Desk Bengali Name Labels */}
-        {renderDeskLabel("arin")}
-        {renderDeskLabel("zayan")}
-        {renderDeskLabel("rose")}
-        {renderDeskLabel("mira")}
-        {renderDeskLabel("naira")}
-
         {/* 5 Agent Sprites (Each renders EXACTLY ONE element with dynamic zIndex based on Y) */}
         {renderAgent("arin")}
         {renderAgent("zayan")}
@@ -448,9 +415,31 @@ export const VirtualOffice: React.FC<VirtualOfficeProps> = ({
         {renderAgent("mira")}
         {renderAgent("naira")}
 
-        {/* In-stage Children (Orb at bottom center, Live Camera preview at bottom right) */}
-        {children}
+        {/* Laptop/Monitor Back Bengali Name Labels (ABOVE desk overlays and ABOVE characters) */}
+        {renderDeskLabel("arin")}
+        {renderDeskLabel("zayan")}
+        {renderDeskLabel("rose")}
+        {renderDeskLabel("mira")}
+        {renderDeskLabel("naira")}
       </div>
+
+      {/* Soft ~40px inner vignette on all 4 sides so the office blends naturally into the dark background */}
+      <div
+        aria-hidden="true"
+        className="absolute inset-0 pointer-events-none select-none z-[1080]"
+        style={{
+          background: [
+            "linear-gradient(to bottom, #020617 0px, rgba(2, 6, 23, 0) 40px)",
+            "linear-gradient(to top, #020617 0px, rgba(2, 6, 23, 0) 40px)",
+            "linear-gradient(to right, #020617 0px, rgba(2, 6, 23, 0) 40px)",
+            "linear-gradient(to left, #020617 0px, rgba(2, 6, 23, 0) 40px)",
+          ].join(", "),
+          boxShadow: "inset 0 0 36px 8px #020617",
+        }}
+      />
+
+      {/* In-area Children (Orb at bottom center, Live Camera preview at bottom right) */}
+      {children}
 
       <style>{`
         @keyframes walkBob {

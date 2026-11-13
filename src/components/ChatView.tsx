@@ -41,31 +41,16 @@ export const ChatView = ({
 
     return (
         <div className="fixed inset-0 z-[90] bg-[#020617] flex flex-col overflow-hidden">
-            {/* Layer 0: Fixed two-layer chat background with dark purple-black overlay */}
-            <div className="absolute inset-0 z-0 pointer-events-none select-none overflow-hidden">
-                <img
-                    src={ROSE_BRAND.chatBackground}
-                    alt={ROSE_BRAND.name}
-                    className="absolute inset-0 w-full h-full object-cover object-top"
-                    style={{ opacity: 0.06 }}
-                />
-                <img
-                    src={ROSE_BRAND.chatBackground}
-                    alt={ROSE_BRAND.name}
-                    className="absolute inset-0 w-full h-full object-cover object-top"
-                    style={{
-                        opacity: 0.22,
-                        WebkitMaskImage:
-                            "radial-gradient(ellipse 45% 28% at 50% 28%, black 0%, black 40%, transparent 100%)",
-                        maskImage:
-                            "radial-gradient(ellipse 45% 28% at 50% 28%, black 0%, black 40%, transparent 100%)",
-                    }}
-                />
-                <div
-                    className="absolute inset-0"
-                    style={{ backgroundColor: "rgba(10, 6, 24, 0.35)" }}
-                />
-            </div>
+            {/* Layer 0: Chat background image with dark overlay */}
+            <div
+                className="absolute inset-0 z-0 pointer-events-none select-none overflow-hidden"
+                style={{
+                    backgroundImage: `linear-gradient(180deg, rgba(10, 8, 25, 0.70) 0%, rgba(10, 8, 25, 0.85) 100%), url('${ROSE_BRAND.chatBackground}')`,
+                    backgroundSize: "cover",
+                    backgroundPosition: "center top",
+                    backgroundRepeat: "no-repeat",
+                }}
+            />
 
             {/* Layer 2: Header */}
             <header className="relative z-[2] px-5 py-4 border-b border-white/5 flex items-center gap-4 shrink-0 bg-[#020617]/90 backdrop-blur-md">

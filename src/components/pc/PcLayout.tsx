@@ -702,12 +702,12 @@ export const PcLayout: React.FC<PcLayoutProps> = ({
               {renderHistory()}
             </div>
           ) : (
-            /* 3) HOME: Full-size Virtual Office filling the center with fixed 1672/941 aspect ratio stage,
+            /* 3) HOME: Full-size Virtual Office filling the center edge-to-edge with 1672/941 cover stage,
                with the single Orb (~64px) at bottom center and Live Camera preview at bottom right */
-            <div className="flex-1 min-h-0 w-full p-2 sm:p-3 flex items-center justify-center overflow-hidden relative">
+            <div className="flex-1 min-h-0 w-full m-0 p-0 flex items-center justify-center overflow-hidden relative">
               <VirtualOffice className="w-full h-full">
                 {/* Single Orb at bottom center of the office stage (~64px) with status pill */}
-                <div className="absolute bottom-3 sm:bottom-4 left-1/2 -translate-x-1/2 z-[120] flex flex-col items-center pointer-events-auto">
+                <div className="absolute bottom-3 sm:bottom-4 left-1/2 -translate-x-1/2 z-[1150] flex flex-col items-center pointer-events-auto">
                   <button
                     type="button"
                     onClick={onToggleVoice}
@@ -759,7 +759,7 @@ export const PcLayout: React.FC<PcLayoutProps> = ({
 
                 {/* Camera Live Preview Card (~200x150) at bottom-right of OfficeStage */}
                 {isCameraOn && (
-                  <div className="absolute bottom-3 right-3 sm:bottom-4 sm:right-4 z-[120] w-[200px] h-[150px] rounded-xl overflow-hidden bg-black/95 border border-purple-500/40 shadow-[0_8px_30px_rgba(0,0,0,0.85)] flex flex-col pointer-events-auto">
+                  <div className="absolute bottom-3 right-3 sm:bottom-4 sm:right-4 z-[1150] w-[200px] h-[150px] rounded-xl overflow-hidden bg-black/95 border border-purple-500/40 shadow-[0_8px_30px_rgba(0,0,0,0.85)] flex flex-col pointer-events-auto">
                     <video
                       ref={videoRef}
                       autoPlay

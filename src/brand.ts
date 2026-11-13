@@ -2,7 +2,7 @@ export const ROSE_BRAND = {
   name: "Rose",
   aliveName: "Rose Alive",
   avatar: "/rose-avatar.jpg",
-  chatBackground: "/rose-chat-bg.jpg",
+  chatBackground: "/rose-chat-bg.png",
   homeBackground: "/rose-bg.webp",
   officeBackground: "/rose-office.jpg",
   fullBodyAvatar: "/rose-full-body.jpg",
