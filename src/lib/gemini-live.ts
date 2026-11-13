@@ -1,6 +1,8 @@
-import { EndSensitivity, StartSensitivity } from '@google/genai';
 import { logVoiceEvent } from './voiceLogger';
-import { getGeminiKey } from './geminiKey';
+import { getGeminiKey, ensureGeminiReady } from './geminiKey';
+
+const StartSensitivity = { START_SENSITIVITY_HIGH: 'START_SENSITIVITY_HIGH' } as const;
+const EndSensitivity = { END_SENSITIVITY_HIGH: 'END_SENSITIVITY_HIGH' } as const;
 import {
   directGeminiTTS,
   pickStrictFemaleVoice,
@@ -23,6 +25,7 @@ import {
 } from './audio-manager';
 import { logDevError } from './devLog';
 import { NoiseGateEngine } from './noiseGate';
+import type { MicVAD as MicVADType } from '@ricky0123/vad-web';
 import {
   getMicListeningSettings,
   saveMicListeningSettings,
@@ -35,6 +38,13 @@ import {
   consumePushToTalkTurnFlag,
   resetPushToTalkTurnFlag,
   getRoseTechInstruction,
+  SMART_VAD_CDN_CONFIG,
+  getSmartListenVadOptions,
+  updateSmartVadTelemetry,
+  getRoseMicPlugin,
+  updateNativeMicFilterStatus,
+  decodeBase64Pcm16ToFloat32,
+  NativeMicMode,
 } from './cleanVoiceAndVad';
 import {
   ADMIN_DISPLAY_NAME,
@@ -90,6 +100,9 @@ export interface GeminiLiveOptions {
   micStream?: MediaStream;
   backgroundCallEnabled?: boolean;
   floatingCallEnabled?: boolean;
+  warmUpOnly?: boolean;
+  onWarmReadyChange?: (ready: boolean) => void;
+  useNativeMic?: boolean;
 }
 
 export function parseAndFormatGeminiError(status: number | string, rawMsg: string): { bengali: string; original: string } {
@@ -208,14 +221,14 @@ interface DiscoveredVoiceModels {
 }
 
 async function discoverVoiceModelsFromListModels(apiKey: string): Promise<DiscoveredVoiceModels> {
-  const url = `https://generativelanguage.googleapis.com/v1beta/models?key=${encodeURIComponent(apiKey)}&pageSize=200`;
+  const cleanKey = String(apiKey || '').replace(/[\r\n\t\s"']+/g, '').trim();
+  const url = `/api/gemini/models${cleanKey ? `?apiKey=${encodeURIComponent(cleanKey)}` : ''}`;
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), 7000);
 
   try {
     const res = await fetch(url, {
       method: 'GET',
-      headers: { 'x-goog-api-key': apiKey },
       signal: controller.signal,
     });
     clearTimeout(timer);
@@ -245,7 +258,9 @@ async function discoverVoiceModelsFromListModels(apiKey: string): Promise<Discov
       const lower = rawName.toLowerCase();
       const methods: string[] = Array.isArray(item?.supportedGenerationMethods)
         ? item.supportedGenerationMethods
-        : [];
+        : Array.isArray(item?.supportedActions)
+          ? item.supportedActions
+          : [];
 
       if (methods.includes('bidiGenerateContent')) {
         liveCandidates.push(rawName);
@@ -450,7 +465,38 @@ export class GeminiLiveSession {
   private inputTranscriptionLangRejected = false;
   private lastSetupRejectedForLang = false;
 
-  constructor(private options: GeminiLiveOptions) {}
+  // Smart Listening (@ricky0123/vad-web MicVAD + manual activityStart/End + Warm-up)
+  private micVad: MicVADType | null = null;
+  private smartVadLoaded = false;
+  private smartVadStarted = false;
+  private smartVadFailed = false;
+  private smartVadSpeaking = false;
+  private smartTurnOpen = false;
+  private sentSmartVadDisabledConfig = false;
+  private preSpeechRing: Float32Array[] = [];
+  private preSpeechSamplesCount = 0;
+  private readonly PRE_SPEECH_TARGET_SAMPLES = 4800; // 300 ms at 16 kHz
+  private bargeInSpeechMs = 0;
+  private isWarmOnly = false;
+  private warmReady = false;
+  private micSettingsChangedHandler: ((ev: Event) => void) | null = null;
+
+  // Android Native Mic (RoseMic) capture state
+  private usingNativeMic = false;
+  private nativeMicFailed = false;
+  private nativeMicMode: NativeMicMode = 'communication';
+  private nativeMicListener: { remove?: () => Promise<void> | void } | null = null;
+  private nativeMicGen = 0;
+  private nativeMicLevel = 0;
+  private nativeVadFallbackToServer = false;
+  private nativeVadPending = new Float32Array(0);
+  private nativeVadQueue: Float32Array[] = [];
+  private nativeVadProcessing = false;
+  private nativeEnergySpeechFrames = 0;
+
+  constructor(private options: GeminiLiveOptions) {
+    this.isWarmOnly = Boolean(options.warmUpOnly);
+  }
 
   private pipVideoElement: HTMLVideoElement | null = null;
   private pipCanvas: HTMLCanvasElement | null = null;
@@ -568,12 +614,711 @@ export class GeminiLiveSession {
 
   public getMicAnalyser() { return this.micAnalyser; }
   public getOutputAnalyser() { return this.outputAnalyser; }
+  public getNativeMicLevel() { return !this.isMuted && this.usingNativeMic ? this.nativeMicLevel : 0; }
+  public isUsingNativeMic() { return this.usingNativeMic; }
   public isBrowserSpeechActive() { return this.isBrowserTtsSpeaking; }
   public getSessionId() { return this.sessionId; }
   public getAudioRoute() { return this.activeAudioRoute; }
   public isStopped() { return this.wasStoppedByUser || this.sessionLifecycleState === 'closed'; }
   public isSessionRunning() {
     return !this.wasStoppedByUser && this.sessionLifecycleState !== 'closed' && this.currentState !== 'off';
+  }
+  public isWarmReadyAndOpen(): boolean {
+    return (
+      !this.wasStoppedByUser &&
+      this.sessionLifecycleState === 'active' &&
+      this.warmReady &&
+      this.isSetupComplete &&
+      Boolean(this.ws && this.ws.readyState === WebSocket.OPEN)
+    );
+  }
+
+  private isSmartListenLiveActive(): boolean {
+    if (this.isFallbackMode || this.smartVadFailed || this.nativeVadFallbackToServer) return false;
+    const micCfg = getMicListeningSettings();
+    return Boolean(micCfg.smartListen && !micCfg.streetMode);
+  }
+
+  private shouldUseNativeMic(): boolean {
+    if (this.nativeMicFailed || this.isFallbackMode || !isAndroidApp()) return false;
+    const micCfg = getMicListeningSettings();
+    return Boolean(micCfg.nativeMic && getRoseMicPlugin());
+  }
+
+  private async stopNativeMicCapture() {
+    this.nativeMicGen++;
+    this.nativeMicLevel = 0;
+    this.nativeVadPending = new Float32Array(0);
+    this.nativeVadQueue = [];
+    this.nativeVadProcessing = false;
+    this.nativeEnergySpeechFrames = 0;
+
+    const listener = this.nativeMicListener;
+    this.nativeMicListener = null;
+    if (listener && typeof listener.remove === 'function') {
+      try {
+        await Promise.resolve(listener.remove());
+      } catch {}
+    }
+
+    const plugin = getRoseMicPlugin();
+    if (plugin && this.usingNativeMic) {
+      try {
+        await Promise.resolve(plugin.stop());
+      } catch {}
+    }
+    this.usingNativeMic = false;
+    updateNativeMicFilterStatus({ active: false });
+  }
+
+  private async initNativeMicCapture(): Promise<boolean> {
+    const plugin = getRoseMicPlugin();
+    if (!plugin || !this.shouldUseNativeMic()) return false;
+
+    const gen = ++this.nativeMicGen;
+    const micCfg = getMicListeningSettings();
+    const mode: NativeMicMode = micCfg.nativeMicMode === 'recognition' ? 'recognition' : 'communication';
+    this.nativeMicMode = mode;
+
+    try {
+      const listenerHandle = await Promise.resolve(
+        plugin.addListener('pcm', (ev: { pcm?: string }) => {
+          if (gen !== this.nativeMicGen || this.wasStoppedByUser) return;
+          if (ev && typeof ev.pcm === 'string' && ev.pcm.length > 0) {
+            this.handleNativePcmEvent(ev.pcm);
+          }
+        })
+      );
+
+      if (gen !== this.nativeMicGen || this.wasStoppedByUser) {
+        try {
+          await Promise.resolve(listenerHandle?.remove?.());
+        } catch {}
+        return false;
+      }
+
+      this.nativeMicListener = listenerHandle || null;
+
+      const startResult = await Promise.resolve(plugin.start({ source: mode }));
+      if (gen !== this.nativeMicGen || this.wasStoppedByUser) {
+        try {
+          await Promise.resolve(this.nativeMicListener?.remove?.());
+        } catch {}
+        this.nativeMicListener = null;
+        try {
+          await Promise.resolve(plugin.stop());
+        } catch {}
+        return false;
+      }
+
+      this.usingNativeMic = true;
+      updateNativeMicFilterStatus({
+        active: true,
+        hasStartResult: true,
+        ns: Boolean(startResult?.ns),
+        aec: Boolean(startResult?.aec),
+        agc: Boolean(startResult?.agc),
+        rate: Number(startResult?.rate) || 16000,
+        mode,
+        error: null,
+      });
+      voiceDebugStore.recordAudioContextInit(Number(startResult?.rate) || 16000, 'RoseMic', 40);
+      this.options.onMicLive?.(true);
+      return true;
+    } catch (err: any) {
+      const errMsg = String(err?.message || err || 'RoseMic failed');
+      console.warn('[NativeMic] RoseMic failed, falling back to getUserMedia:', errMsg);
+      this.nativeMicFailed = true;
+      await this.stopNativeMicCapture();
+      updateNativeMicFilterStatus({ active: false, error: errMsg });
+      this.options.onToast?.('Native mic ব্যর্থ, সাধারণ মাইক চালু করা হচ্ছে');
+      return false;
+    }
+  }
+
+  private handleNativeVadServerFallback(reason: string) {
+    if (this.nativeVadFallbackToServer) return;
+    console.warn('[NativeMic] VAD raw frame processing unavailable, using server VAD HIGH:', reason);
+    this.nativeVadFallbackToServer = true;
+    this.nativeVadPending = new Float32Array(0);
+    this.nativeVadQueue = [];
+    this.nativeVadProcessing = false;
+    void this.cleanupSmartMicVad();
+    if (
+      !this.isWarmOnly &&
+      this.isCurrentSession() &&
+      this.sentSmartVadDisabledConfig &&
+      !this.isFallbackMode &&
+      !this.isReconnecting
+    ) {
+      void this.handleLiveDisconnectAndAutoReconnect(this.cachedApiKey, 'native_vad_server_fallback', 1);
+    }
+  }
+
+  private feedNativeVadSamples(samples: Float32Array) {
+    const vadAny = this.micVad as any;
+    if (!vadAny || typeof vadAny.processFrame !== 'function' || !this.smartVadStarted) {
+      this.handleNativeVadServerFallback('processFrame unavailable');
+      return;
+    }
+
+    const FRAME_SIZE = 512;
+    const merged = new Float32Array(this.nativeVadPending.length + samples.length);
+    merged.set(this.nativeVadPending, 0);
+    merged.set(samples, this.nativeVadPending.length);
+
+    let offset = 0;
+    while (offset + FRAME_SIZE <= merged.length) {
+      const frame = merged.slice(offset, offset + FRAME_SIZE);
+      this.nativeVadQueue.push(frame);
+      offset += FRAME_SIZE;
+    }
+    this.nativeVadPending = merged.slice(offset);
+
+    if (this.nativeVadProcessing) return;
+    this.nativeVadProcessing = true;
+
+    const drainQueue = async () => {
+      try {
+        while (
+          this.nativeVadQueue.length > 0 &&
+          !this.wasStoppedByUser &&
+          this.usingNativeMic &&
+          this.micVad &&
+          !this.nativeVadFallbackToServer
+        ) {
+          const nextFrame = this.nativeVadQueue.shift();
+          if (!nextFrame) break;
+          await (this.micVad as any).processFrame(nextFrame);
+        }
+      } catch (err: any) {
+        this.handleNativeVadServerFallback(String(err?.message || err || 'processFrame error'));
+      } finally {
+        this.nativeVadProcessing = false;
+      }
+    };
+    void drainQueue();
+  }
+
+  private handleNativePcmEvent(base64Pcm: string) {
+    if (!this.usingNativeMic || this.wasStoppedByUser) return;
+
+    // Mute = stop sending chunks (keep RoseMic running)
+    if (this.isMuted) {
+      this.nativeMicLevel = 0;
+      this.currentMicLevel = 0;
+      this.options.onMicVolume?.(0);
+      this.nativeVadPending = new Float32Array(0);
+      this.nativeVadQueue = [];
+      this.nativeEnergySpeechFrames = 0;
+      if (this.smartTurnOpen) {
+        this.closeSmartTurn();
+      }
+      return;
+    }
+
+    const { float32: float32Samples, rms } = decodeBase64Pcm16ToFloat32(base64Pcm);
+    if (float32Samples.length === 0) return;
+
+    const level = Math.min(1.0, rms * 3.8);
+    this.nativeMicLevel = level;
+    this.currentMicLevel = level;
+    this.options.onMicVolume?.(level * 255);
+    voiceDebugStore.recordMicLevel(rms);
+
+    if (
+      !this.ws ||
+      this.ws.readyState !== WebSocket.OPEN ||
+      !this.isSetupComplete ||
+      this.isFallbackMode ||
+      this.isWarmOnly
+    ) {
+      return;
+    }
+
+    // If Smart Listening VAD is active and accepts raw frames, gate via VAD activityStart/activityEnd
+    if (this.isSmartListenLiveActive() && this.smartVadStarted && !this.nativeVadFallbackToServer) {
+      this.feedNativeVadSamples(float32Samples);
+      return;
+    }
+
+    // Server VAD mode: ignore chunks while Rose is speaking to avoid echo
+    if (this.currentState === 'speaking') {
+      return;
+    }
+
+    // Show "শুনছি…" bubble promptly on voice energy when Smart VAD isn't driving activityStart
+    if (rms >= 0.032) {
+      this.nativeEnergySpeechFrames++;
+      if (
+        this.nativeEnergySpeechFrames >= 2 &&
+        !this.liveUserBuffer.trim() &&
+        !this.userStartedSpeakingEmitted
+      ) {
+        this.userStartedSpeakingEmitted = true;
+        this.options.onTranscription?.('user', 'শুনছি…', false);
+      }
+    } else {
+      this.nativeEnergySpeechFrames = 0;
+    }
+
+    const chunkMs = Math.max(10, Math.round((float32Samples.length / 16000) * 1000));
+    try {
+      this.ws.send(
+        JSON.stringify({
+          realtimeInput: {
+            audio: { data: base64Pcm, mimeType: 'audio/pcm;rate=16000' },
+          },
+        })
+      );
+      this.chunksSent++;
+      voiceDebugStore.recordChunkSent(rms, chunkMs);
+    } catch (sendErr: any) {
+      voiceDebugStore.recordError(sendErr?.message || String(sendErr));
+    }
+  }
+
+  private float32ToPcm16Base64(samples: Float32Array): string {
+    const len = samples.length;
+    const buffer = new ArrayBuffer(len * 2);
+    const view = new DataView(buffer);
+    for (let i = 0; i < len; i++) {
+      const s = Math.max(-1, Math.min(1, samples[i]));
+      const int16 = s < 0 ? Math.round(s * 0x8000) : Math.round(s * 0x7fff);
+      view.setInt16(i * 2, int16, true);
+    }
+    const bytes = new Uint8Array(buffer);
+    let binary = '';
+    for (let i = 0; i < bytes.byteLength; i++) {
+      binary += String.fromCharCode(bytes[i]);
+    }
+    return btoa(binary);
+  }
+
+  private sendPcm16kFrame(frame: Float32Array) {
+    if (
+      this.isWarmOnly ||
+      this.isMuted ||
+      this.isFallbackMode ||
+      !this.smartTurnOpen ||
+      !this.ws ||
+      this.ws.readyState !== WebSocket.OPEN ||
+      !this.isSetupComplete ||
+      frame.length === 0
+    ) {
+      return;
+    }
+
+    let sumSq = 0;
+    for (let i = 0; i < frame.length; i++) {
+      const v = frame[i];
+      sumSq += v * v;
+    }
+    const rms = Math.sqrt(sumSq / frame.length);
+    const base64 = this.float32ToPcm16Base64(frame);
+    const chunkMs = Math.round((frame.length / 16000) * 1000);
+
+    try {
+      this.ws.send(
+        JSON.stringify({
+          realtimeInput: {
+            audio: { data: base64, mimeType: 'audio/pcm;rate=16000' },
+          },
+        })
+      );
+      this.chunksSent++;
+      voiceDebugStore.recordChunkSent(rms, chunkMs);
+    } catch (sendErr: any) {
+      voiceDebugStore.recordError(sendErr?.message || String(sendErr));
+    }
+  }
+
+  private pushPreSpeechFrame(frame: Float32Array) {
+    const copy = new Float32Array(frame);
+    this.preSpeechRing.push(copy);
+    this.preSpeechSamplesCount += copy.length;
+    while (
+      this.preSpeechRing.length > 1 &&
+      this.preSpeechSamplesCount - this.preSpeechRing[0].length >= this.PRE_SPEECH_TARGET_SAMPLES
+    ) {
+      const removed = this.preSpeechRing.shift();
+      if (removed) {
+        this.preSpeechSamplesCount -= removed.length;
+      }
+    }
+  }
+
+  private openSmartTurnAndFlushPreSpeech() {
+    if (
+      this.isWarmOnly ||
+      this.isMuted ||
+      this.isFallbackMode ||
+      this.smartTurnOpen ||
+      !this.ws ||
+      this.ws.readyState !== WebSocket.OPEN ||
+      !this.isSetupComplete
+    ) {
+      return;
+    }
+
+    try {
+      this.ws.send(JSON.stringify({ realtimeInput: { activityStart: {} } }));
+      this.smartTurnOpen = true;
+      this.awaitingReplySince = 0;
+    } catch {
+      return;
+    }
+
+    if (!this.liveUserBuffer.trim() && !this.userStartedSpeakingEmitted) {
+      this.userStartedSpeakingEmitted = true;
+      this.options.onTranscription?.('user', 'শুনছি…', false);
+    }
+
+    if (this.preSpeechRing.length > 0 && this.preSpeechSamplesCount > 0) {
+      const combined = new Float32Array(this.preSpeechSamplesCount);
+      let offset = 0;
+      for (const chunk of this.preSpeechRing) {
+        combined.set(chunk, offset);
+        offset += chunk.length;
+      }
+      this.preSpeechRing = [];
+      this.preSpeechSamplesCount = 0;
+      this.sendPcm16kFrame(combined);
+    } else {
+      this.preSpeechRing = [];
+      this.preSpeechSamplesCount = 0;
+    }
+  }
+
+  private closeSmartTurn() {
+    if (!this.smartTurnOpen) return;
+    this.smartTurnOpen = false;
+    if (
+      !this.isWarmOnly &&
+      !this.isFallbackMode &&
+      this.ws &&
+      this.ws.readyState === WebSocket.OPEN &&
+      this.isSetupComplete
+    ) {
+      try {
+        this.ws.send(JSON.stringify({ realtimeInput: { activityEnd: {} } }));
+      } catch {}
+    }
+  }
+
+  private attachMicSettingsListener() {
+    if (typeof window === 'undefined' || this.micSettingsChangedHandler) return;
+    this.micSettingsChangedHandler = (ev: Event) => {
+      const next = (ev as CustomEvent)?.detail || getMicListeningSettings();
+      if (this.micVad) {
+        try {
+          this.micVad.setOptions(getSmartListenVadOptions(next.smartListenSensitivity));
+        } catch {}
+      }
+      if (!this.isCurrentSession() || this.isWarmOnly || this.isFallbackMode || this.isReconnecting) {
+        return;
+      }
+      if (isAndroidApp()) {
+        const wantNative = Boolean(next.nativeMic && !this.nativeMicFailed && getRoseMicPlugin());
+        const nextMode: NativeMicMode = next.nativeMicMode === 'recognition' ? 'recognition' : 'communication';
+        if (wantNative !== this.usingNativeMic || (this.usingNativeMic && nextMode !== this.nativeMicMode)) {
+          void this.handleLiveDisconnectAndAutoReconnect(this.cachedApiKey, 'native_mic_setting_changed', 1);
+          return;
+        }
+      }
+      if (!next.smartListen && this.sentSmartVadDisabledConfig && !this.smartVadFailed) {
+        this.smartVadFailed = true;
+        this.closeSmartTurn();
+        void this.cleanupSmartMicVad();
+        void this.handleLiveDisconnectAndAutoReconnect(this.cachedApiKey, 'smart_listen_toggled_off', 1);
+      } else if (next.smartListen && !this.sentSmartVadDisabledConfig && !this.smartVadFailed && !next.streetMode) {
+        void this.handleLiveDisconnectAndAutoReconnect(this.cachedApiKey, 'smart_listen_toggled_on', 1);
+      }
+    };
+    window.addEventListener('rose-mic-settings-changed', this.micSettingsChangedHandler);
+  }
+
+  private detachMicSettingsListener() {
+    if (typeof window !== 'undefined' && this.micSettingsChangedHandler) {
+      window.removeEventListener('rose-mic-settings-changed', this.micSettingsChangedHandler);
+      this.micSettingsChangedHandler = null;
+    }
+  }
+
+  private async cleanupSmartMicVad() {
+    this.closeSmartTurn();
+    this.smartVadStarted = false;
+    this.smartVadSpeaking = false;
+    this.bargeInSpeechMs = 0;
+    this.preSpeechRing = [];
+    this.preSpeechSamplesCount = 0;
+    const vad = this.micVad;
+    this.micVad = null;
+    this.smartVadLoaded = false;
+    if (vad) {
+      try {
+        (vad as any).frameProcessor?.pause?.(() => {});
+      } catch {}
+      try {
+        await vad.destroy();
+      } catch {
+        try {
+          await (vad as any).model?.release?.();
+        } catch {}
+      }
+      try {
+        (vad as any)._mediaStreamAudioSourceNode?.disconnect?.();
+      } catch {}
+      try {
+        (vad as any)._vadNode?.disconnect?.();
+      } catch {}
+    }
+    updateSmartVadTelemetry({ ready: false, loading: false, speechDetected: false, probability: 0 });
+  }
+
+  private async handleSmartVadFailure(reason: string, shouldReconnectIfLive: boolean) {
+    console.warn('[SmartListening] VAD failed, falling back to old behavior:', reason);
+    if (this.usingNativeMic) {
+      this.handleNativeVadServerFallback(reason);
+      return;
+    }
+    this.smartVadFailed = true;
+    saveMicListeningSettings({ smartListen: false });
+    updateSmartVadTelemetry({
+      ready: false,
+      loading: false,
+      speechDetected: false,
+      probability: 0,
+      error: reason,
+    });
+    await this.cleanupSmartMicVad();
+    this.options.onToast?.(`Smart Listening বন্ধ: ${reason}`);
+    if (
+      shouldReconnectIfLive &&
+      !this.isWarmOnly &&
+      this.isCurrentSession() &&
+      this.sentSmartVadDisabledConfig &&
+      !this.isFallbackMode &&
+      !this.isReconnecting
+    ) {
+      void this.handleLiveDisconnectAndAutoReconnect(this.cachedApiKey, 'smart_vad_fallback', 1);
+    }
+  }
+
+  private async initSmartMicVad(startImmediately: boolean): Promise<boolean> {
+    if (!this.isSmartListenLiveActive()) return false;
+    this.attachMicSettingsListener();
+
+    if (this.micVad && this.smartVadLoaded) {
+      if (this.usingNativeMic) {
+        if (startImmediately && !this.smartVadStarted) {
+          const vadAny = this.micVad as any;
+          if (typeof vadAny.processFrame === 'function' && vadAny.frameProcessor?.resume) {
+            vadAny.frameProcessor.resume();
+            this.smartVadStarted = true;
+            updateSmartVadTelemetry({ ready: true, loading: false, error: null });
+            return true;
+          }
+          this.handleNativeVadServerFallback('processFrame unsupported on native mic');
+          return false;
+        }
+        return true;
+      }
+      if (this.audioCtx) {
+        this.micVad.options.audioContext = this.audioCtx;
+      }
+      this.micVad.options.getStream = async () => {
+        if (!this.micStream) throw new Error('মাইক স্ট্রিম পাওয়া যায়নি');
+        return this.micStream;
+      };
+      this.micVad.options.resumeStream = async () => {
+        if (!this.micStream) throw new Error('মাইক স্ট্রিম পাওয়া যায়নি');
+        return this.micStream;
+      };
+      if (startImmediately && !this.smartVadStarted) {
+        try {
+          await this.micVad.start();
+          this.smartVadStarted = true;
+          updateSmartVadTelemetry({ ready: true, loading: false, error: null });
+          return true;
+        } catch (err: any) {
+          const reason = String(err?.message || err || 'MicVAD start ব্যর্থ');
+          await this.handleSmartVadFailure(reason, true);
+          return false;
+        }
+      }
+      return true;
+    }
+
+    updateSmartVadTelemetry({ loading: true, error: null });
+    try {
+      const vadWeb = await import('@ricky0123/vad-web');
+      const MicVADClass = vadWeb?.MicVAD;
+      if (!MicVADClass) {
+        throw new Error('MicVAD মডিউল পাওয়া যায়নি');
+      }
+      const micCfg = getMicListeningSettings();
+      const vadOpts = getSmartListenVadOptions(micCfg.smartListenSensitivity);
+      const captureSessionId = this.sessionId;
+
+      const vad = await MicVADClass.new({
+        ...SMART_VAD_CDN_CONFIG,
+        ...vadOpts,
+        submitUserSpeechOnPause: false,
+        startOnLoad: false,
+        audioContext: this.audioCtx || undefined,
+        getStream: async () => {
+          if (!this.micStream) throw new Error('মাইক স্ট্রিম পাওয়া যায়নি');
+          return this.micStream;
+        },
+        pauseStream: async () => {},
+        resumeStream: async () => {
+          if (!this.micStream) throw new Error('মাইক স্ট্রিম পাওয়া যায়নি');
+          return this.micStream;
+        },
+        ortConfig: (ortInst) => {
+          try {
+            ortInst.env.wasm.numThreads = 1;
+            ortInst.env.logLevel = 'error';
+          } catch {}
+        },
+        onFrameProcessed: (probs, frame) => {
+          if (this.wasStoppedByUser || this.sessionId !== captureSessionId) return;
+          const activeCfg = getMicListeningSettings();
+          const curOpts = getSmartListenVadOptions(activeCfg.smartListenSensitivity);
+          const isProbSpeech = probs.isSpeech >= curOpts.positiveSpeechThreshold;
+          updateSmartVadTelemetry({
+            ready: true,
+            loading: false,
+            speechDetected: isProbSpeech,
+            probability: probs.isSpeech,
+            error: null,
+          });
+
+          if (this.isWarmOnly) return;
+
+          if (this.isMuted) {
+            this.bargeInSpeechMs = 0;
+            this.preSpeechRing = [];
+            this.preSpeechSamplesCount = 0;
+            if (this.smartTurnOpen) {
+              this.closeSmartTurn();
+            }
+            return;
+          }
+
+          if (!this.smartTurnOpen) {
+            this.pushPreSpeechFrame(frame);
+          }
+
+          const roseSpeaking =
+            this.currentState === 'speaking' ||
+            this.scheduledAudioSources.length > 0 ||
+            this.pendingPcmSamplesCount > 0 ||
+            this.isBrowserTtsSpeaking;
+
+          if (roseSpeaking) {
+            if (!this.smartTurnOpen) {
+              if (isProbSpeech) {
+                this.bargeInSpeechMs += 32;
+                if (this.bargeInSpeechMs >= 250) {
+                  this.bargeInSpeechMs = 0;
+                  this.awaitingReplySince = 0;
+                  this.liveAssistantBuffer = '';
+                  this.phoneToolHandledForTurn = false;
+                  this.liveStreetAllowed = true;
+                  this.isRoseTurnActive = false;
+                  this.interruptPlayback();
+                  this.updateState('listening');
+                  this.options.onInterrupted?.();
+                  this.openSmartTurnAndFlushPreSpeech();
+                }
+              } else {
+                this.bargeInSpeechMs = 0;
+              }
+            } else {
+              this.sendPcm16kFrame(frame);
+            }
+          } else {
+            this.bargeInSpeechMs = 0;
+            if (!this.smartTurnOpen && this.smartVadSpeaking && isProbSpeech) {
+              this.openSmartTurnAndFlushPreSpeech();
+            } else if (this.smartTurnOpen) {
+              this.sendPcm16kFrame(frame);
+            }
+          }
+        },
+        onSpeechStart: () => {
+          if (this.wasStoppedByUser || this.sessionId !== captureSessionId || this.isWarmOnly || this.isMuted) {
+            return;
+          }
+          this.smartVadSpeaking = true;
+          const roseSpeaking =
+            this.currentState === 'speaking' ||
+            this.scheduledAudioSources.length > 0 ||
+            this.pendingPcmSamplesCount > 0 ||
+            this.isBrowserTtsSpeaking;
+          if (!roseSpeaking && !this.smartTurnOpen) {
+            this.openSmartTurnAndFlushPreSpeech();
+          }
+        },
+        onVADMisfire: () => {
+          if (this.wasStoppedByUser || this.sessionId !== captureSessionId) return;
+          this.smartVadSpeaking = false;
+          this.bargeInSpeechMs = 0;
+          if (this.smartTurnOpen) {
+            this.closeSmartTurn();
+          }
+          if (!this.liveUserBuffer.trim() && this.userStartedSpeakingEmitted) {
+            this.userStartedSpeakingEmitted = false;
+            this.options.onTranscription?.('user', '', true);
+          }
+        },
+        onSpeechEnd: () => {
+          if (this.wasStoppedByUser || this.sessionId !== captureSessionId) return;
+          this.smartVadSpeaking = false;
+          this.bargeInSpeechMs = 0;
+          if (this.smartTurnOpen) {
+            this.closeSmartTurn();
+            if (!this.isWarmOnly && this.currentState !== 'speaking') {
+              this.awaitingReplySince = Date.now();
+            }
+          }
+        },
+      });
+
+      if (this.wasStoppedByUser || this.sessionLifecycleState === 'closed') {
+        try {
+          await (vad as any).model?.release?.();
+        } catch {}
+        return false;
+      }
+
+      this.micVad = vad;
+      this.smartVadLoaded = true;
+
+      if (startImmediately) {
+        if (this.usingNativeMic) {
+          const vadAny = vad as any;
+          if (typeof vadAny.processFrame === 'function' && vadAny.frameProcessor?.resume) {
+            vadAny.frameProcessor.resume();
+            this.smartVadStarted = true;
+          } else {
+            this.handleNativeVadServerFallback('processFrame unsupported on native mic');
+            return false;
+          }
+        } else {
+          await vad.start();
+          this.smartVadStarted = true;
+        }
+      }
+      updateSmartVadTelemetry({ ready: true, loading: false, error: null });
+      return true;
+    } catch (err: any) {
+      const reason = String(err?.message || err || 'VAD লোড ব্যর্থ');
+      await this.handleSmartVadFailure(reason, startImmediately);
+      return false;
+    }
   }
 
   private isCurrentSession(
@@ -583,7 +1328,7 @@ export class GeminiLiveSession {
   ): boolean {
     if (this.wasStoppedByUser) return false;
     if (this.sessionLifecycleState !== 'active') return false;
-    if (activeGlobalLiveSession !== this) return false;
+    if (!this.isWarmOnly && activeGlobalLiveSession !== this) return false;
     if (expectedSessionId !== undefined && this.sessionId !== expectedSessionId) return false;
     if (socket !== undefined && socket !== null && this.ws !== socket) return false;
     if (socketSeq !== undefined && this.activeSocketSeq !== socketSeq) return false;
@@ -609,6 +1354,8 @@ export class GeminiLiveSession {
   }
 
   private disconnectAllMicAndAudioNodes() {
+    void this.stopNativeMicCapture();
+
     if (this.micSourceNode) {
       try {
         this.micSourceNode.disconnect();
@@ -823,7 +1570,7 @@ export class GeminiLiveSession {
   public sendTextMessage(text: string) {
     if (this.ws && this.ws.readyState === WebSocket.OPEN && this.isSetupComplete) {
       try {
-        this.ws.send(JSON.stringify({ realtimeInput: { mediaChunks: [], textChunks: [{ text }] } }));
+        this.ws.send(JSON.stringify({ realtimeInput: { text } }));
       } catch {}
     }
   }
@@ -876,12 +1623,10 @@ export class GeminiLiveSession {
       this.ws.send(
         JSON.stringify({
           realtimeInput: {
-            mediaChunks: [
-              {
-                mimeType: 'image/jpeg',
-                data: cleanBase64,
-              },
-            ],
+            video: {
+              mimeType: 'image/jpeg',
+              data: cleanBase64,
+            },
           },
         })
       );
@@ -1009,7 +1754,7 @@ export class GeminiLiveSession {
 
     const apiKey = (this.options.apiKey || getGeminiKey() || '').replace(/[\r\n\t\s"']+/g, '').trim();
     this.cachedApiKey = apiKey;
-    if (!apiKey) {
+    if (!(await ensureGeminiReady(apiKey))) {
       const noKeyMsg = 'Gemini key সেভ করা নেই। Settings → CONNECTIONS-এ কী বসাও।';
       this.lastError = noKeyMsg;
       voiceDebugStore.recordError(noKeyMsg);
@@ -1022,8 +1767,9 @@ export class GeminiLiveSession {
     // Background preload of RNNoise WASM and Silero VAD (non-blocking so call starts immediately)
     preloadAudioEnhancementsInBackground();
     const micSettings = getMicListeningSettings();
-    if (micSettings.smartListen) {
-      void this.sileroVad.initInBackground();
+    let smartVadPromise: Promise<boolean> | null = null;
+    if (micSettings.smartListen && !micSettings.streetMode) {
+      smartVadPromise = this.initSmartMicVad(false);
     }
 
     // 1. Initialize Single AudioContext, Microphone & AnalyserNode immediately
@@ -1031,6 +1777,15 @@ export class GeminiLiveSession {
     if (!audioReady || this.wasStoppedByUser) {
       this.stopRoseCallPlugin();
       return;
+    }
+
+    if (micSettings.smartListen && !micSettings.streetMode && !this.smartVadFailed) {
+      if (smartVadPromise) {
+        await smartVadPromise;
+      }
+      if (!this.smartVadFailed && !this.wasStoppedByUser) {
+        await this.initSmartMicVad(true);
+      }
     }
 
     // Notify Android foreground call service plugin (no-op if missing)
@@ -1214,6 +1969,45 @@ export class GeminiLiveSession {
   private async initAudioAndAnalyzers(): Promise<boolean> {
     try {
       const { cleanVoice } = getMicListeningSettings();
+      const AudioCtxClass = window.AudioContext || (window as any).webkitAudioContext;
+
+      // Try Android Native Mic (RoseMic) when configured — do NOT call getUserMedia if active
+      if (this.shouldUseNativeMic()) {
+        const nativeOk = await this.initNativeMicCapture();
+        if (nativeOk) {
+          this.playbackAudioCtx =
+            this.options.playbackAudioContext &&
+            this.options.playbackAudioContext.state !== 'closed'
+              ? this.options.playbackAudioContext
+              : new AudioCtxClass({ sampleRate: 24000, latencyHint: 'interactive' });
+
+          if (this.playbackAudioCtx.state !== 'running') {
+            try {
+              await this.playbackAudioCtx.resume();
+            } catch {}
+          }
+
+          // Unlock persistent output AudioContext on user gesture with a 1-frame silent buffer
+          try {
+            const silentBuf = this.playbackAudioCtx.createBuffer(1, 1, 24000);
+            const silentSrc = this.playbackAudioCtx.createBufferSource();
+            silentSrc.buffer = silentBuf;
+            silentSrc.connect(this.playbackAudioCtx.destination);
+            silentSrc.start(0);
+          } catch {}
+
+          if (!this.outputAnalyser || this.outputAnalyser.context !== this.playbackAudioCtx) {
+            this.outputAnalyser = this.playbackAudioCtx.createAnalyser();
+            this.outputAnalyser.fftSize = 256;
+            this.outputAnalyser.smoothingTimeConstant = 0.45;
+          }
+
+          this.startVisualizer();
+          await this.setupSingleAudioOutputRoute();
+          return true;
+        }
+      }
+
       setBrowserAudioSessionType('play-and-record');
       const hasLiveOptionStream =
         this.options.micStream &&
@@ -1246,8 +2040,6 @@ export class GeminiLiveSession {
       if (!micTrack || micTrack.readyState !== 'live') {
         throw new Error('মাইক সচল নয়');
       }
-
-      const AudioCtxClass = window.AudioContext || (window as any).webkitAudioContext;
 
       // Separate input AudioContext (for mic/VAD/RNNoise) and persistent output AudioContext (for speaker playback)
       this.audioCtx =
@@ -1381,8 +2173,15 @@ export class GeminiLiveSession {
           !this.ws ||
           this.ws.readyState !== WebSocket.OPEN ||
           !this.isSetupComplete ||
-          this.isFallbackMode
+          this.isFallbackMode ||
+          this.isWarmOnly
         ) {
+          voiceDebugStore.recordMicLevel(rms);
+          return;
+        }
+
+        // When Smart Listening @ricky0123/vad-web MicVAD is active, audio streaming is strictly gated by activityStart..activityEnd
+        if (this.isSmartListenLiveActive() && this.smartVadStarted) {
           voiceDebugStore.recordMicLevel(rms);
           return;
         }
@@ -1687,7 +2486,23 @@ export class GeminiLiveSession {
       const useAlphaEndpoint =
         includeAffectiveDialog && isAdmin() && this.modelSupportsAffectiveDialog(modelName);
       const apiVersion = useAlphaEndpoint ? 'v1alpha' : 'v1beta';
-      const wsUrl = `wss://generativelanguage.googleapis.com/ws/google.ai.generativelanguage.${apiVersion}.GenerativeService.BidiGenerateContent?key=${encodeURIComponent(apiKey)}`;
+      const cleanLiveKey = String(apiKey || '').replace(/[\r\n\t\s"']+/g, '').trim();
+      const protocol = typeof window !== 'undefined' && window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+      const host = typeof window !== 'undefined' ? window.location.host : 'localhost:3000';
+      const wsParams = new URLSearchParams({
+        assistantName: this.options.assistantName || 'Rose AI',
+        ownerName: this.options.ownerName || 'MD YOUSUF KHAN',
+        voiceName: voiceNameOverride || (isAdmin() ? ADMIN_PREFERRED_VOICES[0] : this.options.voiceName || 'Sulafat'),
+        personality: this.options.personality || 'Normal',
+        language: this.options.language || 'bn-BD',
+        responseStyle: this.options.responseStyle || 'Balanced',
+        model: modelName,
+        apiVersion,
+      });
+      if (cleanLiveKey) {
+        wsParams.set('apiKey', cleanLiveKey);
+      }
+      const wsUrl = `${protocol}//${host}/api/live?${wsParams.toString()}`;
 
       let socket: WebSocket | null = null;
       const finish = (success: boolean) => {
@@ -1761,6 +2576,13 @@ export class GeminiLiveSession {
         }
 
         const micSettings = getMicListeningSettings();
+        const useSmartVadConfig =
+          !this.smartVadFailed &&
+          !this.nativeVadFallbackToServer &&
+          !this.vadConfigRejected &&
+          micSettings.smartListen &&
+          !micSettings.streetMode;
+        this.sentSmartVadDisabledConfig = useSmartVadConfig;
         const inputSttLang = this.speechLangMode === 'bn-IN' ? 'bn-IN' : 'bn-BD';
 
         const setupPayload: any = {
@@ -1780,14 +2602,20 @@ export class GeminiLiveSession {
             ? {}
             : { languageCodes: [inputSttLang, 'en-US'] },
           outputAudioTranscription: {},
-          realtimeInputConfig: {
-            automaticActivityDetection: {
-              startOfSpeechSensitivity: StartSensitivity.START_SENSITIVITY_HIGH,
-              endOfSpeechSensitivity: EndSensitivity.END_SENSITIVITY_HIGH,
-              prefixPaddingMs: 100,
-              silenceDurationMs: 500,
-            },
-          },
+          realtimeInputConfig: useSmartVadConfig
+            ? {
+                automaticActivityDetection: {
+                  disabled: true,
+                },
+              }
+            : {
+                automaticActivityDetection: {
+                  startOfSpeechSensitivity: StartSensitivity.START_SENSITIVITY_HIGH,
+                  endOfSpeechSensitivity: EndSensitivity.END_SENSITIVITY_HIGH,
+                  prefixPaddingMs: 100,
+                  silenceDurationMs: 500,
+                },
+              },
         };
 
         if (this.vadConfigRejected) {
@@ -1804,7 +2632,7 @@ export class GeminiLiveSession {
         }
 
         try {
-          socket?.send(JSON.stringify({ setup: setupPayload }));
+          socket?.send(JSON.stringify({ setup: setupPayload, apiVersion }));
         } catch {
           finish(false);
         }
@@ -1865,14 +2693,31 @@ export class GeminiLiveSession {
             this.lastError = formattedErr.bengali;
             voiceDebugStore.recordError(formattedErr.bengali);
             
-            // Check if VAD config was rejected
-            if (safeErr.toLowerCase().includes('automatic_activity_detection') || safeErr.toLowerCase().includes('realtime_input_config')) {
-              console.warn('[GeminiLive] Server rejected VAD config. Retrying without it.');
-              this.vadConfigRejected = true;
-              const micSettings = getMicListeningSettings();
-              if (micSettings.fastReply) {
-                saveMicListeningSettings({ fastReply: false });
-                this.options.onToast?.("Fast reply এই মডেলে চলে না");
+            // Check if VAD / Smart Listening config was rejected
+            const lowerErrForVad = safeErr.toLowerCase();
+            if (
+              lowerErrForVad.includes('automatic_activity_detection') ||
+              lowerErrForVad.includes('automaticactivitydetection') ||
+              lowerErrForVad.includes('realtime_input_config') ||
+              lowerErrForVad.includes('realtimeinputconfig') ||
+              lowerErrForVad.includes('activity_detection') ||
+              (this.sentSmartVadDisabledConfig && lowerErrForVad.includes('disabled'))
+            ) {
+              console.warn('[GeminiLive] Server rejected VAD config. Falling back:', safeErr);
+              if (this.sentSmartVadDisabledConfig) {
+                this.smartVadFailed = true;
+                this.sentSmartVadDisabledConfig = false;
+                saveMicListeningSettings({ smartListen: false });
+                updateSmartVadTelemetry({ ready: false, loading: false, speechDetected: false, probability: 0, error: safeErr });
+                void this.cleanupSmartMicVad();
+                this.options.onToast?.(`Smart Listening বন্ধ: ${safeErr || 'সার্ভার এই কনফিগ নেয়নি'}`);
+              } else {
+                this.vadConfigRejected = true;
+                const micSettings = getMicListeningSettings();
+                if (micSettings.fastReply) {
+                  saveMicListeningSettings({ fastReply: false });
+                  this.options.onToast?.("Fast reply এই মডেলে চলে না");
+                }
               }
               if (!settled) {
                 finish(false);
@@ -2040,6 +2885,24 @@ export class GeminiLiveSession {
 
         if (!settled) {
           if (
+            this.sentSmartVadDisabledConfig &&
+            (lowerClose.includes('automatic_activity_detection') ||
+              lowerClose.includes('automaticactivitydetection') ||
+              lowerClose.includes('realtime_input_config') ||
+              lowerClose.includes('realtimeinputconfig') ||
+              lowerClose.includes('activity_detection') ||
+              lowerClose.includes('disabled'))
+          ) {
+            this.smartVadFailed = true;
+            this.sentSmartVadDisabledConfig = false;
+            saveMicListeningSettings({ smartListen: false });
+            updateSmartVadTelemetry({ ready: false, loading: false, speechDetected: false, probability: 0, error: safeReason });
+            void this.cleanupSmartMicVad();
+            this.options.onToast?.(`Smart Listening বন্ধ: ${safeReason || 'সার্ভার এই কনফিগ নেয়নি'}`);
+            finish(false);
+            return;
+          }
+          if (
             event?.code === 1007 ||
             lowerClose.includes('language') ||
             lowerClose.includes('speech_config') ||
@@ -2080,6 +2943,12 @@ export class GeminiLiveSession {
         } else if (this.isCurrentSession(socket, socketSeq, expectedSessionId)) {
           if (isQuotaOrAuthClose && this.lastError) {
             this.failAndEndSessionCleanly(this.lastError);
+            return;
+          }
+          if (this.isWarmOnly) {
+            this.warmReady = false;
+            this.options.onWarmReadyChange?.(false);
+            this.releaseExistingSocketOnly('warm_idle_closed');
             return;
           }
           void this.handleLiveDisconnectAndAutoReconnect(
@@ -2323,6 +3192,7 @@ export class GeminiLiveSession {
     this.isProcessingClip = false;
 
     this.interruptPlayback();
+    void this.cleanupSmartMicVad();
     this.teardownBackgroundAudioElement();
     this.disconnectAllMicAndAudioNodes();
   }
@@ -2405,12 +3275,18 @@ export class GeminiLiveSession {
         this.sessionId = newSessionId;
         this.sessionLifecycleState = 'active';
 
-        // Re-initialize fresh mic stream and audio nodes
+        // Re-initialize fresh AudioContext, mic stream, audio nodes and Smart VAD after reconnect
+        this.closeSmartTurn();
+        await this.cleanupSmartMicVad();
         const audioReady = await this.initAudioAndAnalyzers();
         if (!audioReady || this.wasStoppedByUser || activeGlobalLiveSession !== this) {
           this.sessionLifecycleState = 'closing';
           this.releaseSessionAudioAndSocketForReconnect();
           continue;
+        }
+
+        if (this.isSmartListenLiveActive()) {
+          await this.initSmartMicVad(true);
         }
 
         if (this.liveModels.length === 0 && cleanKey) {
@@ -2445,6 +3321,8 @@ export class GeminiLiveSession {
           this.socketStatus = 'open';
           this.awaitingReplySince = 0;
           this.isReconnecting = false;
+          this.warmReady = true;
+          this.options.onWarmReadyChange?.(true);
           this.options.onReconnectStatus?.('connected');
           await this.finishSpeakingAndReturnToListening(0);
           return;
@@ -2646,6 +3524,8 @@ export class GeminiLiveSession {
       this.liveUserBuffer = '';
       this.liveAssistantBuffer = '';
       this.suppressedForeignTranscript = false;
+      this.userStartedSpeakingEmitted = false;
+      this.nativeEnergySpeechFrames = 0;
       this.phoneToolHandledForTurn = false;
       this.liveStreetAllowed = true;
       this.isRoseTurnActive = false;
@@ -2689,6 +3569,10 @@ export class GeminiLiveSession {
     this.isFallbackMode = true;
     this.activeMode = 'fallback';
     this.socketStatus = 'open';
+    if (this.usingNativeMic) {
+      void this.stopNativeMicCapture();
+      void this.resumeMicAfterSpeech();
+    }
     void this.finishSpeakingAndReturnToListening(0);
     logVoiceEvent('Fallback Voice', 'Activated Path 2 (MediaRecorder + generateContent + Rose Smart Listen)');
 
@@ -3063,17 +3947,23 @@ export class GeminiLiveSession {
       try {
         for (const flashModel of candidates) {
           if (this.wasStoppedByUser) return;
-          const streamUrl = `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(flashModel)}:streamGenerateContent?alt=sse&key=${encodeURIComponent(apiKey)}`;
-          const fallbackUrl = `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(flashModel)}:generateContent?key=${encodeURIComponent(apiKey)}`;
+          const cleanClipKey = String(apiKey || '').replace(/[\r\n\t\s"']+/g, '').trim();
+          const streamUrl = '/api/gemini/stream';
+          const fallbackUrl = '/api/gemini/generate';
+
+          const makeClipPayload = (withThinkingConfig: boolean) => ({
+            model: flashModel,
+            ...buildClipBody(withThinkingConfig),
+            ...(cleanClipKey ? { apiKey: cleanClipKey } : {}),
+          });
 
           try {
             let res = await fetch(streamUrl, {
               method: 'POST',
               headers: {
                 'Content-Type': 'application/json',
-                'x-goog-api-key': apiKey,
               },
-              body: JSON.stringify(buildClipBody(true)),
+              body: JSON.stringify(makeClipPayload(true)),
               signal: clipController.signal,
             });
 
@@ -3082,9 +3972,8 @@ export class GeminiLiveSession {
                 method: 'POST',
                 headers: {
                   'Content-Type': 'application/json',
-                  'x-goog-api-key': apiKey,
                 },
-                body: JSON.stringify(buildClipBody(false)),
+                body: JSON.stringify(makeClipPayload(false)),
                 signal: clipController.signal,
               });
             }
@@ -3162,9 +4051,12 @@ export class GeminiLiveSession {
                 method: 'POST',
                 headers: {
                   'Content-Type': 'application/json',
-                  'x-goog-api-key': apiKey,
                 },
-                body: JSON.stringify(buildClipBody(false)),
+                body: JSON.stringify({
+                  model: flashModel,
+                  ...buildClipBody(false),
+                  ...(cleanClipKey ? { apiKey: cleanClipKey } : {}),
+                }),
                 signal: clipController.signal,
               });
               const rawText = await genRes.text().catch(() => '');
@@ -3309,6 +4201,15 @@ export class GeminiLiveSession {
   }
 
   private pauseMicDuringSpeech() {
+    if (this.usingNativeMic && !this.isFallbackMode) {
+      this.micReleasedAt = 0;
+      return;
+    }
+    if (this.isSmartListenLiveActive() && this.smartVadStarted && !this.isFallbackMode) {
+      // Keep micStream & AudioContext running for >=250ms Smart VAD barge-in; zero audio is sent over WS while smartTurnOpen is false
+      this.micReleasedAt = 0;
+      return;
+    }
     try {
       const hadActiveMic = Boolean(
         this.micStream ||
@@ -3366,6 +4267,12 @@ export class GeminiLiveSession {
   }
 
   private async resumeMicAfterSpeech() {
+    if (
+      this.usingNativeMic &&
+      !this.isFallbackMode
+    ) {
+      return;
+    }
     if (
       this.wasStoppedByUser ||
       this.isResumingMic ||
@@ -3933,7 +4840,11 @@ export class GeminiLiveSession {
         return;
       }
 
-      if (this.micAnalyser && !this.isMuted && this.currentState !== 'speaking') {
+      if (this.usingNativeMic && !this.isMuted && this.currentState !== 'speaking') {
+        this.nativeMicLevel *= 0.88;
+        this.currentMicLevel = this.nativeMicLevel;
+        this.options.onMicVolume?.(this.nativeMicLevel * 255);
+      } else if (this.micAnalyser && !this.isMuted && this.currentState !== 'speaking') {
         this.micAnalyser.getByteFrequencyData(micFreqData);
         let freqSum = 0;
         for (let i = 0; i < micFreqData.length; i++) freqSum += micFreqData[i];
@@ -4036,9 +4947,125 @@ export class GeminiLiveSession {
     }
   }
 
+  public async startWarmUp(): Promise<boolean> {
+    if (this.wasStoppedByUser) return false;
+    this.isWarmOnly = true;
+    this.warmReady = false;
+    this.options.onWarmReadyChange?.(false);
+    this.sessionLifecycleState = 'active';
+    this.wasStoppedByUser = false;
+
+    const apiKey = (this.options.apiKey || getGeminiKey() || '').replace(/[\r\n\t\s"']+/g, '').trim();
+    this.cachedApiKey = apiKey;
+    if (!(await ensureGeminiReady(apiKey))) return false;
+
+    const micSettings = getMicListeningSettings();
+    if (!micSettings.smartListen || micSettings.streetMode) return false;
+
+    try {
+      const AudioCtxClass = window.AudioContext || (window as any).webkitAudioContext;
+      if (AudioCtxClass) {
+        if (!this.audioCtx || this.audioCtx.state === 'closed') {
+          this.audioCtx =
+            this.options.audioContext && this.options.audioContext.state !== 'closed'
+              ? this.options.audioContext
+              : new AudioCtxClass({ sampleRate: 48000, latencyHint: 'interactive' });
+        }
+        if (!this.playbackAudioCtx || this.playbackAudioCtx.state === 'closed') {
+          this.playbackAudioCtx =
+            this.options.playbackAudioContext &&
+            this.options.playbackAudioContext !== this.audioCtx &&
+            this.options.playbackAudioContext.state !== 'closed'
+              ? this.options.playbackAudioContext
+              : new AudioCtxClass({ sampleRate: 24000, latencyHint: 'interactive' });
+        }
+      }
+    } catch {}
+
+    try {
+      const [vadOk, discovered] = await Promise.all([
+        this.initSmartMicVad(false),
+        discoverVoiceModelsFromListModels(apiKey),
+      ]);
+      if (this.wasStoppedByUser || !vadOk || this.smartVadFailed) {
+        return false;
+      }
+      this.liveModels = discovered.liveModels;
+      this.flashModels = discovered.flashModels;
+      this.ttsModels = discovered.ttsModels;
+      if (this.liveModels.length === 0) return false;
+
+      const connected = await this.tryConnectLiveModels(apiKey, this.liveModels.slice(0, 3), 8000);
+      if (!connected || this.wasStoppedByUser || this.smartVadFailed) {
+        return false;
+      }
+
+      this.warmReady = true;
+      this.options.onWarmReadyChange?.(true);
+      updateSmartVadTelemetry({ ready: true, loading: false, error: null });
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
+  public async activateFromWarmUp(nextOptions: Partial<GeminiLiveOptions>): Promise<boolean> {
+    if (!this.isWarmReadyAndOpen()) return false;
+
+    if (activeGlobalLiveSession && activeGlobalLiveSession !== this) {
+      activeGlobalLiveSession.sessionLifecycleState = 'closing';
+      try {
+        activeGlobalLiveSession.stop();
+      } catch {}
+    }
+
+    this.options = { ...this.options, ...nextOptions, warmUpOnly: false };
+    this.isWarmOnly = false;
+    this.warmReady = false;
+    this.options.onWarmReadyChange?.(false);
+    activeGlobalLiveSession = this;
+    this.sessionLifecycleState = 'active';
+    this.wasStoppedByUser = false;
+    this.isFallbackMode = false;
+    this.activeMode = 'live';
+    this.socketStatus = 'open';
+    this.awaitingReplySince = 0;
+    this.watchdogReconnectedForTurn = false;
+    this.liveUserBuffer = '';
+    this.liveAssistantBuffer = '';
+    this.suppressedForeignTranscript = false;
+    this.phoneToolHandledForTurn = false;
+    this.pendingEndCallAfterSpeech = false;
+    this.endCallReceivedAudioAfterTool = false;
+    this.preSpeechRing = [];
+    this.preSpeechSamplesCount = 0;
+    this.smartTurnOpen = false;
+    this.smartVadSpeaking = false;
+    this.bargeInSpeechMs = 0;
+    this.updateState('connecting');
+
+    const audioReady = await this.initAudioAndAnalyzers();
+    if (!audioReady || this.wasStoppedByUser) {
+      this.stopRoseCallPlugin();
+      return false;
+    }
+
+    if (this.isSmartListenLiveActive()) {
+      await this.initSmartMicVad(true);
+    }
+
+    this.startRoseCallPlugin();
+    this.startWatchdog();
+    this.updateState('listening');
+    return true;
+  }
+
   public stop() {
     this.stopRoseCallPlugin();
     this.exitPiP();
+    this.detachMicSettingsListener();
+    this.warmReady = false;
+    this.options.onWarmReadyChange?.(false);
     this.sessionLifecycleState = 'closed';
     this.wasStoppedByUser = true;
     this.isReconnecting = false;
@@ -4088,6 +5115,8 @@ export class GeminiLiveSession {
 
     this.isRoseTurnActive = false;
     this.interruptPlayback();
+
+    void this.cleanupSmartMicVad();
 
     this.clearMediaSession();
     this.teardownBackgroundAudioElement();

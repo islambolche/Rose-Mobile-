@@ -87,7 +87,15 @@ import {
 import { OrbSphere, ORB_STYLES } from "./components/OrbSphere";
 import { Developer, LiveModelSettings } from "./components/SettingsComponents";
 import { LiveVoiceBars } from "./components/LiveVoiceBars";
-import { getGeminiKey, setGeminiKey, initGeminiKey } from "./lib/geminiKey";
+import {
+  getGeminiKey,
+  setGeminiKey,
+  initGeminiKey,
+  ensureGeminiReady,
+  fetchServerGeminiStatus,
+  hasUsableGeminiKey,
+  isServerGeminiConfigured,
+} from "./lib/geminiKey";
 import { PrivacyView, AdminPanelView, AdminProfileSettingsView } from "./components/ProfileViews";
 import { AccessGate } from "./components/AccessGate";
 import { ConnectionsView } from "./components/Connections";
@@ -181,6 +189,20 @@ import {
   isLiveSessionActive,
   stopActiveGlobalLiveSession,
 } from "./lib/gemini-live";
+import {
+  getMicListeningSettings,
+  saveMicListeningSettings,
+  SMART_VAD_CDN_CONFIG,
+  getSmartListenVadOptions,
+  getSmartVadTelemetry,
+  updateSmartVadTelemetry,
+  SmartListenSensitivity,
+  SmartVadTelemetry,
+  NativeMicMode,
+  NativeMicFilterStatus,
+  getNativeMicFilterStatus,
+  isNativeMicConfigured,
+} from "./lib/cleanVoiceAndVad";
 import { PcLayout, PcNavItem } from "./components/pc/PcLayout";
 import { officeEvents, officeEngine } from "./components/pc/office/officeEngine";
 import { OfficeLayoutEditorModal } from "./components/pc/office/OfficeLayoutEditorModal";
@@ -1089,6 +1111,8 @@ type AppView =
   | "affection"
   | "tts-model"
   | "mic-listening"
+  | "smart-listening"
+  | "native-mic"
   | "voice-list"
   | "language-list"
   | "response-style-list"
@@ -1328,22 +1352,24 @@ const VoiceCheckView = ({
   // Real Gemini Key Validation
   const checkGeminiKeyReal = async (keyStr?: string): Promise<"ok" | "missing" | "invalid"> => {
     const rawKey = (keyStr || apiKeys.gemini || "").trim();
-    if (!rawKey) return "missing";
+    if (!rawKey) {
+      const serverReady = await fetchServerGeminiStatus(true);
+      return serverReady ? "ok" : "missing";
+    }
 
     try {
       const controller = new AbortController();
       const timeoutId = setTimeout(() => controller.abort(), 4000);
-      const res = await fetch(
-        `https://generativelanguage.googleapis.com/v1beta/models?pageSize=200&key=${encodeURIComponent(rawKey)}`,
-        {
-          headers: { "x-goog-api-key": rawKey },
-          signal: controller.signal
-        }
-      );
+      const res = await fetch("/api/gemini/verify", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ apiKey: rawKey }),
+        signal: controller.signal,
+      });
       clearTimeout(timeoutId);
       if (res.ok) return "ok";
       const data = await res.json().catch(() => ({}));
-      if (data && data.error && (data.error.code === 400 || data.error.code === 403) && data.error.status === "UNAUTHENTICATED") {
+      if (res.status === 401 || res.status === 403 || (data?.error && (data.error.code === 400 || data.error.code === 403))) {
         return "invalid";
       }
       return rawKey.length > 20 ? "ok" : "invalid";
@@ -1467,7 +1493,7 @@ const VoiceCheckView = ({
       const cleanKey = (getGeminiKey() || apiKeys.gemini || "").replace(/["'\r\n\t\s]+/g, "").trim();
       const chosenVoiceName = GEMINI_VOICES.find((v) => v.id === prefs.voiceName)?.id || prefs.voiceName || "Leda";
 
-      if (cleanKey) {
+      if (cleanKey || (await ensureGeminiReady())) {
         try {
           const data = await directGeminiTTS({
             text: sampleText,
@@ -2636,7 +2662,15 @@ export function App() {
         'voice-tuning', 'voice-debug', 'mic-listening'
       ];
       const nestedDevBars = ['error_log', 'app_status', 'find_problems', 'system_info'];
-      if (nestedDevBars.includes(id)) {
+      if (id === 'smart-listening' || (id === 'native-mic' && isAndroidApp())) {
+        setCurrentView("voice");
+        setTimeout(() => {
+          setCurrentView("mic-listening");
+          setTimeout(() => {
+            setCurrentView(id as AppView);
+          }, 50);
+        }, 50);
+      } else if (nestedDevBars.includes(id)) {
         setCurrentView("developer_tools");
         setTimeout(() => {
           setCurrentView(id as any);
@@ -3008,6 +3042,167 @@ export function App() {
   } | null>(null);
   const [micTestVolume, setMicTestVolume] = useState(0);
 
+  const [smartListenEnabled, setSmartListenEnabled] = useState<boolean>(() => getMicListeningSettings().smartListen);
+  const [smartListenSensitivity, setSmartListenSensitivity] = useState<SmartListenSensitivity>(() => getMicListeningSettings().smartListenSensitivity);
+  const [smartVadStatus, setSmartVadStatus] = useState<SmartVadTelemetry>(() => getSmartVadTelemetry());
+  const [nativeMicEnabled, setNativeMicEnabled] = useState<boolean>(() => getMicListeningSettings().nativeMic);
+  const [nativeMicMode, setNativeMicMode] = useState<NativeMicMode>(() => getMicListeningSettings().nativeMicMode);
+  const [nativeMicStatus, setNativeMicStatus] = useState<NativeMicFilterStatus>(() => getNativeMicFilterStatus());
+  const [isWarmReady, setIsWarmReady] = useState(false);
+  const warmedLiveSessionRef = useRef<GeminiLiveSession | null>(null);
+  const previewVadRef = useRef<any>(null);
+  const previewMicCtxRef = useRef<AudioContext | null>(null);
+  const [isSmartPreviewMicActive, setIsSmartPreviewMicActive] = useState(false);
+
+  const stopSmartListenPreview = useCallback(async () => {
+    const vad = previewVadRef.current;
+    previewVadRef.current = null;
+    setIsSmartPreviewMicActive(false);
+    if (vad) {
+      try {
+        await vad.destroy();
+      } catch {
+        try {
+          await vad.model?.release?.();
+        } catch {}
+      }
+      try {
+        vad._mediaStreamAudioSourceNode?.disconnect?.();
+      } catch {}
+      try {
+        vad._vadNode?.disconnect?.();
+      } catch {}
+    }
+    if (previewMicCtxRef.current && previewMicCtxRef.current.state !== "closed") {
+      try {
+        await previewMicCtxRef.current.close();
+      } catch {}
+      previewMicCtxRef.current = null;
+    }
+    if (!liveSessionRef.current) {
+      void stopGlobalMicStream();
+      updateSmartVadTelemetry({ speechDetected: false, probability: 0 });
+    }
+  }, []);
+
+  const startSmartListenPreview = useCallback(async (fromUserGesture: boolean) => {
+    if (previewVadRef.current || liveSessionRef.current) return;
+    if (!getMicListeningSettings().smartListen) return;
+    if (!fromUserGesture) {
+      try {
+        const perm = await navigator.permissions?.query?.({ name: "microphone" as PermissionName });
+        if (!perm || perm.state !== "granted") return;
+      } catch {
+        return;
+      }
+    }
+    try {
+      updateSmartVadTelemetry({ loading: true, error: null });
+      const isApp = isAndroidApp();
+      const stream = await getGlobalMicStream({
+        audio: isApp
+          ? { autoGainControl: true, noiseSuppression: true, echoCancellation: true }
+          : { echoCancellation: false, noiseSuppression: true, autoGainControl: false },
+      });
+      if (!stream || viewRef.current !== "smart-listening" || !getMicListeningSettings().smartListen) {
+        if (!liveSessionRef.current) void stopGlobalMicStream();
+        updateSmartVadTelemetry({ loading: false });
+        return;
+      }
+      const AudioCtx = window.AudioContext || (window as any).webkitAudioContext;
+      const ctx = new AudioCtx({ sampleRate: 48000, latencyHint: "interactive" });
+      if (ctx.state === "suspended") {
+        await ctx.resume().catch(() => {});
+      }
+      previewMicCtxRef.current = ctx;
+
+      const { MicVAD } = await import("@ricky0123/vad-web");
+      const vadOpts = getSmartListenVadOptions(getMicListeningSettings().smartListenSensitivity);
+      const vad = await MicVAD.new({
+        ...SMART_VAD_CDN_CONFIG,
+        ...vadOpts,
+        submitUserSpeechOnPause: false,
+        startOnLoad: false,
+        audioContext: ctx,
+        getStream: async () => stream,
+        pauseStream: async () => {},
+        resumeStream: async () => stream,
+        ortConfig: (ortInst) => {
+          try {
+            ortInst.env.wasm.numThreads = 1;
+            ortInst.env.logLevel = "error";
+          } catch {}
+        },
+        onFrameProcessed: (probs) => {
+          const curOpts = getSmartListenVadOptions(getMicListeningSettings().smartListenSensitivity);
+          updateSmartVadTelemetry({
+            ready: true,
+            loading: false,
+            speechDetected: probs.isSpeech >= curOpts.positiveSpeechThreshold,
+            probability: probs.isSpeech,
+            error: null,
+          });
+        },
+      });
+      if (viewRef.current !== "smart-listening" || !getMicListeningSettings().smartListen || liveSessionRef.current) {
+        try { await (vad as any).model?.release?.(); } catch {}
+        try { await ctx.close(); } catch {}
+        previewMicCtxRef.current = null;
+        if (!liveSessionRef.current) void stopGlobalMicStream();
+        return;
+      }
+      previewVadRef.current = vad;
+      await vad.start();
+      setIsSmartPreviewMicActive(true);
+      updateSmartVadTelemetry({ ready: true, loading: false, error: null });
+    } catch (err: any) {
+      const reason = String(err?.message || err || "VAD লোড ব্যর্থ");
+      saveMicListeningSettings({ smartListen: false });
+      updateSmartVadTelemetry({ ready: false, loading: false, speechDetected: false, probability: 0, error: reason });
+      setToast(`Smart Listening বন্ধ: ${reason}`);
+      void stopSmartListenPreview();
+    }
+  }, [stopSmartListenPreview]);
+
+  useEffect(() => {
+    const onSettingsChanged = (ev: Event) => {
+      const next = (ev as CustomEvent)?.detail || getMicListeningSettings();
+      setSmartListenEnabled(Boolean(next.smartListen));
+      setSmartListenSensitivity(next.smartListenSensitivity === "strict" ? "strict" : "normal");
+      setNativeMicEnabled(next.nativeMic !== false);
+      setNativeMicMode(next.nativeMicMode === "recognition" ? "recognition" : "communication");
+      if (previewVadRef.current) {
+        try {
+          previewVadRef.current.setOptions(getSmartListenVadOptions(next.smartListenSensitivity));
+        } catch {}
+      }
+    };
+    const onVadStatus = (ev: Event) => {
+      const detail = (ev as CustomEvent)?.detail;
+      if (detail) setSmartVadStatus(detail);
+    };
+    const onNativeMicStatus = (ev: Event) => {
+      const detail = (ev as CustomEvent)?.detail;
+      if (detail) setNativeMicStatus(detail);
+    };
+    window.addEventListener("rose-mic-settings-changed", onSettingsChanged);
+    window.addEventListener("rose-smart-vad-status", onVadStatus);
+    window.addEventListener("rose-native-mic-status", onNativeMicStatus);
+    return () => {
+      window.removeEventListener("rose-mic-settings-changed", onSettingsChanged);
+      window.removeEventListener("rose-smart-vad-status", onVadStatus);
+      window.removeEventListener("rose-native-mic-status", onNativeMicStatus);
+    };
+  }, []);
+
+  useEffect(() => {
+    if (currentView === "smart-listening" && smartListenEnabled && !liveSessionRef.current) {
+      void startSmartListenPreview(false);
+    } else if (currentView !== "smart-listening" && previewVadRef.current) {
+      void stopSmartListenPreview();
+    }
+  }, [currentView, smartListenEnabled, startSmartListenPreview, stopSmartListenPreview]);
+
   useEffect(() => {
     const currentVoice = VOICE_PRESETS.find(v => v.voiceName === prefs.voiceName);
     if (currentVoice && currentVoice.gender === 'male' && onlyFemaleVoices) {
@@ -3035,6 +3230,7 @@ export function App() {
     }
   });
   const [apiStatus, setApiStatus] = useState<Record<string, any>>({});
+  const [serverGeminiReady, setServerGeminiReady] = useState<boolean>(() => isServerGeminiConfigured());
   const [isVerifying, setIsVerifying] = useState<Record<string, boolean>>({});
   const [openaiModel] = useState("gpt-4o-mini"); // Easy to change to gpt-4o
 
@@ -3252,12 +3448,18 @@ export function App() {
     initGeminiKey().then(k => {
       if (k) setApiKeys(prev => ({ ...prev, gemini: k }));
     });
+    fetchServerGeminiStatus().then(setServerGeminiReady).catch(() => {});
+    const onServerStatusUpdate = () => setServerGeminiReady(isServerGeminiConfigured());
+    window.addEventListener("gemini_server_status_updated", onServerStatusUpdate);
     const loadOtherKeys = async () => {
       const { storage } = await import("./lib/storage");
       const groq = await storage.get("groq_api_keys");
       if (groq) setApiKeys(prev => ({ ...prev, groq }));
     };
     loadOtherKeys();
+    return () => {
+      window.removeEventListener("gemini_server_status_updated", onServerStatusUpdate);
+    };
   }, []);
   const [currentAction, setCurrentAction] = useState<ActionResponse | null>(null);
   const [isAssistantEnabled, setIsAssistantEnabled] = useState<boolean>(false);
@@ -3767,12 +3969,18 @@ export function App() {
       const outAn = outputAnalyserRef.current || liveSessionRef.current?.getOutputAnalyser() || null;
 
       let inVol = 0;
-      if (micAn && !isMutedRef.current) {
-        const dataArray = new Uint8Array(micAn.frequencyBinCount);
-        micAn.getByteFrequencyData(dataArray);
-        let sum = 0;
-        for (let i = 0; i < dataArray.length; i++) sum += dataArray[i];
-        inVol = sum / (dataArray.length * 255);
+      if (!isMutedRef.current) {
+        if (micAn) {
+          const dataArray = new Uint8Array(micAn.frequencyBinCount);
+          micAn.getByteFrequencyData(dataArray);
+          let sum = 0;
+          for (let i = 0; i < dataArray.length; i++) sum += dataArray[i];
+          inVol = sum / (dataArray.length * 255);
+        }
+        const nativeVol = liveSessionRef.current?.getNativeMicLevel?.() || 0;
+        if (nativeVol > inVol) {
+          inVol = nativeVol;
+        }
       }
 
       let outVol = 0;
@@ -5092,20 +5300,9 @@ export function App() {
           let headers: any = { "Content-Type": "application/json" };
 
           if (type === "gemini") {
-            const discoveredModels = await discoverAvailableFlashModels(cleanKey);
-            const m = getSavedWorkingTextModel() || TEXT_MODELS[0] || discoveredModels[0] || "";
-            const cleanM = m.replace(/^models\//, "").trim();
-            url = cleanM
-              ? `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(cleanM)}:generateContent?key=${encodeURIComponent(cleanKey)}`
-              : `https://generativelanguage.googleapis.com/v1beta/models?key=${encodeURIComponent(cleanKey)}&pageSize=10`;
-            method = cleanM ? "POST" : "GET";
-            headers["x-goog-api-key"] = cleanKey;
-            body = cleanM
-              ? JSON.stringify({
-                  contents: [{ role: "user", parts: [{ text: "hi" }] }],
-                  generationConfig: { maxOutputTokens: 2 },
-                })
-              : null;
+            url = "/api/gemini/verify";
+            method = "POST";
+            body = JSON.stringify({ apiKey: cleanKey });
           } else if (type === "groq") {
             url = `https://api.groq.com/openai/v1/models`;
             headers["Authorization"] = `Bearer ${cleanKey}`;
@@ -5192,7 +5389,7 @@ export function App() {
 
   const callLLM = async (_provider: "groq" | "openai", prompt: string, keys: string) => {
     const cleanKey = (getGeminiKey() || apiKeys.gemini || keys || "").split(",")[0].replace(/["'\r\n\t\s]+/g, "").trim();
-    if (!cleanKey) {
+    if (!(await ensureGeminiReady(cleanKey))) {
       throw new Error("Add your Gemini key in Settings > Connections.");
     }
     const result = await directGeminiGenerate({
@@ -5231,7 +5428,7 @@ export function App() {
 
     try {
       const geminiKey = (getGeminiKey() || apiKeys.gemini || "").replace(/["'\r\n\t\s]+/g, "").trim();
-      if (!geminiKey) {
+      if (!(await ensureGeminiReady(geminiKey))) {
         setToast("Add your Gemini key in Settings > Connections.");
         setStatus("idle");
         return;
@@ -6059,7 +6256,7 @@ export function App() {
 
   const handleAutoDetectTtsModels = useCallback(async () => {
     const key = (getGeminiKey() || apiKeysRef.current.gemini || "").replace(/[\r\n\t\s"']+/g, "").trim();
-    if (!key) {
+    if (!(await ensureGeminiReady(key))) {
       setToast("Gemini API Key দেওয়া হয়নি, Settings → Connections-এ key দিন");
       return;
     }
@@ -6107,7 +6304,7 @@ export function App() {
       try {
         const currentKey = getGeminiKey() || apiKeysRef.current.gemini || "";
         const sanitizedKey = currentKey.replace(/[\r\n\t\s"']+/g, "").trim();
-        if (!sanitizedKey) {
+        if (!(await ensureGeminiReady(sanitizedKey))) {
           return { error: "Gemini key নেই। Settings → Connections-এ key দিন।" };
         }
         const preset = getVoicePreset(prefsRef.current.voiceName);
@@ -6798,9 +6995,10 @@ export function App() {
       const initialGeminiKey = (getGeminiKey() || apiKeysRef.current.gemini || "")
         .replace(/["'\r\n\t\s]+/g, "")
         .trim();
+      const hasGemini = await ensureGeminiReady(initialGeminiKey);
       const initialGroqKey = getStoredGroqKey();
       const currentEngine = getSelectedChatEngine();
-      if (!initialGeminiKey && (isTypedChat ? !initialGroqKey : currentEngine === "gemini")) {
+      if (!hasGemini && (isTypedChat ? !initialGroqKey : currentEngine === "gemini")) {
         isProcessingGeminiRef.current = false;
         isBusyRef.current = false;
         setStatus("idle");
@@ -7013,8 +7211,9 @@ export function App() {
         const selectedEngineKey = getProviderKey(activeChatEngine);
         const selectedEngineStatus = getProviderStatus(activeChatEngine);
 
+        const geminiReady = await ensureGeminiReady(sanitizedKey);
         if (isTypedChat) {
-          if (!selectedEngineKey || selectedEngineStatus === "INVALID" || (activeChatEngine === "gemini" && !sanitizedKey)) {
+          if ((activeChatEngine !== "gemini" && !selectedEngineKey) || selectedEngineStatus === "INVALID" || (activeChatEngine === "gemini" && !geminiReady)) {
             const missingMsg = activeChatEngine === "gemini" 
               ? "CONNECTIONS-এ Gemini key সেভ করো"
               : `${activeProviderConfig.displayName || activeProviderConfig.name}-এর key দিন বা অন্য সেবা বাছুন`;
@@ -7032,7 +7231,7 @@ export function App() {
             return;
           }
         } else {
-          if (!sanitizedKey) {
+          if (!geminiReady) {
             throw new Error("Add your Gemini key in Settings > Connections.");
           }
         }
@@ -7434,7 +7633,7 @@ export function App() {
           sentenceBuffer = "";
         }
 
-        if (rememberMeRef.current && sanitizedKey) {
+        if (rememberMeRef.current && hasUsableGeminiKey(sanitizedKey)) {
           extractAndSaveMemoriesFromTurn(userText, finalCleanedReply, sanitizedKey);
         }
 
@@ -7462,7 +7661,7 @@ export function App() {
             }
           }
         } else {
-          const realFormatted = !sanitizedKey ? NO_GEMINI_KEY_MSG : formatRealGeminiError(err);
+          const realFormatted = !hasUsableGeminiKey(sanitizedKey) ? NO_GEMINI_KEY_MSG : formatRealGeminiError(err);
 
           setLiveErrorMsg(realFormatted);
           if (replyMode === "voice") {
@@ -7954,7 +8153,7 @@ export function App() {
               try {
                 const currentKey = getGeminiKey() || apiKeysRef.current.gemini || "";
                 const sanitizedKey = currentKey.replace(/["'\r\n\t\s]+/g, "").trim();
-                if (!sanitizedKey) {
+                if (!(await ensureGeminiReady(sanitizedKey))) {
                   throw new Error("Add your Gemini key in Settings > Connections.");
                 }
 
@@ -8813,7 +9012,7 @@ export function App() {
         const tAnsStart = Date.now();
 
         const cleanKey = (key || getGeminiKey() || apiKeys.gemini || "").replace(/["'\r\n\t\s]+/g, "").trim();
-        if (!cleanKey) {
+        if (!(await ensureGeminiReady(cleanKey))) {
           setToast("Add your Gemini key in Settings > Connections.");
           throw new Error("Add your Gemini key in Settings > Connections.");
         }
@@ -8956,7 +9155,7 @@ export function App() {
 
     // Requirement 1: Before any chat or live request, if no Gemini key is stored, immediately show message (no spinner)
     const geminiKey = (getGeminiKey() || apiKeysRef.current.gemini || "").replace(/["'\r\n\t\s]+/g, "").trim();
-    if (!geminiKey) {
+    if (!(await ensureGeminiReady(geminiKey))) {
       isProcessingGeminiRef.current = false;
       isBusyRef.current = false;
       setStatus("idle");
@@ -8971,6 +9170,10 @@ export function App() {
     }
 
     const startAttemptId = ++callStartAttemptRef.current;
+    // Stop any Smart Listening preview VAD before acquiring call mic stream
+    if (previewVadRef.current) {
+      await stopSmartListenPreview();
+    }
     // Close any prior live session and stop any fallback TTS/recognition immediately before starting
     cancelAllSpeechAndAudio(true);
     stopRecorderVadLoop(true);
@@ -8987,11 +9190,9 @@ export function App() {
     setLiveBottomError(null);
     setLiveReconnectStatus(null);
     // Requirement 4.6: Warm up TTS & API connections on call start
-    if (geminiKey) {
-      try {
-        fetch(`https://generativelanguage.googleapis.com/v1beta/models?pageSize=1&key=${encodeURIComponent(geminiKey)}`, { mode: 'no-cors' }).catch(() => {});
-      } catch (e) {}
-    }
+    try {
+      fetch("/api/gemini/status").catch(() => {});
+    } catch (e) {}
 
     // Requirement 2a: Create separate persistent input and output AudioContexts and call await ctx.resume()
     ensureAudioContext();
@@ -9014,46 +9215,51 @@ export function App() {
       try { await outputAudioCtxRef.current.resume(); } catch(e) {}
     }
 
-    // Requirement 2a & 3: getUserMedia call & error handling
+    // Requirement 2a & 3: getUserMedia call & error handling (skipped when Android Native Mic is On)
+    const useNativeMicForCall = isNativeMicConfigured();
     let micStream: MediaStream | null = null;
-    if (typeof navigator === "undefined" || !navigator.mediaDevices || typeof navigator.mediaDevices.getUserMedia !== "function") {
-      setDiagGetUserMediaStatus("error unsupported");
-      triggerLiveBottomError("মাইক পাওয়া যায়নি");
-      setToast("মাইক পাওয়া যায়নি");
-      return;
-    }
-    try {
-      setBrowserAudioSessionType("play-and-record");
-      const isApp = isAndroidApp();
-      micStream = await getGlobalMicStream({
-        audio: isApp
-          ? {
-              autoGainControl: true,
-              noiseSuppression: true,
-              echoCancellation: true,
-            }
-          : {
-              echoCancellation: false,
-              noiseSuppression: true,
-              autoGainControl: false,
-            },
-      });
-      setDiagGetUserMediaStatus("ok");
-    } catch (err: any) {
-      console.error("getUserMedia error:", err);
-      const errName = String(err?.name || "");
-      const errMsg = String(err?.message || err || "");
-      const isDenied = errName === 'NotAllowedError' || errName === 'PermissionDeniedError' || errMsg.toLowerCase().includes('denied');
-      const isNotFound = errName === 'NotFoundError' || errName === 'DevicesNotFoundError' || /device not found|requested device not found/i.test(errMsg);
-      const errText = isNotFound
-        ? "মাইক পাওয়া যায়নি"
-        : isDenied
-        ? "মাইক্রোফোনের অনুমতি নেই। Chrome এর তালা আইকনে চেপে Microphone Allow করুন।"
-        : `getUserMedia error: ${errMsg}`;
-      setDiagGetUserMediaStatus(`error ${errMsg || 'denied'}`);
-      triggerLiveBottomError(errText);
-      setToast(errText);
-      return;
+    if (useNativeMicForCall) {
+      setDiagGetUserMediaStatus("native-mic");
+    } else {
+      if (typeof navigator === "undefined" || !navigator.mediaDevices || typeof navigator.mediaDevices.getUserMedia !== "function") {
+        setDiagGetUserMediaStatus("error unsupported");
+        triggerLiveBottomError("মাইক পাওয়া যায়নি");
+        setToast("মাইক পাওয়া যায়নি");
+        return;
+      }
+      try {
+        setBrowserAudioSessionType("play-and-record");
+        const isApp = isAndroidApp();
+        micStream = await getGlobalMicStream({
+          audio: isApp
+            ? {
+                autoGainControl: true,
+                noiseSuppression: true,
+                echoCancellation: true,
+              }
+            : {
+                echoCancellation: false,
+                noiseSuppression: true,
+                autoGainControl: false,
+              },
+        });
+        setDiagGetUserMediaStatus("ok");
+      } catch (err: any) {
+        console.error("getUserMedia error:", err);
+        const errName = String(err?.name || "");
+        const errMsg = String(err?.message || err || "");
+        const isDenied = errName === 'NotAllowedError' || errName === 'PermissionDeniedError' || errMsg.toLowerCase().includes('denied');
+        const isNotFound = errName === 'NotFoundError' || errName === 'DevicesNotFoundError' || /device not found|requested device not found/i.test(errMsg);
+        const errText = isNotFound
+          ? "মাইক পাওয়া যায়নি"
+          : isDenied
+          ? "মাইক্রোফোনের অনুমতি নেই। Chrome এর তালা আইকনে চেপে Microphone Allow করুন।"
+          : `getUserMedia error: ${errMsg}`;
+        setDiagGetUserMediaStatus(`error ${errMsg || 'denied'}`);
+        triggerLiveBottomError(errText);
+        setToast(errText);
+        return;
+      }
     }
 
     if (callStartAttemptRef.current !== startAttemptId || !isCallScreenOpenRef.current) {
@@ -9078,7 +9284,13 @@ export function App() {
       ? ADMIN_DISPLAY_NAME
       : getEffectiveUserName(settingsRef.current.ownerName, OWNER_NAME);
 
-    const session = new GeminiLiveSession({
+    const warmedSession = warmedLiveSessionRef.current;
+    if (warmedSession) {
+      warmedLiveSessionRef.current = null;
+    }
+    setIsWarmReady(false);
+
+    const callOptions = {
       apiKey: geminiKey,
       assistantName: settingsRef.current.assistantName,
       ownerName: effectiveCallOwnerName,
@@ -9091,317 +9303,347 @@ export function App() {
       systemInstruction: buildSystemInstruction(settingsRef.current, prefsRef.current, true),
       audioContext: currentCtx as AudioContext,
       playbackAudioContext: outputAudioCtxRef.current as AudioContext,
-      onToast: (msg) => setToast(msg),
-      micStream: micStream,
+      onToast: (msg: string) => setToast(msg),
+      micStream: micStream || undefined,
+      useNativeMic: useNativeMicForCall,
       backgroundCallEnabled: prefsRef.current.backgroundCallEnabled,
-       floatingCallEnabled: prefsRef.current.floatingCallEnabled,
-      onStateChange: (state) => {
-        if (liveSessionRef.current !== session) return;
-        if (state === 'listening') transitionToState("LISTENING");
-        else if (state === 'thinking') transitionToState("THINKING");
-        else if (state === 'speaking') transitionToState("SPEAKING");
-        else if (state === 'off') {
-           if (isCallScreenOpenRef.current && isAssistantEnabledRef.current) {
-             transitionToState("IDLE");
-           }
-        }
-      },
-      onTranscription: (role, text, isFinal) => {
-        if (liveSessionRef.current !== session) return;
-        const rawClean = (text || "").trim();
-        const speaker = role === 'assistant' ? 'rose' : 'user';
-        const streamId = speaker === "user" ? "live-stream-user" : "live-stream-rose";
-        const isPlaceholderText = (t: string) =>
-          t === "শুনছি..." || t === "শুনছি…" || t === "…" || t === "...";
-        const hasForeignScript = (t: string) => {
-          if (!t) return false;
-          try {
-            return /[^\p{Script=Bengali}\p{Script=Latin}\p{N}\p{P}\p{Z}\p{S}\s]/u.test(t);
-          } catch {
-            return /[\u0600-\u06FF\u0750-\u077F\u08A0-\u08FF\u0900-\u097F\u0A00-\u0DFF\u0E00-\u0EFF\u0F00-\u1FFF\u2C00-\uD7FF\uF900-\uFEFF\u0400-\u04FF\u0370-\u03FF\u0590-\u05FF]/.test(t);
+      floatingCallEnabled: prefsRef.current.floatingCallEnabled,
+      onWarmReadyChange: (ready: boolean) => setIsWarmReady(ready),
+    };
+
+    let session: GeminiLiveSession;
+    const canReuseWarmed =
+      Boolean(warmedSession && warmedSession.isWarmReadyAndOpen()) &&
+      getMicListeningSettings().smartListen &&
+      !getMicListeningSettings().streetMode;
+
+    if (canReuseWarmed && warmedSession) {
+      session = warmedSession;
+    } else {
+      if (warmedSession) {
+        try { warmedSession.stop(); } catch {}
+      }
+      session = new GeminiLiveSession(callOptions);
+    }
+
+    const bindCallbacksAndWire = (targetSession: GeminiLiveSession) => {
+      Object.assign((targetSession as any).options, {
+        ...callOptions,
+        onStateChange: (state: 'connecting' | 'listening' | 'thinking' | 'speaking' | 'off') => {
+          if (liveSessionRef.current !== targetSession) return;
+          if (state === 'listening') transitionToState("LISTENING");
+          else if (state === 'thinking') transitionToState("THINKING");
+          else if (state === 'speaking') transitionToState("SPEAKING");
+          else if (state === 'off') {
+            if (isCallScreenOpenRef.current && isAssistantEnabledRef.current) {
+              transitionToState("IDLE");
+            }
           }
-        };
-
-        // Remove placeholder if Rose starts speaking or if user turn completes with empty/foreign text
-        if (
-          speaker === 'user' &&
-          isFinal &&
-          (!rawClean || isPlaceholderText(rawClean) || hasForeignScript(rawClean))
-        ) {
-          setInterimSpeechText("");
-          setChatHistory((prev) => prev.filter((m) => m.id !== streamId));
-          return;
-        }
-
-        if (speaker === 'user' && !isFinal && hasForeignScript(rawClean)) {
-          updateLiveCaption(speaker, "…");
-          setInterimSpeechText("…");
-          const placeholderTime = new Date().toLocaleTimeString([], {
-            hour: "2-digit",
-            minute: "2-digit",
-          });
-          setChatHistory((prev) => {
-            const existingIdx = prev.findIndex((m) => m.id === streamId);
-            if (existingIdx !== -1) {
-              return prev.map((m, idx) =>
-                idx === existingIdx ? { ...m, text: "…", content: "…" } : m
-              );
-            }
-            return [
-              ...prev,
-              {
-                id: streamId,
-                role: speaker,
-                text: "…",
-                content: "…",
-                time: placeholderTime,
-                replyMode: "voice",
-              },
-            ];
-          });
-          return;
-        }
-
-        if (!rawClean) return;
-        const cleanText =
-          role === "assistant"
-            ? isFinal
-              ? stripStageCues(cleanAssistantReplyText(rawClean, prefsRef.current.language))
-              : stripStageCues(rawClean)
-            : rawClean;
-        if (!cleanText) return;
-        
-        // If Rose starts speaking, finalize any unfinalized user stream bubble as 'user' cleanly (or drop placeholders)
-        if (speaker === 'rose') {
-          setChatHistory((prev) => {
-            const hasStreamUser = prev.some((m) => m.id === 'live-stream-user');
-            if (!hasStreamUser) return prev;
-            const finalizedId = `msg-${Date.now()}-${Math.random().toString(36).substring(2, 7)}`;
-            const next = prev
-              .filter(
-                (m) => !(m.id === 'live-stream-user' && isPlaceholderText((m.text || '').trim()))
-              )
-              .map((m) =>
-                m.id === 'live-stream-user' ? { ...m, id: finalizedId, role: 'user' as const } : m
-              );
-            chatHistoryRef.current = next;
-            return next;
-          });
-        }
-
-        updateLiveCaption(speaker, cleanText);
-
-        const nowTime = new Date().toLocaleTimeString([], {
-          hour: "2-digit",
-          minute: "2-digit",
-        });
-
-        if (isFinal) {
-          setChatHistory((prev) => {
-            const cleanedPrev = prev.filter(
-              (m) => !(m.id === streamId && isPlaceholderText((m.text || '').trim()))
-            );
-            const existingIdx = cleanedPrev.findIndex((m) => m.id === streamId);
-            const last = cleanedPrev[cleanedPrev.length - 1];
-            const finalId = `msg-${Date.now()}-${Math.random().toString(36).substring(2, 7)}`;
-            let next: Message[];
-            if (existingIdx !== -1) {
-              next = cleanedPrev.map((m, idx) =>
-                idx === existingIdx
-                  ? {
-                      ...m,
-                      id: finalId,
-                      role: speaker,
-                      text: cleanText,
-                      content: cleanText,
-                      time: m.time || nowTime,
-                      replyMode: "voice",
-                    }
-                  : m
-              );
-            } else if (
-              last &&
-              last.role === speaker &&
-              (last.text || last.content || "").trim() === cleanText
-            ) {
-              return cleanedPrev;
-            } else {
-              next = [
-                ...cleanedPrev,
-                {
-                  id: finalId,
-                  role: speaker,
-                  text: cleanText,
-                  content: cleanText,
-                  time: nowTime,
-                  replyMode: "voice",
-                },
-              ];
-            }
-            chatHistoryRef.current = next;
+        },
+        onTranscription: (role: 'user' | 'assistant', text: string, isFinal?: boolean) => {
+          if (liveSessionRef.current !== targetSession) return;
+          const rawClean = (text || "").trim();
+          const speaker = role === 'assistant' ? 'rose' : 'user';
+          const streamId = speaker === "user" ? "live-stream-user" : "live-stream-rose";
+          const isPlaceholderText = (t: string) =>
+            t === "শুনছি..." || t === "শুনছি…" || t === "…" || t === "...";
+          const hasForeignScript = (t: string) => {
+            if (!t) return false;
             try {
-              const serialized = JSON.stringify(next);
-              localStorage.setItem("iyabd_chat_history", serialized);
-              localStorage.setItem("rose_messages", serialized);
-            } catch (e) {}
-            return next;
-          });
-        } else {
-          setChatHistory((prev) => {
-            const existingIdx = prev.findIndex((m) => m.id === streamId);
-            let next: Message[];
-            if (existingIdx !== -1) {
-              next = prev.map((m, idx) =>
-                idx === existingIdx
-                  ? {
-                      ...m,
-                      role: speaker,
-                      text: cleanText,
-                      content: cleanText,
-                      replyMode: "voice",
-                    }
-                  : m
-              );
-            } else {
-              next = [
+              return /[^\p{Script=Bengali}\p{Script=Latin}\p{N}\p{P}\p{Z}\p{S}\s]/u.test(t);
+            } catch {
+              return /[\u0600-\u06FF\u0750-\u077F\u08A0-\u08FF\u0900-\u097F\u0A00-\u0DFF\u0E00-\u0EFF\u0F00-\u1FFF\u2C00-\uD7FF\uF900-\uFEFF\u0400-\u04FF\u0370-\u03FF\u0590-\u05FF]/.test(t);
+            }
+          };
+
+          if (
+            speaker === 'user' &&
+            isFinal &&
+            (!rawClean || isPlaceholderText(rawClean) || hasForeignScript(rawClean))
+          ) {
+            setInterimSpeechText("");
+            setChatHistory((prev) => prev.filter((m) => m.id !== streamId));
+            return;
+          }
+
+          if (speaker === 'user' && !isFinal && hasForeignScript(rawClean)) {
+            updateLiveCaption(speaker, "…");
+            setInterimSpeechText("…");
+            const placeholderTime = new Date().toLocaleTimeString([], {
+              hour: "2-digit",
+              minute: "2-digit",
+            });
+            setChatHistory((prev) => {
+              const existingIdx = prev.findIndex((m) => m.id === streamId);
+              if (existingIdx !== -1) {
+                return prev.map((m, idx) =>
+                  idx === existingIdx ? { ...m, text: "…", content: "…" } : m
+                );
+              }
+              return [
                 ...prev,
                 {
                   id: streamId,
                   role: speaker,
-                  text: cleanText,
-                  content: cleanText,
-                  time: nowTime,
+                  text: "…",
+                  content: "…",
+                  time: placeholderTime,
                   replyMode: "voice",
                 },
               ];
-            }
-            chatHistoryRef.current = next;
-            return next;
-          });
-        }
+            });
+            return;
+          }
 
-        if (role === 'user') {
-          setInterimSpeechText(isFinal ? "" : cleanText);
-          setDiagHeardText(cleanText);
+          if (!rawClean) return;
+          const cleanText =
+            role === "assistant"
+              ? isFinal
+                ? stripStageCues(cleanAssistantReplyText(rawClean, prefsRef.current.language))
+                : stripStageCues(rawClean)
+              : rawClean;
+          if (!cleanText) return;
+
+          if (speaker === 'rose') {
+            setChatHistory((prev) => {
+              const hasStreamUser = prev.some((m) => m.id === 'live-stream-user');
+              if (!hasStreamUser) return prev;
+              const finalizedId = `msg-${Date.now()}-${Math.random().toString(36).substring(2, 7)}`;
+              const next = prev
+                .filter(
+                  (m) => !(m.id === 'live-stream-user' && isPlaceholderText((m.text || '').trim()))
+                )
+                .map((m) =>
+                  m.id === 'live-stream-user' ? { ...m, id: finalizedId, role: 'user' as const } : m
+                );
+              chatHistoryRef.current = next;
+              return next;
+            });
+          }
+
+          updateLiveCaption(speaker, cleanText);
+
+          const nowTime = new Date().toLocaleTimeString([], {
+            hour: "2-digit",
+            minute: "2-digit",
+          });
 
           if (isFinal) {
-            const toolAlreadyHandled = session.wasPhoneToolHandledInTurn?.() || false;
-            const assistantAlreadyReplied = session.didAssistantReplyInTurn?.() || false;
-            if (toolAlreadyHandled) {
-              return;
-            }
-            const liveOwnerName = adminModeForCall
-              ? ADMIN_DISPLAY_NAME
-              : getEffectiveUserName(settingsRef.current.ownerName, OWNER_NAME);
-            void (async () => {
-              // Handle pending 3s cancel ("না"/"থামো"/cancel/no) or contact choice ("১"/"২") if active
-              if (hasPendingPhoneInteraction()) {
-                const pendingRes = await handlePendingPhoneUserReply(cleanText);
-                if (pendingRes.handled && pendingRes.reply) {
-                  if (!assistantAlreadyReplied) {
-                    session.injectSystemInstructionToSpeak(pendingRes.reply);
-                  }
-                  return;
-                }
+            setChatHistory((prev) => {
+              const cleanedPrev = prev.filter(
+                (m) => !(m.id === streamId && isPlaceholderText((m.text || '').trim()))
+              );
+              const existingIdx = cleanedPrev.findIndex((m) => m.id === streamId);
+              const last = cleanedPrev[cleanedPrev.length - 1];
+              const finalId = `msg-${Date.now()}-${Math.random().toString(36).substring(2, 7)}`;
+              let next: Message[];
+              if (existingIdx !== -1) {
+                next = cleanedPrev.map((m, idx) =>
+                  idx === existingIdx
+                    ? {
+                        ...m,
+                        id: finalId,
+                        role: speaker,
+                        text: cleanText,
+                        content: cleanText,
+                        time: m.time || nowTime,
+                        replyMode: "voice",
+                      }
+                    : m
+                );
+              } else if (
+                last &&
+                last.role === speaker &&
+                (last.text || last.content || "").trim() === cleanText
+              ) {
+                return cleanedPrev;
+              } else {
+                next = [
+                  ...cleanedPrev,
+                  {
+                    id: finalId,
+                    role: speaker,
+                    text: cleanText,
+                    content: cleanText,
+                    time: nowTime,
+                    replyMode: "voice",
+                  },
+                ];
               }
+              chatHistoryRef.current = next;
+              try {
+                const serialized = JSON.stringify(next);
+                localStorage.setItem("iyabd_chat_history", serialized);
+                localStorage.setItem("rose_messages", serialized);
+              } catch (e) {}
+              return next;
+            });
+          } else {
+            setChatHistory((prev) => {
+              const existingIdx = prev.findIndex((m) => m.id === streamId);
+              let next: Message[];
+              if (existingIdx !== -1) {
+                next = prev.map((m, idx) =>
+                  idx === existingIdx
+                    ? {
+                        ...m,
+                        role: speaker,
+                        text: cleanText,
+                        content: cleanText,
+                        replyMode: "voice",
+                      }
+                    : m
+                );
+              } else {
+                next = [
+                  ...prev,
+                  {
+                    id: streamId,
+                    role: speaker,
+                    text: cleanText,
+                    content: cleanText,
+                    time: nowTime,
+                    replyMode: "voice",
+                  },
+                ];
+              }
+              chatHistoryRef.current = next;
+              return next;
+            });
+          }
 
-              let res = await routePcCommandMessage(cleanText, {
-                userName: liveOwnerName,
-                source: isPcLayoutActive ? 'pc' : 'mobile',
-                isVoiceCall: true,
-                onToast: (msg) => setToast(msg),
-              });
-              if (!res.matched) {
-                res = await routeUserMessageForTeamTask(cleanText, {
+          if (role === 'user') {
+            setInterimSpeechText(isFinal ? "" : cleanText);
+            setDiagHeardText(cleanText);
+
+            if (isFinal) {
+              const toolAlreadyHandled = targetSession.wasPhoneToolHandledInTurn?.() || false;
+              const assistantAlreadyReplied = targetSession.didAssistantReplyInTurn?.() || false;
+              if (toolAlreadyHandled) {
+                return;
+              }
+              const liveOwnerName = adminModeForCall
+                ? ADMIN_DISPLAY_NAME
+                : getEffectiveUserName(settingsRef.current.ownerName, OWNER_NAME);
+              void (async () => {
+                if (hasPendingPhoneInteraction()) {
+                  const pendingRes = await handlePendingPhoneUserReply(cleanText);
+                  if (pendingRes.handled && pendingRes.reply) {
+                    if (!assistantAlreadyReplied) {
+                      targetSession.injectSystemInstructionToSpeak(pendingRes.reply);
+                    }
+                    return;
+                  }
+                }
+
+                let res = await routePcCommandMessage(cleanText, {
                   userName: liveOwnerName,
                   source: isPcLayoutActive ? 'pc' : 'mobile',
                   isVoiceCall: true,
                   onToast: (msg) => setToast(msg),
-                  setCurrentView: (v: string) => setCurrentView(v as any),
-                  openPage: (v: string) => openSettingsPage(v),
-                  clearChatCallback: () => {
-                    setChatHistory([]);
-                    chatHistoryRef.current = [];
-                    try {
-                      localStorage.removeItem("iyabd_chat_history");
-                      localStorage.removeItem("rose_messages");
-                    } catch {}
-                  },
-                  pendingClearChatState: pendingClearChatStateRef.current,
-                  setPendingClearChatState: (st) => { pendingClearChatStateRef.current = st; },
-                  pendingNavClarifyState: pendingNavClarifyStateRef.current,
-                  setPendingNavClarifyState: (st) => { pendingNavClarifyStateRef.current = st; },
                 });
-              }
-              if (res.matched && res.roseReply && res.type !== 'phone' && !assistantAlreadyReplied) {
-                session.injectSystemInstructionToSpeak(res.roseReply);
-              }
-            })();
+                if (!res.matched) {
+                  res = await routeUserMessageForTeamTask(cleanText, {
+                    userName: liveOwnerName,
+                    source: isPcLayoutActive ? 'pc' : 'mobile',
+                    isVoiceCall: true,
+                    onToast: (msg) => setToast(msg),
+                    setCurrentView: (v: string) => setCurrentView(v as any),
+                    openPage: (v: string) => openSettingsPage(v),
+                    clearChatCallback: () => {
+                      setChatHistory([]);
+                      chatHistoryRef.current = [];
+                      try {
+                        localStorage.removeItem("iyabd_chat_history");
+                        localStorage.removeItem("rose_messages");
+                      } catch {}
+                    },
+                    pendingClearChatState: pendingClearChatStateRef.current,
+                    setPendingClearChatState: (st) => { pendingClearChatStateRef.current = st; },
+                    pendingNavClarifyState: pendingNavClarifyStateRef.current,
+                    setPendingNavClarifyState: (st) => { pendingNavClarifyStateRef.current = st; },
+                  });
+                }
+                if (res.matched && res.roseReply && res.type !== 'phone' && !assistantAlreadyReplied) {
+                  targetSession.injectSystemInstructionToSpeak(res.roseReply);
+                }
+              })();
+            }
           }
-        }
-      },
-      onTurnComplete: () => {
-        if (liveSessionRef.current !== session) return;
-        setInterimSpeechText("");
-        if (captionFadeTimerRef.current) clearTimeout(captionFadeTimerRef.current);
-        captionFadeTimerRef.current = setTimeout(() => {
-          setActiveCaption(null);
-        }, 3000);
-      },
-      onError: (msg) => {
-        if (liveSessionRef.current !== session) return;
-        setDiagLastError(msg);
-        setLiveErrorMsg(msg);
-        triggerLiveBottomError(msg);
-        setToast(msg);
-      },
-      onReconnectStatus: (status, message) => {
-        if (liveSessionRef.current !== session) return;
-        if (status === 'reconnecting') {
-          setLiveReconnectStatus(message || "Reconnecting…");
-        } else if (status === 'connected') {
-          setLiveReconnectStatus(null);
-          const micAn = session.getMicAnalyser();
-          const outAn = session.getOutputAnalyser();
-          if (micAn) {
-            analyserRef.current = micAn;
-            currentAnalyserRef.current = micAn;
+        },
+        onTurnComplete: () => {
+          if (liveSessionRef.current !== targetSession) return;
+          setInterimSpeechText("");
+          if (captionFadeTimerRef.current) clearTimeout(captionFadeTimerRef.current);
+          captionFadeTimerRef.current = setTimeout(() => {
+            setActiveCaption(null);
+          }, 3000);
+        },
+        onError: (msg: string) => {
+          if (liveSessionRef.current !== targetSession) return;
+          setDiagLastError(msg);
+          setLiveErrorMsg(msg);
+          triggerLiveBottomError(msg);
+          setToast(msg);
+        },
+        onReconnectStatus: (status: 'reconnecting' | 'connected' | 'failed', message?: string) => {
+          if (liveSessionRef.current !== targetSession) return;
+          if (status === 'reconnecting') {
+            setLiveReconnectStatus(message || "Reconnecting…");
+          } else if (status === 'connected') {
+            setLiveReconnectStatus(null);
+            const micAn = targetSession.getMicAnalyser();
+            const outAn = targetSession.getOutputAnalyser();
+            if (micAn) {
+              analyserRef.current = micAn;
+              currentAnalyserRef.current = micAn;
+            }
+            if (outAn) {
+              outputAnalyserRef.current = outAn;
+            }
+          } else if (status === 'failed') {
+            const lostMsg = message || "Connection lost, tap to start again";
+            setLiveReconnectStatus(null);
+            callStartTimeRef.current = null;
+            setIsCallScreenOpen(false);
+            isCallScreenOpenRef.current = false;
+            setIsCallMinimized(false);
+            setIsMuted(false);
+            isMutedRef.current = false;
+            setVoiceModeEnabled(false);
+            stopListening();
+            setLiveErrorMsg(lostMsg);
+            triggerLiveBottomError(lostMsg);
+            setToast(lostMsg);
           }
-          if (outAn) {
-            outputAnalyserRef.current = outAn;
+        },
+        onClose: () => {
+          if (liveSessionRef.current === targetSession) {
+            liveSessionRef.current = null;
           }
-        } else if (status === 'failed') {
-          const lostMsg = message || "Connection lost, tap to start again";
-          setLiveReconnectStatus(null);
-          callStartTimeRef.current = null;
-          setIsCallScreenOpen(false);
-          isCallScreenOpenRef.current = false;
-          setIsCallMinimized(false);
-          setIsMuted(false);
-          isMutedRef.current = false;
-          setVoiceModeEnabled(false);
-          stopListening();
-          setLiveErrorMsg(lostMsg);
-          triggerLiveBottomError(lostMsg);
-          setToast(lostMsg);
-        }
-      },
-      onClose: () => {
-        if (liveSessionRef.current === session) {
-          liveSessionRef.current = null;
-        }
-      },
-      onEndCall: () => {
-        if (liveSessionRef.current !== null && liveSessionRef.current !== session) return;
-        endLiveCallRef.current();
-      }
-    });
+        },
+        onEndCall: () => {
+          if (liveSessionRef.current !== null && liveSessionRef.current !== targetSession) return;
+          endLiveCallRef.current();
+        },
+      });
+    };
 
+    bindCallbacksAndWire(session);
     session.setMuted(false);
 
     liveSessionRef.current = session;
     transitionToState("LISTENING");
-    void session.start();
+    if (canReuseWarmed) {
+      void (async () => {
+        const promoted = await session.activateFromWarmUp((session as any).options);
+        if (!promoted && liveSessionRef.current === session && !session.isStopped()) {
+          await session.start();
+        }
+      })();
+    } else {
+      void session.start();
+    }
 
     let checkCount = 0;
     const checkInterval = setInterval(() => {
@@ -9415,7 +9657,103 @@ export function App() {
       }
       checkCount++;
     }, 80);
-  }, [transitionToState, ensureAudioContext, updateLiveCaption, triggerLiveBottomError, stopListening]);
+  }, [transitionToState, ensureAudioContext, updateLiveCaption, triggerLiveBottomError, stopListening, stopSmartListenPreview, isPcLayoutActive]);
+
+  // Background Warm-up when app opens (and after ending a call) for instant Smart Listening capture
+  useEffect(() => {
+    const geminiKey = (getGeminiKey() || apiKeys.gemini || "").replace(/["'\r\n\t\s]+/g, "").trim();
+    const geminiReady = Boolean(geminiKey) || serverGeminiReady;
+    if (
+      !smartListenEnabled ||
+      !settings.masterAccess ||
+      !geminiReady ||
+      isCallScreenOpen ||
+      isAssistantEnabled ||
+      liveSessionRef.current ||
+      getMicListeningSettings().streetMode
+    ) {
+      if (!smartListenEnabled && warmedLiveSessionRef.current) {
+        const prevWarm = warmedLiveSessionRef.current;
+        warmedLiveSessionRef.current = null;
+        setIsWarmReady(false);
+        try { prevWarm.stop(); } catch {}
+      }
+      return;
+    }
+
+    let cancelled = false;
+    try {
+      const AudioCtx = window.AudioContext || (window as any).webkitAudioContext;
+      if (AudioCtx) {
+        if (!inputAudioCtxRef.current || inputAudioCtxRef.current.state === "closed") {
+          inputAudioCtxRef.current = new AudioCtx({ sampleRate: 48000, latencyHint: "interactive" });
+        }
+        if (
+          !outputAudioCtxRef.current ||
+          outputAudioCtxRef.current.state === "closed" ||
+          outputAudioCtxRef.current === inputAudioCtxRef.current
+        ) {
+          outputAudioCtxRef.current = new AudioCtx({ sampleRate: 24000, latencyHint: "interactive" });
+        }
+      }
+    } catch {}
+
+    const adminMode = isAdmin();
+    const effectiveOwner = adminMode
+      ? ADMIN_DISPLAY_NAME
+      : getEffectiveUserName(settings.ownerName, OWNER_NAME);
+
+    const warmSession = new GeminiLiveSession({
+      apiKey: geminiKey,
+      assistantName: settings.assistantName,
+      ownerName: effectiveOwner,
+      voiceName: getVoicePreset(prefs.voiceName).voiceName,
+      language: prefs.language,
+      speechSpeed: clampSpeechSpeed(prefs.speechSpeed ?? 1.1),
+      voiceVolume: prefs.voiceVolume ?? 100,
+      personality: prefs.personality,
+      customPersonalityText: prefs.customPersonalityText,
+      systemInstruction: buildSystemInstruction(settings, prefs, true),
+      audioContext: inputAudioCtxRef.current || undefined,
+      playbackAudioContext: outputAudioCtxRef.current || undefined,
+      onToast: (msg) => setToast(msg),
+      warmUpOnly: true,
+      onWarmReadyChange: (ready) => {
+        if (!cancelled && warmedLiveSessionRef.current === warmSession) {
+          setIsWarmReady(ready);
+        }
+      },
+    });
+
+    warmedLiveSessionRef.current = warmSession;
+    void warmSession.startWarmUp();
+
+    return () => {
+      cancelled = true;
+      if (warmedLiveSessionRef.current === warmSession && liveSessionRef.current !== warmSession) {
+        warmedLiveSessionRef.current = null;
+        setIsWarmReady(false);
+        try {
+          warmSession.stop();
+        } catch {}
+      }
+    };
+  }, [
+    smartListenEnabled,
+    settings.masterAccess,
+    settings.assistantName,
+    settings.ownerName,
+    apiKeys.gemini,
+    serverGeminiReady,
+    isCallScreenOpen,
+    isAssistantEnabled,
+    prefs.voiceName,
+    prefs.language,
+    prefs.personality,
+    prefs.customPersonalityText,
+    prefs.speechSpeed,
+    prefs.voiceVolume,
+  ]);
 
   const endLiveCall = useCallback(() => {
     callStartAttemptRef.current += 1;
@@ -9448,7 +9786,7 @@ export function App() {
 
   endLiveCallRef.current = endLiveCall;
 
-  const handleVoiceToggle = useCallback(() => {
+  const handleVoiceToggle = useCallback(async () => {
     ensureAudioContext();
     if (!settings.masterAccess) {
       setToast("Assistant access disabled");
@@ -9467,7 +9805,7 @@ export function App() {
     }
 
     const geminiKey = (getGeminiKey() || apiKeysRef.current.gemini || "").replace(/["'\r\n\t\s]+/g, "").trim();
-    if (!geminiKey) {
+    if (!hasUsableGeminiKey(geminiKey) && !(await ensureGeminiReady(geminiKey))) {
       isProcessingGeminiRef.current = false;
       isBusyRef.current = false;
       setStatus("idle");
@@ -9702,7 +10040,7 @@ export function App() {
 
   const formatTTSErrorToast = (err: any, apiKey?: string): string => {
     const cleanKey = (apiKey || getGeminiKey() || "").trim();
-    if (!cleanKey) {
+    if (!hasUsableGeminiKey(cleanKey)) {
       return "Gemini API Key দেওয়া হয়নি, Settings → Connections-এ key দিন";
     }
 
@@ -10985,7 +11323,7 @@ export function App() {
       let geminiSpoke = false;
       let geminiErrMsg = "";
 
-      if (cleanKey) {
+      if (cleanKey || (await ensureGeminiReady(cleanKey))) {
         try {
           const voiceLabel = getVoicePreset(prefsRef.current.voiceName).voiceName || "Leda";
           const data = await directGeminiTTS({
@@ -11041,7 +11379,7 @@ export function App() {
     }
   };
 
-  const sendTypedMessageToRose = (rawText: string) => {
+  const sendTypedMessageToRose = async (rawText: string) => {
     const text = rawText.trim();
     if (!text) return;
     setInputText("");
@@ -11050,7 +11388,8 @@ export function App() {
       .replace(/["'\r\n\t\s]+/g, "")
       .trim();
     const groqKey = getStoredGroqKey();
-    if (!geminiKey && !groqKey) {
+    const geminiAvailable = hasUsableGeminiKey(geminiKey) || (await ensureGeminiReady(geminiKey));
+    if (!geminiAvailable && !groqKey) {
       isProcessingGeminiRef.current = false;
       isBusyRef.current = false;
       setStatus("idle");
@@ -12745,7 +13084,113 @@ export function App() {
             </button>
           </div>
 
-          {/* d. VOICE DEBUG */}
+          {/* d. SMART LISTENING */}
+          <div
+            data-nav-id="smart_listening"
+            onClick={() => setCurrentView("smart-listening")}
+            role="button"
+            tabIndex={0}
+            onKeyDown={(e) => {
+              if (e.key === "Enter" || e.key === " ") {
+                e.preventDefault();
+                setCurrentView("smart-listening");
+              }
+            }}
+            className="w-full p-5 bg-[#0F172A]/80 rounded-[2.5rem] border border-purple-500/30 shadow-2xl flex items-center justify-between active:scale-[0.98] transition-all text-left cursor-pointer"
+          >
+            <div className="flex items-center gap-4">
+              <div className="w-12 h-12 rounded-full bg-purple-600/10 border border-purple-500/20 flex items-center justify-center text-purple-400 shrink-0">
+                <Sparkles className="w-6 h-6" />
+              </div>
+              <div>
+                <h4 className="text-base font-black uppercase tracking-wider text-white leading-none mb-1">
+                  SMART LISTENING
+                </h4>
+                <p className="text-[10px] text-slate-400 font-bold uppercase tracking-widest">
+                  {smartListenEnabled
+                    ? `ON · ${smartListenSensitivity === "strict" ? "Strict" : "Normal"}`
+                    : "OFF · STANDARD LIVE"}
+                </p>
+              </div>
+            </div>
+            <div className="flex items-center gap-2 shrink-0">
+              <button
+                type="button"
+                role="switch"
+                aria-checked={smartListenEnabled}
+                aria-label="Toggle Smart Listening"
+                onClick={(e) => {
+                  e.stopPropagation();
+                  const next = !smartListenEnabled;
+                  saveMicListeningSettings({ smartListen: next });
+                  setToast(next ? "Smart Listening চালু" : "Smart Listening বন্ধ");
+                }}
+                className={
+                  "w-14 h-8 rounded-full p-1 transition-colors shrink-0 flex items-center " +
+                  (smartListenEnabled ? "bg-purple-600 justify-end" : "bg-slate-700 justify-start")
+                }
+              >
+                <span className="w-6 h-6 rounded-full bg-white shadow-md" />
+              </button>
+              <ChevronRight className="w-5 h-5 text-slate-500 shrink-0" />
+            </div>
+          </div>
+
+          {/* NATIVE MIC (অ্যাপ) - Visible only inside the Android app */}
+          {isAndroidApp() && (
+            <div
+              data-nav-id="native_mic"
+              onClick={() => setCurrentView("native-mic")}
+              role="button"
+              tabIndex={0}
+              onKeyDown={(e) => {
+                if (e.key === "Enter" || e.key === " ") {
+                  e.preventDefault();
+                  setCurrentView("native-mic");
+                }
+              }}
+              className="w-full p-5 bg-[#0F172A]/80 rounded-[2.5rem] border border-purple-500/30 shadow-2xl flex items-center justify-between active:scale-[0.98] transition-all text-left cursor-pointer"
+            >
+              <div className="flex items-center gap-4">
+                <div className="w-12 h-12 rounded-full bg-purple-600/10 border border-purple-500/20 flex items-center justify-center text-purple-400 shrink-0">
+                  <Mic className="w-6 h-6" />
+                </div>
+                <div>
+                  <h4 className="text-base font-black uppercase tracking-wider text-white leading-none mb-1">
+                    NATIVE MIC (অ্যাপ)
+                  </h4>
+                  <p className="text-[10px] text-slate-400 font-bold uppercase tracking-widest">
+                    {nativeMicEnabled
+                      ? `ON · ${nativeMicMode === "recognition" ? "Raw" : "Clear voice"}`
+                      : "OFF · BROWSER MIC"}
+                  </p>
+                </div>
+              </div>
+              <div className="flex items-center gap-2 shrink-0">
+                <button
+                  type="button"
+                  role="switch"
+                  aria-checked={nativeMicEnabled}
+                  aria-label="Toggle Native Mic"
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    const next = !nativeMicEnabled;
+                    saveMicListeningSettings({ nativeMic: next });
+                    setToast(next ? "Native Mic চালু" : "Native Mic বন্ধ");
+                  }}
+                  className={
+                    "w-14 h-8 rounded-full p-1 transition-colors shrink-0 flex items-center " +
+                    (nativeMicEnabled ? "bg-purple-600 justify-end" : "bg-slate-700 justify-start")
+                  }
+                >
+                  <span className="w-6 h-6 rounded-full bg-white shadow-md" />
+                </button>
+                <ChevronRight className="w-5 h-5 text-slate-500 shrink-0" />
+              </div>
+            </div>
+          )}
+
+          {/* e. VOICE DEBUG */}
           <button
             type="button"
             data-nav-id="voice_debug"
@@ -12770,10 +13215,337 @@ export function App() {
         </div>
       </div>
     </motion.div>
-    
-
-
     </>
+  );
+
+  const renderSmartListening = () => (
+    <motion.div
+      key="smart-listening"
+      initial={{ x: "100%" }}
+      animate={{ x: 0 }}
+      exit={{ x: "100%" }}
+      className="fixed inset-0 z-[90] bg-[#020617] overflow-y-auto no-scrollbar flex flex-col"
+    >
+      <div className="px-5 py-6 flex flex-col min-h-full">
+        <header className="flex items-center gap-4 mb-7 shrink-0">
+          <button
+            onClick={() => setCurrentView("mic-listening")}
+            className="p-2.5 bg-white/5 rounded-xl active:scale-95 transition-transform border border-white/5 text-slate-300 hover:text-white"
+            aria-label="Back to Mic & Listening"
+          >
+            <ArrowLeft className="w-5 h-5" />
+          </button>
+          <h2 className="text-2xl font-black text-white italic tracking-tighter uppercase leading-tight">
+            SMART LISTENING
+          </h2>
+        </header>
+
+        <div className="space-y-4 pb-36 flex-1">
+          {/* On / Off Switch */}
+          <div className="w-full p-5 bg-[#0F172A]/80 rounded-[2.5rem] border border-purple-500/30 shadow-2xl flex items-center justify-between">
+            <div className="flex items-center gap-4">
+              <div className="w-12 h-12 rounded-full bg-purple-600/10 border border-purple-500/20 flex items-center justify-center text-purple-400 shrink-0">
+                <Sparkles className="w-6 h-6" />
+              </div>
+              <div>
+                <h4 className="text-base font-black uppercase tracking-wider text-white leading-none mb-1">
+                  SMART LISTENING
+                </h4>
+                <p className="text-[10px] text-slate-400 font-bold uppercase tracking-widest">
+                  ON-DEVICE SILERO VAD · SILENCE GATING
+                </p>
+              </div>
+            </div>
+            <button
+              type="button"
+              role="switch"
+              aria-checked={smartListenEnabled}
+              onClick={() => {
+                const next = !smartListenEnabled;
+                saveMicListeningSettings({ smartListen: next });
+                if (!next) {
+                  void stopSmartListenPreview();
+                }
+                setToast(next ? "Smart Listening চালু" : "Smart Listening বন্ধ");
+              }}
+              className={
+                "w-14 h-8 rounded-full p-1 transition-colors shrink-0 flex items-center " +
+                (smartListenEnabled ? "bg-purple-600 justify-end" : "bg-slate-700 justify-start")
+              }
+            >
+              <span className="w-6 h-6 rounded-full bg-white shadow-md" />
+            </button>
+          </div>
+
+          {/* Live "কথা শনাক্ত" Indicator */}
+          <div className="w-full p-5 bg-[#0F172A]/80 rounded-[2.5rem] border border-purple-500/30 shadow-2xl space-y-4">
+            <div className="flex items-center justify-between gap-3">
+              <div className="flex items-center gap-4">
+                <div
+                  className={
+                    "w-12 h-12 rounded-full border flex items-center justify-center shrink-0 transition-all " +
+                    (smartVadStatus.speechDetected
+                      ? "bg-emerald-500/20 border-emerald-400 text-emerald-300 shadow-[0_0_20px_rgba(16,185,129,0.55)]"
+                      : "bg-slate-800/70 border-white/10 text-slate-400")
+                  }
+                >
+                  <Mic className="w-6 h-6" />
+                </div>
+                <div>
+                  <h4 className="text-base font-black tracking-wide text-white leading-none mb-1">
+                    কথা শনাক্ত
+                  </h4>
+                  <p className="text-[11px] font-bold text-slate-400">
+                    {!smartListenEnabled
+                      ? "Smart Listening বন্ধ আছে"
+                      : smartVadStatus.loading
+                      ? "VAD মডেল লোড হচ্ছে…"
+                      : smartVadStatus.speechDetected
+                      ? `কথা ধরা পড়েছে (${Math.round(smartVadStatus.probability * 100)}%)`
+                      : isSmartPreviewMicActive || liveSessionRef.current
+                      ? `নীরব (${Math.round(smartVadStatus.probability * 100)}%)`
+                      : isWarmReady
+                      ? "প্রস্তুত"
+                      : "মাইক চালু হলে লাইভ দেখাবে"}
+                  </p>
+                </div>
+              </div>
+              <span
+                className={
+                  "px-3 py-1.5 rounded-full text-[11px] font-black transition-all shrink-0 " +
+                  (smartVadStatus.speechDetected
+                    ? "bg-emerald-500/25 text-emerald-300 border border-emerald-400/50"
+                    : "bg-white/5 text-slate-400 border border-white/10")
+                }
+              >
+                {smartVadStatus.speechDetected ? "সক্রিয়" : "অপেক্ষা"}
+              </span>
+            </div>
+
+            {smartListenEnabled && !isSmartPreviewMicActive && !liveSessionRef.current && (
+              <button
+                type="button"
+                onClick={() => void startSmartListenPreview(true)}
+                className="w-full py-2.5 rounded-2xl bg-purple-600/20 hover:bg-purple-600/30 border border-purple-500/30 text-purple-200 text-xs font-bold transition-all active:scale-[0.99]"
+              >
+                মাইক দিয়ে লাইভ কথা শনাক্ত পরীক্ষা করো
+              </button>
+            )}
+          </div>
+
+          {/* Sensitivity Choice: Normal / Strict */}
+          <div className="w-full p-5 bg-[#0F172A]/80 rounded-[2.5rem] border border-purple-500/30 shadow-2xl space-y-4">
+            <div>
+              <h4 className="text-base font-black uppercase tracking-wider text-white leading-none mb-1">
+                SENSITIVITY
+              </h4>
+              <p className="text-[10px] text-slate-400 font-bold uppercase tracking-widest">
+                SPEECH DETECTION THRESHOLD
+              </p>
+            </div>
+            <div className="grid grid-cols-2 gap-3">
+              <button
+                type="button"
+                onClick={() => {
+                  saveMicListeningSettings({ smartListenSensitivity: "normal" });
+                  setToast("Sensitivity: Normal");
+                }}
+                className={
+                  "p-4 rounded-2xl border text-left transition-all active:scale-[0.98] " +
+                  (smartListenSensitivity === "normal"
+                    ? "bg-purple-600/25 border-purple-400 text-white shadow-lg"
+                    : "bg-white/5 border-white/10 text-slate-300 hover:bg-white/10")
+                }
+              >
+                <div className="flex items-center justify-between mb-1">
+                  <span className="text-sm font-black uppercase tracking-wide">Normal</span>
+                  {smartListenSensitivity === "normal" && <Check className="w-4 h-4 text-purple-300" />}
+                </div>
+                <p className="text-[10px] text-slate-400 font-bold">Default (0.60 / 0.45)</p>
+              </button>
+
+              <button
+                type="button"
+                onClick={() => {
+                  saveMicListeningSettings({ smartListenSensitivity: "strict" });
+                  setToast("Sensitivity: Strict");
+                }}
+                className={
+                  "p-4 rounded-2xl border text-left transition-all active:scale-[0.98] " +
+                  (smartListenSensitivity === "strict"
+                    ? "bg-purple-600/25 border-purple-400 text-white shadow-lg"
+                    : "bg-white/5 border-white/10 text-slate-300 hover:bg-white/10")
+                }
+              >
+                <div className="flex items-center justify-between mb-1">
+                  <span className="text-sm font-black uppercase tracking-wide">Strict</span>
+                  {smartListenSensitivity === "strict" && <Check className="w-4 h-4 text-purple-300" />}
+                </div>
+                <p className="text-[10px] text-slate-400 font-bold">High Noise (0.75 / 0.60)</p>
+              </button>
+            </div>
+          </div>
+        </div>
+      </div>
+    </motion.div>
+  );
+
+  const renderNativeMic = () => (
+    <motion.div
+      key="native-mic"
+      initial={{ x: "100%" }}
+      animate={{ x: 0 }}
+      exit={{ x: "100%" }}
+      className="fixed inset-0 z-[90] bg-[#020617] overflow-y-auto no-scrollbar flex flex-col"
+    >
+      <div className="px-5 py-6 flex flex-col min-h-full">
+        <header className="flex items-center gap-4 mb-7 shrink-0">
+          <button
+            onClick={() => setCurrentView("mic-listening")}
+            className="p-2.5 bg-white/5 rounded-xl active:scale-95 transition-transform border border-white/5 text-slate-300 hover:text-white"
+            aria-label="Back to Mic & Listening"
+          >
+            <ArrowLeft className="w-5 h-5" />
+          </button>
+          <h2 className="text-2xl font-black text-white italic tracking-tighter uppercase leading-tight">
+            NATIVE MIC (অ্যাপ)
+          </h2>
+        </header>
+
+        <div className="space-y-4 pb-36 flex-1">
+          {/* On / Off Switch */}
+          <div className="w-full p-5 bg-[#0F172A]/80 rounded-[2.5rem] border border-purple-500/30 shadow-2xl flex items-center justify-between">
+            <div className="flex items-center gap-4">
+              <div className="w-12 h-12 rounded-full bg-purple-600/10 border border-purple-500/20 flex items-center justify-center text-purple-400 shrink-0">
+                <Mic className="w-6 h-6" />
+              </div>
+              <div>
+                <h4 className="text-base font-black uppercase tracking-wider text-white leading-none mb-1">
+                  NATIVE MIC (অ্যাপ)
+                </h4>
+                <p className="text-[10px] text-slate-400 font-bold uppercase tracking-widest">
+                  ANDROID AUDIO · 16 KHZ PCM16
+                </p>
+              </div>
+            </div>
+            <button
+              type="button"
+              role="switch"
+              aria-checked={nativeMicEnabled}
+              onClick={() => {
+                const next = !nativeMicEnabled;
+                saveMicListeningSettings({ nativeMic: next });
+                setToast(next ? "Native Mic চালু" : "Native Mic বন্ধ");
+              }}
+              className={
+                "w-14 h-8 rounded-full p-1 transition-colors shrink-0 flex items-center " +
+                (nativeMicEnabled ? "bg-purple-600 justify-end" : "bg-slate-700 justify-start")
+              }
+            >
+              <span className="w-6 h-6 rounded-full bg-white shadow-md" />
+            </button>
+          </div>
+
+          {/* Mode Selector */}
+          <div className="w-full p-5 bg-[#0F172A]/80 rounded-[2.5rem] border border-purple-500/30 shadow-2xl space-y-4">
+            <div>
+              <h4 className="text-base font-black uppercase tracking-wider text-white leading-none mb-1">
+                MODE
+              </h4>
+              <p className="text-[10px] text-slate-400 font-bold uppercase tracking-widest">
+                AUDIO CAPTURE SOURCE
+              </p>
+            </div>
+            <div className="grid grid-cols-2 gap-3">
+              <button
+                type="button"
+                onClick={() => {
+                  saveMicListeningSettings({ nativeMicMode: "communication" });
+                  setToast("Mode: Clear voice");
+                }}
+                className={
+                  "p-4 rounded-2xl border text-left transition-all active:scale-[0.98] " +
+                  (nativeMicMode === "communication"
+                    ? "bg-purple-600/25 border-purple-400 text-white shadow-lg"
+                    : "bg-white/5 border-white/10 text-slate-300 hover:bg-white/10")
+                }
+              >
+                <div className="flex items-center justify-between mb-1">
+                  <span className="text-sm font-black tracking-wide">Clear voice</span>
+                  {nativeMicMode === "communication" && <Check className="w-4 h-4 text-purple-300" />}
+                </div>
+                <p className="text-[10px] text-slate-400 font-bold">communication (Default)</p>
+              </button>
+
+              <button
+                type="button"
+                onClick={() => {
+                  saveMicListeningSettings({ nativeMicMode: "recognition" });
+                  setToast("Mode: Raw");
+                }}
+                className={
+                  "p-4 rounded-2xl border text-left transition-all active:scale-[0.98] " +
+                  (nativeMicMode === "recognition"
+                    ? "bg-purple-600/25 border-purple-400 text-white shadow-lg"
+                    : "bg-white/5 border-white/10 text-slate-300 hover:bg-white/10")
+                }
+              >
+                <div className="flex items-center justify-between mb-1">
+                  <span className="text-sm font-black tracking-wide">Raw</span>
+                  {nativeMicMode === "recognition" && <Check className="w-4 h-4 text-purple-300" />}
+                </div>
+                <p className="text-[10px] text-slate-400 font-bold">recognition</p>
+              </button>
+            </div>
+            <p className="text-xs text-slate-400 font-medium leading-relaxed">
+              Clear voice মোডে স্পিকারের আওয়াজ কমে গেলে Mode বদলে Raw বেছে নিন।
+            </p>
+          </div>
+
+          {/* Active Filters from start() result */}
+          <div className="w-full p-5 bg-[#0F172A]/80 rounded-[2.5rem] border border-purple-500/30 shadow-2xl space-y-3">
+            <div className="flex items-center justify-between">
+              <h4 className="text-base font-black uppercase tracking-wider text-white leading-none">
+                ACTIVE FILTERS
+              </h4>
+              <span className="text-[11px] font-bold text-slate-400">
+                {nativeMicStatus.hasStartResult
+                  ? `${nativeMicStatus.rate} Hz`
+                  : "কল শুরু হলে দেখাবে"}
+              </span>
+            </div>
+            <div className="grid grid-cols-3 gap-2.5">
+              {[
+                { label: "Noise", enabled: nativeMicStatus.ns },
+                { label: "Echo", enabled: nativeMicStatus.aec },
+                { label: "Gain", enabled: nativeMicStatus.agc },
+              ].map((item) => {
+                const isReady = nativeMicStatus.hasStartResult;
+                return (
+                  <div
+                    key={item.label}
+                    className={
+                      "p-3 rounded-2xl border flex items-center justify-between " +
+                      (isReady && item.enabled
+                        ? "bg-emerald-500/15 border-emerald-400/40 text-emerald-200"
+                        : "bg-white/5 border-white/10 text-slate-300")
+                    }
+                  >
+                    <span className="text-xs font-black">{item.label}</span>
+                    <span className="text-sm font-black">
+                      {!isReady ? "—" : item.enabled ? "✓" : "✕"}
+                    </span>
+                  </div>
+                );
+              })}
+            </div>
+            {nativeMicStatus.error && (
+              <p className="text-xs text-rose-300 font-medium">{nativeMicStatus.error}</p>
+            )}
+          </div>
+        </div>
+      </div>
+    </motion.div>
   );
 
   const renderMemory = () => {
@@ -13986,7 +14758,7 @@ export function App() {
                 <span
                   className={
                     "w-2 h-2 rounded-full " +
-                    (Boolean((apiKeys.gemini || getGeminiKey() || "").trim())
+                    ((hasUsableGeminiKey(apiKeys.gemini) || serverGeminiReady)
                       ? "bg-emerald-400 shadow-[0_0_8px_#34d399]"
                       : "bg-amber-400")
                   }
@@ -13994,12 +14766,12 @@ export function App() {
                 <span
                   className={
                     "text-[10px] font-bold uppercase " +
-                    (Boolean((apiKeys.gemini || getGeminiKey() || "").trim())
+                    ((hasUsableGeminiKey(apiKeys.gemini) || serverGeminiReady)
                       ? "text-emerald-400"
                       : "text-amber-300")
                   }
                 >
-                  {Boolean((apiKeys.gemini || getGeminiKey() || "").trim())
+                  {(hasUsableGeminiKey(apiKeys.gemini) || serverGeminiReady)
                     ? "Connected"
                     : "Key required"}
                 </span>
@@ -15317,6 +16089,8 @@ export function App() {
           {currentView === "affection" && <PhoneErrorBoundary>{renderAffection()}</PhoneErrorBoundary>}
           {currentView === "tts-model" && <PhoneErrorBoundary>{renderTtsModelSection()}</PhoneErrorBoundary>}
           {currentView === "mic-listening" && <PhoneErrorBoundary>{renderMicListening()}</PhoneErrorBoundary>}
+          {currentView === "smart-listening" && <PhoneErrorBoundary>{renderSmartListening()}</PhoneErrorBoundary>}
+          {currentView === "native-mic" && <PhoneErrorBoundary>{renderNativeMic()}</PhoneErrorBoundary>}
           {currentView === "voice_debug" && (
             <PhoneErrorBoundary>
               <MicVoiceDebugPanel
@@ -16403,6 +17177,7 @@ export function App() {
                 <LiveVoiceBars
                   inputAnalyserRef={analyserRef}
                   outputAnalyserRef={outputAnalyserRef}
+                  getNativeMicLevel={() => liveSessionRef.current?.getNativeMicLevel() || 0}
                   sessionState={sessionState}
                   isAssistantEnabled={isAssistantEnabled && !isMuted}
                   isBrowserSpeechActive={() =>
@@ -16436,6 +17211,8 @@ export function App() {
                       ? "বলছি"
                       : sessionState === "THINKING"
                       ? "ভাবছি"
+                      : (sessionState === "IDLE" || sessionState === "CONNECTING") && isWarmReady && smartListenEnabled
+                      ? "প্রস্তুত"
                       : "শুনছি"}
                   </span>
                 )}
@@ -16716,7 +17493,7 @@ export function App() {
           masterAccess={settings.masterAccess}
           userName={isAdmin() ? ADMIN_DISPLAY_NAME : getEffectiveUserName(settings.ownerName, OWNER_NAME)}
           isAdminUser={isAdmin()}
-          geminiConnected={Boolean((apiKeys.gemini || getGeminiKey() || "").trim())}
+          geminiConnected={hasUsableGeminiKey(apiKeys.gemini) || serverGeminiReady}
           liveModelName={settings.voiceModel && settings.voiceModel !== "Auto (recommended)" ? settings.voiceModel : "Gemini 2.0 Flash"}
           supabaseConnected={Boolean(supabase)}
           renderRoseFlowerSvg={renderRoseFlowerSvg}
@@ -16730,6 +17507,7 @@ export function App() {
             <LiveVoiceBars
               inputAnalyserRef={analyserRef}
               outputAnalyserRef={outputAnalyserRef}
+              getNativeMicLevel={() => liveSessionRef.current?.getNativeMicLevel() || 0}
               sessionState={sessionState}
               isAssistantEnabled={isAssistantEnabled && !isMuted}
               isBrowserSpeechActive={() =>
@@ -16777,6 +17555,7 @@ export function App() {
             setDeveloperFrom("home");
             setCurrentView("developer");
           }}
+          isWarmReady={isWarmReady && smartListenEnabled}
         />
         {renderGlobalModals()}
       </div>
@@ -16910,11 +17689,15 @@ export function App() {
                   sessionState === "THINKING" ||
                   sessionState === "SPEAKING" ||
                   sessionState === "LISTENING" ||
-                  speakingState !== "idle") && (
+                  speakingState !== "idle") ? (
                   <span className="absolute inset-0 flex items-center justify-center bg-black/35 text-[9px] font-black uppercase tracking-wider text-white drop-shadow-[0_1px_3px_rgba(0,0,0,0.95)] pointer-events-none">
                     Stop
                   </span>
-                )}
+                ) : smartListenEnabled && isWarmReady ? (
+                  <span className="absolute bottom-0.5 inset-x-0 text-center text-[8px] font-black text-emerald-300 bg-black/45 py-[1px] drop-shadow-[0_1px_3px_rgba(0,0,0,0.95)] pointer-events-none">
+                    প্রস্তুত
+                  </span>
+                ) : null}
               </button>
               <div className={'absolute -inset-1.5 rounded-full border-2 pointer-events-none transition-all duration-300 ' + (
                 isAssistantEnabled ||

@@ -1,8 +1,11 @@
 import * as ort from 'onnxruntime-web/wasm';
+import { isAndroidApp } from './voiceDebugStore';
 
 export type MicSensitivityLevel = 'low' | 'medium' | 'high';
 export type NoiseGateSensitivity = 'Low' | 'Medium' | 'High';
 export type FastReplySpeed = 'Normal' | 'Fast' | 'Very fast';
+export type SmartListenSensitivity = 'normal' | 'strict';
+export type NativeMicMode = 'communication' | 'recognition';
 
 export interface MicListeningSettings {
   cleanVoice: boolean;
@@ -11,6 +14,9 @@ export interface MicListeningSettings {
   fastReply: boolean;
   fastReplySpeed: FastReplySpeed;
   smartListen: boolean;
+  smartListenSensitivity: SmartListenSensitivity;
+  nativeMic: boolean;
+  nativeMicMode: NativeMicMode;
   streetMode: boolean;
   micSensitivity: MicSensitivityLevel;
 }
@@ -21,6 +27,9 @@ const STORAGE_KEY_NOISE_GATE_SENS = 'rose_noise_gate_sens';
 const STORAGE_KEY_FAST_REPLY = 'rose_fast_reply';
 const STORAGE_KEY_FAST_REPLY_SPEED = 'rose_fast_reply_speed';
 const STORAGE_KEY_SMART_LISTEN = 'rose_smart_listen';
+const STORAGE_KEY_SMART_LISTEN_SENS = 'rose_smart_listen_sensitivity';
+const STORAGE_KEY_NATIVE_MIC = 'rose_native_mic';
+const STORAGE_KEY_NATIVE_MIC_MODE = 'rose_native_mic_mode';
 const STORAGE_KEY_STREET_MODE = 'rose_street_mode';
 const STORAGE_KEY_MIC_SENSITIVITY = 'rose_mic_sensitivity';
 const STORAGE_KEY_MIGRATION_RESET_V3 = 'rose_audio_defaults_v3_reset';
@@ -35,6 +44,9 @@ export function getMicListeningSettings(): MicListeningSettings {
         fastReply: true,
         fastReplySpeed: 'Fast',
         smartListen: true,
+        smartListenSensitivity: 'normal',
+        nativeMic: true,
+        nativeMicMode: 'communication',
         streetMode: false,
         micSensitivity: 'medium',
       };
@@ -55,6 +67,9 @@ export function getMicListeningSettings(): MicListeningSettings {
     const rawFast = localStorage.getItem(STORAGE_KEY_FAST_REPLY);
     const rawFastSpeed = localStorage.getItem(STORAGE_KEY_FAST_REPLY_SPEED);
     const rawSmart = localStorage.getItem(STORAGE_KEY_SMART_LISTEN);
+    const rawSmartSens = localStorage.getItem(STORAGE_KEY_SMART_LISTEN_SENS);
+    const rawNativeMic = localStorage.getItem(STORAGE_KEY_NATIVE_MIC);
+    const rawNativeMicMode = localStorage.getItem(STORAGE_KEY_NATIVE_MIC_MODE);
     const rawStreet = localStorage.getItem(STORAGE_KEY_STREET_MODE);
     const rawSens = localStorage.getItem(STORAGE_KEY_MIC_SENSITIVITY);
 
@@ -74,10 +89,27 @@ export function getMicListeningSettings(): MicListeningSettings {
         ? (rawFastSpeed as FastReplySpeed)
         : 'Fast';
     const smartListen = rawSmart === null ? true : rawSmart === 'true';
+    const smartListenSensitivity: SmartListenSensitivity =
+      rawSmartSens === 'strict' ? 'strict' : 'normal';
+    const nativeMic = rawNativeMic === null ? true : rawNativeMic === 'true';
+    const nativeMicMode: NativeMicMode =
+      rawNativeMicMode === 'recognition' ? 'recognition' : 'communication';
     const micSensitivity: MicSensitivityLevel =
       rawSens === 'low' || rawSens === 'medium' || rawSens === 'high' ? rawSens : 'medium';
 
-    return { cleanVoice, noiseGate, noiseGateSensitivity, fastReply, fastReplySpeed, smartListen, streetMode, micSensitivity };
+    return {
+      cleanVoice,
+      noiseGate,
+      noiseGateSensitivity,
+      fastReply,
+      fastReplySpeed,
+      smartListen,
+      smartListenSensitivity,
+      nativeMic,
+      nativeMicMode,
+      streetMode,
+      micSensitivity,
+    };
   } catch {
     return {
       cleanVoice: false,
@@ -86,6 +118,9 @@ export function getMicListeningSettings(): MicListeningSettings {
       fastReply: true,
       fastReplySpeed: 'Fast',
       smartListen: true,
+      smartListenSensitivity: 'normal',
+      nativeMic: true,
+      nativeMicMode: 'communication',
       streetMode: false,
       micSensitivity: 'medium',
     };
@@ -115,8 +150,12 @@ export function saveMicListeningSettings(partial: Partial<MicListeningSettings>)
       localStorage.setItem(STORAGE_KEY_FAST_REPLY, String(next.fastReply));
       localStorage.setItem(STORAGE_KEY_FAST_REPLY_SPEED, next.fastReplySpeed);
       localStorage.setItem(STORAGE_KEY_SMART_LISTEN, String(next.smartListen));
+      localStorage.setItem(STORAGE_KEY_SMART_LISTEN_SENS, next.smartListenSensitivity);
+      localStorage.setItem(STORAGE_KEY_NATIVE_MIC, String(next.nativeMic));
+      localStorage.setItem(STORAGE_KEY_NATIVE_MIC_MODE, next.nativeMicMode);
       localStorage.setItem(STORAGE_KEY_STREET_MODE, String(next.streetMode));
       localStorage.setItem(STORAGE_KEY_MIC_SENSITIVITY, next.micSensitivity);
+      window.dispatchEvent(new CustomEvent('rose-mic-settings-changed', { detail: next }));
     }
   } catch {}
   return next;
@@ -130,6 +169,9 @@ export function resetAudioSettings(): MicListeningSettings {
     fastReply: true,
     fastReplySpeed: 'Fast',
     smartListen: true,
+    smartListenSensitivity: 'normal',
+    nativeMic: true,
+    nativeMicMode: 'communication',
     streetMode: false,
     micSensitivity: 'medium',
   };
@@ -141,11 +183,157 @@ export function resetAudioSettings(): MicListeningSettings {
       localStorage.setItem(STORAGE_KEY_FAST_REPLY, 'true');
       localStorage.setItem(STORAGE_KEY_FAST_REPLY_SPEED, 'Fast');
       localStorage.setItem(STORAGE_KEY_SMART_LISTEN, 'true');
+      localStorage.setItem(STORAGE_KEY_SMART_LISTEN_SENS, 'normal');
+      localStorage.setItem(STORAGE_KEY_NATIVE_MIC, 'true');
+      localStorage.setItem(STORAGE_KEY_NATIVE_MIC_MODE, 'communication');
       localStorage.setItem(STORAGE_KEY_STREET_MODE, 'false');
       localStorage.setItem(STORAGE_KEY_MIC_SENSITIVITY, 'medium');
+      window.dispatchEvent(new CustomEvent('rose-mic-settings-changed', { detail: defaults }));
     }
   } catch {}
   return defaults;
+}
+
+export const SMART_VAD_CDN_CONFIG = {
+  baseAssetPath: 'https://cdn.jsdelivr.net/npm/@ricky0123/vad-web@0.0.31/dist/',
+  onnxWASMBasePath: 'https://cdn.jsdelivr.net/npm/onnxruntime-web@1.31.1/dist/',
+  model: 'v5' as const,
+};
+
+export function getSmartListenVadOptions(sensitivity: SmartListenSensitivity = 'normal') {
+  if (sensitivity === 'strict') {
+    return {
+      positiveSpeechThreshold: 0.75,
+      negativeSpeechThreshold: 0.6,
+      minSpeechMs: 150,
+      redemptionMs: 450,
+      preSpeechPadMs: 300,
+    };
+  }
+  return {
+    positiveSpeechThreshold: 0.6,
+    negativeSpeechThreshold: 0.45,
+    minSpeechMs: 150,
+    redemptionMs: 450,
+    preSpeechPadMs: 300,
+  };
+}
+
+export interface SmartVadTelemetry {
+  ready: boolean;
+  loading: boolean;
+  speechDetected: boolean;
+  probability: number;
+  error: string | null;
+}
+
+let currentSmartVadTelemetry: SmartVadTelemetry = {
+  ready: false,
+  loading: false,
+  speechDetected: false,
+  probability: 0,
+  error: null,
+};
+
+export function getSmartVadTelemetry(): SmartVadTelemetry {
+  return currentSmartVadTelemetry;
+}
+
+export function updateSmartVadTelemetry(partial: Partial<SmartVadTelemetry>): SmartVadTelemetry {
+  currentSmartVadTelemetry = {
+    ...currentSmartVadTelemetry,
+    ...partial,
+  };
+  try {
+    if (typeof window !== 'undefined') {
+      window.dispatchEvent(new CustomEvent('rose-smart-vad-status', { detail: currentSmartVadTelemetry }));
+    }
+  } catch {}
+  return currentSmartVadTelemetry;
+}
+
+export interface NativeMicFilterStatus {
+  active: boolean;
+  hasStartResult: boolean;
+  ns: boolean;
+  aec: boolean;
+  agc: boolean;
+  rate: number;
+  mode: NativeMicMode;
+  error: string | null;
+}
+
+let currentNativeMicStatus: NativeMicFilterStatus = {
+  active: false,
+  hasStartResult: false,
+  ns: false,
+  aec: false,
+  agc: false,
+  rate: 16000,
+  mode: 'communication',
+  error: null,
+};
+
+export function getNativeMicFilterStatus(): NativeMicFilterStatus {
+  return currentNativeMicStatus;
+}
+
+export function updateNativeMicFilterStatus(
+  partial: Partial<NativeMicFilterStatus>
+): NativeMicFilterStatus {
+  currentNativeMicStatus = {
+    ...currentNativeMicStatus,
+    ...partial,
+  };
+  try {
+    if (typeof window !== 'undefined') {
+      window.dispatchEvent(
+        new CustomEvent('rose-native-mic-status', { detail: currentNativeMicStatus })
+      );
+    }
+  } catch {}
+  return currentNativeMicStatus;
+}
+
+export function getRoseMicPlugin(): any {
+  if (typeof window === 'undefined') return null;
+  return (window as any)?.Capacitor?.Plugins?.RoseMic || null;
+}
+
+export function isNativeMicConfigured(): boolean {
+  if (!isAndroidApp()) return false;
+  const plugin = getRoseMicPlugin();
+  if (!plugin || typeof plugin.start !== 'function' || typeof plugin.addListener !== 'function') {
+    return false;
+  }
+  return Boolean(getMicListeningSettings().nativeMic);
+}
+
+export function decodeBase64Pcm16ToFloat32(base64Pcm: string): { float32: Float32Array; rms: number } {
+  if (!base64Pcm) {
+    return { float32: new Float32Array(0), rms: 0 };
+  }
+  const binary = atob(base64Pcm);
+  const byteLen = binary.length;
+  const sampleCount = Math.floor(byteLen / 2);
+  if (sampleCount <= 0) {
+    return { float32: new Float32Array(0), rms: 0 };
+  }
+  const bytes = new Uint8Array(byteLen);
+  for (let i = 0; i < byteLen; i++) {
+    bytes[i] = binary.charCodeAt(i);
+  }
+  const view = new DataView(bytes.buffer, bytes.byteOffset, sampleCount * 2);
+  const float32 = new Float32Array(sampleCount);
+  let sumSq = 0;
+  for (let i = 0; i < sampleCount; i++) {
+    const int16 = view.getInt16(i * 2, true);
+    const f = int16 / 32768.0;
+    float32[i] = f;
+    sumSq += f * f;
+  }
+  const rms = Math.sqrt(sumSq / sampleCount);
+  return { float32, rms };
 }
 
 export function getSensitivityThresholds(level: MicSensitivityLevel = 'medium') {

@@ -1,7 +1,7 @@
 import React, { useState, useRef } from "react";
 import { motion } from "framer-motion";
 import { ArrowLeft, Facebook, Instagram, Youtube, Mail, Check, Loader2, ExternalLink, Cpu, PenTool, Zap, ChevronRight, RotateCw, MessageSquare } from "lucide-react";
-import { getGeminiKey } from "../lib/geminiKey";
+import { getGeminiKey, ensureGeminiReady } from "../lib/geminiKey";
 import { DEVELOPER_INFO } from "../lib/creator-profile";
 import { openExternal } from "../lib/openExternal";
 import {
@@ -209,7 +209,7 @@ export const testLiveVoiceModelConnection = async (
 
   let apiKey = (getGeminiKey() || "").replace(/[\r\n\t\s"']+/g, "").trim();
 
-  if (!apiKey) {
+  if (!(await ensureGeminiReady(apiKey))) {
     return { ok: false, error: "Add your Gemini key in Settings > Connections." };
   }
 
@@ -218,7 +218,7 @@ export const testLiveVoiceModelConnection = async (
     const rawModel = trimmed.replace(/^models\//, "").trim();
     const protocol = typeof window !== 'undefined' && window.location.protocol === 'https:' ? 'wss:' : 'ws:';
     const host = typeof window !== 'undefined' ? window.location.host : 'localhost:3000';
-    const wsUrl = `${protocol}//${host}/api/live?model=${encodeURIComponent(rawModel)}&apiKey=${encodeURIComponent(apiKey)}`;
+    const wsUrl = `${protocol}//${host}/api/live?model=${encodeURIComponent(rawModel)}${apiKey ? `&apiKey=${encodeURIComponent(apiKey)}` : ''}`;
 
     let ws: WebSocket | null = null;
     const finish = (result: { ok: boolean; error?: string }) => {
@@ -419,7 +419,7 @@ export const LiveModelSettings = ({
     setIsDetectingLive(true);
     try {
       const apiKey = (getGeminiKey() || "").replace(/[\r\n\t\s"']+/g, "").trim();
-      if (!apiKey) {
+      if (!(await ensureGeminiReady(apiKey))) {
         notifyToast("আগে Gemini Key দিন");
         return;
       }

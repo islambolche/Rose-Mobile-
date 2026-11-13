@@ -1,4 +1,4 @@
-import { getGeminiKey } from './geminiKey';
+import { getGeminiKey, ensureGeminiReady } from './geminiKey';
 import { buildRoseSystemInstruction } from './roseConfig';
 import { getDynamicGroqChatModels, getProviderKey } from './chatEngines';
 import { cleanAssistantReplyText } from './ai-service';
@@ -249,11 +249,11 @@ export async function getValidFlashModels(apiKey: string, signal?: AbortSignal):
   } catch {}
 
   try {
-    const res = await fetch(`https://generativelanguage.googleapis.com/v1beta/models?pageSize=200&key=${apiKey}`, {
-      headers: { 'x-goog-api-key': apiKey },
+    const url = `/api/gemini/models${apiKey ? `?apiKey=${encodeURIComponent(apiKey)}` : ''}`;
+    const res = await fetch(url, {
       signal,
     });
-    if (!res.ok) return ['gemini-2.0-flash', 'gemini-2.0-flash-lite', 'gemini-1.5-flash'];
+    if (!res.ok) return ['gemini-4-hydrogen', 'gemini-3.1-flash-lite', 'gemini-2.5-flash'];
     const data = await res.json();
     const models = Array.isArray(data?.models) ? data.models : [];
 
@@ -262,7 +262,11 @@ export async function getValidFlashModels(apiKey: string, signal?: AbortSignal):
       const rawName = typeof m?.name === 'string' ? m.name : '';
       const shortName = rawName.replace(/^models\//, '').trim();
       const lower = shortName.toLowerCase();
-      const methods: string[] = Array.isArray(m?.supportedGenerationMethods) ? m.supportedGenerationMethods : [];
+      const methods: string[] = Array.isArray(m?.supportedGenerationMethods)
+        ? m.supportedGenerationMethods
+        : Array.isArray(m?.supportedActions)
+          ? m.supportedActions
+          : [];
 
       if (
         shortName &&
@@ -298,7 +302,7 @@ export async function getValidFlashModels(apiKey: string, signal?: AbortSignal):
   } catch (e) {
     console.warn('[TypedChat] Model discovery failed:', e);
   }
-  return ['gemini-2.0-flash', 'gemini-2.0-flash-lite', 'gemini-1.5-flash'];
+  return ['gemini-4-hydrogen', 'gemini-3.1-flash-lite', 'gemini-2.5-flash'];
 }
 
 export async function resolveChatModel(apiKey: string, signal?: AbortSignal): Promise<string> {
@@ -318,7 +322,7 @@ export async function resolveChatModel(apiKey: string, signal?: AbortSignal): Pr
     return best;
   }
 
-  return chosen || 'gemini-2.0-flash';
+  return chosen || 'gemini-4-hydrogen';
 }
 
 function shouldFallbackGeminiError(err: any): boolean {
@@ -369,8 +373,9 @@ export async function sendTypedChat(
 ): Promise<{ text: string; modelUsed: string; provider?: 'gemini' | 'groq'; providerLabel?: string }> {
   const apiKey = (getGeminiKey() || '').replace(/["'\r\n\t\s]+/g, '').trim();
   const groqKey = getStoredGroqKey();
+  const hasGemini = await ensureGeminiReady(apiKey);
 
-  if (!apiKey && !groqKey) {
+  if (!hasGemini && !groqKey) {
     const noKeyErr: any = new Error(NO_GEMINI_KEY_MSG);
     noKeyErr.isNoKey = true;
     noKeyErr.shortBengaliMsg = NO_GEMINI_KEY_MSG;
@@ -386,7 +391,7 @@ export async function sendTypedChat(
   const masterController = new AbortController();
   const startTime = Date.now();
   const deadline = startTime + TOTAL_CHAT_TIMEOUT_MS;
-  let currentModel = (localStorage.getItem('chat_model') || 'gemini-2.0-flash').replace(/^models\//, '').trim();
+  let currentModel = (localStorage.getItem('chat_model') || 'gemini-4-hydrogen').replace(/^models\//, '').trim();
 
   const errorTrace: Record<string, any> = {};
 
@@ -560,8 +565,9 @@ export async function sendTypedChat(
 
   const runChatFlow = async (): Promise<{ text: string; modelUsed: string; provider?: 'gemini' | 'groq'; providerLabel?: string }> => {
     // Requirement 4: Remember for 10 minutes that Gemini returned 429, and go straight to Groq during that time
-    const in429Cooldown = apiKey ? isGeminiIn429Cooldown(apiKey) : false;
-    if ((!apiKey || in429Cooldown) && groqKey) {
+    const geminiCooldownKey = apiKey || 'server';
+    const in429Cooldown = hasGemini ? isGeminiIn429Cooldown(geminiCooldownKey) : false;
+    if ((!hasGemini || in429Cooldown) && groqKey) {
       if (in429Cooldown) {
         console.log('[TypedChat] Gemini in 10-min 429 cooldown — going straight to Groq');
         errorTrace.gemini_cooldown = {
@@ -607,14 +613,16 @@ export async function sendTypedChat(
 
       const { signal, cleanup } = createStepSignal(masterController.signal, Math.min(maxStepMs, remainingMs));
       try {
-        const url = `https://generativelanguage.googleapis.com/v1beta/models/${targetModel}:generateContent?key=${apiKey}`;
-        const res = await fetch(url, {
+        const res = await fetch('/api/gemini/generate', {
           method: 'POST',
           headers: {
             'Content-Type': 'application/json',
-            'x-goog-api-key': apiKey,
           },
-          body: JSON.stringify(geminiBody),
+          body: JSON.stringify({
+            model: targetModel,
+            ...geminiBody,
+            ...(apiKey ? { apiKey } : {}),
+          }),
           signal,
         });
 
@@ -696,9 +704,9 @@ export async function sendTypedChat(
         const validFlashModels = await getValidFlashModels(apiKey, masterController.signal);
         const fallbackCandidates = [
           ...validFlashModels.filter((m) => m.toLowerCase().includes('flash')),
-          'gemini-2.0-flash',
-          'gemini-2.0-flash-lite',
-          'gemini-1.5-flash',
+          'gemini-4-hydrogen',
+          'gemini-3.1-flash-lite',
+          'gemini-2.5-flash',
         ];
         const altModel = fallbackCandidates.find((m) => m && m !== currentModel && !m.includes('gemini-2.5'));
 
@@ -720,8 +728,8 @@ export async function sendTypedChat(
     }
 
     const geminiHit429 = is429Error(primaryGeminiErr) || is429Error(secondaryGeminiErr);
-    if (geminiHit429 && apiKey) {
-      markGemini429Cooldown(apiKey);
+    if (geminiHit429 && hasGemini) {
+      markGemini429Cooldown(geminiCooldownKey);
     }
 
     // Step 3: If Gemini also fails → use Groq (if a Groq key is saved)

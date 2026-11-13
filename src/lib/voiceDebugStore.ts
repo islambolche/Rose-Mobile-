@@ -10,7 +10,7 @@ export interface VoiceDebugTurn {
 export interface VoiceDebugSnapshot {
   platform: 'App' | 'Chrome';
   sampleRate: number;
-  captureMethod: 'Worklet' | 'ScriptProcessor' | 'Idle';
+  captureMethod: 'Worklet' | 'ScriptProcessor' | 'RoseMic' | 'Idle';
   chunkSizeMs: number;
   chunksSentPerSecond: number;
   micLevel: number; // 0 to 100
@@ -49,7 +49,7 @@ function saveTurns(turns: VoiceDebugTurn[]) {
 
 class VoiceDebugStore {
   private sampleRate = 0;
-  private captureMethod: 'Worklet' | 'ScriptProcessor' | 'Idle' = 'Idle';
+  private captureMethod: 'Worklet' | 'ScriptProcessor' | 'RoseMic' | 'Idle' = 'Idle';
   private chunkSizeMs = 40;
   private chunkTimestamps: number[] = [];
   private micLevel = 0;
@@ -91,7 +91,7 @@ class VoiceDebugStore {
 
   recordAudioContextInit(
     sampleRate: number,
-    captureMethod: 'Worklet' | 'ScriptProcessor',
+    captureMethod: 'Worklet' | 'ScriptProcessor' | 'RoseMic',
     chunkSizeMs = 40
   ) {
     this.sampleRate = sampleRate;

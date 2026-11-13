@@ -6,6 +6,7 @@ interface LiveVoiceBarsProps {
   sessionState: string;
   isAssistantEnabled?: boolean;
   isBrowserSpeechActive?: () => boolean;
+  getNativeMicLevel?: () => number;
 }
 
 export const LiveVoiceBars: React.FC<LiveVoiceBarsProps> = ({
@@ -14,6 +15,7 @@ export const LiveVoiceBars: React.FC<LiveVoiceBarsProps> = ({
   sessionState,
   isAssistantEnabled = true,
   isBrowserSpeechActive,
+  getNativeMicLevel,
 }) => {
   const sessionStateRef = useRef(sessionState);
   useEffect(() => {
@@ -29,6 +31,11 @@ export const LiveVoiceBars: React.FC<LiveVoiceBarsProps> = ({
   useEffect(() => {
     browserSpeechFnRef.current = isBrowserSpeechActive;
   }, [isBrowserSpeechActive]);
+
+  const nativeMicLevelFnRef = useRef(getNativeMicLevel);
+  useEffect(() => {
+    nativeMicLevelFnRef.current = getNativeMicLevel;
+  }, [getNativeMicLevel]);
 
   useEffect(() => {
     let animId: number;
@@ -66,6 +73,12 @@ export const LiveVoiceBars: React.FC<LiveVoiceBarsProps> = ({
         let sum = 0;
         for (let i = 0; i < data.length; i++) sum += data[i];
         inLevel = sum / (data.length * 255);
+      }
+      if (isEnabledRef.current && nativeMicLevelFnRef.current) {
+        const nativeLevel = nativeMicLevelFnRef.current() || 0;
+        if (nativeLevel > inLevel) {
+          inLevel = nativeLevel;
+        }
       }
 
       let outLevel = 0;

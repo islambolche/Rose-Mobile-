@@ -65,6 +65,7 @@ export interface PcLayoutProps {
   onActionCreateImage?: () => void;
   onActionWrite?: () => void;
   onActionDeveloper?: () => void;
+  isWarmReady?: boolean;
 }
 
 export const PcLayout: React.FC<PcLayoutProps> = ({
@@ -88,6 +89,7 @@ export const PcLayout: React.FC<PcLayoutProps> = ({
   onToggleVoice,
   onToggleMute,
   onSendVideoFrame,
+  isWarmReady,
 }) => {
   // Toggle for right chat panel (persisted in localStorage)
   const [isChatPanelOpen, setIsChatPanelOpen] = useState<boolean>(() => {
@@ -229,7 +231,7 @@ export const PcLayout: React.FC<PcLayoutProps> = ({
     { id: "settings", label: "Settings", icon: Settings },
   ];
 
-  let statusLabel = "Voice idle";
+  let statusLabel = isWarmReady ? "প্রস্তুত" : "Voice idle";
   if (isVoiceActive) {
     if (speakingState === "listening") statusLabel = "Listening...";
     else if (speakingState === "thinking") statusLabel = "Thinking...";

@@ -14,7 +14,7 @@ const __dirname = path.dirname(__filename);
 dotenv.config();
 
 const app = express();
-app.use(express.json());
+app.use(express.json({ limit: '25mb' }));
 
 const httpServer = createServer(app);
 const wss = new WebSocketServer({ noServer: true });
@@ -87,19 +87,39 @@ const resolveGeminiApiKey = (customKey?: string): string => {
   return cleanCustom || activeServerKey || usableEnvKey || '';
 };
 
-const getGenAIClient = (customKey?: string) => {
+const getGenAIClient = (customKey?: string, apiVersion?: string) => {
   const key = resolveGeminiApiKey(customKey) || 'placeholder';
   return new GoogleGenAI({
     apiKey: key,
     httpOptions: {
       headers: {
         'User-Agent': 'aistudio-build',
-      }
-    }
+      },
+      ...(apiVersion ? { apiVersion } : {}),
+    },
   });
 };
 
 const ai = getGenAIClient();
+
+const normalizeSdkModelsList = async (client: GoogleGenAI) => {
+  const pager = await client.models.list({ config: { pageSize: 200 } });
+  const collected: any[] = [];
+  for await (const m of pager) {
+    const actions = Array.isArray((m as any).supportedActions)
+      ? (m as any).supportedActions
+      : Array.isArray((m as any).supportedGenerationMethods)
+        ? (m as any).supportedGenerationMethods
+        : [];
+    collected.push({
+      ...m,
+      supportedActions: actions,
+      supportedGenerationMethods: actions,
+    });
+    if (collected.length >= 400) break;
+  }
+  return collected;
+};
 
 const getPersonalityInstruction = (id: string, responseStyle: string = 'Balanced', customText?: string) => {
   const instructions: Record<string, string> = {
@@ -159,154 +179,167 @@ const isThoughtOrReasoning = (text: string): boolean => {
   return false;
 };
 
+const safeCloseCode = (code?: number): number => {
+  if (
+    typeof code === 'number' &&
+    (code === 1000 ||
+      (code >= 1001 && code <= 1014 && code !== 1004 && code !== 1005 && code !== 1006) ||
+      (code >= 3000 && code <= 4999))
+  ) {
+    return code;
+  }
+  return 1000;
+};
+
+const safeCloseReason = (reason?: string): string => String(reason || '').slice(0, 100);
+
 // Gemini Live API Bridge
 wss.on('connection', async (clientWs, req) => {
-  const url = new URL(req.url || '', `http://${req.headers.host}`);
+  const url = new URL(req.url || '', `http://${req.headers.host || 'localhost'}`);
   const assistantName = url.searchParams.get('assistantName') || 'Rose AI';
   const ownerName = url.searchParams.get('ownerName') || 'MD YOUSUF KHAN';
   const rawVoiceName = url.searchParams.get('voiceName') || 'Sulafat';
-  
-  const FEMALE_VOICES = new Set([
-    "Sulafat", "Vindemiatrix", "Achernar", "Leda", "Aoede", "Callirrhoe",
-    "Despina", "Laomedeia", "Zephyr", "Kore", "Erinome", "Autonoe", "Gacrux", "Pulcherrima"
-  ]);
-
-  let voiceName = "Sulafat";
-  if (FEMALE_VOICES.has(rawVoiceName)) {
-    voiceName = rawVoiceName;
-  } else {
-    voiceName = "Sulafat";
-  }
-
   const personality = url.searchParams.get('personality') || 'Normal';
-  const customPersonalityText = url.searchParams.get('customPersonalityText') || '';
-  const language = url.searchParams.get('language') || 'bn-BD';
-  const responseStyle = url.searchParams.get('responseStyle') || 'Balanced';
-  const memoryFacts = url.searchParams.get('memoryFacts') || '';
-  const recentSummary = url.searchParams.get('recentSummary') || '';
-  let requestedModel = url.searchParams.get('model') || 'gemini-1.5-flash-native-audio-preview-09-2025';
-
-  const validLiveModels = [
-    'gemini-1.5-flash-native-audio-preview-09-2025',
-    'gemini-1.5-flash-native-audio-preview-12-2025',
-    'gemini-live-2.5-flash-preview',
-    'gemini-1.5-flash-native-audio-preview',
-    'gemini-1.5-live'
-  ];
-
-  let model = requestedModel && requestedModel.trim() ? requestedModel.trim() : 'gemini-1.5-live';
-
+  const isMinimal = url.searchParams.get('minimal') === '1';
+  const queryModel = (url.searchParams.get('model') || 'gemini-3.8-live').replace(/^models\//, '').trim();
+  const queryApiVersion = url.searchParams.get('apiVersion') || '';
   const userKeyParam = url.searchParams.get('apiKey') || '';
-  const apiKey = resolveGeminiApiKey(userKeyParam);
 
-  const isKeyUsable = apiKey && 
-    apiKey !== 'placeholder' && 
-    apiKey !== 'undefined' && 
-    !apiKey.startsWith('AQ.');
+  const apiKey = resolveGeminiApiKey(userKeyParam);
+  const isKeyUsable =
+    apiKey && apiKey !== 'placeholder' && apiKey !== 'undefined' && !apiKey.startsWith('AQ.');
 
   if (!isKeyUsable) {
-    const errorMsg = 'Gemini API key is missing. Add your API key in Connections.';
-    console.warn(`[Live WS] Missing or invalid API key. Key prefix: ${apiKey ? apiKey.slice(0, 4) : 'none'}`);
+    const errorMsg = 'Gemini API key is missing. Add your API key in Settings > Secrets.';
+    console.warn('[Live WS] Missing or invalid API key.');
     if (clientWs.readyState === 1) {
-      clientWs.send(JSON.stringify({ error: errorMsg, closed: true, code: 4001, reason: 'Missing Gemini API Key' }));
+      clientWs.send(
+        JSON.stringify({
+          error: { code: 4001, message: errorMsg, status: 'UNAUTHENTICATED' },
+          closed: true,
+          code: 4001,
+          reason: 'Missing Gemini API Key',
+        })
+      );
     }
     setTimeout(() => {
-      try { clientWs.close(4001, 'Missing Gemini API Key'); } catch (e) {}
+      try {
+        clientWs.close(4001, 'Missing Gemini API Key');
+      } catch {}
     }, 150);
     return;
   }
 
-  const clientGenAI = new GoogleGenAI({
-    apiKey: apiKey,
-    httpOptions: {
-      headers: {
-        'User-Agent': 'aistudio-build',
-      }
-    }
-  });
-
-  const isMinimal = url.searchParams.get('minimal') === '1';
-
-  const personalityMap: Record<string, string> = {
-    "Normal": "সাধারণ, সহায়ক",
-    "Friendly": "উষ্ণ, বন্ধুসুলভ, সহজ কথা",
-    "Professional": "স্পষ্ট, সংক্ষিপ্ত, কাজের কথা",
-    "Funny": "মজার, হালকা রসিকতা",
-    "Companion": "বিশ্বস্ত, মনোযোগী সঙ্গী",
-    "GF Mode": "মিষ্টি, যত্নশীল, সহানুভূতিশীল",
-    "Teacher": "ধৈর্য নিয়ে বুঝিয়ে বলা",
-    "Developer": "প্রযুক্তিগত ও যুক্তিনির্ভর"
-  };
-
-  const pDesc = personalityMap[personality] || "সাধারণ, সহায়ক";
-  
-  const systemInstructionLines: string[] = isMinimal 
-    ? [`তুমি রোজ। বাংলায় ছোট উত্তর দাও।`] 
-    : [
-        `তোমার নাম ${assistantName}। ইউজারের নাম ${ownerName}।`,
-        `${pDesc}। এই স্বভাবে কথার ধরন, শব্দ ও আবেগ রাখো।`
-      ];
-
-  if (!isMinimal) {
-    systemInstructionLines.push(`তুমি রোজ। শুধু বাংলায় ছোট উত্তর দাও। ব্যবহারকারী তোমার নাম ধরে চুপ থাকতে বললে 'ঠিক আছে' বলে চুপ থাকো এবং নাম ধরে না ডাকা পর্যন্ত কোনো উত্তর দিয়ো না।`);
-  }
-
   let session: any = null;
   let isClosing = false;
+  let setupStarted = false;
+  let setupTimeout: ReturnType<typeof setTimeout> | null = null;
+  const pendingMessages: any[] = [];
 
   const cleanupSession = () => {
     if (isClosing) return;
     isClosing = true;
-    console.log(`[Live WS] Cleaning up session for client.`);
+    if (setupTimeout) {
+      clearTimeout(setupTimeout);
+      setupTimeout = null;
+    }
+    pendingMessages.length = 0;
     if (session) {
-      try { session.close(); } catch (e) {}
+      try {
+        session.close();
+      } catch {}
       session = null;
     }
   };
 
-  try {
-    const PHONE_CONTROL_TOOLS = {
-      functionDeclarations: [
-        {
-          name: "open_app",
-          description: "Open an installed app by name.",
-          parameters: { type: Type.OBJECT, properties: { name: { type: Type.STRING } }, required: ["name"] }
-        },
-        {
-          name: "call_contact",
-          description: "Call a phone number.",
-          parameters: { type: Type.OBJECT, properties: { number: { type: Type.STRING } }, required: ["number"] }
-        },
-        {
-          name: "send_sms",
-          description: "Send an SMS message.",
-          parameters: { type: Type.OBJECT, properties: { number: { type: Type.STRING }, text: { type: Type.STRING } }, required: ["number", "text"] }
-        },
-        {
-          name: "read_notifications",
-          description: "Read latest notifications.",
-          parameters: { type: Type.OBJECT, properties: { limit: { type: Type.NUMBER, description: "Max number of notifications to read" } } }
-        },
-        {
-          name: "take_photo",
-          description: "Take a photo.",
-          parameters: { type: Type.OBJECT, properties: { camera: { type: Type.NUMBER, description: "0 for back, 1 for front" } } }
-        },
-        {
-          name: "flashlight",
-          description: "Turn flashlight on or off.",
-          parameters: { type: Type.OBJECT, properties: { state: { type: Type.STRING, enum: ["on", "off"] } }, required: ["state"] }
-        }
-      ]
-    };
+  const forwardDownstreamMessage = (activeSession: any, msg: any) => {
+    if (!activeSession || !msg || typeof msg !== 'object') return;
+    try {
+      if (msg.audio) {
+        activeSession.sendRealtimeInput({
+          audio: { data: msg.audio, mimeType: 'audio/pcm;rate=16000' },
+        });
+        return;
+      }
 
-    const liveConfig: any = {
-      responseModalities: [Modality.AUDIO],
-      systemInstruction: systemInstructionLines.join(" "),
-      tools: [PHONE_CONTROL_TOOLS],
-      speechConfig: {
-        voiceConfig: { prebuiltVoiceConfig: { voiceName: voiceName } },
+      const rt = msg.realtimeInput || msg.realtime_input;
+      if (rt && typeof rt === 'object') {
+        const chunks = rt.mediaChunks || rt.media_chunks;
+        if (Array.isArray(chunks)) {
+          for (const chunk of chunks) {
+            if (!chunk?.data) continue;
+            const mime = String(chunk.mimeType || chunk.mime_type || 'audio/pcm;rate=16000');
+            if (mime.startsWith('image/') || mime.startsWith('video/')) {
+              activeSession.sendRealtimeInput({
+                video: { data: chunk.data, mimeType: mime },
+              });
+            } else {
+              activeSession.sendRealtimeInput({
+                audio: { data: chunk.data, mimeType: mime },
+              });
+            }
+          }
+        }
+        const textChunks = rt.text_chunks || rt.textChunks;
+        if (Array.isArray(textChunks)) {
+          for (const tc of textChunks) {
+            if (tc?.text) {
+              activeSession.sendRealtimeInput({ text: String(tc.text) });
+            }
+          }
+        }
+        if (rt.audio) {
+          activeSession.sendRealtimeInput({ audio: rt.audio });
+        }
+        if (rt.video) {
+          activeSession.sendRealtimeInput({ video: rt.video });
+        }
+        if (typeof rt.text === 'string' && rt.text.length > 0) {
+          activeSession.sendRealtimeInput({ text: rt.text });
+        }
+        if (rt.activityStart !== undefined) {
+          activeSession.sendRealtimeInput({ activityStart: rt.activityStart });
+        }
+        if (rt.activityEnd !== undefined) {
+          activeSession.sendRealtimeInput({ activityEnd: rt.activityEnd });
+        }
+        if (rt.audioStreamEnd !== undefined) {
+          activeSession.sendRealtimeInput({ audioStreamEnd: rt.audioStreamEnd });
+        }
+        return;
+      }
+
+      const clientContent = msg.clientContent || msg.client_content;
+      if (clientContent && typeof activeSession.sendClientContent === 'function') {
+        activeSession.sendClientContent(clientContent);
+        return;
+      }
+
+      const toolResp = msg.toolResponse || msg.tool_response;
+      if (toolResp && Array.isArray(toolResp.functionResponses)) {
+        activeSession.sendToolResponse(toolResp);
+      }
+    } catch (e: any) {
+      console.error('[Live WS] Error forwarding message to Gemini:', e?.message || e);
+    }
+  };
+
+  const buildDefaultSetup = () => {
+    const FEMALE_VOICES = new Set([
+      'Sulafat', 'Vindemiatrix', 'Achernar', 'Leda', 'Aoede', 'Callirrhoe',
+      'Despina', 'Laomedeia', 'Zephyr', 'Kore', 'Erinome', 'Autonoe', 'Gacrux', 'Pulcherrima',
+    ]);
+    const voiceName = FEMALE_VOICES.has(rawVoiceName) ? rawVoiceName : 'Sulafat';
+    const sysInst = isMinimal
+      ? 'তুমি রোজ। বাংলায় ছোট উত্তর দাও।'
+      : `তোমার নাম ${assistantName}। ইউজারের নাম ${ownerName}। (${personality}) শুধু বাংলায় ছোট উত্তর দাও।`;
+    return {
+      model: queryModel || 'gemini-3.8-live',
+      generationConfig: {
+        responseModalities: [Modality.AUDIO],
+        speechConfig: { voiceConfig: { prebuiltVoiceConfig: { voiceName } } },
       },
+      systemInstruction: { parts: [{ text: sysInst }] },
       inputAudioTranscription: {},
       outputAudioTranscription: {},
       realtimeInputConfig: {
@@ -318,17 +351,76 @@ wss.on('connection', async (clientWs, req) => {
         },
       },
     };
+  };
 
-    console.log(`[Live WS] Connecting to Gemini Live with model: ${model}`);
+  const openUpstreamSession = async (setupPayload: any, explicitlySentByClient: boolean, explicitApiVersion?: string) => {
+    if (setupStarted || isClosing) return;
+    setupStarted = true;
+    if (setupTimeout) {
+      clearTimeout(setupTimeout);
+      setupTimeout = null;
+    }
 
-    const connectToGemini = async (modelName: string) => {
-      return await clientGenAI.live.connect({
+    const setup = setupPayload || buildDefaultSetup();
+    const modelName = String(setup.model || queryModel || 'gemini-3.8-live')
+      .replace(/^models\//, '')
+      .trim();
+
+    const genCfg = setup.generationConfig || {};
+    const enableAffective = Boolean(genCfg.enableAffectiveDialog || setup.enableAffectiveDialog);
+    const apiVersion = explicitApiVersion || queryApiVersion || (enableAffective ? 'v1alpha' : 'v1beta');
+
+    const sdkConfig: any = {
+      responseModalities: genCfg.responseModalities || setup.responseModalities || [Modality.AUDIO],
+    };
+    if (genCfg.speechConfig || setup.speechConfig) {
+      sdkConfig.speechConfig = genCfg.speechConfig || setup.speechConfig;
+    }
+    if (enableAffective) {
+      sdkConfig.enableAffectiveDialog = true;
+    }
+    if (genCfg.temperature !== undefined) {
+      sdkConfig.temperature = genCfg.temperature;
+    }
+    if (genCfg.maxOutputTokens !== undefined) {
+      sdkConfig.maxOutputTokens = genCfg.maxOutputTokens;
+    }
+    if (setup.thinkingConfig || genCfg.thinkingConfig) {
+      sdkConfig.thinkingConfig = setup.thinkingConfig || genCfg.thinkingConfig;
+    }
+    if (setup.systemInstruction) {
+      sdkConfig.systemInstruction = setup.systemInstruction;
+    }
+    if (Array.isArray(setup.tools) && setup.tools.length > 0) {
+      sdkConfig.tools = setup.tools;
+    }
+    if (setup.inputAudioTranscription !== undefined) {
+      sdkConfig.inputAudioTranscription = setup.inputAudioTranscription;
+    }
+    if (setup.outputAudioTranscription !== undefined) {
+      sdkConfig.outputAudioTranscription = setup.outputAudioTranscription;
+    }
+    if (setup.realtimeInputConfig !== undefined) {
+      sdkConfig.realtimeInputConfig = setup.realtimeInputConfig;
+    }
+    if (setup.sessionResumption !== undefined) {
+      sdkConfig.sessionResumption = setup.sessionResumption;
+    }
+    if (setup.contextWindowCompression !== undefined) {
+      sdkConfig.contextWindowCompression = setup.contextWindowCompression;
+    }
+
+    const clientGenAI = getGenAIClient(apiKey, apiVersion);
+    console.log(`[Live WS] Connecting to Gemini Live: model=${modelName}, apiVersion=${apiVersion}`);
+
+    try {
+      session = await clientGenAI.live.connect({
         model: modelName,
-        config: liveConfig,
+        config: sdkConfig,
         callbacks: {
           onopen: () => {
-            console.log(`[Live WS] Gemini Live session OPEN for model: ${modelName}`);
-            if (clientWs.readyState === 1) {
+            console.log(`[Live WS] Upstream WS open for model: ${modelName}`);
+            if (!explicitlySentByClient && clientWs.readyState === 1) {
               clientWs.send(JSON.stringify({ connected: true, setupComplete: true, model: modelName }));
             }
           },
@@ -337,232 +429,437 @@ wss.on('connection', async (clientWs, req) => {
             clientWs.send(JSON.stringify(message));
           },
           onerror: (err: any) => {
-            console.error(`[Live WS] Gemini error:`, err);
+            const msg = String(err?.message || err || 'Live session error');
+            console.error(`[Live WS] Gemini error for ${modelName}:`, msg);
             if (clientWs.readyState === 1) {
-              clientWs.send(JSON.stringify({ error: "ভয়েস মডেল বন্ধ হয়েছে। Settings > AI Model-এ নতুন মডেল বাছুন।" }));
+              clientWs.send(JSON.stringify({ error: { message: msg, code: err?.code || 500 } }));
             }
           },
           onclose: (ev: any) => {
-            console.log(`[Live WS] Gemini closed (code ${ev?.code}):`, ev?.reason);
+            const code = typeof ev?.code === 'number' ? ev.code : 1000;
+            const reason = String(ev?.reason || '');
+            console.log(`[Live WS] Upstream closed (${modelName}) code=${code} reason=${reason}`);
             if (clientWs.readyState === 1 && !isClosing) {
-              clientWs.send(JSON.stringify({ error: ev?.reason || "Gemini connection lost", closed: true, code: ev?.code }));
+              if (reason && code !== 1000) {
+                clientWs.send(
+                  JSON.stringify({
+                    error: { code, message: reason },
+                    closed: true,
+                    code,
+                    reason,
+                  })
+                );
+              }
               setTimeout(() => {
-                try { clientWs.close(ev?.code === 1008 ? 4001 : 1000, "Gemini Closed"); } catch (e) {}
-              }, 100);
+                try {
+                  clientWs.close(safeCloseCode(code), safeCloseReason(reason || 'Gemini Closed'));
+                } catch {}
+              }, 80);
             }
             cleanupSession();
-          }
+          },
         },
       });
-    };
 
-    try {
-      session = await connectToGemini(model);
-    } catch (err: any) {
-      console.warn(`[Live WS] Initial connect failed for ${model} (${err?.message}), trying default fallback...`);
-      try {
-        session = await connectToGemini('gemini-1.5-flash-native-audio-preview-09-2025');
-      } catch (err2: any) {
-        console.error(`[Live WS] Fallback connect failed:`, err2?.message || err2);
-        const friendlyErr = err2?.message || err?.message || 'Failed connecting to Gemini Live API';
-        if (clientWs.readyState === 1) {
-          clientWs.send(JSON.stringify({ error: friendlyErr, closed: true }));
-        }
-        setTimeout(() => {
-          try { clientWs.close(4000, friendlyErr); } catch (e) {}
-        }, 150);
+      if (isClosing) {
+        try {
+          session?.close();
+        } catch {}
+        session = null;
         return;
       }
-    }
 
-    clientWs.on('message', (data) => {
-      if (!session) return;
-      try {
-        const msg = JSON.parse(data.toString());
-        if (msg.audio) {
-          session.sendRealtimeInput({
-            audio: { data: msg.audio, mimeType: 'audio/pcm;rate=16000' }
-          });
-        } else if (msg.realtime_input?.media_chunks?.[0]?.data) {
-          session.sendRealtimeInput({
-            audio: { data: msg.realtime_input.media_chunks[0].data, mimeType: 'audio/pcm;rate=16000' }
-          });
-        } else if (msg.realtime_input) {
-          session.sendRealtimeInput(msg.realtime_input);
-        } else if (msg.realtimeInput) {
-          session.sendRealtimeInput(msg.realtimeInput);
-        } else if (msg.toolResponse) {
-          if (msg.toolResponse.functionResponses && Array.isArray(msg.toolResponse.functionResponses)) {
-            session.sendToolResponse(msg.toolResponse);
-          }
-        }
-      } catch (e: any) {
-        console.error('[Live WS] Error processing message:', e?.message);
+      while (pendingMessages.length > 0 && session) {
+        const queued = pendingMessages.shift();
+        forwardDownstreamMessage(session, queued);
       }
-    });
-
-    clientWs.on('close', () => {
+    } catch (err: any) {
+      const parsed = parseGeminiError(err);
+      console.error(`[Live WS] Live connect failed (${modelName}):`, parsed.message);
+      if (clientWs.readyState === 1) {
+        clientWs.send(
+          JSON.stringify({
+            error: { code: parsed.status || 4000, message: parsed.message },
+            closed: true,
+          })
+        );
+      }
+      setTimeout(() => {
+        try {
+          clientWs.close(4000, safeCloseReason(parsed.message));
+        } catch {}
+      }, 100);
       cleanupSession();
-    });
-
-    clientWs.on('error', (err) => {
-      console.error('[Live WS] Client WS error:', err);
-      cleanupSession();
-    });
-
-  } catch (error: any) {
-    const rawMsg = error?.message || String(error);
-    console.error('[Live WS] Setup failed:', rawMsg);
-    if (clientWs.readyState === 1) {
-      clientWs.send(JSON.stringify({ error: `Setup failed: ${rawMsg}`, closed: true }));
     }
-    setTimeout(() => {
-      try { clientWs.close(4001, "Setup Failed"); } catch (e) {}
-    }, 100);
+  };
+
+  clientWs.on('message', (data) => {
+    if (isClosing) return;
+    try {
+      const msg = JSON.parse(data.toString());
+      if (msg && msg.setup && !setupStarted) {
+        void openUpstreamSession(msg.setup, true, msg.apiVersion);
+        return;
+      }
+      if (!setupStarted) {
+        pendingMessages.push(msg);
+        return;
+      }
+      if (!session) {
+        pendingMessages.push(msg);
+        return;
+      }
+      forwardDownstreamMessage(session, msg);
+    } catch (e: any) {
+      console.error('[Live WS] Error processing client message:', e?.message || e);
+    }
+  });
+
+  clientWs.on('close', () => {
+    cleanupSession();
+  });
+
+  clientWs.on('error', (err) => {
+    console.error('[Live WS] Client WS error:', err);
+    cleanupSession();
+  });
+
+  // Fallback if a minimal client opens WS without sending a setup payload
+  setupTimeout = setTimeout(() => {
+    if (!setupStarted && !isClosing) {
+      void openUpstreamSession(buildDefaultSetup(), false, queryApiVersion || 'v1beta');
+    }
+  }, 1200);
+});
+
+app.get('/api/gemini/status', (req, res) => {
+  const key = resolveGeminiApiKey();
+  const configured = Boolean(key && key !== 'placeholder' && key !== 'undefined');
+  res.json({
+    configured,
+    maskedKey: configured ? maskApiKey(key) : '',
+  });
+});
+
+app.post('/api/gemini/verify', async (req, res) => {
+  try {
+    const { apiKey, model } = req.body || {};
+    const effectiveKey = resolveGeminiApiKey(apiKey);
+    if (!effectiveKey || effectiveKey === 'placeholder') {
+      return res.status(401).json({
+        ok: false,
+        status: 401,
+        error: { code: 401, message: 'Gemini API key is not configured on the server.' },
+      });
+    }
+    const client = getGenAIClient(effectiveKey);
+    const cleanModel = typeof model === 'string' ? model.replace(/^models\//, '').trim() : '';
+    if (cleanModel) {
+      await client.models.generateContent({
+        model: cleanModel,
+        contents: [{ role: 'user', parts: [{ text: 'hi' }] }],
+        config: { maxOutputTokens: 2 },
+      });
+    } else {
+      await client.models.list({ config: { pageSize: 10 } });
+    }
+    return res.json({ ok: true, status: 200, message: 'OK' });
+  } catch (err: any) {
+    const parsed = parseGeminiError(err);
+    const status = parsed.status >= 400 ? parsed.status : 400;
+    return res.status(status).json({
+      ok: false,
+      status,
+      error: { code: status, message: parsed.message },
+    });
   }
 });
 
 app.get('/api/gemini/models', async (req, res) => {
   try {
-    const customKey = req.query.apiKey as string;
+    const customKey = req.query.apiKey as string | undefined;
     const key = resolveGeminiApiKey(customKey);
     if (!key || key === 'placeholder') {
-      return res.status(401).json({ error: "API key not configured" });
+      return res.status(401).json({ error: { code: 401, message: 'API key not configured' } });
     }
-    const response = await fetch(`https://generativelanguage.googleapis.com/v1beta/models?key=${encodeURIComponent(key)}`);
-    const data = await response.json();
-    res.json(data);
+    const client = getGenAIClient(key);
+    const models = await normalizeSdkModelsList(client);
+    res.json({ models });
   } catch (error: any) {
-    res.status(500).json({ error: error.message });
+    const parsed = parseGeminiError(error);
+    res.status(parsed.status || 500).json({ error: { code: parsed.status || 500, message: parsed.message } });
   }
 });
 
+const normalizeContentsForSdk = (contents: any, prompt?: any) => {
+  const mapPart = (p: any) => {
+    if (!p || typeof p !== 'object') return p;
+    if (p.inline_data && !p.inlineData) {
+      return {
+        inlineData: {
+          mimeType: p.inline_data.mime_type || p.inline_data.mimeType || 'audio/webm',
+          data: p.inline_data.data,
+        },
+      };
+    }
+    return p;
+  };
+  let normalizedContents: any = contents;
+  if (!normalizedContents && prompt) {
+    normalizedContents = [{ role: 'user', parts: [{ text: String(prompt) }] }];
+  } else if (typeof normalizedContents === 'string') {
+    normalizedContents = [{ role: 'user', parts: [{ text: normalizedContents }] }];
+  } else if (Array.isArray(normalizedContents)) {
+    normalizedContents = normalizedContents.map((item: any) => {
+      if (typeof item === 'string') {
+        return { role: 'user', parts: [{ text: item }] };
+      }
+      if (item && item.text && !item.parts) {
+        return {
+          role: item.role === 'assistant' ? 'model' : item.role || 'user',
+          parts: [{ text: item.text }],
+        };
+      }
+      if (item && Array.isArray(item.parts)) {
+        return {
+          ...item,
+          role: item.role === 'assistant' ? 'model' : item.role || 'user',
+          parts: item.parts.map(mapPart),
+        };
+      }
+      return item;
+    });
+  }
+  return normalizedContents;
+};
+
+const buildSdkGenerateConfig = (opts: {
+  systemInstruction?: any;
+  generationConfig?: any;
+  tools?: any;
+  toolConfig?: any;
+  includeThinking?: boolean;
+  includeGoogleSearch?: boolean;
+}) => {
+  const {
+    systemInstruction,
+    generationConfig,
+    tools,
+    toolConfig,
+    includeThinking = true,
+    includeGoogleSearch = true,
+  } = opts;
+  const config: any = {};
+  if (systemInstruction) {
+    config.systemInstruction =
+      typeof systemInstruction === 'string'
+        ? systemInstruction
+        : systemInstruction?.parts?.map((p: any) => p?.text || '').join('\n').trim() || systemInstruction;
+  }
+  if (generationConfig && typeof generationConfig === 'object') {
+    if (generationConfig.maxOutputTokens !== undefined) {
+      config.maxOutputTokens = generationConfig.maxOutputTokens;
+    }
+    if (generationConfig.temperature !== undefined) {
+      config.temperature = generationConfig.temperature;
+    }
+    if (generationConfig.topP !== undefined) {
+      config.topP = generationConfig.topP;
+    }
+    if (generationConfig.topK !== undefined) {
+      config.topK = generationConfig.topK;
+    }
+    if (generationConfig.seed !== undefined) {
+      config.seed = generationConfig.seed;
+    }
+    if (generationConfig.responseMimeType) {
+      config.responseMimeType = generationConfig.responseMimeType;
+    }
+    if (generationConfig.responseSchema) {
+      config.responseSchema = generationConfig.responseSchema;
+    }
+    if (includeThinking && generationConfig.thinkingConfig) {
+      config.thinkingConfig = generationConfig.thinkingConfig;
+    }
+  }
+  if (Array.isArray(tools) && tools.length > 0) {
+    const filteredTools = includeGoogleSearch
+      ? tools
+      : tools.filter((t: any) => !t?.googleSearch);
+    if (filteredTools.length > 0) {
+      config.tools = filteredTools;
+    }
+  }
+  if (toolConfig) {
+    config.toolConfig = toolConfig;
+  }
+  return config;
+};
+
+const filterNonThoughtCandidates = (candidates: any[] | undefined, fallbackText: string) => {
+  if (!Array.isArray(candidates) || candidates.length === 0) {
+    return fallbackText
+      ? [{ content: { parts: [{ text: fallbackText }], role: 'model' } }]
+      : [];
+  }
+  return candidates.map((cand: any) => {
+    const parts = Array.isArray(cand?.content?.parts)
+      ? cand.content.parts.filter((p: any) => p && p.thought !== true)
+      : [];
+    return {
+      ...cand,
+      content: {
+        ...(cand?.content || {}),
+        role: cand?.content?.role || 'model',
+        parts,
+      },
+    };
+  });
+};
+
 app.post('/api/gemini/generate', async (req, res) => {
   try {
-    const { model, contents, systemInstruction, generationConfig, apiKey, prompt, tools, toolConfig } = req.body;
+    const {
+      model,
+      contents,
+      systemInstruction,
+      generationConfig,
+      apiKey,
+      prompt,
+      tools,
+      toolConfig,
+    } = req.body || {};
+
     const cleanUserKey =
-      typeof apiKey === 'string'
-        ? apiKey.replace(/[\r\n\t\s"']+/g, '').trim()
-        : '';
+      typeof apiKey === 'string' ? apiKey.replace(/[\r\n\t\s"']+/g, '').trim() : '';
     const effectiveKey = resolveGeminiApiKey(cleanUserKey);
 
-    if (!effectiveKey) {
-      return res.status(400).json({
+    if (!effectiveKey || effectiveKey === 'placeholder') {
+      return res.status(401).json({
         error: {
-          code: 400,
-          message:
-            'Gemini API key is missing. Please save your Gemini API key in Settings > Connections.',
-          status: 'INVALID_ARGUMENT',
+          code: 401,
+          message: 'Gemini API key is missing on the server.',
+          status: 'UNAUTHENTICATED',
         },
       });
-    }
-
-    if (cleanUserKey && !serverSecretVault.freeKey && !cleanUserKey.startsWith('AQ.')) {
-      serverSecretVault.freeKey = cleanUserKey;
-      saveSecrets(serverSecretVault);
     }
 
     let modelToUse =
       model && typeof model === 'string'
         ? model.replace(/^models\//, '').trim()
-        : 'gemini-1.5-flash';
+        : 'gemini-4-hydrogen';
     if (
       !modelToUse ||
       !modelToUse.startsWith('gemini') ||
       modelToUse.includes('native-audio') ||
       modelToUse.includes('live')
     ) {
-      modelToUse = 'gemini-1.5-flash';
+      modelToUse = 'gemini-4-hydrogen';
     }
 
     const client = getGenAIClient(effectiveKey);
+    const normalizedContents = normalizeContentsForSdk(contents, prompt);
 
-    let normalizedContents: any = contents;
-    if (!normalizedContents && prompt) {
-      normalizedContents = [{ role: 'user', parts: [{ text: String(prompt) }] }];
-    } else if (typeof normalizedContents === 'string') {
-      normalizedContents = [{ role: 'user', parts: [{ text: normalizedContents }] }];
-    } else if (Array.isArray(normalizedContents)) {
-      normalizedContents = normalizedContents.map((item: any) => {
-        if (typeof item === 'string') {
-          return { role: 'user', parts: [{ text: item }] };
-        }
-        if (item && item.text && !item.parts) {
-          return { role: item.role === 'assistant' ? 'model' : (item.role || 'user'), parts: [{ text: item.text }] };
-        }
-        return item;
+    const runWithConfig = async (
+      targetModel: string,
+      includeThinking: boolean,
+      includeGoogleSearch: boolean
+    ) => {
+      const cfg = buildSdkGenerateConfig({
+        systemInstruction,
+        generationConfig,
+        tools,
+        toolConfig,
+        includeThinking,
+        includeGoogleSearch,
       });
-    }
+      return await client.models.generateContent({
+        model: targetModel,
+        contents: normalizedContents,
+        config: Object.keys(cfg).length > 0 ? cfg : undefined,
+      });
+    };
 
-    const config: any = {};
-    if (systemInstruction) {
-      config.systemInstruction = typeof systemInstruction === 'string'
-        ? systemInstruction
-        : systemInstruction?.parts?.[0]?.text || '';
-    }
-    if (generationConfig?.maxOutputTokens) {
-      config.maxOutputTokens = generationConfig.maxOutputTokens;
-    }
-    if (generationConfig?.temperature !== undefined) {
-      config.temperature = generationConfig.temperature;
-    }
-    if (generationConfig?.responseMimeType) {
-      config.responseMimeType = generationConfig.responseMimeType;
-    }
-    if (generationConfig?.responseSchema) {
-      config.responseSchema = generationConfig.responseSchema;
-    }
-    if (tools && Array.isArray(tools) && tools.length > 0) {
-      config.tools = tools;
-    }
-    if (toolConfig) {
-      config.toolConfig = toolConfig;
-    }
+    const callModelWith400Retries = async (targetModel: string) => {
+      try {
+        return await runWithConfig(targetModel, true, true);
+      } catch (err1: any) {
+        const p1 = parseGeminiError(err1);
+        const msg1 = (p1.message || '').toLowerCase();
+        if (p1.status === 400 || msg1.includes('thinking') || msg1.includes('google_search') || msg1.includes('tool')) {
+          try {
+            return await runWithConfig(targetModel, false, true);
+          } catch (err2: any) {
+            const p2 = parseGeminiError(err2);
+            const msg2 = (p2.message || '').toLowerCase();
+            if (Array.isArray(tools) && tools.some((t: any) => t?.googleSearch) && (p2.status === 400 || msg2.includes('search') || msg2.includes('tool'))) {
+              return await runWithConfig(targetModel, false, false);
+            }
+            throw err2;
+          }
+        }
+        throw err1;
+      }
+    };
+
+    let response: any = null;
+    let finalModelUsed = modelToUse;
 
     try {
-      const response = await client.models.generateContent({
-        model: modelToUse,
-        contents: normalizedContents,
-        config: Object.keys(config).length > 0 ? config : undefined,
-      });
-
-      const replyText = response.text || '';
-      return res.status(200).json({
-        text: replyText,
-        candidates: response.candidates || [
-          {
-            content: {
-              parts: [{ text: replyText }],
-              role: 'model',
-            },
-          },
-        ],
-        usageMetadata: response.usageMetadata,
-      });
+      response = await callModelWith400Retries(modelToUse);
     } catch (sdkErr: any) {
-      console.warn(`[Gemini SDK generate] error for model ${modelToUse}:`, sdkErr?.message);
-      // Fallback to gemini-1.5-flash if model was not found
-      if (modelToUse !== 'gemini-1.5-flash' && String(sdkErr?.message || '').toLowerCase().includes('not found')) {
-        const fallbackRes = await client.models.generateContent({
-          model: 'gemini-1.5-flash',
-          contents: normalizedContents,
-          config: Object.keys(config).length > 0 ? config : undefined,
-        });
-        const replyText = fallbackRes.text || '';
-        return res.status(200).json({
-          text: replyText,
-          candidates: fallbackRes.candidates || [
-            { content: { parts: [{ text: replyText }], role: 'model' } }
-          ],
-          usageMetadata: fallbackRes.usageMetadata,
-        });
+      const parsedErr = parseGeminiError(sdkErr);
+      if (parsedErr.status === 404 || String(sdkErr?.message || '').toLowerCase().includes('not found')) {
+        const discovered = await normalizeSdkModelsList(client).catch(() => []);
+        const flashCandidates = discovered
+          .map((m: any) => String(m.name || '').replace(/^models\//, '').trim())
+          .filter((name: string) => {
+            const lower = name.toLowerCase();
+            return (
+              name &&
+              name !== modelToUse &&
+              lower.includes('flash') &&
+              !lower.includes('live') &&
+              !lower.includes('native-audio') &&
+              !lower.includes('tts') &&
+              !lower.includes('image')
+            );
+          });
+        const fallbacks = Array.from(
+          new Set([...flashCandidates.slice(0, 3), 'gemini-4-hydrogen', 'gemini-3.1-flash-lite', 'gemini-2.5-flash'])
+        ).filter((m) => m !== modelToUse);
+
+        let succeeded = false;
+        let lastFallbackErr = sdkErr;
+        for (const fb of fallbacks) {
+          try {
+            response = await callModelWith400Retries(fb);
+            finalModelUsed = fb;
+            succeeded = true;
+            break;
+          } catch (fbErr: any) {
+            lastFallbackErr = fbErr;
+          }
+        }
+        if (!succeeded) throw lastFallbackErr;
+      } else {
+        throw sdkErr;
       }
-      throw sdkErr;
     }
+
+    const replyText = response?.text || '';
+    const filteredCandidates = filterNonThoughtCandidates(response?.candidates, replyText);
+    return res.status(200).json({
+      text: replyText,
+      candidates: filteredCandidates,
+      groundingMetadata: filteredCandidates?.[0]?.groundingMetadata,
+      usageMetadata: response?.usageMetadata,
+      modelUsed: finalModelUsed,
+    });
   } catch (error: any) {
-    console.error('Gemini generate error:', error);
+    console.error('Gemini generate error:', error?.message || error);
     const parsed = parseGeminiError(error);
-    const status = parsed.status || (typeof error?.status === 'number' && error.status >= 400 ? error.status : 500);
+    const status = parsed.status >= 400 ? parsed.status : 500;
     return res.status(status).json({
       error: {
         code: status,
@@ -575,20 +872,27 @@ app.post('/api/gemini/generate', async (req, res) => {
 
 app.post('/api/gemini/stream', async (req, res) => {
   try {
-    const { model, contents, systemInstruction, generationConfig, apiKey, prompt } = req.body;
+    const {
+      model,
+      contents,
+      systemInstruction,
+      generationConfig,
+      apiKey,
+      prompt,
+      tools,
+      toolConfig,
+    } = req.body || {};
+
     const cleanUserKey =
-      typeof apiKey === 'string'
-        ? apiKey.replace(/[\r\n\t\s"']+/g, '').trim()
-        : '';
+      typeof apiKey === 'string' ? apiKey.replace(/[\r\n\t\s"']+/g, '').trim() : '';
     const effectiveKey = resolveGeminiApiKey(cleanUserKey);
 
-    if (!effectiveKey) {
-      return res.status(400).json({
+    if (!effectiveKey || effectiveKey === 'placeholder') {
+      return res.status(401).json({
         error: {
-          code: 400,
-          message:
-            'Gemini API key is missing. Please save your Gemini API key in Settings > Connections.',
-          status: 'INVALID_ARGUMENT',
+          code: 401,
+          message: 'Gemini API key is missing on the server.',
+          status: 'UNAUTHENTICATED',
         },
       });
     }
@@ -596,60 +900,105 @@ app.post('/api/gemini/stream', async (req, res) => {
     let modelToUse =
       model && typeof model === 'string'
         ? model.replace(/^models\//, '').trim()
-        : 'gemini-1.5-flash';
+        : 'gemini-4-hydrogen';
     if (
       !modelToUse ||
       !modelToUse.startsWith('gemini') ||
       modelToUse.includes('native-audio') ||
       modelToUse.includes('live')
     ) {
-      modelToUse = 'gemini-1.5-flash';
+      modelToUse = 'gemini-4-hydrogen';
     }
 
     const client = getGenAIClient(effectiveKey);
+    const normalizedContents = normalizeContentsForSdk(contents, prompt);
 
-    let normalizedContents: any = contents;
-    if (!normalizedContents && prompt) {
-      normalizedContents = [{ role: 'user', parts: [{ text: String(prompt) }] }];
-    } else if (typeof normalizedContents === 'string') {
-      normalizedContents = [{ role: 'user', parts: [{ text: normalizedContents }] }];
-    }
+    const openStream = async (
+      targetModel: string,
+      includeThinking: boolean,
+      includeGoogleSearch: boolean
+    ) => {
+      const cfg = buildSdkGenerateConfig({
+        systemInstruction,
+        generationConfig,
+        tools,
+        toolConfig,
+        includeThinking,
+        includeGoogleSearch,
+      });
+      return await client.models.generateContentStream({
+        model: targetModel,
+        contents: normalizedContents,
+        config: Object.keys(cfg).length > 0 ? cfg : undefined,
+      });
+    };
 
-    const config: any = {};
-    if (systemInstruction) {
-      config.systemInstruction = typeof systemInstruction === 'string'
-        ? systemInstruction
-        : systemInstruction?.parts?.[0]?.text || '';
-    }
-    if (generationConfig?.maxOutputTokens) {
-      config.maxOutputTokens = generationConfig.maxOutputTokens;
-    }
-    if (generationConfig?.temperature !== undefined) {
-      config.temperature = generationConfig.temperature;
-    }
+    const openStreamWithRetries = async (targetModel: string) => {
+      try {
+        return await openStream(targetModel, true, true);
+      } catch (err1: any) {
+        const p1 = parseGeminiError(err1);
+        const msg1 = (p1.message || '').toLowerCase();
+        if (p1.status === 400 || msg1.includes('thinking') || msg1.includes('google_search') || msg1.includes('tool')) {
+          try {
+            return await openStream(targetModel, false, true);
+          } catch (err2: any) {
+            const p2 = parseGeminiError(err2);
+            const msg2 = (p2.message || '').toLowerCase();
+            if (Array.isArray(tools) && tools.some((t: any) => t?.googleSearch) && (p2.status === 400 || msg2.includes('search') || msg2.includes('tool'))) {
+              return await openStream(targetModel, false, false);
+            }
+            throw err2;
+          }
+        }
+        throw err1;
+      }
+    };
 
-    const streamResponse = await client.models.generateContentStream({
-      model: modelToUse,
-      contents: normalizedContents,
-      config: Object.keys(config).length > 0 ? config : undefined,
-    });
+    let streamResponse: any = null;
+    try {
+      streamResponse = await openStreamWithRetries(modelToUse);
+    } catch (sdkErr: any) {
+      const parsedErr = parseGeminiError(sdkErr);
+      if (parsedErr.status === 404 || String(sdkErr?.message || '').toLowerCase().includes('not found')) {
+        let opened = false;
+        let lastFbErr = sdkErr;
+        for (const fb of ['gemini-4-hydrogen', 'gemini-3.1-flash-lite', 'gemini-2.5-flash']) {
+          if (fb === modelToUse) continue;
+          try {
+            streamResponse = await openStreamWithRetries(fb);
+            opened = true;
+            break;
+          } catch (e: any) {
+            lastFbErr = e;
+          }
+        }
+        if (!opened) throw lastFbErr;
+      } else {
+        throw sdkErr;
+      }
+    }
 
     res.setHeader('Content-Type', 'text/event-stream; charset=utf-8');
     res.setHeader('Cache-Control', 'no-cache');
     res.setHeader('Connection', 'keep-alive');
 
     for await (const chunk of streamResponse) {
-      const text = chunk.text || '';
-      res.write(`data: ${JSON.stringify({ text, candidates: chunk.candidates })}\n\n`);
+      const filteredCandidates = filterNonThoughtCandidates(chunk?.candidates, chunk?.text || '');
+      const text = chunk?.text || '';
+      res.write(`data: ${JSON.stringify({ text, candidates: filteredCandidates })}\n\n`);
     }
     res.write('data: [DONE]\n\n');
     res.end();
   } catch (error: any) {
-    console.error('Gemini stream error:', error);
+    console.error('Gemini stream error:', error?.message || error);
+    const parsed = parseGeminiError(error);
     if (!res.headersSent) {
-      const parsed = parseGeminiError(error);
-      res.status(parsed.status || 500).json({ error: { message: parsed.message } });
+      res.status(parsed.status || 500).json({ error: { code: parsed.status || 500, message: parsed.message } });
     } else {
+      try {
+        res.write(`data: ${JSON.stringify({ error: { code: parsed.status || 500, message: parsed.message } })}\n\n`);
+      } catch {}
       res.end();
     }
   }
@@ -657,15 +1006,15 @@ app.post('/api/gemini/stream', async (req, res) => {
 
 function parseGeminiError(err: any): { message: string; status: number } {
   let status = 500;
-  let message = "Gemini TTS request failed";
+  let message = 'Gemini request failed';
 
   if (!err) return { message, status };
 
-  if (typeof err.status === "number" && err.status > 0) {
+  if (typeof err.status === 'number' && err.status > 0) {
     status = err.status;
   }
 
-  const rawStr = typeof err === "string" ? err : String(err?.message || err?.bodyText || err || "");
+  const rawStr = typeof err === 'string' ? err : String(err?.message || err?.bodyText || err || '');
 
   const jsonMatch = rawStr.match(/\{[\s\S]*"error"[\s\S]*\}/);
   if (jsonMatch) {
@@ -674,33 +1023,31 @@ function parseGeminiError(err: any): { message: string; status: number } {
       if (parsed?.error?.message) {
         message = parsed.error.message;
       }
-      if (typeof parsed?.error?.code === "number") {
+      if (typeof parsed?.error?.code === 'number') {
         status = parsed.error.code;
       }
-    } catch (e) {}
+    } catch {}
   }
 
-  if (message === "Gemini TTS request failed" && rawStr) {
+  if (message === 'Gemini request failed' && rawStr) {
     message = rawStr
-      .replace(/^Error:\s*/i, "")
-      .replace(/^\[GoogleGenAI Error\]:\s*/i, "")
-      .replace(/^HTTP \d+:\s*/i, "")
+      .replace(/^Error:\s*/i, '')
+      .replace(/^\[GoogleGenAI Error\]:\s*/i, '')
+      .replace(/^HTTP \d+:\s*/i, '')
       .trim();
   }
 
   const lower = message.toLowerCase();
-  if (lower.includes("429") || lower.includes("quota") || lower.includes("resource_exhausted")) {
+  if (lower.includes('429') || lower.includes('quota') || lower.includes('resource_exhausted')) {
     status = 429;
-    message = "Gemini API daily quota limit reached (429)";
-  } else if (lower.includes("401") || lower.includes("api key not valid") || lower.includes("unauthenticated") || lower.includes("invalid key")) {
+  } else if (lower.includes('401') || lower.includes('api key not valid') || lower.includes('unauthenticated') || lower.includes('invalid key')) {
     status = 401;
-    message = "Gemini API key is invalid (401)";
-  } else if (lower.includes("403") || lower.includes("permission_denied") || lower.includes("forbidden")) {
+  } else if (lower.includes('403') || lower.includes('permission_denied') || lower.includes('forbidden')) {
     status = 403;
-    message = "Gemini API permission denied (403)";
-  } else if (lower.includes("404") || lower.includes("not_found")) {
+  } else if (lower.includes('404') || lower.includes('not_found') || lower.includes('not found')) {
     status = 404;
-    message = "Gemini TTS model not found (404)";
+  } else if (lower.includes('400') || lower.includes('invalid_argument')) {
+    status = 400;
   }
 
   return { message, status };
@@ -708,62 +1055,64 @@ function parseGeminiError(err: any): { message: string; status: number } {
 
 app.post('/api/gemini/tts', async (req, res) => {
   try {
-    const { model, text, voiceName, style, apiKey } = req.body;
-    const activeServerKey = serverSecretVault.activeProfile === 'paid'
-      ? (serverSecretVault.paidKey || serverSecretVault.freeKey)
-      : (serverSecretVault.freeKey || serverSecretVault.paidKey);
-    const effectiveKey = (apiKey || activeServerKey || process.env.GEMINI_API_KEY || '').replace(/[\r\n\t\s"']+/g, '').trim();
-    if (!effectiveKey) {
-      return res.status(400).json({ error: { message: 'Missing Gemini API key', code: 400 }, exactError: 'Missing Gemini API key', status: 400 });
+    const { model, text, voiceName, voices, style, apiKey } = req.body || {};
+    const effectiveKey = resolveGeminiApiKey(apiKey);
+    if (!effectiveKey || effectiveKey === 'placeholder') {
+      return res.status(401).json({
+        error: { message: 'Missing Gemini API key', code: 401 },
+        exactError: 'Missing Gemini API key',
+        status: 401,
+      });
     }
     const client = getGenAIClient(effectiveKey);
 
     const rawText = String(text || '').trim();
     if (!rawText) {
-      return res.status(400).json({ error: { message: 'Empty text for TTS', code: 400 }, exactError: 'Empty text for TTS', status: 400 });
+      return res.status(400).json({
+        error: { message: 'Empty text for TTS', code: 400 },
+        exactError: 'Empty text for TTS',
+        status: 400,
+      });
     }
 
-    // Extract optional style prefix if embedded as "Say in a ...: <transcript>"
-    let styleHint = String(style || '').trim();
-    let transcript = rawText;
-    const prefixMatch = rawText.match(/^Say in [a-zA-Z0-9\s,()'-]+:\s*([\s\S]+)$/i);
-    if (prefixMatch && prefixMatch[1]) {
-      if (!styleHint) {
-        styleHint = rawText.slice(0, rawText.indexOf(':')).replace(/^Say in (a |an )?/i, '').trim();
-      }
-      transcript = prefixMatch[1].trim();
-    }
+    const styleHint = String(style || '').trim();
+    const ttsPrompt = styleHint ? `${styleHint} ${rawText}` : rawText;
 
-    console.log(`[Gemini TTS Server] Received request for text: "${transcript.slice(0, 30)}...", voice: ${voiceName || "Leda"}, requested model: ${model || "default"}`);
-    const ttsPrompt = transcript;
+    const voicesToTry: string[] = Array.isArray(voices) && voices.length > 0
+      ? voices.map((v: any) => String(v || '').trim()).filter(Boolean)
+      : [String(voiceName || 'Leda').trim() || 'Leda'];
 
-    const initialModels = Array.from(new Set([
-      model && model.toLowerCase().includes('tts') ? model : null,
-      'gemini-1.5-flash-lite-tts',
-      'gemini-1.5-flash-tts',
-      'gemini-1.5-flash-lite-tts',
-      'gemini-1.5-flash-tts',
-      'gemini-2.0-flash-preview-tts',
-      'gemini-2.0-flash-tts',
-    ].filter(Boolean))) as string[];
+    const requestedClean = model ? String(model).replace(/^models\//, '').trim() : '';
+    const initialModels = Array.from(
+      new Set(
+        [
+          requestedClean && requestedClean.toLowerCase().includes('tts') ? requestedClean : null,
+          'gemini-3.8-flash-lite-tts',
+          'gemini-3.8-flash-tts',
+          'gemini-2.5-flash-preview-tts',
+        ].filter(Boolean)
+      )
+    ) as string[];
 
     const triedModels = new Set<string>();
     let base64Audio: string | undefined = undefined;
     let workingModelUsed: string | undefined = undefined;
+    let workingVoiceUsed: string | undefined = undefined;
     let lastErrorText = '';
     let lastStatus = 500;
 
-    const tryModelWithRetry = async (m: string): Promise<boolean> => {
-      for (let attempt = 0; attempt < 2; attempt++) {
+    const tryModelAndVoices = async (m: string): Promise<boolean> => {
+      for (let vIdx = 0; vIdx < voicesToTry.length; vIdx++) {
+        const candidateVoice = voicesToTry[vIdx];
         try {
           const response = await client.models.generateContent({
             model: m,
-            contents: [{ role: "user", parts: [{ text: ttsPrompt }] }],
+            contents: [{ role: 'user', parts: [{ text: ttsPrompt }] }],
             config: {
               responseModalities: [Modality.AUDIO],
               speechConfig: {
                 voiceConfig: {
-                  prebuiltVoiceConfig: { voiceName: voiceName || "Leda" },
+                  prebuiltVoiceConfig: { voiceName: candidateVoice },
                 },
               },
             },
@@ -778,6 +1127,7 @@ app.post('/api/gemini/tts', async (req, res) => {
               base64Audio = rawB64;
             }
             workingModelUsed = m;
+            workingVoiceUsed = candidateVoice;
             return true;
           }
           lastErrorText = `No audio returned from ${m}`;
@@ -785,12 +1135,13 @@ app.post('/api/gemini/tts', async (req, res) => {
           const parsed = parseGeminiError(err);
           lastErrorText = parsed.message;
           lastStatus = parsed.status;
+          if (parsed.status === 400 && vIdx + 1 < voicesToTry.length) {
+            continue;
+          }
           if (parsed.status === 404) {
             return false;
           }
-          if (attempt === 0) {
-            await new Promise((r) => setTimeout(r, 250));
-          }
+          break;
         }
       }
       return false;
@@ -798,31 +1149,31 @@ app.post('/api/gemini/tts', async (req, res) => {
 
     for (const m of initialModels) {
       triedModels.add(m);
-      const ok = await tryModelWithRetry(m);
+      const ok = await tryModelAndVoices(m);
       if (ok && base64Audio) break;
     }
 
-    // Auto-discover TTS models via GET /v1beta/models if not yet resolved
     if (!base64Audio) {
       try {
-        const listRes = await fetch(`https://generativelanguage.googleapis.com/v1beta/models?key=${encodeURIComponent(effectiveKey)}`);
-        if (listRes.ok) {
-          const listData: any = await listRes.json();
-          const discoveredTtsModels = (listData?.models || [])
-            .filter((m: any) => {
-              const name = String(m?.name || '').replace(/^models\//, '');
-              const methods: string[] = m?.supportedGenerationMethods || [];
-              return name.toLowerCase().includes('tts') && methods.includes('generateContent') && !triedModels.has(name);
-            })
-            .map((m: any) => String(m.name).replace(/^models\//, ''));
+        const discovered = await normalizeSdkModelsList(client);
+        const discoveredTtsModels = discovered
+          .filter((m: any) => {
+            const name = String(m?.name || '').replace(/^models\//, '');
+            const methods: string[] = m?.supportedActions || m?.supportedGenerationMethods || [];
+            return (
+              name.toLowerCase().includes('tts') &&
+              methods.includes('generateContent') &&
+              !triedModels.has(name)
+            );
+          })
+          .map((m: any) => String(m.name).replace(/^models\//, ''));
 
-          for (const dm of discoveredTtsModels) {
-            triedModels.add(dm);
-            const ok = await tryModelWithRetry(dm);
-            if (ok && base64Audio) break;
-          }
+        for (const dm of discoveredTtsModels) {
+          triedModels.add(dm);
+          const ok = await tryModelAndVoices(dm);
+          if (ok && base64Audio) break;
         }
-      } catch (e) {}
+      } catch {}
     }
 
     if (!base64Audio) {
@@ -834,7 +1185,11 @@ app.post('/api/gemini/tts', async (req, res) => {
       });
     }
 
-    res.json({ audio: base64Audio, modelUsed: workingModelUsed });
+    res.json({
+      audio: base64Audio,
+      modelUsed: workingModelUsed,
+      voiceUsed: workingVoiceUsed,
+    });
   } catch (error: any) {
     const parsed = parseGeminiError(error);
     res.status(parsed.status || 500).json({
@@ -1028,7 +1383,7 @@ const ensureSharedBusinessState = () => {
           lastTested: serverSecretVault.freeKey ? new Date().toISOString() : null,
           lastError: null,
           errorCategory: null,
-          model: "gemini-1.5-flash",
+          model: "gemini-4-hydrogen",
           callsCount: 0,
           quotaLimit: "Standard Free Quota (15 RPM / 1M TPM / 1,500 RPD)",
           billingStatus: "Free tier profile (No credit card required; subject to Google rate limits)",
@@ -1043,7 +1398,7 @@ const ensureSharedBusinessState = () => {
           lastTested: serverSecretVault.paidKey ? new Date().toISOString() : null,
           lastError: null,
           errorCategory: null,
-          model: "gemini-1.5-flash",
+          model: "gemini-4-hydrogen",
           callsCount: 0,
           quotaLimit: "Pay-as-you-go Quotas (Project Billing Account governed)",
           billingStatus: "Requires active Google Cloud billing account linked to project",
@@ -1132,115 +1487,95 @@ app.post('/api/business/save-key', async (req, res) => {
       });
     }
 
-    // 3. Real server-side API validation request to Google Generative Language API
+    // 3. Real server-side API validation request via @google/genai SDK
     try {
-      const testUrl = `https://generativelanguage.googleapis.com/v1beta/models?key=${encodeURIComponent(cleanKey)}`;
-      const googleRes = await fetch(testUrl);
+      const testClient = getGenAIClient(cleanKey);
+      await testClient.models.list({ config: { pageSize: 10 } });
 
-      if (googleRes.ok) {
-        // Successfully verified by Google API!
-        if (targetProfile === 'free') {
-          serverSecretVault.freeKey = cleanKey;
-        } else {
-          serverSecretVault.paidKey = cleanKey;
-        }
-        saveSecrets(serverSecretVault);
-
-        const state = ensureSharedBusinessState();
-        state.geminiProfiles[targetProfile] = {
-          ...state.geminiProfiles[targetProfile],
-          hasKey: true,
-          maskedKey: maskApiKey(cleanKey),
-          status: "connected",
-          verificationStatus: "VERIFIED",
-          lastTested: new Date().toISOString(),
-          lastError: null,
-          errorCategory: null,
-          model: model || state.geminiProfiles[targetProfile]?.model || "gemini-1.5-flash",
-        };
-        state.lastSyncedAt = new Date().toISOString();
-        state.version = (state.version || 0) + 1;
-
-        return res.json({
-          success: true,
-          verificationStatus: "VERIFIED",
-          message: "API key verified successfully.",
-          profile: {
-            ...state.geminiProfiles[targetProfile],
-            key: '',
-          },
-          activeGeminiProfile: serverSecretVault.activeProfile,
-        });
+      if (targetProfile === 'free') {
+        serverSecretVault.freeKey = cleanKey;
       } else {
-        const data = await googleRes.json().catch(() => ({}));
-        const rawMsg = data.error?.message || `HTTP ${googleRes.status}`;
-        let verificationStatus: string = "INVALID KEY";
-        let message: string = "API key verification failed. Check your key and try again.";
-        let errorCategory: string = "Invalid Key";
+        serverSecretVault.paidKey = cleanKey;
+      }
+      saveSecrets(serverSecretVault);
 
-        if (googleRes.status === 400) {
+      const state = ensureSharedBusinessState();
+      state.geminiProfiles[targetProfile] = {
+        ...state.geminiProfiles[targetProfile],
+        hasKey: true,
+        maskedKey: maskApiKey(cleanKey),
+        status: "connected",
+        verificationStatus: "VERIFIED",
+        lastTested: new Date().toISOString(),
+        lastError: null,
+        errorCategory: null,
+        model: model || state.geminiProfiles[targetProfile]?.model || "gemini-4-hydrogen",
+      };
+      state.lastSyncedAt = new Date().toISOString();
+      state.version = (state.version || 0) + 1;
+
+      return res.json({
+        success: true,
+        verificationStatus: "VERIFIED",
+        message: "API key verified successfully.",
+        profile: {
+          ...state.geminiProfiles[targetProfile],
+          key: '',
+        },
+        activeGeminiProfile: serverSecretVault.activeProfile,
+      });
+    } catch (verifyErr: any) {
+      const parsed = parseGeminiError(verifyErr);
+      const rawMsg = parsed.message || `HTTP ${parsed.status}`;
+      let verificationStatus = "INVALID KEY";
+      let message = "API key verification failed. Check your key and try again.";
+      let errorCategory = "Invalid Key";
+
+      if (parsed.status === 400 || parsed.status === 401) {
+        verificationStatus = "INVALID KEY";
+        message = "API key verification failed. Check your key and try again.";
+        errorCategory = "Invalid Key";
+      } else if (parsed.status === 403) {
+        if (targetProfile === 'paid' || rawMsg.toLowerCase().includes('billing')) {
+          verificationStatus = "BILLING ISSUE";
+          message = "A billing issue was detected. Check your Google Cloud billing configuration.";
+          errorCategory = "Billing Problem";
+        } else {
           verificationStatus = "INVALID KEY";
           message = "API key verification failed. Check your key and try again.";
-          errorCategory = "Invalid Key";
-        } else if (googleRes.status === 403) {
-          if (targetProfile === 'paid' || rawMsg.toLowerCase().includes('billing')) {
-            verificationStatus = "BILLING ISSUE";
-            message = "A billing issue was detected. Check your Google Cloud billing configuration.";
-            errorCategory = "Billing Problem";
-          } else {
-            verificationStatus = "INVALID KEY";
-            message = "API key verification failed. Check your key and try again.";
-            errorCategory = "Permission Denied";
-          }
-        } else if (googleRes.status === 429) {
-          verificationStatus = "QUOTA EXCEEDED";
-          message = "API quota exceeded. Check your Google AI Studio usage limits.";
-          errorCategory = "Quota Exceeded";
-        } else {
-          verificationStatus = "CONNECTION ERROR";
-          message = "Unable to connect. Check your internet connection and retry.";
-          errorCategory = "Service Error";
+          errorCategory = "Permission Denied";
         }
-
-        // Do not store invalid key in vault
-        const state = ensureSharedBusinessState();
-        state.geminiProfiles[targetProfile] = {
-          ...state.geminiProfiles[targetProfile],
-          status: "error",
-          verificationStatus,
-          lastTested: new Date().toISOString(),
-          lastError: message,
-          errorCategory,
-        };
-
-        return res.status(googleRes.status >= 400 && googleRes.status < 500 ? googleRes.status : 400).json({
-          success: false,
-          verificationStatus,
-          message,
-          errorCategory,
-          details: rawMsg,
-          profile: {
-            ...state.geminiProfiles[targetProfile],
-            key: '',
-          }
-        });
+      } else if (parsed.status === 429) {
+        verificationStatus = "QUOTA EXCEEDED";
+        message = "API quota exceeded. Check your Google AI Studio usage limits.";
+        errorCategory = "Quota Exceeded";
+      } else {
+        verificationStatus = "CONNECTION ERROR";
+        message = "Unable to connect. Check your internet connection and retry.";
+        errorCategory = "Service Error";
       }
-    } catch (netErr: any) {
+
       const state = ensureSharedBusinessState();
       state.geminiProfiles[targetProfile] = {
         ...state.geminiProfiles[targetProfile],
         status: "error",
-        verificationStatus: "CONNECTION ERROR",
+        verificationStatus,
         lastTested: new Date().toISOString(),
-        lastError: "Unable to connect. Check your internet connection and retry.",
-        errorCategory: "Network Failure",
+        lastError: message,
+        errorCategory,
       };
 
-      return res.status(503).json({
+      const httpCode = parsed.status >= 400 && parsed.status < 500 ? parsed.status : 400;
+      return res.status(httpCode).json({
         success: false,
-        verificationStatus: "CONNECTION ERROR",
-        message: "Unable to connect. Check your internet connection and retry.",
-        errorCategory: "Network Failure"
+        verificationStatus,
+        message,
+        errorCategory,
+        details: rawMsg,
+        profile: {
+          ...state.geminiProfiles[targetProfile],
+          key: '',
+        }
       });
     }
   } catch (err: any) {
@@ -1258,10 +1593,9 @@ app.post('/api/business/test-key', async (req, res) => {
     const { profile, key } = req.body;
     const targetProfile: 'free' | 'paid' = profile === 'paid' ? 'paid' : 'free';
 
-    // Key to test is either provided explicitly or retrieved from server vault
     const keyToTest = (key && typeof key === 'string' && key.trim())
       ? key.trim()
-      : (targetProfile === 'free' ? serverSecretVault.freeKey : serverSecretVault.paidKey);
+      : resolveGeminiApiKey();
 
     if (!keyToTest) {
       return res.status(400).json({
@@ -1273,88 +1607,80 @@ app.post('/api/business/test-key', async (req, res) => {
     }
 
     try {
-      const testUrl = `https://generativelanguage.googleapis.com/v1beta/models?key=${encodeURIComponent(keyToTest)}`;
-      const googleRes = await fetch(testUrl);
+      const testClient = getGenAIClient(keyToTest);
+      await testClient.models.list({ config: { pageSize: 10 } });
 
-      if (googleRes.ok) {
-        const state = ensureSharedBusinessState();
-        state.geminiProfiles[targetProfile] = {
+      const state = ensureSharedBusinessState();
+      state.geminiProfiles[targetProfile] = {
+        ...state.geminiProfiles[targetProfile],
+        status: "connected",
+        verificationStatus: "VERIFIED",
+        lastTested: new Date().toISOString(),
+        lastError: null,
+        errorCategory: null,
+      };
+      return res.json({
+        ok: true,
+        verificationStatus: "VERIFIED",
+        message: "API key verified successfully.",
+        model: state.geminiProfiles[targetProfile]?.model || "gemini-4-hydrogen",
+        profile: {
           ...state.geminiProfiles[targetProfile],
-          status: "connected",
-          verificationStatus: "VERIFIED",
-          lastTested: new Date().toISOString(),
-          lastError: null,
-          errorCategory: null,
-        };
-        return res.json({
-          ok: true,
-          verificationStatus: "VERIFIED",
-          message: "API key verified successfully.",
-          model: state.geminiProfiles[targetProfile]?.model || "gemini-1.5-flash",
-          profile: {
-            ...state.geminiProfiles[targetProfile],
-            key: '',
-          }
-        });
-      } else {
-        const data = await googleRes.json().catch(() => ({}));
-        const rawMsg = data.error?.message || `HTTP ${googleRes.status}`;
-        let verificationStatus: string = "INVALID KEY";
-        let message: string = "API key verification failed. Check your key and try again.";
-        let errorCategory: string = "Invalid Key";
+          key: '',
+        }
+      });
+    } catch (verifyErr: any) {
+      const parsed = parseGeminiError(verifyErr);
+      const rawMsg = parsed.message || `HTTP ${parsed.status}`;
+      let verificationStatus = "INVALID KEY";
+      let message = "API key verification failed. Check your key and try again.";
+      let errorCategory = "Invalid Key";
 
-        if (googleRes.status === 400) {
+      if (parsed.status === 400 || parsed.status === 401) {
+        verificationStatus = "INVALID KEY";
+        message = "API key verification failed. Check your key and try again.";
+        errorCategory = "Invalid Key";
+      } else if (parsed.status === 403) {
+        if (targetProfile === 'paid' || rawMsg.toLowerCase().includes('billing')) {
+          verificationStatus = "BILLING ISSUE";
+          message = "A billing issue was detected. Check your Google Cloud billing configuration.";
+          errorCategory = "Billing Problem";
+        } else {
           verificationStatus = "INVALID KEY";
           message = "API key verification failed. Check your key and try again.";
-          errorCategory = "Invalid Key";
-        } else if (googleRes.status === 403) {
-          if (targetProfile === 'paid' || rawMsg.toLowerCase().includes('billing')) {
-            verificationStatus = "BILLING ISSUE";
-            message = "A billing issue was detected. Check your Google Cloud billing configuration.";
-            errorCategory = "Billing Problem";
-          } else {
-            verificationStatus = "INVALID KEY";
-            message = "API key verification failed. Check your key and try again.";
-            errorCategory = "Permission Denied";
-          }
-        } else if (googleRes.status === 429) {
-          verificationStatus = "QUOTA EXCEEDED";
-          message = "API quota exceeded. Check your Google AI Studio usage limits.";
-          errorCategory = "Quota Exceeded";
-        } else {
-          verificationStatus = "CONNECTION ERROR";
-          message = "Unable to connect. Check your internet connection and retry.";
-          errorCategory = "Service Error";
+          errorCategory = "Permission Denied";
         }
-
-        const state = ensureSharedBusinessState();
-        state.geminiProfiles[targetProfile] = {
-          ...state.geminiProfiles[targetProfile],
-          status: "error",
-          verificationStatus,
-          lastTested: new Date().toISOString(),
-          lastError: message,
-          errorCategory,
-        };
-
-        return res.status(googleRes.status >= 400 && googleRes.status < 500 ? googleRes.status : 400).json({
-          ok: false,
-          verificationStatus,
-          message,
-          errorCategory,
-          details: rawMsg,
-          profile: {
-            ...state.geminiProfiles[targetProfile],
-            key: '',
-          }
-        });
+      } else if (parsed.status === 429) {
+        verificationStatus = "QUOTA EXCEEDED";
+        message = "API quota exceeded. Check your Google AI Studio usage limits.";
+        errorCategory = "Quota Exceeded";
+      } else {
+        verificationStatus = "CONNECTION ERROR";
+        message = "Unable to connect. Check your internet connection and retry.";
+        errorCategory = "Service Error";
       }
-    } catch (netErr: any) {
-      return res.status(503).json({
+
+      const state = ensureSharedBusinessState();
+      state.geminiProfiles[targetProfile] = {
+        ...state.geminiProfiles[targetProfile],
+        status: "error",
+        verificationStatus,
+        lastTested: new Date().toISOString(),
+        lastError: message,
+        errorCategory,
+      };
+
+      const httpCode = parsed.status >= 400 && parsed.status < 500 ? parsed.status : 400;
+      return res.status(httpCode).json({
         ok: false,
-        verificationStatus: "CONNECTION ERROR",
-        message: "Unable to connect. Check your internet connection and retry.",
-        errorCategory: "Network Failure"
+        verificationStatus,
+        message,
+        errorCategory,
+        details: rawMsg,
+        profile: {
+          ...state.geminiProfiles[targetProfile],
+          key: '',
+        }
       });
     }
   } catch (err: any) {
@@ -1509,51 +1835,41 @@ app.post('/api/business/sync', (req, res) => {
 // Legacy test-gemini compatibility
 app.post('/api/test-gemini', async (req, res) => {
   try {
-    const { key, profile } = req.body;
-    if (!key || typeof key !== 'string' || !key.trim()) {
+    const { key, profile } = req.body || {};
+    const effectiveKey = resolveGeminiApiKey(typeof key === 'string' ? key : '');
+    if (!effectiveKey) {
       return res.status(400).json({
         ok: false,
         errorCategory: 'Missing Key',
-        errorMessage: 'Please enter your Gemini API key.'
+        errorMessage: 'Please configure your Gemini API key.'
       });
     }
 
-    const testUrl = `https://generativelanguage.googleapis.com/v1beta/models?key=${encodeURIComponent(key.trim())}`;
-    const googleRes = await fetch(testUrl);
+    const testClient = getGenAIClient(effectiveKey);
+    await testClient.models.list({ config: { pageSize: 10 } });
 
-    if (googleRes.ok) {
-      return res.json({
-        ok: true,
-        status: 200,
-        model: 'gemini-1.5-flash',
-        profile: profile || 'free',
-        message: 'API key verified successfully.'
-      });
-    } else {
-      const data = await googleRes.json().catch(() => ({}));
-      const rawMsg = data.error?.message || `HTTP ${googleRes.status}`;
-      let errorCategory = 'Authentication Error';
-
-      if (googleRes.status === 400) {
-        errorCategory = 'Invalid Key';
-      } else if (googleRes.status === 403) {
-        errorCategory = profile === 'paid' ? 'Billing Problem' : 'Permission Denied';
-      } else if (googleRes.status === 429) {
-        errorCategory = 'Quota Exceeded';
-      }
-
-      return res.status(googleRes.status).json({
-        ok: false,
-        status: googleRes.status,
-        errorCategory,
-        errorMessage: rawMsg
-      });
-    }
+    return res.json({
+      ok: true,
+      status: 200,
+      model: 'gemini-4-hydrogen',
+      profile: profile || 'free',
+      message: 'API key verified successfully.'
+    });
   } catch (err: any) {
-    res.status(500).json({
+    const parsed = parseGeminiError(err);
+    let errorCategory = 'Authentication Error';
+    if (parsed.status === 400 || parsed.status === 401) {
+      errorCategory = 'Invalid Key';
+    } else if (parsed.status === 403) {
+      errorCategory = req.body?.profile === 'paid' ? 'Billing Problem' : 'Permission Denied';
+    } else if (parsed.status === 429) {
+      errorCategory = 'Quota Exceeded';
+    }
+    return res.status(parsed.status >= 400 ? parsed.status : 500).json({
       ok: false,
-      errorCategory: 'Network Failure',
-      errorMessage: 'Unable to connect. Check your internet connection and retry.'
+      status: parsed.status,
+      errorCategory,
+      errorMessage: parsed.message,
     });
   }
 });
@@ -1561,9 +1877,10 @@ app.post('/api/test-gemini', async (req, res) => {
 app.post('/api/iyabd/process', async (req, res) => {
   try {
     const { prompt, assistantName, ownerName, permissions, mode, personality, customPersonalityText, responseStyle } = req.body;
+    const activeClient = getGenAIClient();
 
-    const response = await ai.models.generateContent({
-      model: "gemini-1.5-flash",
+    const response = await activeClient.models.generateContent({
+      model: "gemini-4-hydrogen",
       contents: prompt,
       config: {
         systemInstruction: `You are ${assistantName || 'IYABD'}, the personal assistant of ${ownerName || 'MD YOUSUF KHAN'} (মোঃ ইউসুফ খান).
@@ -1609,65 +1926,6 @@ IMPORTANT: You must ALWAYS respond in valid JSON format matching the requested s
   } catch (error: any) {
     console.error('IYABD processing error:', error);
     res.status(500).json({ error: error.message });
-  }
-});
-
-// New endpoint for text generation
-app.post('/api/gemini/generate', async (req, res) => {
-  try {
-    const { model, contents, systemInstruction, generationConfig, apiKey } = req.body;
-    
-    // In callGeminiTextEndpoint, contents are mapped to roles. 
-    // The server-side code I added expected prompt/history, but the client sends contents/systemInstruction/generationConfig.
-    // Let's adjust to match.
-    
-    const client = getGenAIClient(apiKey);
-    const modelName = model || 'gemini-1.5-flash';
-    
-    const config: any = {};
-    if (systemInstruction) {
-        config.systemInstruction = systemInstruction;
-    }
-    if (generationConfig) {
-        config.generationConfig = generationConfig;
-    }
-
-    const result = await client.models.generateContent({
-        model: modelName,
-        contents: contents,
-        config: config
-    });
-
-    res.json({ text: result.text, candidates: result.candidates, usageMetadata: result.usageMetadata });
-  } catch (err: any) {
-    console.error('Server Gemini generate error:', err);
-    res.status(500).json({ error: err.message });
-  }
-});
-
-// New endpoint for model discovery
-app.get('/api/gemini/models', async (req, res) => {
-  try {
-    const customKey = req.query.apiKey as string;
-    const key = resolveGeminiApiKey(customKey);
-    if (!key || key === 'placeholder') {
-      return res.status(401).json({ error: "API key not configured" });
-    }
-    const response = await fetch(`https://generativelanguage.googleapis.com/v1beta/models?key=${encodeURIComponent(key)}`);
-    const data = await response.json();
-    res.json(data);
-  } catch (error: any) {
-    res.status(500).json({ error: error.message });
-  }
-});
-
-app.get('/api/keys/get-live-token', async (req, res) => {
-  try {
-    const key = process.env.GEMINI_API_KEY; 
-    if (!key) return res.status(404).json({ error: "Key not found" });
-    res.json({ token: key });
-  } catch (err) {
-    res.status(500).json({ error: "Failed to retrieve token" });
   }
 });
 

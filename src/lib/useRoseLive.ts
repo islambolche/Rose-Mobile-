@@ -1,7 +1,9 @@
 import { useRef, useState } from "react";
-import { EndSensitivity, StartSensitivity } from "@google/genai";
-import { getGeminiKey } from "./geminiKey";
+import { getGeminiKey, ensureGeminiReady } from "./geminiKey";
 import { getGlobalMicStream, stopGlobalMicStream } from "./audio-manager";
+
+const StartSensitivity = { START_SENSITIVITY_HIGH: "START_SENSITIVITY_HIGH" } as const;
+const EndSensitivity = { END_SENSITIVITY_HIGH: "END_SENSITIVITY_HIGH" } as const;
 
 type Opts = {
   apiKey: string; model: string; voiceName: string; systemInstruction: string;
@@ -152,7 +154,7 @@ export function useRoseLive(getOpts: () => Opts) {
     const s = R.current;
     const o = getOpts();
     const apiKey = String(o.apiKey || getGeminiKey() || "").replace(/[\r\n\t\s"']+/g, "").trim();
-    if (s.active || !apiKey) return;
+    if (s.active || !(await ensureGeminiReady(apiKey))) return;
     setError(""); setStatus("connecting"); R.current.retries = 0;
     try {
       s.active = true; s.sentN = 0; s.recvN = 0; setSent(0); setRecv(0);

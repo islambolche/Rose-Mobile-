@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { Mic, Camera, Image as ImageIcon, Settings, X, Send, Trash2 } from 'lucide-react';
 import { useRoseLive } from '../lib/useRoseLive';
-import { getGeminiKey } from '../lib/geminiKey';
+import { getGeminiKey, hasUsableGeminiKey } from '../lib/geminiKey';
 import { buildAssistantSystemInstruction } from '../types/settings';
 
 export const HomeScreenV4 = ({
@@ -73,8 +73,8 @@ export const HomeScreenV4 = ({
         </div>
         <div style={{ fontSize: '11px', color: '#8b8cff', padding: '0 10px' }}>
             Session: {live.status} | sent: {live.sent} | received: {live.recv} | 
-            Key: {getGeminiKey() ? `yes (len ${getGeminiKey().length})` : 'no'} | 
-            Path: Google API (Direct)
+            Key: {getGeminiKey() ? `yes (len ${getGeminiKey().length})` : hasUsableGeminiKey() ? 'server' : 'no'} | 
+            Path: Server Proxy
         </div>
         {live.error && <div style={{ color: 'red', fontSize: '11px', padding: '5px' }}>{live.error}</div>}
 

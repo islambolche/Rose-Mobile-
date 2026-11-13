@@ -1,7 +1,7 @@
 import { ApiKeys } from '../types';
 import { extractReplyText } from './ai-utils';
 import { directGeminiGenerate, TEXT_MODELS } from './ai-service';
-import { getGeminiKey } from './geminiKey';
+import { getGeminiKey, ensureGeminiReady } from './geminiKey';
 
 interface Message {
   role: 'user' | 'assistant' | 'system';
@@ -13,7 +13,7 @@ export async function askAI(messages: Message[], apiKeys: ApiKeys, modelId?: str
     .replace(/[\r\n\t\s"']+/g, '')
     .trim();
 
-  if (!cleanKey) {
+  if (!(await ensureGeminiReady(cleanKey))) {
     return 'Add your Gemini key in Settings > Connections.';
   }
 

@@ -3,7 +3,7 @@ import { motion, AnimatePresence } from 'framer-motion';
 import { Mic, Send, X, Sparkles, MessageSquare, History, Settings, User, Volume2, VolumeX, ArrowLeft } from 'lucide-react';
 import { directGeminiGenerate } from '../lib/ai-service';
 import { extractReplyText, prepareHistory } from '../lib/ai-utils';
-import { getGeminiKey } from '../lib/geminiKey';
+import { getGeminiKey, ensureGeminiReady } from '../lib/geminiKey';
 
 interface Character {
   id: string;
@@ -121,7 +121,7 @@ export const OfficeScene = (props: {
       const tools = useSearch ? [{ googleSearch: {} }] : undefined;
 
       const apiKeyToUse = apiKey || getGeminiKey() || '';
-      if (!apiKeyToUse) {
+      if (!(await ensureGeminiReady(apiKeyToUse))) {
         throw new Error("CONNECTIONS-এ Gemini key সেভ করো");
       }
 

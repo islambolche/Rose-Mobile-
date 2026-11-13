@@ -3,6 +3,7 @@ import { getGlobalMicStream, stopGlobalMicStream } from "../lib/audio-manager";
 import { ArrowLeft, CheckCircle, XCircle, Loader2, Copy, Trash2, RefreshCw, Mic, Volume2, Bug, Sparkles, Activity, Clock, AlertTriangle } from "lucide-react";
 import { UnifiedSettings } from "../types/settings";
 import { getVoiceLogs, clearVoiceLogs, logVoiceEvent, VoiceLogEntry, getVADMetrics } from "../lib/voiceLogger";
+import { ensureGeminiReady } from "../lib/geminiKey";
 import {
   generateVoiceAnswer,
   generateVoiceTTS,
@@ -102,8 +103,15 @@ export const VoiceDebugView: React.FC<VoiceDebugViewProps> = ({ settings, onBack
     // STEP 1: Key found
     updateStep(1, "running");
     const apiKey = settings.geminiApiKey || localStorage.getItem("gemini_api_key") || "";
-    if (apiKey && apiKey.length > 10) {
-      updateStep(1, "pass", `Key found (${apiKey.slice(0, 6)}...${apiKey.slice(-4)})`);
+    const ready = await ensureGeminiReady(apiKey);
+    if (ready) {
+      updateStep(
+        1,
+        "pass",
+        apiKey && apiKey.length > 10
+          ? `Key found (${apiKey.slice(0, 6)}...${apiKey.slice(-4)})`
+          : "Server Gemini API configured"
+      );
     } else {
       updateStep(1, "fail", undefined, "Gemini API key missing. Add key in Settings > Connections.");
       setIsRunningTest(false);

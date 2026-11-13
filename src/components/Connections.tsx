@@ -21,7 +21,7 @@ import {
   ChevronRight,
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'framer-motion';
-import { getGeminiKey, setGeminiKey, initGeminiKey } from '../lib/geminiKey';
+import { getGeminiKey, setGeminiKey, initGeminiKey, fetchServerGeminiStatus, isServerGeminiConfigured } from '../lib/geminiKey';
 import { storage } from '../lib/storage';
 import { openExternal } from '../lib/openExternal';
 import {
@@ -152,7 +152,10 @@ export const ConnectionsView = ({
 
   const [statusMap, setStatusMap] = useState<Record<AllProviderId, KeyStatus>>(() => {
     const resolveStatus = (id: AllProviderId, keyVal: string, statusKey: string): KeyStatus => {
-      if (!keyVal || !keyVal.trim()) return 'NOT SET';
+      if (!keyVal || !keyVal.trim()) {
+        if (id === 'gemini' && isServerGeminiConfigured()) return 'READY';
+        return 'NOT SET';
+      }
       const saved = readLocalKey(statusKey);
       if (saved === 'READY' || saved === 'CONNECTED') return 'READY';
       if (saved === 'LIMIT REACHED') return 'LIMIT REACHED';
@@ -243,8 +246,11 @@ export const ConnectionsView = ({
         const msStat = (await storage.get('connection_status_mistral')) || readLocalKey('connection_status_mistral');
         const elStat = (await storage.get('connection_status_elevenlabs')) || readLocalKey('connection_status_elevenlabs');
 
-        const mapVal = (k: string, s: string): KeyStatus => {
-          if (!k || !k.trim()) return 'NOT SET';
+        const serverGeminiReady = await fetchServerGeminiStatus();
+        if (!mounted) return;
+
+        const mapVal = (k: string, s: string, allowServer = false): KeyStatus => {
+          if (!k || !k.trim()) return allowServer ? 'READY' : 'NOT SET';
           if (s === 'READY' || s === 'CONNECTED') return 'READY';
           if (s === 'LIMIT REACHED') return 'LIMIT REACHED';
           if (s === 'INVALID') return 'INVALID';
@@ -253,7 +259,7 @@ export const ConnectionsView = ({
         };
 
         setStatusMap({
-          gemini: mapVal(g, gStat),
+          gemini: mapVal(g, gStat, serverGeminiReady),
           groq: mapVal(gr, grStat),
           openrouter: mapVal(or, orStat),
           cerebras: mapVal(cr, crStat),
@@ -529,7 +535,8 @@ export const ConnectionsView = ({
   const handleSelectEngine = (engineId: ChatEngineId) => {
     const stat = statusMap[engineId];
     const key = typedKeys[engineId];
-    if (!key || stat === 'INVALID' || stat === 'NOT SET') {
+    const serverReady = engineId === 'gemini' && (isServerGeminiConfigured() || stat === 'READY');
+    if ((!key && !serverReady) || stat === 'INVALID' || stat === 'NOT SET') {
       notifyToast(`আগে Connections-এ ${engineId.toUpperCase()}-এর Key যোগ করে SAVE করুন`);
       return;
     }

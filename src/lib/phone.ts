@@ -1,6 +1,6 @@
 import { logDevError } from './devLog';
 import { openExternal } from './openExternal';
-import { getGeminiKey } from './geminiKey';
+import { getGeminiKey, ensureGeminiReady } from './geminiKey';
 import { getStoredGroqKey, getSelectedGroqModelFromSettings, isGeminiIn429Cooldown, resolveChatModel } from './typedChat';
 import { getDynamicGroqChatModels } from './chatEngines';
 
@@ -747,33 +747,37 @@ Return ONLY a JSON array of strings, nothing else.`;
 
   const geminiKey = (getGeminiKey() || '').replace(/["'\r\n\t\s]+/g, '').trim();
   const groqKey = getStoredGroqKey();
+  const hasGemini = await ensureGeminiReady(geminiKey);
 
   // Try Gemini first if available and not in 429 cooldown
-  if (geminiKey && !isGeminiIn429Cooldown(geminiKey)) {
+  if (hasGemini && !isGeminiIn429Cooldown(geminiKey || 'server')) {
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), 4500);
     try {
       const model = await resolveChatModel(geminiKey, controller.signal);
-      const url = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${geminiKey}`;
-      const res = await fetch(url, {
+      const res = await fetch('/api/gemini/generate', {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
-          'x-goog-api-key': geminiKey,
         },
         body: JSON.stringify({
+          model,
           contents: [{ role: 'user', parts: [{ text: prompt }] }],
           generationConfig: {
             responseMimeType: 'application/json',
             temperature: 0.2,
             maxOutputTokens: 120,
           },
+          ...(geminiKey ? { apiKey: geminiKey } : {}),
         }),
         signal: controller.signal,
       });
       if (res.ok) {
         const data = await res.json();
-        const text = data?.candidates?.[0]?.content?.parts?.find((p: any) => typeof p?.text === 'string')?.text || '';
+        const text =
+          data?.text ||
+          data?.candidates?.[0]?.content?.parts?.find((p: any) => typeof p?.text === 'string')?.text ||
+          '';
         const list = parseJsonStringArray(text);
         if (list.length > 0) {
           aiSpellingCache.set(key, list);
@@ -1673,24 +1677,29 @@ Return ONLY valid JSON with keys "title", "description", "hashtags" (title max 7
     return null;
   };
 
-  if (geminiKey && !isGeminiIn429Cooldown(geminiKey)) {
+  const hasGemini = await ensureGeminiReady(geminiKey);
+  if (hasGemini && !isGeminiIn429Cooldown(geminiKey || 'server')) {
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), 5000);
     try {
       const model = await resolveChatModel(geminiKey, controller.signal);
-      const url = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${geminiKey}`;
-      const res = await fetch(url, {
+      const res = await fetch('/api/gemini/generate', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json', 'x-goog-api-key': geminiKey },
+        headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
+          model,
           contents: [{ role: 'user', parts: [{ text: prompt }] }],
           generationConfig: { responseMimeType: 'application/json', temperature: 0.7, maxOutputTokens: 220 },
+          ...(geminiKey ? { apiKey: geminiKey } : {}),
         }),
         signal: controller.signal,
       });
       if (res.ok) {
         const data = await res.json();
-        const text = data?.candidates?.[0]?.content?.parts?.find((p: any) => typeof p?.text === 'string')?.text || '';
+        const text =
+          data?.text ||
+          data?.candidates?.[0]?.content?.parts?.find((p: any) => typeof p?.text === 'string')?.text ||
+          '';
         const parsed = tryParse(text);
         if (parsed) return parsed;
       }

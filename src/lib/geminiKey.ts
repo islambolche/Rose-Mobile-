@@ -2,8 +2,82 @@ import { storage } from './storage';
 import { backupKeyToIndexedDB, getKeyFromIndexedDB } from './keyBackup';
 
 let cachedKey: string = '';
+let serverGeminiConfigured: boolean | null = null;
+let serverGeminiMaskedKey: string = '';
+let serverStatusPromise: Promise<boolean> | null = null;
+let lastServerCheckAt = 0;
+const SERVER_STATUS_CACHE_TTL_MS = 15000;
+
+export const isServerGeminiConfigured = (): boolean => serverGeminiConfigured === true;
+
+export const getServerGeminiMaskedKey = (): string => serverGeminiMaskedKey;
+
+export const hasUsableGeminiKey = (overrideKey?: string): boolean => {
+  const cleanOverride = String(overrideKey || '').replace(/[\r\n\t\s"']+/g, '').trim();
+  if (cleanOverride) return true;
+  if (getGeminiKey()) return true;
+  return serverGeminiConfigured === true;
+};
+
+export const fetchServerGeminiStatus = async (forceRefresh = false): Promise<boolean> => {
+  if (typeof window === 'undefined') return false;
+  const now = Date.now();
+  if (
+    !forceRefresh &&
+    serverGeminiConfigured !== null &&
+    now - lastServerCheckAt < SERVER_STATUS_CACHE_TTL_MS
+  ) {
+    return serverGeminiConfigured;
+  }
+  if (!forceRefresh && serverStatusPromise) {
+    return serverStatusPromise;
+  }
+
+  serverStatusPromise = (async () => {
+    try {
+      const controller = new AbortController();
+      const timer = setTimeout(() => controller.abort(), 5000);
+      const res = await fetch('/api/gemini/status', { signal: controller.signal });
+      clearTimeout(timer);
+      if (res.ok) {
+        const data = await res.json().catch(() => null);
+        const configured = Boolean(data?.configured);
+        serverGeminiConfigured = configured;
+        serverGeminiMaskedKey = typeof data?.maskedKey === 'string' ? data.maskedKey : '';
+        lastServerCheckAt = Date.now();
+        try {
+          window.dispatchEvent(
+            new CustomEvent('gemini_server_status_updated', {
+              detail: { configured, maskedKey: serverGeminiMaskedKey },
+            })
+          );
+        } catch {}
+        return configured;
+      }
+    } catch {}
+    if (serverGeminiConfigured === null) {
+      serverGeminiConfigured = false;
+    }
+    lastServerCheckAt = Date.now();
+    return serverGeminiConfigured;
+  })().finally(() => {
+    serverStatusPromise = null;
+  });
+
+  return serverStatusPromise;
+};
+
+export const ensureGeminiReady = async (overrideKey?: string): Promise<boolean> => {
+  const cleanOverride = String(overrideKey || '').replace(/[\r\n\t\s"']+/g, '').trim();
+  if (cleanOverride) return true;
+  if (getGeminiKey()) return true;
+  if (serverGeminiConfigured === true) return true;
+  return await fetchServerGeminiStatus(false);
+};
 
 export const initGeminiKey = async (): Promise<string> => {
+  // Warm server Gemini availability check immediately without blocking init
+  void fetchServerGeminiStatus();
   try {
     let key = await storage.get('gemini_api_key');
     if (!key || !key.trim()) {

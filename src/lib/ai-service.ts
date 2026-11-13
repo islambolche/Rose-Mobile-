@@ -1,5 +1,5 @@
 import { prepareHistory, extractLastUserText } from './ai-utils';
-import { getGeminiKey } from './geminiKey';
+import { getGeminiKey, ensureGeminiReady } from './geminiKey';
 import {
   isAdmin,
   ADMIN_PREFERRED_VOICES,
@@ -272,7 +272,7 @@ export const discoverAvailableFlashModels = async (
   const cleanKey = String(apiKey || getGeminiKey() || '')
     .replace(/[\r\n\t\s"']+/g, '')
     .trim();
-  if (!cleanKey) return [];
+  if (!(await ensureGeminiReady(cleanKey))) return [];
   try {
     const controller = new AbortController();
     const timer = setTimeout(() => {
@@ -280,9 +280,8 @@ export const discoverAvailableFlashModels = async (
         controller.abort();
       } catch (e) {}
     }, 6000);
-    const url = `https://generativelanguage.googleapis.com/v1beta/models?pageSize=200&key=${cleanKey}`;
+    const url = `/api/gemini/models${cleanKey ? `?apiKey=${encodeURIComponent(cleanKey)}` : ''}`;
     const res = await fetch(url, {
-      headers: { 'x-goog-api-key': cleanKey },
       signal: controller.signal,
     });
     clearTimeout(timer);
@@ -297,7 +296,9 @@ export const discoverAvailableFlashModels = async (
       const lower = shortName.toLowerCase();
       const methods: string[] = Array.isArray(m?.supportedGenerationMethods)
         ? m.supportedGenerationMethods
-        : [];
+        : Array.isArray(m?.supportedActions)
+          ? m.supportedActions
+          : [];
 
       if (
         shortName &&
@@ -352,13 +353,12 @@ export const isValidVoiceTranscript = (text?: string, durationSec?: number): boo
 
 export const discoverLightestFlashModel = async (apiKey?: string): Promise<string> => {
   const cleanKey = String(apiKey || getGeminiKey() || '').replace(/[\r\n\t\s"']+/g, '').trim();
-  if (!cleanKey) return '';
+  if (!(await ensureGeminiReady(cleanKey))) return '';
   try {
-    const url = `https://generativelanguage.googleapis.com/v1beta/models?pageSize=200&key=${cleanKey}`;
+    const url = `/api/gemini/models${cleanKey ? `?apiKey=${encodeURIComponent(cleanKey)}` : ''}`;
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), 6000);
     const res = await fetch(url, {
-      headers: { 'x-goog-api-key': cleanKey },
       signal: controller.signal,
     });
     clearTimeout(timer);
@@ -372,7 +372,11 @@ export const discoverLightestFlashModel = async (apiKey?: string): Promise<strin
     for (const m of models) {
       const rawName = String(m?.name || '').replace(/^models\//, '').trim();
       const lower = rawName.toLowerCase();
-      const methods: string[] = Array.isArray(m?.supportedGenerationMethods) ? m.supportedGenerationMethods : [];
+      const methods: string[] = Array.isArray(m?.supportedGenerationMethods)
+        ? m.supportedGenerationMethods
+        : Array.isArray(m?.supportedActions)
+          ? m.supportedActions
+          : [];
       if (
         rawName &&
         methods.includes('generateContent') &&
@@ -928,7 +932,7 @@ const callGeminiTextEndpoint = async (params: {
     .replace(/[\r\n\t\s"']+/g, '')
     .trim();
 
-  if (!cleanKey) {
+  if (!(await ensureGeminiReady(cleanKey))) {
     const missingErr: any = new Error('Add your Gemini key in Settings > Connections.');
     missingErr.status = 400;
     missingErr.googleMessage = 'API key ঠিক নেই';
@@ -936,7 +940,7 @@ const callGeminiTextEndpoint = async (params: {
   }
 
   const cleanModel =
-    String(model || getSavedWorkingTextModel() || '').replace(/^models\//, '').trim();
+    String(model || getSavedWorkingTextModel() || 'gemini-4-hydrogen').replace(/^models\//, '').trim();
   if (!cleanModel) {
     throw new Error('মডেল পাওয়া যায়নি');
   }
@@ -951,9 +955,18 @@ const callGeminiTextEndpoint = async (params: {
     tools || [{ googleSearch: {} }]
   );
 
-  const url = `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(cleanModel)}:generateContent?key=${cleanKey}`;
+  const url = '/api/gemini/generate';
   const reqStartTime = Date.now();
   const perReqTimeout = Math.min(GEMINI_PER_REQUEST_TIMEOUT_MS, Math.max(1000, timeoutMs));
+
+  const buildProxyPayload = (bodyObj: any) => ({
+    model: cleanModel,
+    contents: bodyObj.contents,
+    systemInstruction: bodyObj.systemInstruction,
+    generationConfig: bodyObj.generationConfig,
+    tools: bodyObj.tools,
+    ...(cleanKey ? { apiKey: cleanKey } : {}),
+  });
 
   let res = await fetchWithSignalTimeout(
     url,
@@ -961,9 +974,8 @@ const callGeminiTextEndpoint = async (params: {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
-        'x-goog-api-key': cleanKey,
       },
-      body: JSON.stringify(directBody),
+      body: JSON.stringify(buildProxyPayload(directBody)),
     },
     perReqTimeout,
     cleanModel,
@@ -989,9 +1001,8 @@ const callGeminiTextEndpoint = async (params: {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
-          'x-goog-api-key': cleanKey,
         },
-        body: JSON.stringify(fallbackBody),
+        body: JSON.stringify(buildProxyPayload(fallbackBody)),
       },
       remainingMs,
       cleanModel,
@@ -1017,9 +1028,8 @@ const callGeminiTextEndpoint = async (params: {
           method: 'POST',
           headers: {
             'Content-Type': 'application/json',
-            'x-goog-api-key': cleanKey,
           },
-          body: JSON.stringify(minimalBody),
+          body: JSON.stringify(buildProxyPayload(minimalBody)),
         },
         remMs2,
         cleanModel,
@@ -1127,7 +1137,7 @@ export const directGeminiGenerate = async (payload: any) => {
     .replace(/[\r\n\t\s"']+/g, '')
     .trim();
 
-  if (!cleanKey) {
+  if (!(await ensureGeminiReady(cleanKey))) {
     const missingErr: any = new Error('Gemini key নেই। Settings → Connections-এ key দিন।');
     missingErr.bodyText = 'Gemini key নেই। Settings → Connections-এ key দিন।';
     missingErr.googleMessage = 'Gemini key নেই। Settings → Connections-এ key দিন।';
@@ -1159,7 +1169,11 @@ export const directGeminiGenerate = async (payload: any) => {
 
   const overallStart = Date.now();
   const deadline = overallStart + GEMINI_TOTAL_CHAIN_TIMEOUT_MS;
-  const initialModels = buildOrderedModelList(model);
+  let initialModels = buildOrderedModelList(model);
+  if (initialModels.length === 0) {
+    const discoveredInitial = await discoverAvailableFlashModels(cleanKey);
+    initialModels = discoveredInitial.length > 0 ? discoveredInitial.slice(0, 3) : ['gemini-4-hydrogen'];
+  }
 
   const runAllAttempts = async (currentTools?: any[]): Promise<any> => {
     const triedModels = new Set<string>();
@@ -1368,7 +1382,7 @@ export const directGeminiStream = async (
     .replace(/[\r\n\t\s"']+/g, '')
     .trim();
 
-  if (!cleanKey) {
+  if (!(await ensureGeminiReady(cleanKey))) {
     return await directGeminiGenerate(payload);
   }
 
@@ -1385,18 +1399,29 @@ export const directGeminiStream = async (
       ? normalizedContents
       : prepareHistory(normalizedContents);
     const orderedModels = buildOrderedModelList(model);
-    const primaryModel = String(orderedModels[0] || '').replace(/^models\//, '').trim();
-
-    if (!primaryModel) return await directGeminiGenerate(payload);
+    let primaryModel = String(orderedModels[0] || '').replace(/^models\//, '').trim();
+    if (!primaryModel) {
+      const discovered = await discoverAvailableFlashModels(cleanKey);
+      primaryModel = discovered[0] || 'gemini-4-hydrogen';
+    }
 
     const reqStartTime = Date.now();
     const startMinimal = isMinimalBodyStoredForModel(primaryModel);
-    const streamUrl = `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(primaryModel)}:streamGenerateContent?alt=sse&key=${cleanKey}`;
+    const streamUrl = '/api/gemini/stream';
 
     let accumulatedRawText = '';
     let emittedAnyChunk = false;
     let lastGroundingMetadata: any = null;
     const functionCallParts: any[] = [];
+
+    const toProxyStreamPayload = (bodyObj: any) => ({
+      model: primaryModel,
+      contents: bodyObj.contents,
+      systemInstruction: bodyObj.systemInstruction,
+      generationConfig: bodyObj.generationConfig,
+      tools: bodyObj.tools,
+      ...(cleanKey ? { apiKey: cleanKey } : {}),
+    });
 
     try {
       const directBody = buildBodyForRequest(
@@ -1414,9 +1439,8 @@ export const directGeminiStream = async (
           method: 'POST',
           headers: {
             'Content-Type': 'application/json',
-            'x-goog-api-key': cleanKey,
           },
-          body: JSON.stringify(directBody),
+          body: JSON.stringify(toProxyStreamPayload(directBody)),
         },
         GEMINI_PER_REQUEST_TIMEOUT_MS,
         primaryModel,
@@ -1441,9 +1465,8 @@ export const directGeminiStream = async (
             method: 'POST',
             headers: {
               'Content-Type': 'application/json',
-              'x-goog-api-key': cleanKey,
             },
-            body: JSON.stringify(fallbackBody),
+            body: JSON.stringify(toProxyStreamPayload(fallbackBody)),
           },
           remainingMs,
           primaryModel,
@@ -1583,7 +1606,7 @@ export const runGeminiSpeedTest = async (
     .replace(/[\r\n\t\s"']+/g, '')
     .trim();
 
-  if (!cleanKey) {
+  if (!(await ensureGeminiReady(cleanKey))) {
     return [{ model: 'gemini', text: 'Add your key first', ok: false }];
   }
 
@@ -1597,18 +1620,19 @@ export const runGeminiSpeedTest = async (
   for (const model of testModels) {
     const start = Date.now();
     try {
-      const url = `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(model)}:generateContent?key=${cleanKey}`;
+      const url = '/api/gemini/generate';
       const res = await fetchWithSignalTimeout(
         url,
         {
           method: 'POST',
           headers: {
             'Content-Type': 'application/json',
-            'x-goog-api-key': cleanKey,
           },
           body: JSON.stringify({
+            model,
             contents: [{ role: 'user', parts: [{ text: 'Hi' }] }],
             generationConfig: { maxOutputTokens: 10 },
+            ...(cleanKey ? { apiKey: cleanKey } : {}),
           }),
         },
         12000,
@@ -1624,7 +1648,7 @@ export const runGeminiSpeedTest = async (
         parsed = rawText ? JSON.parse(rawText) : null;
       } catch {}
 
-      if (res.ok && parsed?.candidates?.[0]?.content?.parts?.[0]?.text) {
+      if (res.ok && (parsed?.text || parsed?.candidates?.[0]?.content?.parts?.[0]?.text)) {
         results.push({
           model,
           text: `${model}: ${sec} seconds`,
@@ -1783,9 +1807,9 @@ export const discoverAvailableTtsModels = async (
   forceRefresh = false
 ): Promise<string[]> => {
   const cleanKey = String(apiKey || getGeminiKey() || '').replace(/[\r\n\t\s"']+/g, '').trim();
-  if (!cleanKey) return [];
+  if (!(await ensureGeminiReady(cleanKey))) return [];
 
-  const keyPrefix = cleanKey.slice(0, 8);
+  const keyPrefix = cleanKey ? cleanKey.slice(0, 8) : 'server';
   const now = Date.now();
 
   if (!forceRefresh) {
@@ -1820,37 +1844,17 @@ export const discoverAvailableTtsModels = async (
   }
 
   try {
-    const allModels: any[] = [];
-    let nextPageToken = '';
-    let pageCount = 0;
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), 8000);
+    const url = `/api/gemini/models${cleanKey ? `?apiKey=${encodeURIComponent(cleanKey)}` : ''}`;
 
-    while (pageCount < 10) {
-      pageCount++;
-      const controller = new AbortController();
-      const timer = setTimeout(() => controller.abort(), 8000);
-      const tokenParam = nextPageToken ? `&pageToken=${encodeURIComponent(nextPageToken)}` : '';
-      const url = `https://generativelanguage.googleapis.com/v1beta/models?key=${encodeURIComponent(cleanKey)}&pageSize=200${tokenParam}`;
+    const res = await fetch(url, {
+      signal: controller.signal,
+    });
+    clearTimeout(timer);
 
-      const res = await fetch(url, {
-        headers: { 'x-goog-api-key': cleanKey },
-        signal: controller.signal,
-      });
-      clearTimeout(timer);
-
-      if (!res.ok) {
-        break;
-      }
-
-      const data = await res.json().catch(() => null);
-      const pageList: any[] = Array.isArray(data?.models) ? data.models : [];
-      allModels.push(...pageList);
-
-      if (data?.nextPageToken && typeof data.nextPageToken === 'string') {
-        nextPageToken = data.nextPageToken;
-      } else {
-        break;
-      }
-    }
+    const data = res.ok ? await res.json().catch(() => null) : null;
+    const allModels: any[] = Array.isArray(data?.models) ? data.models : [];
 
     const foundSet = new Set<string>();
     for (const m of allModels) {
@@ -1858,7 +1862,9 @@ export const discoverAvailableTtsModels = async (
       const shortName = rawName.replace(/^models\//, '').trim();
       const methods: string[] = Array.isArray(m?.supportedGenerationMethods)
         ? m.supportedGenerationMethods
-        : [];
+        : Array.isArray(m?.supportedActions)
+          ? m.supportedActions
+          : [];
       if (shortName && methods.includes('generateContent') && shortName.toLowerCase().includes('tts')) {
         foundSet.add(shortName);
       }
@@ -1979,7 +1985,7 @@ export const directGeminiTTS = async (payload: any) => {
   const rawText = String(text || '').replace(/[*#_~`]/g, '').trim();
   if (!rawText) throw new Error('Empty text for TTS');
   const ttsPromptText = formatAdminTtsPrompt(rawText);
-  if (!cleanKey) {
+  if (!(await ensureGeminiReady(cleanKey))) {
     const err: any = new Error('Gemini key নেই। Settings → Connections-এ key দিন।');
     err.status = 'missing_key';
     err.modelTried = 'none';
@@ -2011,126 +2017,98 @@ export const directGeminiTTS = async (payload: any) => {
     }
   }
 
-  // Try up to 3 models maximum
-  const modelsToTry = candidateModels.slice(0, 3);
-
-  if (modelsToTry.length === 0) {
-    const noModelErr: any = new Error('এই API key-তে কোনো Gemini TTS মডেল পাওয়া যায়নি।');
-    noModelErr.isNoTtsModel = true;
-    noModelErr.status = 404;
-    noModelErr.modelTried = 'none';
-    noModelErr.googleMessage = 'এই API key-তে কোনো Gemini TTS মডেল পাওয়া যায়নি।';
-    throw noModelErr;
-  }
-
   const adminActive = isAdmin();
   const selectedVoiceName = String(voiceName || 'Leda').trim() || 'Leda';
   const voicesToTry: string[] = adminActive
     ? [...ADMIN_PREFERRED_VOICES]
     : [selectedVoiceName];
+
+  const modelsToTry = candidateModels.length > 0 ? candidateModels.slice(0, 3) : [''];
   const attempts: Array<{ model: string; status: number | string; message: string }> = [];
   let lastError: any = null;
 
   for (const rawTargetModel of modelsToTry) {
-    const targetModel = rawTargetModel.replace(/^models\//, '').trim();
-    for (let vIdx = 0; vIdx < voicesToTry.length; vIdx++) {
-      const candidateVoice = voicesToTry[vIdx];
-      const controller = new AbortController();
-      const timer = setTimeout(() => controller.abort(), 9000);
+    const targetModel = rawTargetModel ? rawTargetModel.replace(/^models\//, '').trim() : '';
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), GEMINI_TTS_PER_REQUEST_TIMEOUT_MS);
+    try {
+      const res = await fetch('/api/gemini/tts', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          model: targetModel || undefined,
+          text: ttsPromptText,
+          voiceName: selectedVoiceName,
+          voices: voicesToTry,
+          ...(cleanKey ? { apiKey: cleanKey } : {}),
+        }),
+        signal: controller.signal,
+      });
+      clearTimeout(timer);
+
+      const rawBodyText = await res.text().catch(() => '');
+      let data: any = null;
       try {
-        const url = `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(targetModel)}:generateContent?key=${encodeURIComponent(cleanKey)}`;
-        const res = await fetch(url, {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-            'x-goog-api-key': cleanKey,
-          },
-          body: JSON.stringify({
-            contents: [{ parts: [{ text: ttsPromptText }] }],
-            generationConfig: {
-              responseModalities: ['AUDIO'],
-              speechConfig: {
-                voiceConfig: {
-                  prebuiltVoiceConfig: {
-                    voiceName: candidateVoice,
-                  },
-                },
-              },
-            },
-          }),
-          signal: controller.signal,
-        });
-        clearTimeout(timer);
+        data = rawBodyText ? JSON.parse(rawBodyText) : null;
+      } catch {}
 
-        const rawBodyText = await res.text().catch(() => '');
-        let data: any = null;
-        try {
-          data = rawBodyText ? JSON.parse(rawBodyText) : null;
-        } catch {}
-
-        const audioPart = data?.candidates?.[0]?.content?.parts?.find(
-          (p: any) => p?.inlineData?.data || p?.inline_data?.data
-        );
-        const audioData = audioPart?.inlineData?.data || audioPart?.inline_data?.data;
-
-        if (!res.ok || !audioData) {
-          const googleMsg = sanitizeOutApiKey(
-            data?.error?.message || rawBodyText || `HTTP ${res.status}`,
-            cleanKey
-          ).trim();
-          attempts.push({
-            model: targetModel,
-            status: res.status,
-            message: googleMsg,
-          });
-          const err: any = new Error(`${targetModel} (HTTP ${res.status}): ${googleMsg}`);
-          err.status = res.status;
-          err.modelTried = targetModel;
-          err.googleMessage = googleMsg;
-          err.attempts = [...attempts];
-          lastError = err;
-
-          // If admin mode and voice might be rejected (400), try next voice in ADMIN_PREFERRED_VOICES
-          if (adminActive && res.status === 400 && vIdx + 1 < voicesToTry.length) {
-            continue;
-          }
-          break;
-        }
-
-        setLastUsedTtsModel(targetModel);
-        if (adminActive) {
-          console.log('[ADMIN TTS] Used:', {
-            model: targetModel,
-            voice: candidateVoice,
-            affectiveDialog: false,
-          });
-        }
-
-        return {
-          audio: audioData,
-          modelUsed: targetModel,
-          voiceUsed: candidateVoice,
-        };
-      } catch (err: any) {
-        clearTimeout(timer);
-        const isTimeout = err?.name === 'AbortError';
-        const msg = sanitizeOutApiKey(
-          isTimeout ? 'Request timed out' : String(err?.message || 'Network error'),
+      if (!res.ok || !data?.audio) {
+        const googleMsg = sanitizeOutApiKey(
+          data?.exactError || data?.error?.message || rawBodyText || `HTTP ${res.status}`,
           cleanKey
-        );
+        ).trim();
+        const usedModelLabel = targetModel || 'gemini-tts';
         attempts.push({
-          model: targetModel,
-          status: isTimeout ? 'timeout' : 'network_error',
-          message: msg,
+          model: usedModelLabel,
+          status: res.status,
+          message: googleMsg,
         });
-        const wrappedErr: any = new Error(`${targetModel} (${isTimeout ? 'Timeout' : 'Network'}): ${msg}`);
-        wrappedErr.status = isTimeout ? 408 : 0;
-        wrappedErr.modelTried = targetModel;
-        wrappedErr.googleMessage = msg;
-        wrappedErr.attempts = [...attempts];
-        lastError = wrappedErr;
-        break;
+        const err: any = new Error(`${usedModelLabel} (HTTP ${res.status}): ${googleMsg}`);
+        err.status = res.status;
+        err.modelTried = usedModelLabel;
+        err.googleMessage = googleMsg;
+        err.attempts = [...attempts];
+        lastError = err;
+        continue;
       }
+
+      const finalModel = data.modelUsed || targetModel || 'gemini-3.8-flash-lite-tts';
+      const finalVoice = data.voiceUsed || selectedVoiceName;
+      setLastUsedTtsModel(finalModel);
+      if (adminActive) {
+        console.log('[ADMIN TTS] Used:', {
+          model: finalModel,
+          voice: finalVoice,
+          affectiveDialog: false,
+        });
+      }
+
+      return {
+        audio: data.audio,
+        modelUsed: finalModel,
+        voiceUsed: finalVoice,
+      };
+    } catch (err: any) {
+      clearTimeout(timer);
+      const isTimeout = err?.name === 'AbortError';
+      const msg = sanitizeOutApiKey(
+        isTimeout ? 'Request timed out' : String(err?.message || 'Network error'),
+        cleanKey
+      );
+      const usedModelLabel = targetModel || 'gemini-tts';
+      attempts.push({
+        model: usedModelLabel,
+        status: isTimeout ? 'timeout' : 'network_error',
+        message: msg,
+      });
+      const wrappedErr: any = new Error(`${usedModelLabel} (${isTimeout ? 'Timeout' : 'Network'}): ${msg}`);
+      wrappedErr.status = isTimeout ? 408 : 0;
+      wrappedErr.modelTried = usedModelLabel;
+      wrappedErr.googleMessage = msg;
+      wrappedErr.attempts = [...attempts];
+      lastError = wrappedErr;
     }
   }
 

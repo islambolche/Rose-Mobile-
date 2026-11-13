@@ -2,7 +2,12 @@ import React, { useState, useEffect } from "react";
 import { getGlobalMicStream, stopGlobalMicStream } from "../lib/audio-manager";
 import { Zap, ArrowLeft, Key, Check, X, Loader2 } from "lucide-react";
 import { UnifiedSettings } from "../types/settings";
-import { getGeminiKey } from "../lib/geminiKey";
+import {
+  getGeminiKey,
+  ensureGeminiReady,
+  fetchServerGeminiStatus,
+  isServerGeminiConfigured,
+} from "../lib/geminiKey";
 
 interface DiagnosticsViewProps {
   liveTimings: {
@@ -29,16 +34,21 @@ export const DiagnosticsView: React.FC<DiagnosticsViewProps> = ({
   onBack,
 }) => {
   const [geminiKey, setLocalGeminiKey] = useState<string>(() => getGeminiKey());
+  const [serverReady, setServerReady] = useState<boolean>(() => isServerGeminiConfigured());
   const [isTesting, setIsTesting] = useState(false);
   const [testResult, setTestResult] = useState<'PASS' | 'FAIL' | null>(null);
   const [testSteps, setTestSteps] = useState<TestStep[]>([]);
 
   useEffect(() => {
     const updateKey = () => setLocalGeminiKey(getGeminiKey());
+    const updateServer = () => setServerReady(isServerGeminiConfigured());
+    fetchServerGeminiStatus().then(setServerReady).catch(() => {});
     window.addEventListener("gemini_key_updated", updateKey);
+    window.addEventListener("gemini_server_status_updated", updateServer);
     window.addEventListener("storage", updateKey);
     return () => {
       window.removeEventListener("gemini_key_updated", updateKey);
+      window.removeEventListener("gemini_server_status_updated", updateServer);
       window.removeEventListener("storage", updateKey);
     };
   }, []);
@@ -51,7 +61,8 @@ export const DiagnosticsView: React.FC<DiagnosticsViewProps> = ({
     setTestSteps([]);
     
     const key = getGeminiKey();
-    if (!key) {
+    const ready = await ensureGeminiReady(key);
+    if (!ready) {
       setTestSteps([{ label: "Gemini key পাওয়া যায়নি", status: "error" }]);
       setTestResult("FAIL");
       setIsTesting(false);
@@ -82,10 +93,12 @@ export const DiagnosticsView: React.FC<DiagnosticsViewProps> = ({
 
     try {
       // 1. Connecting
-      const cleanKey = key.replace(/[\r\n\t\s"']+/g, "").trim();
+      const cleanKey = (key || "").replace(/[\r\n\t\s"']+/g, "").trim();
       const protocol = typeof window !== 'undefined' && window.location.protocol === 'https:' ? 'wss:' : 'ws:';
       const host = typeof window !== 'undefined' ? window.location.host : 'localhost:3000';
-      const wsUrl = `${protocol}//${host}/api/live?apiKey=${encodeURIComponent(cleanKey)}`;
+      const wsUrl = cleanKey
+        ? `${protocol}//${host}/api/live?apiKey=${encodeURIComponent(cleanKey)}`
+        : `${protocol}//${host}/api/live`;
       
       ws = new WebSocket(wsUrl);
 
@@ -189,7 +202,7 @@ export const DiagnosticsView: React.FC<DiagnosticsViewProps> = ({
     }
   };
 
-  const hasGeminiKey = Boolean(geminiKey && geminiKey.length > 0);
+  const hasGeminiKey = Boolean(geminiKey && geminiKey.length > 0) || serverReady;
   const geminiKeyLength = geminiKey ? geminiKey.length : 0;
 
   return (
@@ -289,7 +302,7 @@ export const DiagnosticsView: React.FC<DiagnosticsViewProps> = ({
             <div className="flex justify-between items-center border-t border-white/5 pt-2">
               <span className="text-slate-400 uppercase font-bold text-[10px]">Gemini key</span>
               <span className={`font-bold ${hasGeminiKey ? 'text-emerald-400' : 'text-rose-400'}`}>
-                {hasGeminiKey ? `পাওয়া গেছে (${geminiKeyLength} অক্ষর)` : 'নেই'}
+                {geminiKeyLength > 0 ? `পাওয়া গেছে (${geminiKeyLength} অক্ষর)` : serverReady ? 'Server Connected' : 'নেই'}
               </span>
             </div>
             <div className="flex justify-between items-center border-t border-white/5 pt-2">

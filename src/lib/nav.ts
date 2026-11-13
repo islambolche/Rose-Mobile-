@@ -52,6 +52,7 @@ export const PAGES: PageDef[] = [
   { id: 'voice_tuning', parent: 'voice_language' },
   { id: 'voice_check', parent: 'voice_language' },
   { id: 'mic_listening', parent: 'voice_language' },
+  { id: 'smart_listening', parent: 'mic_listening' },
   { id: 'voice_debug', parent: 'mic_listening' },
 
   { id: 'theme', parent: 'look_feel' },
@@ -137,6 +138,7 @@ const PAGE_TO_NAV_ID: Record<string, string> = {
   voice_tuning: 'voice_tuning',
   voice_check: 'voice_check',
   mic_listening: 'mic_listening',
+  smart_listening: 'smart_listening',
   voice_debug: 'voice_debug',
 
   theme: 'theme',

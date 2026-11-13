@@ -1,5 +1,5 @@
 import { directGeminiGenerate, TEXT_MODELS } from "./ai-service";
-import { getGeminiKey } from "./geminiKey";
+import { getGeminiKey, ensureGeminiReady } from "./geminiKey";
 
 export async function getReply(
   messages: { role: string; text: string }[],
@@ -11,7 +11,7 @@ export async function getReply(
     .replace(/[\r\n\t\s"']+/g, "")
     .trim();
 
-  if (!cleanKey) {
+  if (!(await ensureGeminiReady(cleanKey))) {
     throw new Error("Add your Gemini key in Settings > Connections.");
   }
 

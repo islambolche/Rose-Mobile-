@@ -36,6 +36,7 @@ import {
 import { UnifiedSettings, saveUnifiedSettings, AssistantPersonality, ReplyLength } from "../types/settings";
 import { directGeminiTTS } from "../lib/ai-service";
 import { getElevenLabsKey } from "../lib/voiceEngine";
+import { ensureGeminiReady } from "../lib/geminiKey";
 import {
   getMicListeningSettings,
   saveMicListeningSettings,
@@ -43,8 +44,11 @@ import {
   MicListeningSettings,
   NoiseGateSensitivity,
   FastReplySpeed,
+  getNativeMicFilterStatus,
+  NativeMicFilterStatus,
 } from "../lib/cleanVoiceAndVad";
 import { NoiseGateEngine } from "../lib/noiseGate";
+import { isAndroidApp } from "../lib/voiceDebugStore";
 
 interface VoiceLanguageSettingsProps {
   settings: UnifiedSettings;
@@ -213,6 +217,18 @@ export const VoiceLanguageSettings: React.FC<VoiceLanguageSettingsProps> = ({
   const [micSettingsState, setMicSettingsState] = useState<MicListeningSettings>(() =>
     getMicListeningSettings()
   );
+  const [nativeMicStatus, setNativeMicStatus] = useState<NativeMicFilterStatus>(() =>
+    getNativeMicFilterStatus()
+  );
+
+  useEffect(() => {
+    const onNativeStatus = (ev: Event) => {
+      const detail = (ev as CustomEvent)?.detail;
+      if (detail) setNativeMicStatus(detail);
+    };
+    window.addEventListener("rose-native-mic-status", onNativeStatus);
+    return () => window.removeEventListener("rose-native-mic-status", onNativeStatus);
+  }, []);
 
   const updateMicConfig = (partial: Partial<MicListeningSettings>) => {
     const updated = saveMicListeningSettings(partial);
@@ -604,7 +620,7 @@ export const VoiceLanguageSettings: React.FC<VoiceLanguageSettingsProps> = ({
                 <button 
                   onClick={async () => {
                       const key = (settings.geminiApiKey || localStorage.getItem("gemini_api_key") || "").replace(/[\r\n\t\s"']+/g, "").trim();
-                      if (!key) { showToast("Add your Gemini key in Settings > Connections."); return; }
+                      if (!(await ensureGeminiReady(key))) { showToast("Add your Gemini key in Settings > Connections."); return; }
                       try {
                           const url = '/api/gemini/generate';
                           const res = await fetch(url, {
@@ -613,10 +629,10 @@ export const VoiceLanguageSettings: React.FC<VoiceLanguageSettingsProps> = ({
                               "Content-Type": "application/json",
                             },
                             body: JSON.stringify({
-                                model: "gemini-1.5-flash",
+                                model: "gemini-4-hydrogen",
                                 contents: [{ role: "user", parts: [{ text: "হাই" }] }],
                                 generationConfig: { maxOutputTokens: 30 },
-                                apiKey: key,
+                                ...(key ? { apiKey: key } : {}),
                             })
                           });
                           const raw = await res.text().catch(() => "");
@@ -794,6 +810,18 @@ export const VoiceLanguageSettings: React.FC<VoiceLanguageSettingsProps> = ({
               value={micSettingsState.streetMode ? "ACTIVE (Noisy Preset)" : "OFF"}
               onClick={() => setActiveSheet("street_mode")}
             />
+            {isAndroidApp() && (
+              <SettingRow
+                icon={Mic}
+                title="NATIVE MIC (অ্যাপ)"
+                value={
+                  micSettingsState.nativeMic
+                    ? `ON (${micSettingsState.nativeMicMode === "recognition" ? "Raw" : "Clear voice"})`
+                    : "OFF"
+                }
+                onClick={() => setActiveSheet("native_mic")}
+              />
+            )}
 
             <div className="p-4 bg-[#0A1628]/40 border-t border-white/5 flex items-center justify-between">
               <button
@@ -1544,6 +1572,98 @@ export const VoiceLanguageSettings: React.FC<VoiceLanguageSettingsProps> = ({
                           <li>Noise Gate: <strong className="text-white">ON (High +14dB)</strong></li>
                           <li>Fast Reply silenceDurationMs: <strong className="text-amber-400 font-bold">400 ms</strong></li>
                         </ul>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              )}
+
+              {/* Native Mic Sheet (Android app only) */}
+              {activeSheet === "native_mic" && isAndroidApp() && (
+                <div className="fixed inset-0 z-[200] bg-[#020617] flex flex-col">
+                  <div className="flex items-center gap-3 px-[14px] h-[56px] pt-[max(env(safe-area-inset-top),8px)] shrink-0 border-b border-white/10">
+                    <button onClick={() => setActiveSheet(null)} className="w-[40px] h-[40px] rounded-[12px] bg-white/5 border border-white/10 flex items-center justify-center text-white active:scale-95 transition-transform">
+                      <ArrowLeft className="w-5 h-5" />
+                    </button>
+                    <h3 className="text-[20px] font-semibold text-white">NATIVE MIC (অ্যাপ)</h3>
+                  </div>
+
+                  <div className="flex-1 p-[16px] space-y-5 overflow-y-auto">
+                    <div className="bg-[#0f0f23] border border-purple-500/20 rounded-[20px] p-5 space-y-4">
+                      <div className="flex items-center justify-between">
+                        <div>
+                          <h4 className="text-base font-bold text-white">NATIVE MIC (অ্যাপ)</h4>
+                          <p className="text-xs text-slate-400 mt-0.5">Android native 16 kHz PCM16 capture</p>
+                        </div>
+                        <button
+                          onClick={() => {
+                            const next = !micSettingsState.nativeMic;
+                            updateMicConfig({ nativeMic: next });
+                            showToast(next ? "Native Mic চালু" : "Native Mic বন্ধ");
+                          }}
+                          className={`w-14 h-7 rounded-full transition-all relative ${micSettingsState.nativeMic ? "bg-purple-600" : "bg-slate-700"}`}
+                        >
+                          <motion.div animate={{ x: micSettingsState.nativeMic ? 30 : 4 }} className="w-5 h-5 bg-white rounded-full absolute top-1" />
+                        </button>
+                      </div>
+
+                      <div className="pt-3 border-t border-white/5 space-y-2">
+                        <label className="text-xs font-bold text-slate-300 uppercase tracking-wider block">
+                          Mode
+                        </label>
+                        <div className="grid grid-cols-2 gap-2">
+                          {[
+                            { id: "communication" as const, label: "Clear voice" },
+                            { id: "recognition" as const, label: "Raw" },
+                          ].map((opt) => {
+                            const isSel = micSettingsState.nativeMicMode === opt.id;
+                            return (
+                              <button
+                                key={opt.id}
+                                type="button"
+                                onClick={() => updateMicConfig({ nativeMicMode: opt.id })}
+                                className={`py-2.5 rounded-xl border text-xs font-bold transition-all ${
+                                  isSel
+                                    ? "bg-purple-600 border-purple-400 text-white shadow-lg"
+                                    : "bg-slate-900 border-white/10 text-slate-400 hover:text-white"
+                                }`}
+                              >
+                                {opt.label}
+                              </button>
+                            );
+                          })}
+                        </div>
+                        <p className="text-xs text-slate-400 pt-1">
+                          Clear voice মোডে স্পিকারের আওয়াজ কমে গেলে Mode বদলে Raw বেছে নিন।
+                        </p>
+                      </div>
+
+                      <div className="pt-3 border-t border-white/5 space-y-2">
+                        <div className="flex items-center justify-between text-xs font-bold">
+                          <span className="text-purple-400 uppercase tracking-wider">Active Filters</span>
+                          <span className="text-slate-400">
+                            {nativeMicStatus.hasStartResult ? `${nativeMicStatus.rate} Hz` : "কল শুরু হলে দেখাবে"}
+                          </span>
+                        </div>
+                        <div className="grid grid-cols-3 gap-2 text-xs font-bold">
+                          {[
+                            { label: "Noise", enabled: nativeMicStatus.ns },
+                            { label: "Echo", enabled: nativeMicStatus.aec },
+                            { label: "Gain", enabled: nativeMicStatus.agc },
+                          ].map((item) => (
+                            <div
+                              key={item.label}
+                              className={`p-2.5 rounded-xl border flex items-center justify-between ${
+                                nativeMicStatus.hasStartResult && item.enabled
+                                  ? "bg-emerald-500/15 border-emerald-400/40 text-emerald-200"
+                                  : "bg-slate-900/80 border-white/10 text-slate-300"
+                              }`}
+                            >
+                              <span>{item.label}</span>
+                              <span>{!nativeMicStatus.hasStartResult ? "—" : item.enabled ? "✓" : "✕"}</span>
+                            </div>
+                          ))}
+                        </div>
                       </div>
                     </div>
                   </div>

@@ -1,4 +1,4 @@
-import { getGeminiKey, setGeminiKey } from './geminiKey';
+import { getGeminiKey, setGeminiKey, ensureGeminiReady, isServerGeminiConfigured } from './geminiKey';
 import {
   directGeminiGenerate,
   TEXT_MODELS,
@@ -32,7 +32,7 @@ export const FREE_CHAT_PROVIDERS: ChatProviderConfig[] = [
     name: 'Gemini',
     badgeLabel: 'চ্যাট ও ভয়েস',
     tier: 'free',
-    baseURL: 'https://generativelanguage.googleapis.com/v1beta',
+    baseURL: '/api/gemini',
     defaultModel: '',
     storageKey: 'gemini_api_key',
     statusStorageKey: 'connection_status_gemini',
@@ -187,7 +187,12 @@ export const getProviderStatus = (id: ChatEngineId): KeyStatus => {
   const config = FREE_CHAT_PROVIDERS.find((p) => p.id === id);
   if (!config) return 'NOT SET';
   const key = getProviderKey(id);
-  if (!key) return 'NOT SET';
+  if (!key) {
+    if (id === 'gemini' && isServerGeminiConfigured()) {
+      return 'READY';
+    }
+    return 'NOT SET';
+  }
   const saved = readLocalKey(config.statusStorageKey);
   if (saved === 'READY' || saved === 'CONNECTED') return 'READY';
   if (saved === 'LIMIT REACHED') return 'LIMIT REACHED';
@@ -319,8 +324,8 @@ export const getDynamicGeminiChatModels = async (
   apiKey: string,
   forceFresh = false
 ): Promise<{ models: string[]; error?: string; errorReason?: string; source?: string }> => {
-  const cleanKey = apiKey.trim();
-  if (!cleanKey) return { models: [], error: 'Gemini key দেওয়া নেই' };
+  const cleanKey = (apiKey || '').trim();
+  if (!(await ensureGeminiReady(cleanKey))) return { models: [], error: 'Gemini key দেওয়া নেই' };
 
   const cacheKey = 'gemini_cached_chat_models';
   if (!forceFresh) {
@@ -336,46 +341,40 @@ export const getDynamicGeminiChatModels = async (
   }
 
   let allModels: any[] = [];
-  let nextToken = '';
-  let attemptCount = 0;
 
   try {
-    do {
-      attemptCount++;
-      const controller = new AbortController();
-      const timer = setTimeout(() => controller.abort(), 8000);
-      let url = `https://generativelanguage.googleapis.com/v1beta/models?key=${encodeURIComponent(cleanKey)}&pageSize=200`;
-      if (nextToken) url += `&pageToken=${encodeURIComponent(nextToken)}`;
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), 8000);
+    const url = `/api/gemini/models${cleanKey ? `?apiKey=${encodeURIComponent(cleanKey)}` : ''}`;
 
-      const res = await fetch(url, {
-        headers: { 'x-goog-api-key': cleanKey },
-        signal: controller.signal,
-      });
-      clearTimeout(timer);
+    const res = await fetch(url, {
+      signal: controller.signal,
+    });
+    clearTimeout(timer);
 
-      if (!res.ok) {
-        const raw = await res.text().catch(() => '');
-        let errMsg = `HTTP ${res.status}`;
-        try {
-          const j = JSON.parse(raw);
-          if (j?.error?.message) errMsg = j.error.message;
-        } catch (e) {}
-        return { models: [], error: `Gemini ত্রুটি (${res.status}): ${errMsg}`, errorReason: errMsg };
-      }
+    if (!res.ok) {
+      const raw = await res.text().catch(() => '');
+      let errMsg = `HTTP ${res.status}`;
+      try {
+        const j = JSON.parse(raw);
+        if (j?.error?.message) errMsg = j.error.message;
+      } catch (e) {}
+      return { models: [], error: `Gemini ত্রুটি (${res.status}): ${errMsg}`, errorReason: errMsg };
+    }
 
-      const data = await res.json();
-      if (Array.isArray(data.models)) {
-        allModels = [...allModels, ...data.models];
-      }
-      nextToken = data.nextPageToken || '';
-      // Safety break to prevent infinite loops
-      if (attemptCount > 10) break;
-    } while (nextToken);
+    const data = await res.json();
+    if (Array.isArray(data.models)) {
+      allModels = data.models;
+    }
 
     const excluded = ['live', 'audio', 'tts', 'image', 'embedding', 'aqa', 'imagen', 'veo'];
     const filtered = allModels.filter((m: any) => {
       const name = String(m?.name || '').replace(/^models\//, '').toLowerCase();
-      const methods: string[] = Array.isArray(m?.supportedGenerationMethods) ? m.supportedGenerationMethods : [];
+      const methods: string[] = Array.isArray(m?.supportedGenerationMethods)
+        ? m.supportedGenerationMethods
+        : Array.isArray(m?.supportedActions)
+          ? m.supportedActions
+          : [];
       if (!methods.includes('generateContent')) return false;
       if (excluded.some((ex) => name.includes(ex))) return false;
       return true;
@@ -440,8 +439,8 @@ export const getDynamicGeminiLiveModels = async (
   apiKey: string,
   forceFresh = false
 ): Promise<{ models: string[]; error?: string; errorReason?: string; source?: string }> => {
-  const cleanKey = apiKey.trim();
-  if (!cleanKey) return { models: [], error: 'Gemini key দেওয়া নেই' };
+  const cleanKey = (apiKey || '').trim();
+  if (!(await ensureGeminiReady(cleanKey))) return { models: [], error: 'Gemini key দেওয়া নেই' };
 
   const cacheKey = 'gemini_cached_live_models';
   if (!forceFresh) {
@@ -457,43 +456,38 @@ export const getDynamicGeminiLiveModels = async (
   }
 
   let allModels: any[] = [];
-  let nextToken = '';
-  let attemptCount = 0;
 
   try {
-    do {
-      attemptCount++;
-      const controller = new AbortController();
-      const timer = setTimeout(() => controller.abort(), 8000);
-      let url = `https://generativelanguage.googleapis.com/v1beta/models?key=${encodeURIComponent(cleanKey)}&pageSize=200`;
-      if (nextToken) url += `&pageToken=${encodeURIComponent(nextToken)}`;
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), 8000);
+    const url = `/api/gemini/models${cleanKey ? `?apiKey=${encodeURIComponent(cleanKey)}` : ''}`;
 
-      const res = await fetch(url, {
-        headers: { 'x-goog-api-key': cleanKey },
-        signal: controller.signal
-      });
-      clearTimeout(timer);
+    const res = await fetch(url, {
+      signal: controller.signal
+    });
+    clearTimeout(timer);
 
-      if (!res.ok) {
-        const raw = await res.text().catch(() => '');
-        let errMsg = `HTTP ${res.status}`;
-        try {
-          const j = JSON.parse(raw);
-          if (j?.error?.message) errMsg = j.error.message;
-        } catch (e) {}
-        return { models: [], error: `Gemini Live ত্রুটি (${res.status}): ${errMsg}`, errorReason: errMsg };
-      }
+    if (!res.ok) {
+      const raw = await res.text().catch(() => '');
+      let errMsg = `HTTP ${res.status}`;
+      try {
+        const j = JSON.parse(raw);
+        if (j?.error?.message) errMsg = j.error.message;
+      } catch (e) {}
+      return { models: [], error: `Gemini Live ত্রুটি (${res.status}): ${errMsg}`, errorReason: errMsg };
+    }
 
-      const data = await res.json();
-      if (Array.isArray(data.models)) {
-        allModels = [...allModels, ...data.models];
-      }
-      nextToken = data.nextPageToken || '';
-      if (attemptCount > 10) break;
-    } while (nextToken);
+    const data = await res.json();
+    if (Array.isArray(data.models)) {
+      allModels = data.models;
+    }
 
     const filtered = allModels.filter((m: any) => {
-      const methods: string[] = Array.isArray(m?.supportedGenerationMethods) ? m.supportedGenerationMethods : [];
+      const methods: string[] = Array.isArray(m?.supportedGenerationMethods)
+        ? m.supportedGenerationMethods
+        : Array.isArray(m?.supportedActions)
+          ? m.supportedActions
+          : [];
       return methods.includes('bidiGenerateContent');
     });
 
@@ -558,7 +552,7 @@ export const callGeminiDirectChat = async (params: {
 }): Promise<string> => {
   const { apiKey, model, systemPrompt, messages, maxTokens = 1024 } = params;
   const cleanKey = String(apiKey || '').trim();
-  if (!cleanKey) {
+  if (!(await ensureGeminiReady(cleanKey))) {
     throw new Error('Gemini key নেই। Settings → Connections-এ key দিন।');
   }
 
@@ -582,8 +576,10 @@ export const callGeminiDirectChat = async (params: {
         : { includeThoughts: false };
     }
     const b: any = {
+      model: cleanModel,
       contents,
       generationConfig: genConfig,
+      ...(cleanKey ? { apiKey: cleanKey } : {}),
     };
     if (finalSystemPrompt) {
       b.systemInstruction = {
@@ -593,7 +589,7 @@ export const callGeminiDirectChat = async (params: {
     return b;
   };
 
-  const url = `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(cleanModel)}:generateContent?key=${encodeURIComponent(cleanKey)}`;
+  const url = '/api/gemini/generate';
 
   try {
     const bodyObj = buildChatBody(true, true);
@@ -601,7 +597,6 @@ export const callGeminiDirectChat = async (params: {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
-        'x-goog-api-key': cleanKey,
       },
       body: JSON.stringify(bodyObj),
     });
@@ -613,7 +608,6 @@ export const callGeminiDirectChat = async (params: {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
-          'x-goog-api-key': cleanKey,
         },
         body: JSON.stringify(fallbackObj),
       });
@@ -661,7 +655,7 @@ export const fetchActiveModelForProvider = async (
       writeLocalKey('active_model_gemini', disc.models[0]);
       return disc.models[0];
     }
-    return getSavedWorkingTextModel() || TEXT_MODELS[0] || 'gemini-1.5-flash';
+    return getSavedWorkingTextModel() || TEXT_MODELS[0] || 'gemini-4-hydrogen';
   }
 
   if (provider.id === 'groq') {
@@ -904,9 +898,10 @@ export const verifyProviderKey = async (
   try {
     let res: Response;
     if (providerId === 'gemini') {
-      const url = `https://generativelanguage.googleapis.com/v1beta/models?key=${encodeURIComponent(testKey)}`;
-      res = await fetch(url, {
-        method: 'GET',
+      res = await fetch('/api/gemini/verify', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ apiKey: testKey }),
         signal: controller.signal,
       });
     } else {
@@ -1012,9 +1007,10 @@ export const generateTextWithSelectedEngine = async (params: {
   const currentEngine = getSelectedChatEngine();
   const groqKey = getProviderKey('groq');
   const geminiKey = getProviderKey('gemini');
+  const hasGemini = Boolean(geminiKey) || (await ensureGeminiReady());
   const overrideModel = getChatModelOverride();
 
-  if (currentEngine === 'gemini' && !geminiKey) {
+  if (currentEngine === 'gemini' && !hasGemini) {
     throw new Error('Gemini key নেই। Settings → Connections-এ key দিন।');
   }
 
@@ -1022,7 +1018,7 @@ export const generateTextWithSelectedEngine = async (params: {
     throw new Error('Groq key নেই। Settings → Connections-এ key দিন।');
   }
 
-  if (!groqKey && !geminiKey) {
+  if (!groqKey && !hasGemini) {
     throw new Error('Gemini key নেই। Settings → Connections-এ key দিন।');
   }
 
@@ -1093,7 +1089,7 @@ export const generateTextWithSelectedEngine = async (params: {
   }
 
   // 2. IF CURRENT ENGINE IS GEMINI (OR FALLBACK TO GEMINI)
-  if (geminiKey) {
+  if (hasGemini) {
     let candidateGeminiModels: string[] = [];
     if (overrideModel) {
       candidateGeminiModels = [overrideModel];

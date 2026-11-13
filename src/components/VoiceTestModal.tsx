@@ -2,6 +2,7 @@ import React, { useState, useEffect } from "react";
 import { getGlobalMicStream, stopGlobalMicStream } from "../lib/audio-manager";
 import { X, CheckCircle, XCircle, Loader2, Copy, Play, RefreshCw, Mic, Volume2 } from "lucide-react";
 import { UnifiedSettings } from "../types/settings";
+import { ensureGeminiReady } from "../lib/geminiKey";
 
 interface VoiceTestModalProps {
   settings: UnifiedSettings;
@@ -41,10 +42,12 @@ export const VoiceTestModal: React.FC<VoiceTestModalProps> = ({ settings, onClos
 
     // STEP 1: Gemini API Key
     updateStep(1, "running");
-    let apiKey = settings.geminiApiKey || localStorage.getItem("gemini_api_key") || "";
+    let apiKey = (settings.geminiApiKey || localStorage.getItem("gemini_api_key") || "").replace(/[\r\n\t\s"']+/g, "").trim();
 
     if (apiKey && apiKey.length > 10) {
       updateStep(1, "pass", `Key found (${apiKey.slice(0, 6)}...${apiKey.slice(-4)})`);
+    } else if (await ensureGeminiReady()) {
+      updateStep(1, "pass", "Using server-configured Gemini API key");
     } else {
       updateStep(1, "fail", undefined, "Gemini API key missing. Add key in Connections settings.");
       setIsRunning(false);
@@ -93,8 +96,8 @@ export const VoiceTestModal: React.FC<VoiceTestModalProps> = ({ settings, onClos
     // STEP 4: Gemini Live WebSocket Connection & Probing
     updateStep(4, "running");
     const LIVE_MODELS = [
-      "gemini-1.5-flash",
-      "gemini-1.5-flash"
+      settings.liveVoiceModel || "gemini-3.8-live",
+      "gemini-2.5-flash-native-audio-preview-12-2025",
     ];
     let ws: WebSocket | null = null;
     let wsSuccess = false;
@@ -102,9 +105,9 @@ export const VoiceTestModal: React.FC<VoiceTestModalProps> = ({ settings, onClos
 
     for (const modelCandidate of LIVE_MODELS) {
       const cleanKey = apiKey.replace(/[\r\n\t\s"']+/g, "").trim();
-      const protocol = typeof window !== 'undefined' && window.location.protocol === 'heights' ? 'wss:' : 'ws:';
+      const protocol = typeof window !== 'undefined' && window.location.protocol === 'https:' ? 'wss:' : 'ws:';
       const host = typeof window !== 'undefined' ? window.location.host : 'localhost:3000';
-      const wsUrl = `${protocol}//${host}/api/live?model=${encodeURIComponent(modelCandidate)}&apiKey=${encodeURIComponent(cleanKey)}`;
+      const wsUrl = `${protocol}//${host}/api/live?model=${encodeURIComponent(modelCandidate)}${cleanKey ? `&apiKey=${encodeURIComponent(cleanKey)}` : ''}`;
       try {
         ws = new WebSocket(wsUrl);
         const wsPromise = new Promise<string>((resolve, reject) => {

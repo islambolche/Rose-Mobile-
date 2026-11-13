@@ -41,6 +41,7 @@ import {
 } from "../types/settings";
 import { CREATOR_PROFILE } from "../lib/creator-profile";
 import { getSavedWorkingTextModel, TEXT_MODELS, sanitizeOutApiKey } from "../lib/ai-service";
+import { ensureGeminiReady } from "../lib/geminiKey";
 
 interface SettingsModalProps {
   isOpen: boolean;
@@ -265,13 +266,13 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({ isOpen, onClose, o
   // Test Key
   const handleTestKey = async () => {
     const key = (form.geminiApiKey || "").replace(/[\r\n\t\s"']+/g, "").trim();
-    if (!key) {
+    if (!(await ensureGeminiReady(key))) {
       setKeyTestState({ loading: false, result: "Add your Gemini key in Settings > Connections.", isOk: false });
       return;
     }
     setKeyTestState({ loading: true, result: null, isOk: false });
     try {
-      const model = getSavedWorkingTextModel() || TEXT_MODELS[0] || 'gemini-2.0-flash';
+      const model = getSavedWorkingTextModel() || TEXT_MODELS[0] || 'gemini-4-hydrogen';
       const cleanM = model.replace(/^models\//, "").trim();
       const url = '/api/gemini/generate';
       const res = await fetch(url, {
@@ -283,7 +284,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({ isOpen, onClose, o
           model: cleanM,
           contents: [{ role: "user", parts: [{ text: "hi" }] }],
           generationConfig: { maxOutputTokens: 10 },
-          apiKey: key,
+          ...(key ? { apiKey: key } : {}),
         }),
       });
       const rawText = await res.text().catch(() => "");

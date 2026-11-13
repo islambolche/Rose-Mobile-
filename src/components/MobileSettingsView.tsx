@@ -55,7 +55,7 @@ import {
   saveLocalBusinessDb,
   validateGeminiApiKey,
 } from "../lib/businessSync";
-import { getGeminiKey } from "../lib/geminiKey";
+import { getGeminiKey, hasUsableGeminiKey } from "../lib/geminiKey";
 import { logActivity } from "../lib/activityLog";
 
 interface MobileSettingsViewProps {
@@ -287,11 +287,11 @@ export const MobileSettingsView: React.FC<MobileSettingsViewProps> = ({
                   </div>
                   {sec.id === 'connections' && (
                     <div className={`px-3 py-1.5 rounded-xl text-[9px] font-black uppercase mr-1 transition-transform ${
-                      (getGeminiKey() && localStorage.getItem('groq_api_keys'))
+                      (hasUsableGeminiKey() || localStorage.getItem('groq_api_keys'))
                       ? 'bg-emerald-500/10 border border-emerald-500/30 text-emerald-400' 
                       : 'bg-purple-500/10 border border-purple-500/30 text-purple-400'
                     }`}>
-                      {(getGeminiKey() && localStorage.getItem('groq_api_keys')) ? 'READY' : 'ADD A KEY'}
+                      {(hasUsableGeminiKey() || localStorage.getItem('groq_api_keys')) ? 'READY' : 'ADD A KEY'}
                     </div>
                   )}
                   <ChevronRight className="w-5 h-5 text-slate-600 group-hover:text-emerald-400" />
