@@ -114,7 +114,7 @@ const ALL_PROVIDERS: ProviderItem[] = [
     tier: 'paid',
     displayName: 'ElevenLabs',
     badgeLabel: 'ভয়েস স্টুডিও',
-    link: 'https://join.elevenlabs.io/api/developer-api',
+    link: 'https://elevenlabs.io/docs/developer-api',
     storageKey: 'elevenlabs_api_key',
     statusStorageKey: 'connection_status_elevenlabs',
     placeholder: 'xi_api_key...',

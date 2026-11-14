@@ -755,7 +755,8 @@ Return ONLY a JSON array of strings, nothing else.`;
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), 4500);
     try {
-      const model = await resolveChatModel(geminiKey, controller.signal);
+      const models = await resolveChatModel(geminiKey, controller.signal);
+      const model = Array.isArray(models) ? models[0] : (models || 'gemini-flash-latest');
       const res = await fetchGeminiGenerateWithFallback(
         {
           model,
@@ -1679,7 +1680,8 @@ Return ONLY valid JSON with keys "title", "description", "hashtags" (title max 7
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), 5000);
     try {
-      const model = await resolveChatModel(geminiKey, controller.signal);
+      const models = await resolveChatModel(geminiKey, controller.signal);
+      const model = Array.isArray(models) ? models[0] : (models || 'gemini-flash-latest');
       const res = await fetchGeminiGenerateWithFallback(
         {
           model,

@@ -1,11 +1,21 @@
 import { getGeminiKey, ensureGeminiReady } from './geminiKey';
-import { fetchGeminiModelsWithFallback, fetchGeminiGenerateWithFallback } from './geminiDirect';
+import {
+  fetchGeminiModelsWithFallback,
+  fetchGeminiGenerateWithFallback,
+  fetchGeminiStreamWithFallback,
+} from './geminiDirect';
 import { buildRoseSystemInstruction } from './roseConfig';
 import { getDynamicGroqChatModels, getProviderKey } from './chatEngines';
 import { cleanAssistantReplyText } from './ai-service';
 import { ROSE_TYPED_CHAT_FUNCTION_DECLARATIONS } from './team';
 import { executePcTaskTool } from '../pc/pcTaskManager';
 import { executeOfficeTaskTool } from './officeSync';
+import {
+  discoverModels,
+  recordChatModelUsed,
+  recordDiagnosticError,
+} from './modelDiscovery';
+import { isAdmin } from './admin';
 
 export const NO_GEMINI_KEY_MSG = 'Gemini key সেভ করা নেই। Settings → CONNECTIONS-এ কী বসাও।';
 export const QUOTA_429_MSG = 'আজকের ফ্রি সীমা শেষ। পরে চেষ্টা করো বা নতুন কী দাও।';
@@ -238,60 +248,9 @@ export function formatRealGeminiError(err: any, fallbackStatus?: number): string
   return 'সংযোগ সমস্যা — উত্তর পাওয়া যায়নি। আবার চেষ্টা করো।';
 }
 
-export async function getValidFlashModels(apiKey: string, signal?: AbortSignal): Promise<string[]> {
-  try {
-    if (typeof window !== 'undefined' && window.localStorage) {
-      const cachedStr = localStorage.getItem('gemini_cached_chat_models');
-      if (cachedStr) {
-        const cached = JSON.parse(cachedStr);
-        if (Array.isArray(cached?.models) && cached.models.length > 0 && Date.now() - Number(cached.timestamp || 0) < 3600000) {
-          const flashList = cached.models.filter((m: string) => typeof m === 'string' && m.toLowerCase().includes('flash'));
-          if (flashList.length >= 2) return flashList;
-        }
-      }
-    }
-  } catch {}
-
-  try {
-    const res = await fetchGeminiModelsWithFallback(apiKey, signal);
-    if (!res.ok) return ['gemini-flash-latest', 'gemini-2.5-flash', 'gemini-2.5-flash-lite', 'gemini-flash-lite-latest'];
-    const data = await res.json();
-    const models = Array.isArray(data?.models) ? data.models : [];
-
-    const valid: string[] = [];
-    for (const m of models) {
-      const rawName = typeof m?.name === 'string' ? m.name : '';
-      const shortName = rawName.replace(/^models\//, '').trim();
-      const lower = shortName.toLowerCase();
-      const methods: string[] = Array.isArray(m?.supportedGenerationMethods)
-        ? m.supportedGenerationMethods
-        : Array.isArray(m?.supportedActions)
-          ? m.supportedActions
-          : [];
-
-      if (
-        shortName &&
-        methods.includes('generateContent') &&
-        !lower.includes('tts') &&
-        !lower.includes('live') &&
-        !lower.includes('audio') &&
-        !lower.includes('image') &&
-        !lower.includes('embedding')
-      ) {
-        valid.push(shortName);
-      }
-    }
-
-    if (valid.length > 0) {
-      try {
-        localStorage.setItem('gemini_cached_chat_models', JSON.stringify({ models: valid, timestamp: Date.now() }));
-      } catch {}
-      return valid;
-    }
-  } catch (e) {
-    console.warn('[TypedChat] Model discovery failed:', e);
-  }
-  return ['gemini-flash-latest', 'gemini-2.5-flash', 'gemini-2.5-flash-lite', 'gemini-flash-lite-latest'];
+export async function getValidFlashModels(apiKey: string): Promise<string[]> {
+  const discovered = await discoverModels(apiKey);
+  return discovered.chatModels;
 }
 
 export function getOrderedFlashModels(allModels: string[]): string[] {
@@ -339,26 +298,50 @@ export function getOrderedFlashModels(allModels: string[]): string[] {
   return ordered;
 }
 
-export async function resolveChatModel(apiKey: string, signal?: AbortSignal): Promise<string[]> {
-  // Check working model in localStorage
+export async function resolveChatModel(apiKey: string, _signal?: AbortSignal): Promise<string[]> {
+  const discovered = await discoverModels(apiKey);
+  const candidateModels = discovered.chatModels.length > 0
+    ? [...discovered.chatModels]
+    : ['gemini-flash-latest', 'gemini-2.5-flash', 'gemini-2.5-flash-lite', 'gemini-flash-lite-latest'];
+
+  // Check working model in localStorage (within 1 hour)
   try {
     const workingModel = localStorage.getItem(WORKING_MODEL_KEY);
     const workingTime = Number(localStorage.getItem(WORKING_MODEL_TIME_KEY) || 0);
     if (workingModel && Date.now() - workingTime < WORKING_MODEL_TTL_MS) {
       const cleanWorking = workingModel.replace(/^models\//, '').trim();
-      const validModels = await getValidFlashModels(apiKey, signal);
-      const ordered = getOrderedFlashModels(validModels);
-      // Put working model first if valid
-      if (ordered.includes(cleanWorking)) {
-        return [cleanWorking, ...ordered.filter((m) => m !== cleanWorking)];
-      } else if (cleanWorking) {
-        return [cleanWorking, ...ordered];
+      if (candidateModels.includes(cleanWorking)) {
+        return [cleanWorking, ...candidateModels.filter((m) => m !== cleanWorking)];
       }
     }
   } catch {}
 
-  const validModels = await getValidFlashModels(apiKey, signal);
-  return getOrderedFlashModels(validModels);
+  return candidateModels;
+}
+
+export function buildShortFallbackSystemPrompt(): string {
+  let settings: any = {};
+  let prefs: any = {};
+  try {
+    const s = localStorage.getItem('iyabd_settings');
+    if (s) settings = JSON.parse(s);
+    const p = localStorage.getItem('iyabd_preferences') || localStorage.getItem('iyabd_prefs');
+    if (p) prefs = JSON.parse(p);
+  } catch {}
+
+  const name = settings?.assistantName || 'Rose AI';
+  const owner = settings?.ownerName || 'MD YOUSUF KHAN';
+  const personality = settings?.personality || 'Normal';
+  const adminActive = isAdmin();
+
+  return [
+    `তুমি ${name} (Rose AI), ${owner}-এর বিশ্বস্ত পার্সোনাল এআই অ্যাসিস্ট্যান্ট।`,
+    'ভাষা নীতি (অত্যন্ত কঠোর): তুমি সব সময় শুদ্ধ বাংলায় কথা বলবে। ইংরেজি বা অন্য কোনো ভাষায় কখনোই উত্তর দেবে না।',
+    `ব্যক্তিত্ব: ${personality}`,
+    adminActive ? 'এডমিন অ্যাক্সেস সক্রিয়।' : '',
+  ]
+    .filter(Boolean)
+    .join('\n');
 }
 
 function shouldRetryGeminiError(err: any): boolean {
@@ -402,7 +385,7 @@ function createStepSignal(masterSignal: AbortSignal, stepTimeoutMs: number): { s
 export async function sendTypedChat(
   history: Array<{ role: string; content?: string; text?: string; isError?: boolean }>,
   userText: string
-): Promise<{ text: string; modelUsed: string; provider?: 'gemini' | 'groq'; providerLabel?: string; pcTaskId?: string }> {
+): Promise<{ text: string; modelUsed: string; provider?: 'gemini' | 'groq' | 'openrouter'; providerLabel?: string; pcTaskId?: string }> {
   const apiKey = (getGeminiKey() || '').replace(/["'\r\n\t\s]+/g, '').trim();
   const groqKey = getStoredGroqKey();
   const hasGemini = await ensureGeminiReady(apiKey);
@@ -464,132 +447,226 @@ export async function sendTypedChat(
 
   const sysInstructionText = buildRoseSystemInstruction(settings, prefs, false);
 
-  const tryGroqFallback = async (): Promise<{ text: string; modelUsed: string; provider: 'groq'; providerLabel: string }> => {
-    if (!groqKey) {
-      const noGroqErr: any = new Error('No Groq key saved');
-      noGroqErr.noGroqKey = true;
-      throw noGroqErr;
+  const openRouterKey = (getProviderKey('openrouter') || (typeof window !== 'undefined' ? localStorage.getItem('openrouter_api_key') : '') || '').trim();
+  const hasFallbackKey = Boolean(groqKey || openRouterKey);
+
+  const shortFallbackSysPrompt = buildShortFallbackSystemPrompt();
+
+  const tryFallbackEngine = async (): Promise<{ text: string; modelUsed: string; provider: 'groq' | 'openrouter'; providerLabel: string }> => {
+    if (!hasFallbackKey) {
+      const noFallbackErr: any = new Error('No fallback key saved');
+      noFallbackErr.noFallbackKey = true;
+      throw noFallbackErr;
     }
 
-    let groqModel = getSelectedGroqModelFromSettings();
-    if (!groqModel) {
-      const disc = await getDynamicGroqChatModels(groqKey, false);
-      const availableGroqModels = disc.models || [];
-      groqModel = availableGroqModels[0] || 'llama-3.3-70b-versatile';
-    }
-
-    const executeGroqCall = async (targetGroqModel: string): Promise<string> => {
-      const stepTime = Math.min(10000, Math.max(2000, deadline - Date.now() - 200));
-      const { signal, cleanup } = createStepSignal(masterController.signal, stepTime);
-      try {
-        const groqMessages: Array<{ role: 'system' | 'user' | 'assistant'; content: string }> = [
-          { role: 'system', content: sysInstructionText },
-          ...last20.map((m) => ({
-            role: (m.role === 'model' || m.role === 'assistant' || m.role === 'rose' ? 'assistant' : 'user') as 'user' | 'assistant',
-            content: String(m.content || m.text || '').trim(),
-          })),
-          { role: 'user', content: userText.trim() },
-        ];
-
-        const res = await fetch('https://api.groq.com/openai/v1/chat/completions', {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-            Authorization: `Bearer ${groqKey}`,
-          },
-          body: JSON.stringify({
-            model: targetGroqModel,
-            messages: groqMessages,
-            temperature: 0.7,
-            max_tokens: 1024,
-          }),
-          signal,
-        });
-
-        const rawText = await res.text().catch(() => '');
-        if (!res.ok) {
-          let parsedJson: any = rawText;
-          try {
-            parsedJson = rawText ? JSON.parse(rawText) : rawText;
-          } catch {}
-          const err: any = new Error(`Groq HTTP ${res.status}`);
-          err.status = res.status;
-          err.rawBody = rawText;
-          err.parsedJson = parsedJson;
-          err.modelUsed = targetGroqModel;
-          throw err;
+    // 1. Try Groq if groqKey is present
+    if (groqKey) {
+      let groqModel = getSelectedGroqModelFromSettings();
+      if (!groqModel) {
+        try {
+          const disc = await getDynamicGroqChatModels(groqKey, false);
+          const availableGroqModels = disc.models || [];
+          groqModel = availableGroqModels[0] || 'llama-3.3-70b-versatile';
+        } catch {
+          groqModel = 'llama-3.3-70b-versatile';
         }
-
-        const data = rawText ? JSON.parse(rawText) : {};
-        const content = data?.choices?.[0]?.message?.content;
-        if (typeof content === 'string' && content.trim()) {
-          return cleanAssistantReplyText(content.trim());
-        }
-        const emptyErr: any = new Error('Groq returned empty response');
-        emptyErr.status = 200;
-        emptyErr.rawBody = rawText;
-        throw emptyErr;
-      } finally {
-        cleanup();
       }
-    };
 
-    try {
-      const reply = await executeGroqCall(groqModel);
+      const executeGroqCall = async (historySlice: typeof cleanHistory): Promise<string> => {
+        const stepTime = Math.min(10000, Math.max(2000, deadline - Date.now() - 200));
+        const { signal, cleanup } = createStepSignal(masterController.signal, stepTime);
+        try {
+          const groqMessages: Array<{ role: 'system' | 'user' | 'assistant'; content: string }> = [
+            { role: 'system', content: shortFallbackSysPrompt },
+            ...historySlice.map((m) => ({
+              role: (m.role === 'model' || m.role === 'assistant' || m.role === 'rose' ? 'assistant' : 'user') as 'user' | 'assistant',
+              content: String(m.content || m.text || '').trim(),
+            })),
+            { role: 'user', content: userText.trim() },
+          ];
+
+          const res = await fetch('https://api.groq.com/openai/v1/chat/completions', {
+            method: 'POST',
+            headers: {
+              'Content-Type': 'application/json',
+              Authorization: `Bearer ${groqKey}`,
+            },
+            body: JSON.stringify({
+              model: groqModel,
+              messages: groqMessages,
+              temperature: 0.7,
+              max_tokens: 1024,
+            }),
+            signal,
+          });
+
+          const rawText = await res.text().catch(() => '');
+          if (!res.ok) {
+            let parsedJson: any = rawText;
+            try {
+              parsedJson = rawText ? JSON.parse(rawText) : rawText;
+            } catch {}
+            const err: any = new Error(`Groq HTTP ${res.status}`);
+            err.status = res.status;
+            err.rawBody = rawText;
+            err.parsedJson = parsedJson;
+            err.modelUsed = groqModel;
+            throw err;
+          }
+
+          const data = rawText ? JSON.parse(rawText) : {};
+          const content = data?.choices?.[0]?.message?.content;
+          if (typeof content === 'string' && content.trim()) {
+            return cleanAssistantReplyText(content.trim());
+          }
+          const emptyErr: any = new Error('Groq returned empty response');
+          emptyErr.status = 200;
+          emptyErr.rawBody = rawText;
+          throw emptyErr;
+        } finally {
+          cleanup();
+        }
+      };
+
       try {
-        localStorage.setItem('active_model_groq', groqModel);
-      } catch {}
-      return {
-        text: reply,
-        modelUsed: groqModel,
-        provider: 'groq',
-        providerLabel: 'Groq দিয়ে উত্তর',
-      };
-    } catch (firstGroqErr: any) {
-      errorTrace.groq_primary = {
-        model: groqModel,
-        status: firstGroqErr?.status || 0,
-        error: firstGroqErr?.parsedJson || firstGroqErr?.rawBody || firstGroqErr?.message || String(firstGroqErr),
-      };
-      throw firstGroqErr;
+        const reply = await executeGroqCall(cleanHistory.slice(-6));
+        try {
+          localStorage.setItem('active_model_groq', groqModel);
+        } catch {}
+        return {
+          text: reply,
+          modelUsed: groqModel,
+          provider: 'groq',
+          providerLabel: 'Groq দিয়ে উত্তর',
+        };
+      } catch (firstGroqErr: any) {
+        if (firstGroqErr?.status === 413 && cleanHistory.length > 4) {
+          try {
+            const retryReply = await executeGroqCall(cleanHistory.slice(-4));
+            return {
+              text: retryReply,
+              modelUsed: groqModel,
+              provider: 'groq',
+              providerLabel: 'Groq দিয়ে উত্তর',
+            };
+          } catch {}
+        }
+        errorTrace.groq_primary = {
+          model: groqModel,
+          status: firstGroqErr?.status || 0,
+          error: firstGroqErr?.parsedJson || firstGroqErr?.rawBody || firstGroqErr?.message || String(firstGroqErr),
+        };
+      }
     }
+
+    // 2. Try OpenRouter if openRouterKey is present
+    if (openRouterKey && deadline - Date.now() > 1500) {
+      const openRouterModel = 'meta-llama/llama-3.3-70b-instruct:free';
+      const openRouterEndpoint = ['https://openrouter.ai', 'api', 'v1', 'chat', 'completions'].join('/');
+
+      const executeOpenRouterCall = async (historySlice: typeof cleanHistory): Promise<string> => {
+        const stepTime = Math.min(10000, Math.max(2000, deadline - Date.now() - 200));
+        const { signal, cleanup } = createStepSignal(masterController.signal, stepTime);
+        try {
+          const orMessages = [
+            { role: 'system', content: shortFallbackSysPrompt },
+            ...historySlice.map((m) => ({
+              role: (m.role === 'model' || m.role === 'assistant' || m.role === 'rose' ? 'assistant' : 'user') as 'user' | 'assistant',
+              content: String(m.content || m.text || '').trim(),
+            })),
+            { role: 'user', content: userText.trim() },
+          ];
+
+          const res = await fetch(openRouterEndpoint, {
+            method: 'POST',
+            headers: {
+              'Content-Type': 'application/json',
+              Authorization: `Bearer ${openRouterKey}`,
+            },
+            body: JSON.stringify({
+              model: openRouterModel,
+              messages: orMessages,
+              temperature: 0.7,
+              max_tokens: 1024,
+            }),
+            signal,
+          });
+
+          const rawText = await res.text().catch(() => '');
+          if (!res.ok) {
+            const err: any = new Error(`OpenRouter HTTP ${res.status}`);
+            err.status = res.status;
+            err.rawBody = rawText;
+            err.modelUsed = openRouterModel;
+            throw err;
+          }
+
+          const data = rawText ? JSON.parse(rawText) : {};
+          const content = data?.choices?.[0]?.message?.content;
+          if (typeof content === 'string' && content.trim()) {
+            return cleanAssistantReplyText(content.trim());
+          }
+          throw new Error('OpenRouter returned empty response');
+        } finally {
+          cleanup();
+        }
+      };
+
+      try {
+        const reply = await executeOpenRouterCall(cleanHistory.slice(-6));
+        return {
+          text: reply,
+          modelUsed: openRouterModel,
+          provider: 'openrouter',
+          providerLabel: 'OpenRouter দিয়ে উত্তর',
+        };
+      } catch (firstOrErr: any) {
+        if (firstOrErr?.status === 413 && cleanHistory.length > 4) {
+          try {
+            const retryReply = await executeOpenRouterCall(cleanHistory.slice(-4));
+            return {
+              text: retryReply,
+              modelUsed: openRouterModel,
+              provider: 'openrouter',
+              providerLabel: 'OpenRouter দিয়ে উত্তর',
+            };
+          } catch {}
+        }
+        errorTrace.openrouter = {
+          model: openRouterModel,
+          status: firstOrErr?.status || 0,
+          error: firstOrErr?.message || String(firstOrErr),
+        };
+      }
+    }
+
+    throw new Error('All fallback providers failed');
   };
 
-  const runChatFlow = async (): Promise<{ text: string; modelUsed: string; provider?: 'gemini' | 'groq'; providerLabel?: string; pcTaskId?: string }> => {
+  const runChatFlow = async (): Promise<{ text: string; modelUsed: string; provider?: 'gemini' | 'groq' | 'openrouter'; providerLabel?: string; pcTaskId?: string }> => {
     const geminiCooldownKey = apiKey || 'server';
     const in429Cooldown = hasGemini ? isGeminiIn429Cooldown(geminiCooldownKey) : false;
-    if ((!hasGemini || in429Cooldown) && groqKey) {
+    if ((!hasGemini || in429Cooldown) && hasFallbackKey) {
       try {
-        return await tryGroqFallback();
-      } catch (groqErr: any) {
-        groqErr.geminiHad429 = in429Cooldown;
-        throw groqErr;
+        return await tryFallbackEngine();
+      } catch (fallbackErr: any) {
+        fallbackErr.geminiHad429 = in429Cooldown;
+        throw fallbackErr;
       }
     }
 
-    const candidateModels = hasGemini ? await resolveChatModel(apiKey, masterController.signal) : [];
+    const candidateModels = hasGemini ? await resolveChatModel(apiKey) : [];
     if (candidateModels.length === 0) {
-      candidateModels.push('gemini-flash-latest', 'gemini-2.5-flash');
+      candidateModels.push('gemini-flash-latest', 'gemini-2.5-flash', 'gemini-2.5-flash-lite', 'gemini-flash-lite-latest');
     }
-
-    const geminiContents = [
-      ...last20.map((m) => ({
-        role: m.role === 'model' || m.role === 'assistant' || m.role === 'rose' ? 'model' : 'user',
-        parts: [{ text: String(m.content || m.text || '').trim() }],
-      })),
-      { role: 'user', parts: [{ text: userText.trim() }] },
-    ];
 
     let lastPcTaskId: string | undefined;
 
-    const geminiBody: any = {
-      systemInstruction: { parts: [{ text: sysInstructionText }] },
-      contents: geminiContents,
-      tools: [{ functionDeclarations: ROSE_TYPED_CHAT_FUNCTION_DECLARATIONS }],
-      generationConfig: { temperature: 0.8 },
-    };
-
-    const executeGeminiFetch = async (targetModel: string, maxStepMs: number): Promise<string> => {
+    const executeGeminiStreamFetch = async (
+      targetModel: string,
+      historySlice: typeof cleanHistory,
+      maxStepMs: number
+    ): Promise<string> => {
       const remainingMs = deadline - Date.now();
       if (remainingMs <= 400) {
         const tErr: any = new Error('HTTP 408: Request timed out');
@@ -599,12 +676,23 @@ export async function sendTypedChat(
         throw tErr;
       }
 
+      const geminiContents = [
+        ...historySlice.map((m) => ({
+          role: m.role === 'model' || m.role === 'assistant' || m.role === 'rose' ? 'model' : 'user',
+          parts: [{ text: String(m.content || m.text || '').trim() }],
+        })),
+        { role: 'user', parts: [{ text: userText.trim() }] },
+      ];
+
       const { signal, cleanup } = createStepSignal(masterController.signal, Math.min(maxStepMs, remainingMs));
       try {
-        const res = await fetchGeminiGenerateWithFallback(
+        const res = await fetchGeminiStreamWithFallback(
           {
             model: targetModel,
-            ...geminiBody,
+            systemInstruction: { parts: [{ text: sysInstructionText }] },
+            contents: geminiContents,
+            tools: [{ functionDeclarations: ROSE_TYPED_CHAT_FUNCTION_DECLARATIONS }],
+            generationConfig: { temperature: 0.8 },
             ...(apiKey ? { apiKey } : {}),
           },
           signal
@@ -625,12 +713,86 @@ export async function sendTypedChat(
           throw errObj;
         }
 
-        const data = await res.json();
-        const parts = data?.candidates?.[0]?.content?.parts || [];
-        const fcPart = parts.find((p: any) => p && p.functionCall);
-        if (fcPart?.functionCall?.name) {
-          const fcName = String(fcPart.functionCall.name);
-          const fcArgs = fcPart.functionCall.args || {};
+        if (!res.body) {
+          const errObj: any = new Error('HTTP 500: Missing stream body');
+          errObj.status = 500;
+          errObj.modelUsed = targetModel;
+          throw errObj;
+        }
+
+        const reader = res.body.getReader();
+        const decoder = new TextDecoder();
+        let receivedFirstChunk = false;
+        let accumulatedText = '';
+        const pendingFunctionCalls: any[] = [];
+        let buffer = '';
+
+        const firstChunkTimeout = setTimeout(() => {
+          if (!receivedFirstChunk) {
+            const tErr: any = new Error(`HTTP 408: Timeout waiting for first chunk on ${targetModel} (10s)`);
+            tErr.status = 408;
+            tErr.isTimeout = true;
+            tErr.modelUsed = targetModel;
+            try {
+              reader.cancel();
+            } catch {}
+          }
+        }, 10000);
+
+        try {
+          while (true) {
+            if (masterController.signal.aborted) {
+              const tErr: any = new Error(`HTTP 408: Chat master timeout on ${targetModel}`);
+              tErr.status = 408;
+              tErr.isTimeout = true;
+              tErr.modelUsed = targetModel;
+              throw tErr;
+            }
+
+            const { done, value } = await reader.read();
+            if (done) break;
+
+            if (!receivedFirstChunk) {
+              receivedFirstChunk = true;
+              clearTimeout(firstChunkTimeout);
+            }
+
+            buffer += decoder.decode(value, { stream: true });
+            const lines = buffer.split('\n');
+            buffer = lines.pop() || '';
+
+            for (const line of lines) {
+              const trimmed = line.trim();
+              if (!trimmed || !trimmed.startsWith('data:')) continue;
+              const jsonStr = trimmed.slice(5).trim();
+              if (!jsonStr || jsonStr === '[DONE]') continue;
+
+              try {
+                const data = JSON.parse(jsonStr);
+                const parts = data?.candidates?.[0]?.content?.parts || [];
+                for (const p of parts) {
+                  if (p?.text && typeof p.text === 'string') {
+                    accumulatedText += p.text;
+                  }
+                  if (p?.functionCall) {
+                    pendingFunctionCalls.push(p.functionCall);
+                  }
+                }
+              } catch {}
+            }
+          }
+        } finally {
+          clearTimeout(firstChunkTimeout);
+          try {
+            reader.releaseLock();
+          } catch {}
+        }
+
+        if (pendingFunctionCalls.length > 0) {
+          const fc = pendingFunctionCalls[0];
+          const fcName = String(fc.name || '');
+          const fcArgs = fc.args || {};
+
           if (fcName === 'office_task' || fcName === 'assign_task' || fcName === 'get_team_status') {
             const officeRes = await executeOfficeTaskTool({
               agent: String(fcArgs.agent || 'mira'),
@@ -654,19 +816,15 @@ export async function sendTypedChat(
             }
           }
         }
-        const textPart = parts.find((p: any) => p && typeof p.text === 'string')?.text;
-        if (typeof textPart !== 'string' || !textPart.trim()) {
-          const blockReason = data?.promptFeedback?.blockReason || data?.candidates?.[0]?.finishReason;
-          const errObj: any = new Error(
-            blockReason ? `HTTP 200: Empty response (${blockReason})` : 'HTTP 200: Empty response from Gemini API'
-          );
+
+        if (!accumulatedText.trim()) {
+          const errObj: any = new Error('HTTP 200: Empty response from Gemini API');
           errObj.status = 200;
-          errObj.rawBody = JSON.stringify(data);
-          errObj.parsedJson = data;
           errObj.modelUsed = targetModel;
           throw errObj;
         }
-        return textPart;
+
+        return accumulatedText;
       } catch (fetchErr: any) {
         if (fetchErr?.name === 'AbortError') {
           const tErr: any = new Error(`HTTP 408: Timeout on ${targetModel}`);
@@ -681,7 +839,6 @@ export async function sendTypedChat(
       }
     };
 
-    // Iterate through candidate models with retry-once per model on 503/500/429/timeout
     let lastGeminiError: any = null;
 
     for (let i = 0; i < candidateModels.length; i++) {
@@ -695,18 +852,31 @@ export async function sendTypedChat(
           if (attemptCount > 1) {
             setWaitingStatus('পুনরায় চেষ্টা করছি…');
             await new Promise((r) => setTimeout(r, 1500));
-          } else if (i > 0 || attemptCount > 1) {
+          } else if (i > 0) {
             setWaitingStatus('অন্য মডেল চেষ্টা করছি…');
           }
 
           console.log(`[TypedChat] Trying model ${model} (attempt ${attemptCount})`);
-          const text = await executeGeminiFetch(model, 10000);
+          let text: string;
+          try {
+            text = await executeGeminiStreamFetch(model, last20, 10000);
+          } catch (fetchErr: any) {
+            // If 413: retry ONCE with last 4 messages only
+            if (fetchErr?.status === 413 && last20.length > 4) {
+              text = await executeGeminiStreamFetch(model, cleanHistory.slice(-4), 10000);
+            } else {
+              throw fetchErr;
+            }
+          }
 
           // Success! Remember working model
           try {
             localStorage.setItem(WORKING_MODEL_KEY, model);
             localStorage.setItem(WORKING_MODEL_TIME_KEY, String(Date.now()));
           } catch {}
+
+          recordChatModelUsed(model);
+          clearGemini429Cooldown();
 
           return {
             text,
@@ -724,13 +894,29 @@ export async function sendTypedChat(
             error: err?.parsedJson || err?.rawBody || err?.message || String(err),
           };
 
+          // If 404: model not found/deprecated, do not retry same model
+          if (status === 404) {
+            try {
+              if (localStorage.getItem(WORKING_MODEL_KEY) === model) {
+                localStorage.removeItem(WORKING_MODEL_KEY);
+                localStorage.removeItem(WORKING_MODEL_TIME_KEY);
+              }
+            } catch {}
+            break;
+          }
+
           if (!shouldRetryGeminiError(err)) {
-            // Non-retryable error (e.g. 400, 401, 403) -> abort gemini loop
+            // Non-retryable error (e.g. 400, 401, 403)
+            try {
+              if (localStorage.getItem(WORKING_MODEL_KEY) === model) {
+                localStorage.removeItem(WORKING_MODEL_KEY);
+                localStorage.removeItem(WORKING_MODEL_TIME_KEY);
+              }
+            } catch {}
             break;
           }
 
           if (attemptCount >= maxAttempts) {
-            // Failed both attempts for this model, clear working model if it was this one
             try {
               if (localStorage.getItem(WORKING_MODEL_KEY) === model) {
                 localStorage.removeItem(WORKING_MODEL_KEY);
@@ -741,8 +927,7 @@ export async function sendTypedChat(
         }
       }
 
-      // If non-retryable error, don't try other Gemini models
-      if (lastGeminiError && !shouldRetryGeminiError(lastGeminiError)) {
+      if (lastGeminiError && !shouldRetryGeminiError(lastGeminiError) && lastGeminiError?.status !== 404) {
         break;
       }
     }
@@ -752,16 +937,16 @@ export async function sendTypedChat(
       markGemini429Cooldown(geminiCooldownKey);
     }
 
-    // All Gemini models failed -> try Groq if key is saved
-    if (groqKey && deadline - Date.now() > 1200) {
+    // All Gemini models failed -> try fallback if user saved a key
+    if (hasFallbackKey && deadline - Date.now() > 1200) {
       try {
-        setWaitingStatus('Groq বিকল্প চেষ্টা করছি…');
-        console.log('[TypedChat] All Gemini models failed. Falling back to Groq...');
-        return await tryGroqFallback();
-      } catch (groqErr: any) {
-        groqErr.geminiHad429 = geminiHit429;
-        groqErr.lastGeminiError = lastGeminiError;
-        throw groqErr;
+        setWaitingStatus(groqKey ? 'Groq বিকল্প চেষ্টা করছি…' : 'বিকল্প চেষ্টা করছি…');
+        console.log('[TypedChat] All Gemini models failed. Falling back to alternative engine...');
+        return await tryFallbackEngine();
+      } catch (fallbackErr: any) {
+        fallbackErr.geminiHad429 = geminiHit429;
+        fallbackErr.lastGeminiError = lastGeminiError;
+        throw fallbackErr;
       }
     }
 
@@ -774,48 +959,51 @@ export async function sendTypedChat(
     return await Promise.race([runChatFlow(), timeoutPromise]);
   } catch (err: any) {
     const geminiHad429 = Boolean(err?.geminiHad429 || is429Error(err) || is429Error(err?.lastGeminiError));
-    const groqAttempted = Boolean(errorTrace.groq_primary);
+    const fallbackAttempted = Boolean(errorTrace.groq_primary || errorTrace.openrouter);
     const groqStatus = Number(errorTrace.groq_primary?.status || 0);
     const geminiStatus = Number(err?.status || err?.lastGeminiError?.status || 0);
+    const lastFailedModel = err?.modelUsed || err?.lastGeminiError?.modelUsed || 'gemini';
 
     let shortBengaliMsg = '';
     if (err?.isNoKey) {
       shortBengaliMsg = NO_GEMINI_KEY_MSG;
-    } else if (!groqKey) {
-      shortBengaliMsg = 'Gemini এখন ব্যস্ত, একটু পরে আবার চেষ্টা করো';
+    } else if (!hasFallbackKey) {
+      shortBengaliMsg = 'Gemini সার্ভার এখন ব্যস্ত, একটু পরে আবার চেষ্টা করো';
     } else if (geminiHad429) {
-      if (groqAttempted) {
+      if (fallbackAttempted) {
         if (groqStatus === 429) {
-          shortBengaliMsg = 'আজকের ফ্রি সীমা শেষ, Groq-এর সীমাও শেষ (HTTP 429)';
+          shortBengaliMsg = 'আজকের ফ্রি সীমা শেষ, বিকল্পের সীমাও শেষ (HTTP 429)';
         } else if (groqStatus === 401 || groqStatus === 403) {
-          shortBengaliMsg = 'আজকের ফ্রি সীমা শেষ, Groq কী-ও কাজ করছে না (Invalid Key)';
+          shortBengaliMsg = 'আজকের ফ্রি সীমা শেষ, বিকল্প কী-ও কাজ করছে না (Invalid Key)';
         } else {
-          shortBengaliMsg = 'আজকের ফ্রি সীমা শেষ, Groq কী-ও কাজ করছে না';
+          shortBengaliMsg = 'আজকের ফ্রি সীমা শেষ, বিকল্পও কাজ করছে না';
         }
       } else {
         shortBengaliMsg = QUOTA_429_MSG;
       }
     } else if (geminiStatus === 400 || geminiStatus === 401 || geminiStatus === 403) {
-      if (groqAttempted) {
-        shortBengaliMsg = `Gemini কী সঠিক নয় (HTTP ${geminiStatus}), Groq কী-ও কাজ করছে না`;
+      if (fallbackAttempted) {
+        shortBengaliMsg = `Gemini কী সঠিক নয় (HTTP ${geminiStatus}), বিকল্প কী-ও কাজ করছে না`;
       } else {
         shortBengaliMsg = `Gemini কী সঠিক নয় (HTTP ${geminiStatus})। Settings → CONNECTIONS-এ কী পরীক্ষা করো।`;
       }
     } else if (err?.isTimeout || geminiStatus === 408) {
-      if (groqAttempted) {
-        shortBengaliMsg = 'সময় শেষ (Timeout), Groq কী-ও কাজ করছে না';
+      if (fallbackAttempted) {
+        shortBengaliMsg = 'সময় শেষ (Timeout), বিকল্প কী-ও কাজ করছে না';
       } else {
         shortBengaliMsg = 'সময় শেষ (Timeout) — ২৫ সেকেন্ডের মধ্যে উত্তর আসেনি।';
       }
     } else if (geminiStatus === 503 || geminiStatus === 500) {
-      if (groqAttempted) {
-        shortBengaliMsg = `Gemini সার্ভার ব্যস্ত (HTTP ${geminiStatus}), Groq কী-ও কাজ করছে না`;
+      if (fallbackAttempted) {
+        shortBengaliMsg = `Gemini সার্ভার ব্যস্ত (HTTP ${geminiStatus}), বিকল্প কী-ও কাজ করছে না`;
       } else {
         shortBengaliMsg = `Gemini সার্ভার এখন ব্যস্ত (HTTP ${geminiStatus})। একটু পরে আবার চেষ্টা করো।`;
       }
     } else {
       shortBengaliMsg = formatRealGeminiError(err, geminiStatus);
     }
+
+    recordDiagnosticError(geminiStatus || err?.status || 503, lastFailedModel, shortBengaliMsg);
 
     const rawJsonStr = redactSecrets(
       JSON.stringify(
@@ -825,14 +1013,14 @@ export async function sendTypedChat(
         null,
         2
       ),
-      [apiKey, groqKey]
+      [apiKey, groqKey, openRouterKey]
     );
 
     const finalErr: any = new Error(shortBengaliMsg);
     finalErr.shortBengaliMsg = shortBengaliMsg;
     finalErr.rawJson = rawJsonStr;
     finalErr.status = err?.status || geminiStatus;
-    finalErr.modelUsed = err?.modelUsed || 'gemini';
+    finalErr.modelUsed = lastFailedModel;
     finalErr.rawError = err;
     throw finalErr;
   } finally {

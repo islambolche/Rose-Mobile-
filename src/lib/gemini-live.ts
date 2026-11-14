@@ -5,6 +5,13 @@ import {
   fetchGeminiStreamWithFallback,
   fetchGeminiGenerateWithFallback,
 } from './geminiDirect';
+import {
+  discoverModels,
+  recordLiveModelUsed,
+  recordDiagnosticError,
+  removeUnsupportedModel,
+  getDiagnosticsState,
+} from './modelDiscovery';
 
 const StartSensitivity = { START_SENSITIVITY_HIGH: 'START_SENSITIVITY_HIGH' } as const;
 const EndSensitivity = { END_SENSITIVITY_HIGH: 'END_SENSITIVITY_HIGH' } as const;
@@ -347,149 +354,29 @@ export async function discoverVoiceModelsFromListModels(
   forceRefresh = false
 ): Promise<DiscoveredVoiceModels> {
   const cleanKey = String(apiKey || '').replace(/[\r\n\t\s"']+/g, '').trim();
-  const keyPrefix = cleanKey ? cleanKey.slice(0, 8) : 'server';
+  const discovered = await discoverModels(cleanKey, forceRefresh);
 
-  if (!forceRefresh) {
-    const cached = readCachedVoiceModelsFromStorage(cleanKey);
-    if (cached && cached.liveModels.length > 0) {
-      return cached;
-    }
+  const resolvedLiveList = discovered.liveModels;
+  const flashCandidates = discovered.chatModels;
+  const ttsCandidates = discovered.ttsModels;
+
+  if (resolvedLiveList.length > 0 && !getCachedResolvedLiveModel()) {
+    setCachedResolvedLiveModel(resolvedLiveList[0]);
+  }
+  if (ttsCandidates.length > 0) {
+    setLastUsedTtsModel(ttsCandidates[0]);
   }
 
-  const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), 7000);
+  const savedLive = getCachedResolvedLiveModel();
+  const orderedLive = savedLive && resolvedLiveList.includes(savedLive)
+    ? [savedLive, ...resolvedLiveList.filter((m) => m !== savedLive)]
+    : resolvedLiveList;
 
-  try {
-    const res = await fetchGeminiModelsWithFallback(cleanKey, controller.signal);
-    clearTimeout(timer);
-
-    const rawText = await res.text().catch(() => '');
-    let data: any = null;
-    try {
-      data = rawText ? JSON.parse(rawText) : null;
-    } catch {}
-
-    if (!res.ok) {
-      const googleMsg = data?.error?.message || rawText || `HTTP ${res.status}`;
-      const err: any = new Error(googleMsg);
-      err.status = res.status;
-      throw err;
-    }
-
-    const list: any[] = Array.isArray(data?.models) ? data.models : [];
-
-    const liveCandidates: string[] = [];
-    const flashCandidates: string[] = [];
-    const ttsCandidates: string[] = [];
-
-    for (const item of list) {
-      const rawName = String(item?.name || '').replace(/^models\//, '').trim();
-      if (!rawName) continue;
-      const lower = rawName.toLowerCase();
-      const methods: string[] = Array.isArray(item?.supportedGenerationMethods)
-        ? item.supportedGenerationMethods
-        : Array.isArray(item?.supportedActions)
-          ? item.supportedActions
-          : [];
-
-      if (methods.includes('bidiGenerateContent')) {
-        liveCandidates.push(rawName);
-      }
-
-      if (methods.includes('generateContent')) {
-        if (lower.includes('tts')) {
-          ttsCandidates.push(rawName);
-        } else if (
-          lower.includes('flash') &&
-          !lower.includes('live') &&
-          !lower.includes('tts') &&
-          !lower.includes('image') &&
-          !lower.includes('embedding') &&
-          !lower.includes('vision') &&
-          !lower.includes('aqa') &&
-          !lower.includes('audio')
-        ) {
-          flashCandidates.push(rawName);
-        }
-      }
-    }
-
-    // Sort liveModels: "native-audio" first, then "live", then newest version
-    liveCandidates.sort((a, b) => {
-      const la = a.toLowerCase();
-      const lb = b.toLowerCase();
-      const scoreA =
-        (la.includes('native-audio') ? 100000 : la.includes('live') ? 50000 : 0) +
-        parseVersionScore(la);
-      const scoreB =
-        (lb.includes('native-audio') ? 100000 : lb.includes('live') ? 50000 : 0) +
-        parseVersionScore(lb);
-      return scoreB - scoreA;
-    });
-
-    // Sort flashModels: newest version first, prefer standard flash over lite/exp
-    flashCandidates.sort((a, b) => {
-      const la = a.toLowerCase();
-      const lb = b.toLowerCase();
-      const scoreA =
-        parseVersionScore(la) +
-        (!la.includes('lite') ? 30 : 0) +
-        (!la.includes('exp') && !la.includes('preview') ? 15 : 0);
-      const scoreB =
-        parseVersionScore(lb) +
-        (!lb.includes('lite') ? 30 : 0) +
-        (!lb.includes('exp') && !lb.includes('preview') ? 15 : 0);
-      return scoreB - scoreA;
-    });
-
-    // Sort ttsModels: newest version first
-    ttsCandidates.sort((a, b) => parseVersionScore(b) - parseVersionScore(a));
-
-    const resolvedLiveList = liveCandidates.slice(0, 3);
-    const now = Date.now();
-    memoryCachedVoiceModels = {
-      liveModels: resolvedLiveList,
-      flashModels: flashCandidates,
-      ttsModels: ttsCandidates,
-      keyPrefix,
-      timestamp: now,
-    };
-
-    if (resolvedLiveList.length > 0 && !getCachedResolvedLiveModel()) {
-      setCachedResolvedLiveModel(resolvedLiveList[0]);
-    }
-    if (ttsCandidates.length > 0) {
-      setLastUsedTtsModel(ttsCandidates[0]);
-    }
-
-    try {
-      if (typeof window !== 'undefined' && window.localStorage && resolvedLiveList.length > 0) {
-        localStorage.setItem(
-          VOICE_MODELS_CACHE_KEY,
-          JSON.stringify({
-            liveModels: resolvedLiveList,
-            flashModels: flashCandidates,
-            ttsModels: ttsCandidates,
-            keyPrefix,
-            timestamp: now,
-          })
-        );
-      }
-    } catch {}
-
-    const savedLive = getCachedResolvedLiveModel();
-    const orderedLive = savedLive
-      ? [savedLive, ...resolvedLiveList.filter((m) => m !== savedLive)]
-      : resolvedLiveList;
-
-    return {
-      liveModels: orderedLive,
-      flashModels: flashCandidates,
-      ttsModels: ttsCandidates,
-    };
-  } finally {
-    clearTimeout(timer);
-  }
+  return {
+    liveModels: orderedLive,
+    flashModels: flashCandidates,
+    ttsModels: ttsCandidates,
+  };
 }
 
 function getSupportedRecorderMimeType(): string {
@@ -601,8 +488,10 @@ export function getLiveVoiceCheckStatus(
   } catch {}
 
   const active = activeGlobalLiveSession;
+  const diag = getDiagnosticsState();
   const resolvedModel =
     (active as any)?.connectedModelName ||
+    diag.liveModelUsed ||
     latestLiveVoiceCheckStatus.liveModelName ||
     stored.liveModelName ||
     getCachedResolvedLiveModel() ||
@@ -683,6 +572,7 @@ export class GeminiLiveSession {
   private isReconnecting = false;
   private resumptionHandle: string | null = lastGlobalResumptionHandle;
   private connectedModelName: string | null = null;
+  private connectedAt = 0;
   private awaitingReplySince = 0;
   private watchdogReconnectedForTurn = false;
   private visualizerRunning = false;
@@ -2757,7 +2647,9 @@ export class GeminiLiveSession {
 
         if (ok) {
           this.connectedModelName = modelName;
+          this.connectedAt = Date.now();
           setCachedResolvedLiveModel(modelName);
+          recordLiveModelUsed(modelName);
           updateLiveVoiceCheckStatus({
             liveModelName: modelName,
             voiceName: candidateVoice,
@@ -3607,9 +3499,22 @@ export class GeminiLiveSession {
           await this.initSmartMicVad(true);
         }
 
+        const failedEarly = this.connectedAt > 0 && Date.now() - this.connectedAt < 5000;
+        if (failedEarly && this.connectedModelName) {
+          const badModel = this.connectedModelName;
+          console.warn(`[GeminiLive] Model ${badModel} failed/closed within 5s. Removing and trying next LIVE model.`);
+          removeUnsupportedModel(badModel);
+          this.liveModels = this.liveModels.filter((m) => m !== badModel);
+          this.connectedModelName = null;
+          this.connectedAt = 0;
+          try {
+            localStorage.removeItem('rose_resolved_live_model');
+          } catch {}
+        }
+
         if (this.liveModels.length === 0 && cleanKey) {
           try {
-            const discovered = await discoverVoiceModelsFromListModels(cleanKey);
+            const discovered = await discoverVoiceModelsFromListModels(cleanKey, true);
             this.liveModels = discovered.liveModels;
             this.flashModels = discovered.flashModels;
             this.ttsModels = discovered.ttsModels;
@@ -3621,7 +3526,7 @@ export class GeminiLiveSession {
               this.connectedModelName,
               ...this.liveModels.filter((m) => m !== this.connectedModelName),
             ]
-          : this.liveModels.slice(0, 3);
+          : this.liveModels.slice(0, 4);
 
         let reconnected = false;
         if (orderedCandidates.length > 0 && !getMicListeningSettings().streetMode) {

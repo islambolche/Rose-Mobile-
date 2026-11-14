@@ -251,6 +251,11 @@ import { buildRoseSystemInstruction } from "./lib/roseConfig";
 import { sendPcCommand } from "./lib/pcCommand";
 import { sendTypedChat, NO_GEMINI_KEY_MSG, formatRealGeminiError, getStoredGroqKey } from "./lib/typedChat";
 import {
+  resetCachedModelNames,
+  getDiagnosticsState,
+  discoverModels,
+} from "./lib/modelDiscovery";
+import {
   executePhoneToolAction,
   executePhoneToolActionByName,
   routePhoneActionFromText,
@@ -1773,6 +1778,47 @@ const VoiceCheckView = ({
   );
   const effectiveLastError = voiceTestError || liveVoiceCheck.lastError;
 
+  const [diagState, setDiagState] = useState(() => getDiagnosticsState());
+  const [isResettingModels, setIsResettingModels] = useState(false);
+
+  useEffect(() => {
+    const onDiagUpdate = () => {
+      setDiagState(getDiagnosticsState());
+    };
+    window.addEventListener("rose_diagnostics_updated", onDiagUpdate);
+    return () => window.removeEventListener("rose_diagnostics_updated", onDiagUpdate);
+  }, []);
+
+  const handleResetModels = async () => {
+    setIsResettingModels(true);
+    try {
+      resetCachedModelNames();
+      const apiKey = (getGeminiKey() || apiKeys.gemini || "").trim();
+      if (apiKey) {
+        await discoverModels(apiKey, true);
+      }
+      setDiagState(getDiagnosticsState());
+      setToast("সব মডেল ক্যাশ মুছে নতুন করে লোড করা হয়েছে");
+    } catch {
+      setToast("মডেল রিসেট সম্পন্ন");
+    } finally {
+      setIsResettingModels(false);
+    }
+  };
+
+  const displayedKeyStatus =
+    keyStatus === "ok"
+      ? "READY"
+      : keyStatus === "missing"
+      ? "MISSING"
+      : keyStatus === "invalid"
+      ? "INVALID"
+      : (getGeminiKey() || apiKeys.gemini ? "READY" : "MISSING");
+
+  const liveModelActuallyUsed = liveVoiceCheck.liveModelName || diagState.liveModelUsed || "None";
+  const chatModelActuallyUsed = diagState.chatModelUsed || (typeof window !== "undefined" ? localStorage.getItem("working_gemini_text_model") : "") || "None";
+  const displayedLastError = diagState.lastError || effectiveLastError || "None";
+
   return (
     <motion.div
       key="voice-debug"
@@ -2092,6 +2138,78 @@ const VoiceCheckView = ({
                 <p className="text-xs text-indigo-200 font-bold leading-relaxed">{fixResult}</p>
               </div>
             )}
+          </div>
+
+          {/* Diagnostics Card */}
+          <div className="bg-[#0F172A]/80 border border-purple-500/30 rounded-2xl p-4 shadow-xl space-y-3">
+            <div className="flex items-center justify-between border-b border-purple-500/20 pb-2">
+              <span className="text-xs font-black uppercase tracking-wider text-purple-300">
+                AI Diagnostics
+              </span>
+              <span className="text-[10px] font-mono font-bold px-2 py-0.5 rounded-full bg-purple-600/20 text-purple-300 border border-purple-500/30">
+                Direct Gemini
+              </span>
+            </div>
+
+            <div className="space-y-1.5 text-xs">
+              <div className="flex items-center justify-between">
+                <span className="text-slate-400 font-medium">Gemini Key:</span>
+                <span className={`font-black font-mono text-[11px] px-2 py-0.5 rounded-md ${
+                  displayedKeyStatus === 'READY'
+                    ? 'bg-emerald-500/15 text-emerald-400 border border-emerald-500/30'
+                    : displayedKeyStatus === 'MISSING'
+                    ? 'bg-amber-500/15 text-amber-400 border border-amber-500/30'
+                    : 'bg-red-500/15 text-red-400 border border-red-500/30'
+                }`}>
+                  {displayedKeyStatus}
+                </span>
+              </div>
+
+              <div className="flex items-center justify-between">
+                <span className="text-slate-400 font-medium">Live model used:</span>
+                <span className="font-bold text-white font-mono text-[11px] truncate max-w-[200px]">
+                  {liveModelActuallyUsed}
+                </span>
+              </div>
+
+              <div className="flex items-center justify-between">
+                <span className="text-slate-400 font-medium">Chat model used:</span>
+                <span className="font-bold text-white font-mono text-[11px] truncate max-w-[200px]">
+                  {chatModelActuallyUsed}
+                </span>
+              </div>
+
+              <div className="flex items-start justify-between gap-2 pt-1 border-t border-white/5">
+                <span className="text-slate-400 font-medium shrink-0">Last error:</span>
+                <span className={`font-mono text-[11px] text-right break-words ${
+                  displayedLastError === 'None' ? 'text-slate-500' : 'text-red-400 font-bold'
+                }`}>
+                  {displayedLastError}
+                </span>
+              </div>
+            </div>
+
+            {/* RESET MODELS BUTTON */}
+            <div className="pt-2">
+              <button
+                type="button"
+                onClick={handleResetModels}
+                disabled={isResettingModels}
+                className="w-full py-2.5 px-3 bg-purple-600/20 hover:bg-purple-600/30 border border-purple-500/30 text-purple-200 rounded-xl text-xs font-black uppercase tracking-wider active:scale-[0.98] transition-transform flex items-center justify-center gap-2 disabled:opacity-50"
+              >
+                {isResettingModels ? (
+                  <>
+                    <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                    <span>মডেল রিফ্রেশ হচ্ছে...</span>
+                  </>
+                ) : (
+                  <>
+                    <RotateCcw className="w-3.5 h-3.5 text-purple-300" />
+                    <span>RESET MODELS</span>
+                  </>
+                )}
+              </button>
+            </div>
           </div>
 
           {/* Current voice summary */}

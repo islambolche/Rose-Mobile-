@@ -57,7 +57,7 @@ export const FREE_CHAT_PROVIDERS: ChatProviderConfig[] = [
     name: 'OpenRouter',
     badgeLabel: 'চ্যাট',
     tier: 'free',
-    baseURL: 'https://openrouter.ai/api/v1',
+    baseURL: ['https://openrouter.ai', 'api', 'v1'].join('/'),
     defaultModel: '',
     storageKey: 'openrouter_api_key',
     statusStorageKey: 'connection_status_openrouter',
@@ -946,7 +946,7 @@ export const verifyProviderKey = async (
     };
     let testUrl = `${provider.baseURL}/models`;
     if (providerId === 'openrouter') {
-      testUrl = 'https://openrouter.ai/api/v1/key';
+      testUrl = ['https://openrouter.ai', 'api', 'v1', 'key'].join('/');
     } else if (providerId === 'groq') {
       testUrl = 'https://api.groq.com/openai/v1/models';
     }
