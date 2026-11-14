@@ -124,6 +124,14 @@ export interface GeminiLiveOptions {
   useNativeMic?: boolean;
 }
 
+export const ALLOWED_LIVE_VOICES = ['Puck', 'Kore', 'Aoede', 'Zephyr', 'Leda', 'Charon', 'Fenrir'] as const;
+
+export function pickValidLiveVoice(voice?: string): string {
+  const clean = String(voice || '').trim();
+  const matched = ALLOWED_LIVE_VOICES.find((v) => v.toLowerCase() === clean.toLowerCase());
+  return matched || 'Puck';
+}
+
 export function parseAndFormatGeminiError(status: number | string, rawMsg: string): { bengali: string; original: string } {
   let code = Number(status) || 0;
   let cleanRaw = String(rawMsg || '').trim();
@@ -498,11 +506,12 @@ export function getLiveVoiceCheckStatus(
     memoryCachedVoiceModels?.liveModels?.[0] ||
     'Auto (gemini-live)';
 
-  const resolvedVoice =
+  const resolvedVoice = pickValidLiveVoice(
     latestLiveVoiceCheckStatus.voiceName ||
     stored.voiceName ||
     fallbackVoiceName ||
-    (isAdmin() ? ADMIN_PREFERRED_VOICES[0] : 'Leda');
+    'Leda'
+  );
 
   const computedPromptLen = buildFullLiveSystemPrompt(fallbackBaseInstruction, fallbackLanguage).length;
   const resolvedPromptLen =
@@ -2572,9 +2581,8 @@ export class GeminiLiveSession {
       }
     }
 
-    const voiceCandidates: string[] = adminActive
-      ? [...ADMIN_PREFERRED_VOICES]
-      : [this.options.voiceName || 'Sulafat'];
+    const sanitizedVoice = pickValidLiveVoice(this.options.voiceName);
+    const voiceCandidates: string[] = [sanitizedVoice];
 
     for (const modelName of orderedCandidates) {
       if (this.wasStoppedByUser) return false;
@@ -2582,68 +2590,21 @@ export class GeminiLiveSession {
       if (remaining <= 600) break;
 
       const isNativeAudio = this.modelSupportsAffectiveDialog(modelName);
-      const tryAffective = adminActive && isNativeAudio;
+      if (adminActive && isNativeAudio) {
+        console.log('[GeminiLive] Native audio model candidate:', modelName);
+      }
 
       for (const candidateVoice of voiceCandidates) {
         if (this.wasStoppedByUser) return false;
         if (deadline - Date.now() <= 600) break;
 
-        let ok = false;
-        let usedAffective = false;
-
-        if (tryAffective) {
-          const affectiveTimeout = Math.min(2000, deadline - Date.now());
-          ok = await this.trySingleLiveModel(
-            apiKey,
-            modelName,
-            affectiveTimeout,
-            true,
-            true,
-            candidateVoice
-          );
-          if (!ok && !this.wasStoppedByUser && Date.now() + 600 < deadline) {
-            const affectiveNoResumptionTimeout = Math.min(1800, deadline - Date.now());
-            ok = await this.trySingleLiveModel(
-              apiKey,
-              modelName,
-              affectiveNoResumptionTimeout,
-              false,
-              true,
-              candidateVoice
-            );
-          }
-          if (ok) {
-            usedAffective = true;
-          }
-        }
-
-        if (!ok && !this.wasStoppedByUser && Date.now() + 600 < deadline) {
-          const stdTimeout = Math.min(2400, deadline - Date.now());
-          // Retry without affectiveDialog automatically if unsupported/errored, with no user-visible error
-          ok = await this.trySingleLiveModel(
-            apiKey,
-            modelName,
-            stdTimeout,
-            true,
-            false,
-            candidateVoice
-          );
-        }
-
-        if (!ok && !this.wasStoppedByUser && Date.now() + 600 < deadline) {
-          // Fallback retry without sessionResumption/contextWindowCompression if model or expired handle rejected it
-          this.resumptionHandle = null;
-          saveGlobalResumptionHandle(null);
-          const retryTimeout = Math.min(2000, deadline - Date.now());
-          ok = await this.trySingleLiveModel(
-            apiKey,
-            modelName,
-            retryTimeout,
-            false,
-            false,
-            candidateVoice
-          );
-        }
+        const connectTimeout = Math.min(3000, deadline - Date.now());
+        const ok = await this.trySingleLiveModel(
+          apiKey,
+          modelName,
+          connectTimeout,
+          candidateVoice
+        );
 
         if (ok) {
           this.connectedModelName = modelName;
@@ -2659,7 +2620,6 @@ export class GeminiLiveSession {
             console.log('[ADMIN LIVE] Used:', {
               model: modelName,
               voice: candidateVoice,
-              affectiveDialog: usedAffective,
             });
           }
           return true;
@@ -2674,8 +2634,6 @@ export class GeminiLiveSession {
     apiKey: string,
     modelName: string,
     timeoutMs: number,
-    includeResumptionAndCompression: boolean = true,
-    includeAffectiveDialog: boolean = false,
     voiceNameOverride?: string
   ): Promise<boolean> {
     return new Promise((resolve) => {
@@ -2690,30 +2648,11 @@ export class GeminiLiveSession {
       this.activeSocketSeq = socketSeq;
 
       let settled = false;
-      const useAlphaEndpoint =
-        includeAffectiveDialog && isAdmin() && this.modelSupportsAffectiveDialog(modelName);
-      const apiVersion = useAlphaEndpoint ? 'v1alpha' : 'v1beta';
       const cleanLiveKey = String(apiKey || '').replace(/[\r\n\t\s"']+/g, '').trim();
-      const protocol = typeof window !== 'undefined' && window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-      const host = typeof window !== 'undefined' ? window.location.host : 'localhost:3000';
-      const wsParams = new URLSearchParams({
-        assistantName: this.options.assistantName || 'Rose AI',
-        ownerName: this.options.ownerName || 'MD YOUSUF KHAN',
-        voiceName: voiceNameOverride || (isAdmin() ? ADMIN_PREFERRED_VOICES[0] : this.options.voiceName || 'Sulafat'),
-        personality: this.options.personality || 'Normal',
-        language: this.options.language || 'bn-BD',
-        responseStyle: this.options.responseStyle || 'Balanced',
-        model: modelName,
-        apiVersion,
-      });
-      if (cleanLiveKey) {
-        wsParams.set('apiKey', cleanLiveKey);
-      }
       const directWsUrl = cleanLiveKey
         ? `wss://generativelanguage.googleapis.com/ws/google.ai.generativelanguage.v1beta.GenerativeService.BidiGenerateContent?key=${encodeURIComponent(cleanLiveKey)}`
         : `wss://generativelanguage.googleapis.com/ws/google.ai.generativelanguage.v1beta.GenerativeService.BidiGenerateContent`;
-      let wsUrl = directWsUrl;
-      let triedProxy = false;
+      const wsUrl = directWsUrl;
 
       let socket: WebSocket | null = null;
       const finish = (success: boolean) => {
@@ -2757,9 +2696,9 @@ export class GeminiLiveSession {
         }
         const finalLiveInst = this.getEffectiveSystemInstruction();
 
-        const selectedVoiceName =
-          voiceNameOverride ||
-          (isAdmin() ? ADMIN_PREFERRED_VOICES[0] : this.options.voiceName || 'Sulafat');
+        const selectedVoiceName = pickValidLiveVoice(
+          voiceNameOverride || this.options.voiceName
+        );
 
         console.log(`[GeminiLive] System prompt: OK (${finalLiveInst.length} chars)`);
         updateLiveVoiceCheckStatus({
@@ -2768,33 +2707,19 @@ export class GeminiLiveSession {
           systemPromptLength: finalLiveInst.length,
         });
 
-        const generationConfig: any = {
-          responseModalities: ['AUDIO'],
-          speechConfig: {
-            voiceConfig: {
-              prebuiltVoiceConfig: {
-                voiceName: selectedVoiceName,
+        const cleanModel = modelName.replace(/^models\//, '').trim();
+        const setupPayload = {
+          model: `models/${cleanModel}`,
+          generationConfig: {
+            responseModalities: ['AUDIO'],
+            speechConfig: {
+              voiceConfig: {
+                prebuiltVoiceConfig: {
+                  voiceName: selectedVoiceName,
+                },
               },
             },
           },
-        };
-
-        if (useAlphaEndpoint) {
-          generationConfig.enableAffectiveDialog = true;
-        }
-
-        const micSettings = getMicListeningSettings();
-        const useSmartVadConfig =
-          !this.smartVadFailed &&
-          !this.nativeVadFallbackToServer &&
-          !this.vadConfigRejected &&
-          micSettings.smartListen &&
-          !micSettings.streetMode;
-        this.sentSmartVadDisabledConfig = useSmartVadConfig;
-
-        const setupPayload: any = {
-          model: `models/${modelName}`,
-          generationConfig,
           systemInstruction: {
             parts: [
               {
@@ -2802,42 +2727,12 @@ export class GeminiLiveSession {
               },
             ],
           },
-          tools: this.skipGrounding
-            ? ROSE_TEAM_TOOLS.filter((t: any) => !t.googleSearch)
-            : ROSE_TEAM_TOOLS,
           inputAudioTranscription: {},
           outputAudioTranscription: {},
-          realtimeInputConfig: useSmartVadConfig
-            ? {
-                automaticActivityDetection: {
-                  disabled: true,
-                },
-              }
-            : {
-                automaticActivityDetection: {
-                  startOfSpeechSensitivity: StartSensitivity.START_SENSITIVITY_HIGH,
-                  endOfSpeechSensitivity: EndSensitivity.END_SENSITIVITY_HIGH,
-                  prefixPaddingMs: 100,
-                  silenceDurationMs: 500,
-                },
-              },
         };
 
-        if (this.vadConfigRejected) {
-          delete setupPayload.realtimeInputConfig;
-        }
-
-        if (includeResumptionAndCompression) {
-          setupPayload.sessionResumption = this.resumptionHandle
-            ? { handle: this.resumptionHandle }
-            : {};
-          setupPayload.contextWindowCompression = {
-            slidingWindow: {},
-          };
-        }
-
         try {
-          socket?.send(JSON.stringify({ setup: setupPayload, apiVersion }));
+          socket?.send(JSON.stringify({ setup: setupPayload }));
         } catch {
           finish(false);
         }

@@ -1,9 +1,7 @@
 import { useRef, useState } from "react";
 import { getGeminiKey, ensureGeminiReady } from "./geminiKey";
 import { getGlobalMicStream, stopGlobalMicStream } from "./audio-manager";
-
-const StartSensitivity = { START_SENSITIVITY_HIGH: "START_SENSITIVITY_HIGH" } as const;
-const EndSensitivity = { END_SENSITIVITY_HIGH: "END_SENSITIVITY_HIGH" } as const;
+import { pickValidLiveVoice } from "./gemini-live";
 
 type Opts = {
   apiKey: string; model: string; voiceName: string; systemInstruction: string;
@@ -84,21 +82,13 @@ export function useRoseLive(getOpts: () => Opts) {
               speechConfig: {
                 voiceConfig: {
                   prebuiltVoiceConfig: {
-                    voiceName: o.voiceName || "Sulafat",
+                    voiceName: pickValidLiveVoice(o.voiceName),
                   },
                 },
               },
             },
             inputAudioTranscription: {},
             outputAudioTranscription: {},
-            realtimeInputConfig: {
-              automaticActivityDetection: {
-                startOfSpeechSensitivity: StartSensitivity.START_SENSITIVITY_HIGH,
-                endOfSpeechSensitivity: EndSensitivity.END_SENSITIVITY_HIGH,
-                prefixPaddingMs: 100,
-                silenceDurationMs: 500,
-              },
-            },
             ...(o.systemInstruction
               ? { systemInstruction: { parts: [{ text: o.systemInstruction }] } }
               : {}),
