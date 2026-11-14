@@ -62,6 +62,56 @@ export function ensureLanguageFirstLineLock(instructionText: string, language?: 
 }
 
 /**
+ * Trims system instruction strictly to essentials for fast replies:
+ * (name, personality, language, response style, user name; business info only if set).
+ */
+export function buildEssentialSystemInstruction(
+  currentSettings?: Partial<AssistantSettings>,
+  currentPrefs?: Partial<UserPreferences>,
+  userWantsDetail: boolean = false
+): string {
+  const assistantName = currentSettings?.assistantName || "Rose AI";
+  const adminActive = isAdmin();
+  const ownerName = adminActive
+    ? ADMIN_DISPLAY_NAME
+    : getEffectiveUserName(currentSettings?.ownerName, OWNER_NAME);
+  const personality = currentSettings?.personality || "Normal";
+  const language = currentPrefs?.language || "bn-BD";
+
+  const langRule = getLanguageFirstLineLock(language);
+
+  let businessSnippet = "";
+  try {
+    const rawBp = typeof window !== "undefined" ? localStorage.getItem("rose_business_profile_v1") : "";
+    const bName = String((currentSettings as any)?.businessName || (currentSettings as any)?.businessProfile?.businessName || "").trim();
+    if (bName && bName !== "Rose AI Hub" && bName !== "Rose AI Enterprise & Commerce") {
+      businessSnippet = `ব্যবসার তথ্য: ${bName}`;
+    } else if (rawBp) {
+      const parsed = JSON.parse(rawBp);
+      if (parsed?.businessName) {
+        businessSnippet = `ব্যবসার তথ্য: ${parsed.businessName}${parsed.description ? ` (${parsed.description})` : ""}`;
+      }
+    }
+  } catch {}
+
+  const responseStyleDirective = userWantsDetail
+    ? "উত্তর শৈলী (বিস্তারিত): ব্যবহারকারী বিস্তারিত জানতে চেয়েছে, স্পষ্ট ও তথ্যবহুল উত্তর দাও।"
+    : "উত্তর শৈলী (ডিফল্ট সংক্ষিপ্ত): ১ থেকে ৩টি ছোট স্বাভাবিক বাক্যে দ্রুত উত্তর দেবে। ব্যবহারকারী নিজে বিস্তারিত ব্যাখ্যা না চাইলে কখনোই লম্বা উত্তর বা অপ্রয়োজনীয় তালিকা দেবে না।";
+
+  const lines = [
+    langRule,
+    `তুমি ${assistantName} (Rose AI), ${ownerName}-এর বিশ্বস্ত পার্সোনাল এআই অ্যাসিস্ট্যান্ট।`,
+    `ব্যবহারকারীর নাম: ${ownerName}। তাকে এই নামেই স্বাভাবিকভাবে সম্বোধন করবে।`,
+    `ব্যক্তিত্ব: ${personality}। সুর সবসময় মিষ্টি, বন্ধুত্বপূর্ণ ও বিনয়ী।`,
+    responseStyleDirective,
+    businessSnippet,
+  ].filter(Boolean);
+
+  const raw = lines.join("\n");
+  return adminActive ? applyAdminSystemInstructionOverride(raw) : raw;
+}
+
+/**
  * Builds Rose's system instruction centrally.
  * Used by mobile chat, mobile voice, PC chat, and PC voice.
  */

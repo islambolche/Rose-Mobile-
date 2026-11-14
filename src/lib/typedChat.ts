@@ -4,7 +4,7 @@ import {
   fetchGeminiGenerateWithFallback,
   fetchGeminiStreamWithFallback,
 } from './geminiDirect';
-import { buildRoseSystemInstruction } from './roseConfig';
+import { buildRoseSystemInstruction, buildEssentialSystemInstruction } from './roseConfig';
 import { getDynamicGroqChatModels, getProviderKey } from './chatEngines';
 import { cleanAssistantReplyText } from './ai-service';
 import { ROSE_TYPED_CHAT_FUNCTION_DECLARATIONS } from './team';
@@ -384,7 +384,8 @@ function createStepSignal(masterSignal: AbortSignal, stepTimeoutMs: number): { s
 
 export async function sendTypedChat(
   history: Array<{ role: string; content?: string; text?: string; isError?: boolean }>,
-  userText: string
+  userText: string,
+  onToken?: (delta: string, accumulated: string) => void
 ): Promise<{ text: string; modelUsed: string; provider?: 'gemini' | 'groq' | 'openrouter'; providerLabel?: string; pcTaskId?: string }> {
   const apiKey = (getGeminiKey() || '').replace(/["'\r\n\t\s]+/g, '').trim();
   const groqKey = getStoredGroqKey();
@@ -434,7 +435,8 @@ export async function sendTypedChat(
     }
   }
 
-  const last20 = cleanHistory.slice(-20);
+  // Send only the last 10 messages
+  const last10 = cleanHistory.slice(-10);
 
   let settings: any = {};
   let prefs: any = {};
@@ -445,12 +447,15 @@ export async function sendTypedChat(
     if (p) prefs = JSON.parse(p);
   } catch {}
 
-  const sysInstructionText = buildRoseSystemInstruction(settings, prefs, false);
+  // Default replies short (1 to 3 sentences) unless the user asks for detail; max output tokens 300
+  const userWantsDetail = /বিস্তারিত|ব্যাখ্যা|details?|explain|in-depth|detailed/i.test(userText);
+  const maxOutputTokens = userWantsDetail ? 800 : 300;
+  const sysInstructionText = buildEssentialSystemInstruction(settings, prefs, userWantsDetail);
 
   const openRouterKey = (getProviderKey('openrouter') || (typeof window !== 'undefined' ? localStorage.getItem('openrouter_api_key') : '') || '').trim();
   const hasFallbackKey = Boolean(groqKey || openRouterKey);
 
-  const shortFallbackSysPrompt = buildShortFallbackSystemPrompt();
+  const shortFallbackSysPrompt = sysInstructionText;
 
   const tryFallbackEngine = async (): Promise<{ text: string; modelUsed: string; provider: 'groq' | 'openrouter'; providerLabel: string }> => {
     if (!hasFallbackKey) {
@@ -495,13 +500,14 @@ export async function sendTypedChat(
               model: groqModel,
               messages: groqMessages,
               temperature: 0.7,
-              max_tokens: 1024,
+              max_tokens: maxOutputTokens,
+              stream: true,
             }),
             signal,
           });
 
-          const rawText = await res.text().catch(() => '');
           if (!res.ok) {
+            const rawText = await res.text().catch(() => '');
             let parsedJson: any = rawText;
             try {
               parsedJson = rawText ? JSON.parse(rawText) : rawText;
@@ -514,14 +520,44 @@ export async function sendTypedChat(
             throw err;
           }
 
-          const data = rawText ? JSON.parse(rawText) : {};
-          const content = data?.choices?.[0]?.message?.content;
-          if (typeof content === 'string' && content.trim()) {
-            return cleanAssistantReplyText(content.trim());
+          if (!res.body) {
+            throw new Error('Groq returned empty response stream');
+          }
+
+          const reader = res.body.getReader();
+          const decoder = new TextDecoder();
+          let buffer = '';
+          let accumulated = '';
+
+          while (true) {
+            const { done, value } = await reader.read();
+            if (done) break;
+            buffer += decoder.decode(value, { stream: true });
+            const lines = buffer.split('\n');
+            buffer = lines.pop() || '';
+
+            for (const line of lines) {
+              const trimmed = line.trim();
+              if (!trimmed || !trimmed.startsWith('data:')) continue;
+              const jsonStr = trimmed.slice(5).trim();
+              if (!jsonStr || jsonStr === '[DONE]') continue;
+
+              try {
+                const data = JSON.parse(jsonStr);
+                const delta = data?.choices?.[0]?.delta?.content;
+                if (typeof delta === 'string' && delta) {
+                  accumulated += delta;
+                  onToken?.(delta, accumulated);
+                }
+              } catch {}
+            }
+          }
+
+          if (accumulated.trim()) {
+            return cleanAssistantReplyText(accumulated.trim());
           }
           const emptyErr: any = new Error('Groq returned empty response');
           emptyErr.status = 200;
-          emptyErr.rawBody = rawText;
           throw emptyErr;
         } finally {
           cleanup();
@@ -529,7 +565,7 @@ export async function sendTypedChat(
       };
 
       try {
-        const reply = await executeGroqCall(cleanHistory.slice(-6));
+        const reply = await executeGroqCall(last10);
         try {
           localStorage.setItem('active_model_groq', groqModel);
         } catch {}
@@ -692,7 +728,10 @@ export async function sendTypedChat(
             systemInstruction: { parts: [{ text: sysInstructionText }] },
             contents: geminiContents,
             tools: [{ functionDeclarations: ROSE_TYPED_CHAT_FUNCTION_DECLARATIONS }],
-            generationConfig: { temperature: 0.8 },
+            generationConfig: {
+              temperature: 0.7,
+              maxOutputTokens,
+            },
             ...(apiKey ? { apiKey } : {}),
           },
           signal
@@ -773,6 +812,7 @@ export async function sendTypedChat(
                 for (const p of parts) {
                   if (p?.text && typeof p.text === 'string') {
                     accumulatedText += p.text;
+                    onToken?.(p.text, accumulatedText);
                   }
                   if (p?.functionCall) {
                     pendingFunctionCalls.push(p.functionCall);
@@ -859,10 +899,10 @@ export async function sendTypedChat(
           console.log(`[TypedChat] Trying model ${model} (attempt ${attemptCount})`);
           let text: string;
           try {
-            text = await executeGeminiStreamFetch(model, last20, 10000);
+            text = await executeGeminiStreamFetch(model, last10, 10000);
           } catch (fetchErr: any) {
             // If 413: retry ONCE with last 4 messages only
-            if (fetchErr?.status === 413 && last20.length > 4) {
+            if (fetchErr?.status === 413 && last10.length > 4) {
               text = await executeGeminiStreamFetch(model, cleanHistory.slice(-4), 10000);
             } else {
               throw fetchErr;
