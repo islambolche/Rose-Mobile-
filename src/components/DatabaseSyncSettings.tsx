@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from "react";
 import { ArrowLeft, Loader2, Check, X, Eye, EyeOff, Database, Cpu, RefreshCw, Key } from "lucide-react";
-import { supabase } from "../lib/supabase";
+import { supabase, DEFAULT_SUPABASE_URL, DEFAULT_SUPABASE_ANON_KEY } from "../lib/supabase";
 import { createClient } from "@supabase/supabase-js";
 
 interface DatabaseSyncSettingsProps {
@@ -23,8 +23,8 @@ const Card = ({ title, desc, children }: { title: string; desc: string; children
 );
 
 export const DatabaseSyncSettings: React.FC<DatabaseSyncSettingsProps> = ({ onClose }) => {
-  const [supabaseUrl, setSupabaseUrl] = useState(localStorage.getItem("supabase_url") || "");
-  const [supabaseKey, setSupabaseKey] = useState(localStorage.getItem("supabase_key") || "");
+  const [supabaseUrl, setSupabaseUrl] = useState(localStorage.getItem("supabase_url") || DEFAULT_SUPABASE_URL);
+  const [supabaseKey, setSupabaseKey] = useState(localStorage.getItem("supabase_key") || DEFAULT_SUPABASE_ANON_KEY);
   const [showKey, setShowKey] = useState(false);
   const [connectionStatus, setConnectionStatus] = useState<"idle" | "connecting" | "connected" | "error">("idle");
   const [errorMessage, setErrorMessage] = useState("");

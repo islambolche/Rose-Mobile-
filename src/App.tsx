@@ -115,7 +115,13 @@ import {
   PhoneErrorBoundary,
 } from "./components/PhoneControlViews";
 import { requestStoragePersistence } from "./lib/keyBackup";
-import { initializeSupabase, supabase } from "./lib/supabase";
+import {
+  initializeSupabase,
+  supabase,
+  DEFAULT_SUPABASE_URL,
+  DEFAULT_SUPABASE_ANON_KEY,
+  clearLegacySupabaseStorage,
+} from "./lib/supabase";
 import { storage } from "./lib/storage";
 import { DeveloperToolsViews } from "./components/DeveloperToolsViews";
 import { PublicLegalPages } from "./components/PublicLegalPages";
@@ -3692,21 +3698,22 @@ export function App() {
     }
   }, [onlyFemaleVoices]);
   const [apiKeys, setApiKeys] = useState<ApiKeys>(() => {
+    clearLegacySupabaseStorage();
     const savedGemini = getGeminiKey();
     try {
       const parsed = JSON.parse(localStorage.getItem("iyabd_api_keys") || "{}");
       return {
         gemini: savedGemini || parsed.gemini || "",
         groq: localStorage.getItem("groq_api_keys") || parsed.groq || "",
-        supabaseUrl: parsed.supabaseUrl || "",
-        supabaseKey: parsed.supabaseKey || "",
+        supabaseUrl: DEFAULT_SUPABASE_URL,
+        supabaseKey: DEFAULT_SUPABASE_ANON_KEY,
       };
     } catch (e) {
       return {
         gemini: savedGemini,
         groq: "",
-        supabaseUrl: "",
-        supabaseKey: "",
+        supabaseUrl: DEFAULT_SUPABASE_URL,
+        supabaseKey: DEFAULT_SUPABASE_ANON_KEY,
       };
     }
   });
@@ -5326,8 +5333,8 @@ export function App() {
             openrouter: "",
             github: "",
             openai: "",
-            supabaseUrl: "",
-            supabaseKey: "",
+            supabaseUrl: DEFAULT_SUPABASE_URL,
+            supabaseKey: DEFAULT_SUPABASE_ANON_KEY,
           };
 
       const latestGeminiKey = getGeminiKey();
@@ -5335,11 +5342,12 @@ export function App() {
         loadedKeys.gemini = latestGeminiKey;
       }
 
-      // Always try to load from storage utility for Capacitor/Native compatibility
-      const storedSupabaseUrl = await storage.get("supabaseUrl");
-      const storedSupabaseKey = await storage.get("supabaseKey");
-      if (storedSupabaseUrl) loadedKeys.supabaseUrl = storedSupabaseUrl;
-      if (storedSupabaseKey) loadedKeys.supabaseKey = storedSupabaseKey;
+      // Clear any old Supabase URL/key saved in storage/localStorage and always use ROSE project defaults
+      clearLegacySupabaseStorage();
+      await storage.remove("supabaseUrl").catch(() => {});
+      await storage.remove("supabaseKey").catch(() => {});
+      loadedKeys.supabaseUrl = DEFAULT_SUPABASE_URL;
+      loadedKeys.supabaseKey = DEFAULT_SUPABASE_ANON_KEY;
 
       // Re-initialize Supabase with loaded keys
       initializeSupabase();

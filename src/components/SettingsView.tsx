@@ -5,6 +5,7 @@ import { UnifiedSettings, saveUnifiedSettings, loadUnifiedSettings } from "../ty
 import { SharedBusinessDatabase } from "../types/business";
 import { saveLocalBusinessDb, validateGeminiApiKey } from "../lib/businessSync";
 import { openExternal } from "../lib/openExternal";
+import { DEFAULT_SUPABASE_URL, DEFAULT_SUPABASE_ANON_KEY } from "../lib/supabase";
 
 interface SettingsViewProps {
   db: SharedBusinessDatabase;
@@ -90,8 +91,8 @@ export const SettingsView: React.FC<SettingsViewProps> = ({ db, onUpdateDb, unif
         {/* Supabase */}
         <section className="space-y-3">
           <h3 className="text-xs font-black uppercase tracking-widest text-green-400 flex items-center gap-2"><Database className="w-3.5 h-3.5" /> SUPABASE</h3>
-          <input type="text" placeholder="Supabase URL" className="w-full bg-[#0F172A] border border-green-500/20 rounded-2xl px-4 py-3 text-xs text-white outline-none" />
-          <input type="password" placeholder="Supabase Anon Key" className="w-full bg-[#0F172A] border border-green-500/20 rounded-2xl px-4 py-3 text-xs text-white outline-none" />
+          <input type="text" defaultValue={DEFAULT_SUPABASE_URL} placeholder="Supabase URL" className="w-full bg-[#0F172A] border border-green-500/20 rounded-2xl px-4 py-3 text-xs text-white outline-none" />
+          <input type="password" defaultValue={DEFAULT_SUPABASE_ANON_KEY} placeholder="Supabase Anon Key" className="w-full bg-[#0F172A] border border-green-500/20 rounded-2xl px-4 py-3 text-xs text-white outline-none" />
           <div className="flex items-center gap-2 text-[10px] font-bold text-slate-400">
              <div className="w-2 h-2 rounded-full bg-emerald-500" /> Connected
           </div>

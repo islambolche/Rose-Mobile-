@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from "react";
 import { Mail, Lock, Eye, ChevronLeft, Shield, Home } from "lucide-react";
-import { supabase, isSupabaseConfigured } from "../lib/supabase";
+import { supabase, isSupabaseConfigured, DEFAULT_SUPABASE_URL, DEFAULT_SUPABASE_ANON_KEY } from "../lib/supabase";
 import { SignUpScreen } from "./SignUpScreen";
 
 interface AuthScreenProps {
@@ -24,8 +24,8 @@ export const AuthScreen: React.FC<AuthScreenProps> = ({ onLoginSuccess }) => {
 
   useEffect(() => {
     const checkConnection = async () => {
-      const url = import.meta.env.VITE_SUPABASE_URL;
-      const key = import.meta.env.VITE_SUPABASE_ANON_KEY;
+      const url = import.meta.env.VITE_SUPABASE_URL || DEFAULT_SUPABASE_URL;
+      const key = import.meta.env.VITE_SUPABASE_ANON_KEY || DEFAULT_SUPABASE_ANON_KEY;
       if (!url || !key) {
         setServerConnected("missing");
         return;
@@ -48,8 +48,8 @@ export const AuthScreen: React.FC<AuthScreenProps> = ({ onLoginSuccess }) => {
       setError("Enter your email and password.");
       return;
     }
-    const url = import.meta.env.VITE_SUPABASE_URL;
-    const key = import.meta.env.VITE_SUPABASE_ANON_KEY;
+    const url = import.meta.env.VITE_SUPABASE_URL || DEFAULT_SUPABASE_URL;
+    const key = import.meta.env.VITE_SUPABASE_ANON_KEY || DEFAULT_SUPABASE_ANON_KEY;
     if (!url || !key) {
       setError("Cannot connect to the server. Check Supabase URL and key in Secrets.");
       return;

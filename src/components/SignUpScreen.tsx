@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from "react";
 import { ChevronLeft, User, Smartphone, Mail, Lock, Eye } from "lucide-react";
-import { supabase, isSupabaseConfigured } from "../lib/supabase";
+import { supabase, isSupabaseConfigured, DEFAULT_SUPABASE_URL, DEFAULT_SUPABASE_ANON_KEY } from "../lib/supabase";
 
 interface SignUpScreenProps {
   onBack: () => void;
@@ -23,8 +23,8 @@ export const SignUpScreen: React.FC<SignUpScreenProps> = ({ onBack, onSuccess })
   const [keyLen, setKeyLen] = useState(0);
 
   useEffect(() => {
-    const url = import.meta.env.VITE_SUPABASE_URL || "";
-    const key = import.meta.env.VITE_SUPABASE_ANON_KEY || "";
+    const url = import.meta.env.VITE_SUPABASE_URL || DEFAULT_SUPABASE_URL;
+    const key = import.meta.env.VITE_SUPABASE_ANON_KEY || DEFAULT_SUPABASE_ANON_KEY;
     setUrlOk(url.startsWith("https://") && url.endsWith(".supabase.co"));
     setKeyOk(key.startsWith("eyJ") || key.startsWith("sb_publishable_"));
     setKeyLen(key.length);
