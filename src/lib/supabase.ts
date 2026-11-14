@@ -3,9 +3,6 @@ import { createClient, SupabaseClient } from '@supabase/supabase-js';
 export const DEFAULT_SUPABASE_URL = "https://qnezkeqywwvynlrodbrg.supabase.co";
 export const DEFAULT_SUPABASE_ANON_KEY =
   "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InFuZXprZXF5d3d2eW5scm9kYnJnIiwicm9sZSI6ImFub24iLCJpYXQiOjE3OTQwNjM5MDIsImV4cCI6MjEwOTYzOTkwMn0.lwOMHOqjss4l_618Ymm1aVYy4eWr3S6UCFcFaWeJzqg";
-export const DEFAULT_GOOGLE_CLIENT_ID =
-  (import.meta.env.VITE_GOOGLE_CLIENT_ID || "").trim() ||
-  "845602108360-vu0rm387omvm2p71qjtuskejjbrpe8rs.apps.googleusercontent.com";
 
 function getSafeStorage() {
   if (typeof window === 'undefined') return undefined;

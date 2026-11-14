@@ -1,11 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { Mail, Lock, User, Eye, EyeOff, CheckCircle2, AlertCircle, Loader2 } from 'lucide-react';
-import {
-  supabase,
-  DEFAULT_SUPABASE_URL,
-  DEFAULT_SUPABASE_ANON_KEY,
-  DEFAULT_GOOGLE_CLIENT_ID,
-} from '../lib/supabase';
+import { supabase } from '../lib/supabase';
 
 interface RoseLoginScreenProps {
   onLoginSuccess: () => void;
@@ -21,14 +16,16 @@ export const RoseLoginScreen: React.FC<RoseLoginScreenProps> = ({ onLoginSuccess
   const [showPassword, setShowPassword] = useState(false);
   const [showConfirmPassword, setShowConfirmPassword] = useState(false);
   const [loading, setLoading] = useState(false);
-  const [message, setMessage] = useState<{ type: 'error' | 'success'; text: string } | null>(null);
+  const [message, setMessage] = useState<{
+    type: 'error' | 'success';
+    text: string;
+    details?: string;
+  } | null>(null);
+  const [showErrorDetails, setShowErrorDetails] = useState(false);
 
   const translateError = (err: any): string => {
     const raw = String(err?.message || err || '');
     const msg = raw.toLowerCase();
-    if (msg.includes('provider is not enabled') || msg.includes('unsupported provider')) {
-      return 'Supabase Dashboard → Authentication → Providers → Google চালু (Enable) করে Client ID ও Client Secret সেভ করুন';
-    }
     if (
       msg.includes('user already registered') ||
       msg.includes('already registered') ||
@@ -69,7 +66,6 @@ export const RoseLoginScreen: React.FC<RoseLoginScreenProps> = ({ onLoginSuccess
         hashParams.get('error');
 
       if (errorDesc) {
-        setMessage({ type: 'error', text: translateError(errorDesc) });
         window.history.replaceState({}, document.title, window.location.pathname);
         return;
       }
@@ -85,7 +81,12 @@ export const RoseLoginScreen: React.FC<RoseLoginScreenProps> = ({ onLoginSuccess
           window.history.replaceState({}, document.title, window.location.pathname);
           onLoginSuccess();
         } else {
-          setMessage({ type: 'error', text: translateError(error) });
+          setShowErrorDetails(false);
+          setMessage({
+            type: 'error',
+            text: 'Google লগইন এখন কাজ করছে না, একটু পরে আবার চেষ্টা করুন',
+            details: String(error?.message || error || ''),
+          });
         }
       } else if (hash && hash.includes('type=recovery')) {
         setTab('recovery');
@@ -111,27 +112,8 @@ export const RoseLoginScreen: React.FC<RoseLoginScreenProps> = ({ onLoginSuccess
   const handleGoogleLogin = async () => {
     setLoading(true);
     setMessage(null);
+    setShowErrorDetails(false);
     try {
-      try {
-        const settingsRes = await fetch(`${DEFAULT_SUPABASE_URL}/auth/v1/settings`, {
-          headers: { apikey: DEFAULT_SUPABASE_ANON_KEY },
-        });
-        if (settingsRes.ok) {
-          const settingsJson = await settingsRes.json();
-          if (settingsJson?.external && settingsJson.external.google === false) {
-            setMessage({
-              type: 'error',
-              text: `Supabase Dashboard → Authentication → Providers → Google চালু (Enable) করে Client ID (${DEFAULT_GOOGLE_CLIENT_ID.slice(
-                0,
-                16
-              )}…) ও Client Secret সেভ করুন`,
-            });
-            setLoading(false);
-            return;
-          }
-        }
-      } catch {}
-
       const isNative = Boolean((window as any).Capacitor?.isNativePlatform());
       const redirectTo = isNative ? 'rose://login' : `${window.location.origin}/auth/callback`;
 
@@ -152,7 +134,12 @@ export const RoseLoginScreen: React.FC<RoseLoginScreenProps> = ({ onLoginSuccess
         }
       }
     } catch (err: any) {
-      setMessage({ type: 'error', text: translateError(err) });
+      setShowErrorDetails(false);
+      setMessage({
+        type: 'error',
+        text: 'Google লগইন এখন কাজ করছে না, একটু পরে আবার চেষ্টা করুন',
+        details: String(err?.message || err || ''),
+      });
       setLoading(false);
     }
   };
@@ -160,6 +147,7 @@ export const RoseLoginScreen: React.FC<RoseLoginScreenProps> = ({ onLoginSuccess
   const handleEmailAuth = async (e: React.FormEvent) => {
     e.preventDefault();
     setMessage(null);
+    setShowErrorDetails(false);
 
     if (tab === 'signup') {
       if (!fullName.trim()) {
@@ -360,18 +348,36 @@ export const RoseLoginScreen: React.FC<RoseLoginScreenProps> = ({ onLoginSuccess
 
             {message && (
               <div
-                className={`p-3.5 rounded-2xl text-xs font-semibold flex items-center gap-3 ${
+                className={`p-3.5 rounded-2xl text-xs font-semibold flex flex-col gap-2 ${
                   message.type === 'error'
                     ? 'bg-rose-500/20 border border-rose-500/40 text-rose-200'
                     : 'bg-emerald-500/20 border border-emerald-500/40 text-emerald-200'
                 }`}
               >
-                {message.type === 'error' ? (
-                  <AlertCircle className="w-4 h-4 shrink-0" />
-                ) : (
-                  <CheckCircle2 className="w-4 h-4 shrink-0" />
+                <div className="flex items-center justify-between gap-3">
+                  <div className="flex items-center gap-2.5">
+                    {message.type === 'error' ? (
+                      <AlertCircle className="w-4 h-4 shrink-0" />
+                    ) : (
+                      <CheckCircle2 className="w-4 h-4 shrink-0" />
+                    )}
+                    <span>{message.text}</span>
+                  </div>
+                  {message.details && (
+                    <button
+                      type="button"
+                      onClick={() => setShowErrorDetails((prev) => !prev)}
+                      className="text-[11px] underline text-rose-300 hover:text-white shrink-0 font-bold"
+                    >
+                      বিস্তারিত
+                    </button>
+                  )}
+                </div>
+                {message.details && showErrorDetails && (
+                  <div className="text-[11px] font-mono text-rose-200/90 bg-black/30 rounded-lg px-2.5 py-2 break-all">
+                    {message.details}
+                  </div>
                 )}
-                <span>{message.text}</span>
               </div>
             )}
 
