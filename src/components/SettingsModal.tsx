@@ -1,4 +1,5 @@
 import React, { useState, useEffect, useRef } from "react";
+import { supabase } from "../lib/supabase";
 import {
   X,
   User,
@@ -56,6 +57,7 @@ type TabType =
   | "language"
   | "voice"
   | "keys"
+  | "session"
   | "developer"
   | "business"
   | "data"
@@ -66,6 +68,7 @@ const TABS: { id: TabType; label: string; icon: React.FC<{ className?: string }>
   { id: "language", label: "Language & Style", icon: Globe },
   { id: "voice", label: "Voice & Model", icon: Volume2 },
   { id: "keys", label: "API Keys", icon: Key },
+  { id: "session", label: "Session", icon: User },
   { id: "developer", label: "MD YOUSUF KHAN\nWEB DEVELOPER", icon: Code },
   { id: "business", label: "Business Info", icon: Briefcase },
   { id: "data", label: "Data", icon: Database },
@@ -103,9 +106,18 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({ isOpen, onClose, o
   // File import ref
   const fileInputRef = useRef<HTMLInputElement | null>(null);
 
+  const [userEmail, setUserEmail] = useState<string>('');
+
   // Load devices on mount/open once
   useEffect(() => {
     if (isOpen) {
+      if (supabase) {
+        supabase.auth.getUser().then(({ data }) => {
+          if (data?.user?.email) {
+            setUserEmail(data.user.email);
+          }
+        }).catch(() => {});
+      }
       const current = loadUnifiedSettings();
       setForm(current);
       setSavedStatus(null);
@@ -1490,6 +1502,34 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({ isOpen, onClose, o
                     >
                       <Trash2 className="w-4 h-4" />
                       Clear all data
+                    </button>
+                  </div>
+                </div>
+              )}
+
+              {/* TAB SESSION */}
+              {activeTab === "session" && (
+                <div className="space-y-5">
+                  <div className="border-b border-white/5 pb-2">
+                    <h3 className="text-sm font-black uppercase tracking-wider text-purple-400">User Session</h3>
+                    <p className="text-xs text-slate-400">Manage your active login session and account access.</p>
+                  </div>
+
+                  <div className="bg-[#060e1a] border border-purple-500/20 rounded-2xl p-5 space-y-4">
+                    <div>
+                      <span className="text-[10px] font-bold text-slate-400 uppercase tracking-wider">Logged in email</span>
+                      <p className="text-sm font-bold text-white mt-1">{userEmail || 'No active session'}</p>
+                    </div>
+
+                    <button
+                      onClick={async () => {
+                        if (supabase) await supabase.auth.signOut();
+                        onClose();
+                        window.location.reload();
+                      }}
+                      className="w-full py-3 px-4 bg-red-600/20 hover:bg-red-600/30 border border-red-500/40 rounded-xl text-xs font-black uppercase tracking-wider text-red-300 active:scale-95 transition-all flex items-center justify-center gap-2"
+                    >
+                      লগআউট
                     </button>
                   </div>
                 </div>

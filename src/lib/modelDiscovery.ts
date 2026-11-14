@@ -197,11 +197,9 @@ export async function discoverModels(apiKey: string, forceRefresh = false): Prom
   const timer = setTimeout(() => controller.abort(), 10000);
 
   try {
-    const res = await fetch('https://generativelanguage.googleapis.com/v1beta/models?pageSize=200', {
+    const modelsUrl = cleanKey ? `/api/gemini/models?pageSize=200&apiKey=${encodeURIComponent(cleanKey)}` : '/api/gemini/models?pageSize=200';
+    const res = await fetch(modelsUrl, {
       method: 'GET',
-      headers: {
-        'x-goog-api-key': cleanKey,
-      },
       signal: controller.signal,
     });
     clearTimeout(timer);

@@ -105,7 +105,10 @@ export const VoiceTestModal: React.FC<VoiceTestModalProps> = ({ settings, onClos
 
     for (const modelCandidate of LIVE_MODELS) {
       const cleanKey = apiKey.replace(/[\r\n\t\s"']+/g, "").trim();
-      const wsUrl = `wss://generativelanguage.googleapis.com/ws/google.ai.generativelanguage.v1beta.GenerativeService.BidiGenerateContent?key=${encodeURIComponent(cleanKey)}`;
+      const rawModel = modelCandidate.replace(/^models\//, "").trim();
+      const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+      const host = window.location.host;
+      const wsUrl = `${protocol}//${host}/api/live?model=${encodeURIComponent(rawModel)}&apiKey=${encodeURIComponent(cleanKey)}`;
       try {
         ws = new WebSocket(wsUrl);
         const wsPromise = new Promise<string>((resolve, reject) => {

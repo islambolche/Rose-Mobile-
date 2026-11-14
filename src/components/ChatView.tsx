@@ -47,7 +47,7 @@ export const ChatView = ({
                 style={{
                     backgroundImage: `linear-gradient(180deg, rgba(10, 8, 25, 0.70) 0%, rgba(10, 8, 25, 0.85) 100%), url('${ROSE_BRAND.chatBackground}')`,
                     backgroundSize: "cover",
-                    backgroundPosition: "center top",
+                    backgroundPosition: "center 30%",
                     backgroundRepeat: "no-repeat",
                 }}
             />

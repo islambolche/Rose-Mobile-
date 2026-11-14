@@ -124,12 +124,12 @@ export interface GeminiLiveOptions {
   useNativeMic?: boolean;
 }
 
-export const ALLOWED_LIVE_VOICES = ['Puck', 'Kore', 'Aoede', 'Zephyr', 'Leda', 'Charon', 'Fenrir'] as const;
+export const ALLOWED_LIVE_VOICES = ['Leda', 'Kore', 'Aoede', 'Zephyr', 'Callirrhoe', 'Despina', 'Vindemiatrix', 'Sulafat', 'Achernar', 'Puck', 'Charon', 'Fenrir', 'Orus'] as const;
 
 export function pickValidLiveVoice(voice?: string): string {
-  const clean = String(voice || '').trim();
+  const clean = String(voice || '').trim().split(/\s+/)[0] || 'Leda';
   const matched = ALLOWED_LIVE_VOICES.find((v) => v.toLowerCase() === clean.toLowerCase());
-  return matched || 'Puck';
+  return matched || 'Leda';
 }
 
 export function parseAndFormatGeminiError(status: number | string, rawMsg: string): { bengali: string; original: string } {
@@ -1411,7 +1411,8 @@ export class GeminiLiveSession {
 
           if (roseSpeaking) {
             if (!this.smartTurnOpen) {
-              if (isProbSpeech) {
+              const isBargeInSpeech = probs.isSpeech >= 0.85;
+              if (isBargeInSpeech) {
                 this.bargeInSpeechMs += 32;
                 if (this.bargeInSpeechMs >= 250) {
                   this.bargeInSpeechMs = 0;
@@ -2649,10 +2650,19 @@ export class GeminiLiveSession {
 
       let settled = false;
       const cleanLiveKey = String(apiKey || '').replace(/[\r\n\t\s"']+/g, '').trim();
-      const directWsUrl = cleanLiveKey
-        ? `wss://generativelanguage.googleapis.com/ws/google.ai.generativelanguage.v1beta.GenerativeService.BidiGenerateContent?key=${encodeURIComponent(cleanLiveKey)}`
-        : `wss://generativelanguage.googleapis.com/ws/google.ai.generativelanguage.v1beta.GenerativeService.BidiGenerateContent`;
-      const wsUrl = directWsUrl;
+      const protocol = typeof window !== 'undefined' && window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+      const host = typeof window !== 'undefined' ? window.location.host : 'localhost:3000';
+      const wsParams = new URLSearchParams({
+        assistantName: this.options.assistantName || 'Rose AI',
+        ownerName: this.options.ownerName || 'MD YOUSUF KHAN',
+        voiceName: this.options.voiceName || 'Sulafat',
+        personality: this.options.personality || 'Normal',
+        model: modelName,
+      });
+      if (cleanLiveKey) {
+        wsParams.set('apiKey', cleanLiveKey);
+      }
+      const wsUrl = `${protocol}//${host}/api/live?` + wsParams.toString();
 
       let socket: WebSocket | null = null;
       const finish = (success: boolean) => {
@@ -3600,6 +3610,10 @@ export class GeminiLiveSession {
     }
 
     if (content.interrupted) {
+      if (this.currentState === 'speaking' || this.scheduledAudioSources.length > 0) {
+        console.log('[GeminiLive] Ignoring server interrupted event during speech playback (echo guard)');
+        return;
+      }
       this.awaitingReplySince = 0;
       this.liveUserBuffer = '';
       this.liveAssistantBuffer = '';

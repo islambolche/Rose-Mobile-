@@ -94,12 +94,13 @@ function readSavedYourName(): string {
   return "";
 }
 
+let cachedIsAdmin = false;
+export function setCachedIsAdmin(val: boolean) {
+  cachedIsAdmin = val;
+}
+
 export function isAdmin(): boolean {
-  const raw = readSavedYourName();
-  const normalized = String(raw || "").replace(/\s+/g, "").toLowerCase();
-  const target = (ADMIN_EMAIL + ADMIN_CODE).replace(/\s+/g, "").toLowerCase();
-  const result = normalized === target;
-  return result;
+  return cachedIsAdmin;
 }
 
 export function getEffectiveUserName(rawSavedName?: string, fallbackName: string = ""): string {

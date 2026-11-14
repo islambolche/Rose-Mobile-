@@ -33,7 +33,7 @@ export const FREE_CHAT_PROVIDERS: ChatProviderConfig[] = [
     name: 'Gemini',
     badgeLabel: 'চ্যাট ও ভয়েস',
     tier: 'free',
-    baseURL: 'https://generativelanguage.googleapis.com/v1beta',
+    baseURL: '/api/gemini',
     defaultModel: '',
     storageKey: 'gemini_api_key',
     statusStorageKey: 'connection_status_gemini',
@@ -879,10 +879,12 @@ export const verifyProviderKey = async (
   try {
     let res: Response;
     if (providerId === 'gemini') {
+      let res: Response;
       try {
-        res = await fetch('https://generativelanguage.googleapis.com/v1beta/models', {
-          method: 'GET',
-          headers: { 'x-goog-api-key': testKey },
+        res = await fetch('/api/gemini/verify', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ apiKey: testKey }),
           signal: controller.signal,
         });
       } catch {

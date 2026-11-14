@@ -123,7 +123,7 @@ export const HomeScreenV2 = ({
 
       {/* 3. IMAGE AREA */}
       <div style={{ width: '100vw', height: '100vw', flexShrink: 0, position: 'relative', paddingBottom: 'env(safe-area-inset-bottom)' }}>
-        <img src="/rose-mobile.png" alt="Rose" style={{ width: '100%', height: '100%', objectFit: 'cover', objectPosition: 'center top' }} />
+        <img src="/rose-home-ai.png" alt="Rose" style={{ width: '100%', height: '100%', objectFit: 'cover', objectPosition: 'center 30%' }} />
         
         {/* Mic Waves */}
         {voiceActive && (

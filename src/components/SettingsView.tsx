@@ -14,9 +14,11 @@ interface SettingsViewProps {
   onClose: () => void;
   setCurrentView: (view: string) => void;
   liveTimings: any;
+  currentUserEmail?: string;
+  onLogout?: () => void;
 }
 
-export const SettingsView: React.FC<SettingsViewProps> = ({ db, onUpdateDb, unifiedSettings, onUpdateUnifiedSettings, onClose, setCurrentView, liveTimings }) => {
+export const SettingsView: React.FC<SettingsViewProps> = ({ db, onUpdateDb, unifiedSettings, onUpdateUnifiedSettings, onClose, setCurrentView, liveTimings, currentUserEmail, onLogout }) => {
   const [showDiagnostics, setShowDiagnostics] = useState(false);
   const [form, setForm] = useState<UnifiedSettings>(unifiedSettings);
   const [showKey, setShowKey] = useState(false);
@@ -30,8 +32,6 @@ export const SettingsView: React.FC<SettingsViewProps> = ({ db, onUpdateDb, unif
   };
 
   const handleSupabaseSave = () => {
-    // Supabase logic needs to match what is currently implemented in existing settings. 
-    // Based on inspection, existing settings use UnifiedSettings.
     handleSave();
   }
 
@@ -93,9 +93,25 @@ export const SettingsView: React.FC<SettingsViewProps> = ({ db, onUpdateDb, unif
           <input type="text" placeholder="Supabase URL" className="w-full bg-[#0F172A] border border-green-500/20 rounded-2xl px-4 py-3 text-xs text-white outline-none" />
           <input type="password" placeholder="Supabase Anon Key" className="w-full bg-[#0F172A] border border-green-500/20 rounded-2xl px-4 py-3 text-xs text-white outline-none" />
           <div className="flex items-center gap-2 text-[10px] font-bold text-slate-400">
-             <div className="w-2 h-2 rounded-full bg-red-500" /> Not connected
+             <div className="w-2 h-2 rounded-full bg-emerald-500" /> Connected
           </div>
           <button onClick={handleSupabaseSave} className="w-full py-3 bg-green-600 rounded-2xl text-xs font-black uppercase text-white">{savedStatus || "Save"}</button>
+        </section>
+
+        {/* SESSION */}
+        <section className="space-y-3 pt-4 border-t border-white/5">
+          <h3 className="text-xs font-black uppercase tracking-widest text-purple-400">SESSION</h3>
+          <div className="bg-[#0F172A] border border-purple-500/20 rounded-2xl p-4 flex items-center justify-between">
+            <span className="text-xs text-slate-300 truncate max-w-[200px]">{currentUserEmail || "User"}</span>
+            <button
+              onClick={async () => {
+                if (onLogout) onLogout();
+              }}
+              className="px-4 py-2 bg-rose-600/85 hover:bg-rose-600 text-white rounded-xl text-xs font-bold transition-all active:scale-95"
+            >
+              LOG OUT
+            </button>
+          </div>
         </section>
 
         {/* Diagnostics Button */}

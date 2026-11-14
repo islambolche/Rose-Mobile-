@@ -59,7 +59,7 @@ export const HomeScreenV4 = ({
     <div style={{ position: 'fixed', top: 0, left: 0, width: '100vw', height: `${viewportHeight}px`, display: 'flex', flexDirection: 'column', overflow: 'hidden', background: 'linear-gradient(180deg, #050a24 0%, #0a0f3a 60%, #1a0b4a 100%)', color: 'white', fontFamily: 'sans-serif' }}>
       {!keyboardOpen && (
         <div style={{ width: '100vw', aspectRatio: '941 / 650', overflow: 'hidden', flexShrink: 0 }}>
-            <img src="/rose-mobile.png" style={{ width: '100%', height: '100%', objectFit: 'cover', objectPosition: 'center top' }} />
+            <img src="/rose-home-ai.png" style={{ width: '100%', height: '100%', objectFit: 'cover', objectPosition: 'center 30%' }} />
         </div>
       )}
 

@@ -78,7 +78,10 @@ import {
   CameraOff,
   RefreshCw,
   Clock,
+  Bell,
 } from "lucide-react";
+import { RoseLoginScreen } from "./components/RoseLoginScreen";
+import { setCachedIsAdmin } from "./lib/admin";
 import {
   AssistantSettings,
   AppPermission,
@@ -1404,14 +1407,15 @@ const VoiceCheckView = ({
     try {
       const controller = new AbortController();
       const timeoutId = setTimeout(() => controller.abort(), 4000);
-      const res = await fetch("https://generativelanguage.googleapis.com/v1beta/models", {
-        method: "GET",
-        headers: { "x-goog-api-key": rawKey },
+      const res = await fetch("/api/gemini/verify", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ apiKey: rawKey }),
         signal: controller.signal,
       });
       clearTimeout(timeoutId);
-      if (res.ok) return "ok";
-      if (res.status === 429) return "ok";
+      const data = await res.json().catch(() => ({}));
+      if (data.ok || res.ok) return "ok";
       if (res.status === 400 || res.status === 401 || res.status === 403) {
         return "invalid";
       }
@@ -2831,6 +2835,116 @@ export function App() {
 
   const [voiceConnOk, setVoiceConnOk] = useState<boolean>(true);
   const [micStatus, setMicStatus] = useState<"ok" | "blocked">("ok");
+
+  const [user, setUser] = useState<any>(null);
+  const [session, setSession] = useState<any>(null);
+  const [accountLocked, setAccountLocked] = useState(false);
+  const [notifications, setNotifications] = useState<any[]>([]);
+  const [unreadNotifCount, setUnreadNotifCount] = useState(0);
+  const [showNotificationsModal, setShowNotificationsModal] = useState(false);
+
+  const handleUserSessionSetup = async (currentUser: any) => {
+    if (!currentUser || !supabase) return;
+    setUser(currentUser);
+    const isNative = Boolean((window as any).Capacitor?.isNativePlatform());
+    try {
+      const { data: touchRes } = await supabase.rpc('touch_profile', {
+        p_device: isNative ? 'mobile' : (window.innerWidth >= 1024 ? 'pc' : 'mobile')
+      });
+      if (touchRes === 'locked' || (touchRes as any)?.status === 'locked') {
+        setAccountLocked(true);
+        return;
+      }
+    } catch {}
+
+    try {
+      const { data: adminRes } = await supabase.rpc('is_admin');
+      setCachedIsAdmin(adminRes === true);
+    } catch {
+      setCachedIsAdmin(false);
+    }
+
+    try {
+      const { data: prof } = await supabase.from('profiles').select('full_name').eq('id', currentUser.id).single();
+      if (prof?.full_name) {
+        setSettings(prev => ({ ...prev, ownerName: prof.full_name }));
+        localStorage.setItem("userName", prof.full_name);
+      }
+    } catch {}
+
+    try {
+      const { data: notifs } = await supabase
+        .from('notifications')
+        .select('*')
+        .or(`user_id.eq.${currentUser.id},user_id.is.null`)
+        .order('created_at', { ascending: false });
+      if (notifs) {
+        setNotifications(notifs);
+        setUnreadNotifCount(notifs.filter((n: any) => !n.is_read).length);
+      }
+    } catch {}
+  };
+
+  useEffect(() => {
+    if (!supabase) return;
+    supabase.auth.getSession().then(async ({ data: { session } }) => {
+      setSession(session);
+      setUser(session?.user ?? null);
+      if (session?.user) {
+        await handleUserSessionSetup(session.user);
+      }
+    });
+
+    const { data: { subscription } } = supabase.auth.onAuthStateChange(async (_event, session) => {
+      setSession(session);
+      setUser(session?.user ?? null);
+      if (session?.user) {
+        await handleUserSessionSetup(session.user);
+      } else {
+        setUser(null);
+        setSession(null);
+      }
+    });
+
+    return () => {
+      subscription.unsubscribe();
+    };
+  }, []);
+
+  useEffect(() => {
+    if (!user || !supabase) return;
+    const client = supabase;
+    const channel = client.channel('notifications_realtime')
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'notifications' }, async () => {
+        const { data: notifs } = await client
+          .from('notifications')
+          .select('*')
+          .or(`user_id.eq.${user.id},user_id.is.null`)
+          .order('created_at', { ascending: false });
+        if (notifs) {
+          setNotifications(notifs);
+          setUnreadNotifCount(notifs.filter((n: any) => !n.is_read).length);
+        }
+      })
+      .subscribe();
+
+    return () => {
+      client.removeChannel(channel);
+    };
+  }, [user]);
+
+  const checkAndUseMessageQuota = async (): Promise<boolean> => {
+    if (!supabase) return true;
+    try {
+      const { data } = await supabase.rpc('use_one_message');
+      if (data === false) {
+        alert("আজকের ফ্রি সীমা শেষ, কাল আবার চালু হবে");
+        setToast("আজকের ফ্রি সীমা শেষ, কাল আবার চালু হবে");
+        return false;
+      }
+    } catch {}
+    return true;
+  };
 
   // Sync Termux contacts on startup if applicable
   useEffect(() => {
@@ -5725,45 +5839,48 @@ export function App() {
         const timeoutId = setTimeout(() => controller.abort(), 12000);
 
         try {
-          let url = "";
-          let method = "GET";
-          const headers: Record<string, string> = {};
-          let body: string | undefined = undefined;
-
-          if (type === "gemini") {
-            url = "https://generativelanguage.googleapis.com/v1beta/models";
-            method = "GET";
-            headers["x-goog-api-key"] = cleanKey;
-          } else if (type === "groq") {
-            url = "https://api.groq.com/openai/v1/models";
-            headers["Authorization"] = `Bearer ${cleanKey}`;
-          } else if (type === "openai") {
-            url = "https://api.openai.com/v1/models";
-            headers["Authorization"] = `Bearer ${cleanKey}`;
+          let res: Response;
+          const isGemini = type === "gemini";
+          if (isGemini) {
+            res = await fetch("/api/gemini/verify", {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({ apiKey: cleanKey }),
+              signal: controller.signal
+            });
+          } else {
+            let url = "";
+            const headers: Record<string, string> = {};
+            if (type === "groq") {
+              url = "https://api.groq.com/openai/v1/models";
+              headers["Authorization"] = `Bearer ${cleanKey}`;
+            } else if (type === "openai") {
+              url = "https://api.openai.com/v1/models";
+              headers["Authorization"] = `Bearer ${cleanKey}`;
+            }
+            res = await fetch(url, {
+              method: "GET",
+              headers,
+              signal: controller.signal
+            });
           }
-
-          const res = await fetch(url, {
-            method,
-            headers,
-            ...(body ? { body } : {}),
-            signal: controller.signal
-          });
           clearTimeout(timeoutId);
-          
+
           const rawText = await res.text().catch(() => "");
           let parsed: any = null;
           try { parsed = JSON.parse(rawText); } catch {}
           const apiMsg = parsed?.error?.message || parsed?.message || "";
           const status = res.status;
+          const isOk = res.ok || (isGemini && (parsed.ok || status === 200));
 
-          if (res.ok) {
+          if (isOk) {
             verifiedCount++;
           } else if (status === 400 || status === 401 || status === 403) {
             invalidFound = true;
-            lastErrorMsg = type === "gemini" ? "কী ভুল" : `ভুল API Key (${status}): ${apiMsg.slice(0, 40)}`;
+            lastErrorMsg = isGemini ? "কী ভুল" : `ভুল API Key (${status}): ${apiMsg.slice(0, 40)}`;
           } else if (status === 429) {
-            lastErrorMsg = type === "gemini" ? "READY (limit full, পরে আবার)" : "সীমা শেষ (429), পরে চেষ্টা করুন";
-            if (type === "gemini") verifiedCount++;
+            lastErrorMsg = isGemini ? "READY (limit full, পরে আবার)" : "সীমা শেষ (429), পরে চেষ্টা করুন";
+            if (isGemini) verifiedCount++;
           } else {
             networkError = true;
             lastErrorMsg = `ত্রুটি (${status}): ${apiMsg.slice(0, 40)}`;
@@ -9711,6 +9828,7 @@ export function App() {
 
   const startLiveCall = useCallback(async () => {
     if (!settingsRef.current.masterAccess) return;
+    if (!(await checkAndUseMessageQuota())) return;
 
     // Requirement 1: Before any chat or live request, if no Gemini key is stored, immediately show message (no spinner)
     const geminiKey = (getGeminiKey() || apiKeysRef.current.gemini || "").replace(/["'\r\n\t\s]+/g, "").trim();
@@ -11074,9 +11192,9 @@ export function App() {
                   width: "100%",
                   height: "100%",
                   objectFit: "cover",
-                  objectPosition: "center top",
+                  objectPosition: "center 30%",
                 }}
-                className="w-full h-full object-cover object-top block pointer-events-none select-none"
+                className="w-full h-full object-cover object-[center_30%] block pointer-events-none select-none"
               />
 
               {/* Subtle purple hair-glow overlay */}
@@ -11129,20 +11247,44 @@ export function App() {
 
         {/* Foreground Overlay Controls (z-10) */}
         <div className="relative z-10 flex-1 flex flex-col justify-between w-full h-full pt-[env(safe-area-inset-top,12px)] pb-1">
-          {/* Top Section - ROSE Title & Status Dot (No background box) */}
-          <div className="w-full flex items-center justify-center gap-2 px-4 pt-[calc(env(safe-area-inset-top,0px)+12px)] shrink-0 z-20">
-            <h1 className="text-[28px] font-black italic tracking-[0.2em] text-white drop-shadow-[0_2px_8px_rgba(168,85,247,0.5)] select-none uppercase">
-              ROSE
-            </h1>
-            <div
-              className={'w-2.5 h-2.5 rounded-full transition-all duration-300 ' + (
-                !isAssistantEnabled
-                  ? "bg-slate-500 shadow-none"
-                  : isSilentMode
-                    ? "bg-amber-400 shadow-[0_0_10px_#fbbf24] animate-pulse"
-                    : "bg-emerald-400 shadow-[0_0_10px_#34d399] animate-pulse"
+          {/* Top Section - ROSE Title, Status Dot & Notifications Bell */}
+          <div className="w-full flex items-center justify-between px-6 pt-[calc(env(safe-area-inset-top,0px)+12px)] shrink-0 z-20">
+            <div className="w-8" />
+            <div className="flex items-center gap-2">
+              <h1 className="text-[28px] font-black italic tracking-[0.2em] text-white drop-shadow-[0_2px_8px_rgba(168,85,247,0.5)] select-none uppercase">
+                ROSE
+              </h1>
+              <div
+                className={'w-2.5 h-2.5 rounded-full transition-all duration-300 ' + (
+                  !isAssistantEnabled
+                    ? "bg-slate-500 shadow-none"
+                    : isSilentMode
+                      ? "bg-amber-400 shadow-[0_0_10px_#fbbf24] animate-pulse"
+                      : "bg-emerald-400 shadow-[0_0_10px_#34d399] animate-pulse"
+                )}
+              />
+            </div>
+            <button
+              onClick={async () => {
+                setShowNotificationsModal(true);
+                if (supabase && user) {
+                  await supabase
+                    .from('notifications')
+                    .update({ is_read: true })
+                    .or(`user_id.eq.${user.id},user_id.is.null`)
+                    .eq('is_read', false);
+                  setUnreadNotifCount(0);
+                }
+              }}
+              className="relative p-2.5 bg-white/10 backdrop-blur-md rounded-2xl text-white active:scale-95 transition-all"
+            >
+              <Bell className="w-5 h-5 text-purple-300" />
+              {unreadNotifCount > 0 && (
+                <span className="absolute -top-1 -right-1 w-5 h-5 bg-rose-600 text-white text-[10px] font-black rounded-full flex items-center justify-center shadow">
+                  {unreadNotifCount}
+                </span>
               )}
-            />
+            </button>
           </div>
 
           {/* Bottom Controls Area - 3 Cards at bottom & Orb Container 20px above cards */}
@@ -11941,6 +12083,7 @@ export function App() {
   const sendTypedMessageToRose = async (rawText: string) => {
     const text = rawText.trim();
     if (!text) return;
+    if (!(await checkAndUseMessageQuota())) return;
     setInputText("");
 
     // Start immediately: show "Rose is typing..." at once with no artificial delay
@@ -12066,7 +12209,7 @@ export function App() {
           style={{
             backgroundImage: `linear-gradient(180deg, rgba(10, 8, 25, 0.70) 0%, rgba(10, 8, 25, 0.85) 100%), url('${ROSE_BRAND.chatBackground}')`,
             backgroundSize: "cover",
-            backgroundPosition: "center top",
+            backgroundPosition: "center 30%",
             backgroundRepeat: "no-repeat",
           }}
         />
@@ -19068,6 +19211,34 @@ export function App() {
         )}
       </AnimatePresence>
 
+      {showNotificationsModal && (
+        <div className="fixed inset-0 z-[150] bg-black/70 backdrop-blur-md flex items-center justify-center p-5">
+          <div className="w-full max-w-sm bg-[#0e0924] border border-purple-500/30 rounded-[28px] p-6 text-white flex flex-col gap-4 max-h-[80vh] shadow-2xl">
+            <div className="flex items-center justify-between pb-3 border-b border-white/10">
+              <h3 className="text-base font-black uppercase tracking-wider flex items-center gap-2">
+                <Bell className="w-5 h-5 text-purple-400" /> Notifications
+              </h3>
+              <button onClick={() => setShowNotificationsModal(false)} className="p-2 bg-white/10 rounded-xl">
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+            <div className="flex-1 overflow-y-auto space-y-3 pr-1">
+              {notifications.length === 0 ? (
+                <p className="text-xs text-slate-400 text-center py-8">কোনো নোটিফিকেশন নেই</p>
+              ) : (
+                notifications.map((n: any, idx: number) => (
+                  <div key={n.id || idx} className="p-3 bg-white/5 border border-white/10 rounded-2xl flex flex-col gap-1">
+                    <h4 className="text-xs font-bold text-purple-300">{n.title || "Notification"}</h4>
+                    <p className="text-[11px] text-slate-300 leading-relaxed">{n.message || n.content}</p>
+                    <span className="text-[9px] text-slate-500 self-end">{new Date(n.created_at || Date.now()).toLocaleTimeString()}</span>
+                  </div>
+                ))
+              )}
+            </div>
+          </div>
+        </div>
+      )}
+
       {/* Menu Overlay */}
       <AnimatePresence>
         {isMenuOpen && (
@@ -19220,6 +19391,39 @@ export function App() {
         {renderGlobalModals()}
       </div>
     );
+  }
+
+  if (accountLocked) {
+    return (
+      <div className="fixed inset-0 z-[200] bg-[#030614] text-white flex flex-col items-center justify-center p-6 text-center gap-4">
+        <div className="w-16 h-16 rounded-full bg-rose-500/20 border border-rose-500/40 flex items-center justify-center text-rose-400 mb-2">
+          <AlertTriangle className="w-8 h-8" />
+        </div>
+        <p className="text-base font-bold leading-relaxed max-w-sm">
+          আপনার অ্যাকাউন্ট সাময়িকভাবে বন্ধ। যোগাযোগ: Settings → ABOUT & GUIDE → যোগাযোগ ও সাহায্য
+        </p>
+        <button
+          onClick={async () => {
+            if (supabase) await supabase.auth.signOut();
+            setAccountLocked(false);
+            setUser(null);
+            setSession(null);
+          }}
+          className="mt-4 px-6 py-3 bg-purple-600 rounded-2xl text-xs font-black uppercase tracking-wider text-white"
+        >
+          লগআউট করুন
+        </button>
+      </div>
+    );
+  }
+
+  if (!user) {
+    return <RoseLoginScreen onLoginSuccess={async () => {
+      const { data: { session } } = await supabase!.auth.getSession();
+      if (session?.user) {
+        await handleUserSessionSetup(session.user);
+      }
+    }} />;
   }
 
   return (
