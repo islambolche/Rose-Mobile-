@@ -19303,6 +19303,39 @@ export function App() {
     );
   }
 
+  if (accountLocked) {
+    return (
+      <div className="fixed inset-0 z-[200] bg-[#030614] text-white flex flex-col items-center justify-center p-6 text-center gap-4">
+        <div className="w-16 h-16 rounded-full bg-rose-500/20 border border-rose-500/40 flex items-center justify-center text-rose-400 mb-2">
+          <AlertTriangle className="w-8 h-8" />
+        </div>
+        <p className="text-base font-bold leading-relaxed max-w-sm">
+          আপনার অ্যাকাউন্ট সাময়িকভাবে বন্ধ। যোগাযোগ: Settings → ABOUT & GUIDE → যোগাযোগ ও সাহায্য
+        </p>
+        <button
+          onClick={async () => {
+            if (supabase) await supabase.auth.signOut();
+            setAccountLocked(false);
+            setUser(null);
+            setSession(null);
+          }}
+          className="mt-4 px-6 py-3 bg-purple-600 rounded-2xl text-xs font-black uppercase tracking-wider text-white"
+        >
+          লগআউট করুন
+        </button>
+      </div>
+    );
+  }
+
+  if (!user) {
+    return <RoseLoginScreen onLoginSuccess={async () => {
+      const { data: { session } } = await supabase!.auth.getSession();
+      if (session?.user) {
+        await handleUserSessionSetup(session.user);
+      }
+    }} />;
+  }
+
   if (isPcLayoutActive) {
     return (
       <div
@@ -19391,39 +19424,6 @@ export function App() {
         {renderGlobalModals()}
       </div>
     );
-  }
-
-  if (accountLocked) {
-    return (
-      <div className="fixed inset-0 z-[200] bg-[#030614] text-white flex flex-col items-center justify-center p-6 text-center gap-4">
-        <div className="w-16 h-16 rounded-full bg-rose-500/20 border border-rose-500/40 flex items-center justify-center text-rose-400 mb-2">
-          <AlertTriangle className="w-8 h-8" />
-        </div>
-        <p className="text-base font-bold leading-relaxed max-w-sm">
-          আপনার অ্যাকাউন্ট সাময়িকভাবে বন্ধ। যোগাযোগ: Settings → ABOUT & GUIDE → যোগাযোগ ও সাহায্য
-        </p>
-        <button
-          onClick={async () => {
-            if (supabase) await supabase.auth.signOut();
-            setAccountLocked(false);
-            setUser(null);
-            setSession(null);
-          }}
-          className="mt-4 px-6 py-3 bg-purple-600 rounded-2xl text-xs font-black uppercase tracking-wider text-white"
-        >
-          লগআউট করুন
-        </button>
-      </div>
-    );
-  }
-
-  if (!user) {
-    return <RoseLoginScreen onLoginSuccess={async () => {
-      const { data: { session } } = await supabase!.auth.getSession();
-      if (session?.user) {
-        await handleUserSessionSetup(session.user);
-      }
-    }} />;
   }
 
   return (
