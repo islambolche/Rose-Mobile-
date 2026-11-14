@@ -1,6 +1,11 @@
 import React, { useState, useEffect } from 'react';
 import { Mail, Lock, User, Eye, EyeOff, CheckCircle2, AlertCircle, Loader2 } from 'lucide-react';
-import { supabase } from '../lib/supabase';
+import {
+  supabase,
+  DEFAULT_SUPABASE_URL,
+  DEFAULT_SUPABASE_ANON_KEY,
+  DEFAULT_GOOGLE_CLIENT_ID,
+} from '../lib/supabase';
 
 interface RoseLoginScreenProps {
   onLoginSuccess: () => void;
@@ -21,6 +26,9 @@ export const RoseLoginScreen: React.FC<RoseLoginScreenProps> = ({ onLoginSuccess
   const translateError = (err: any): string => {
     const raw = String(err?.message || err || '');
     const msg = raw.toLowerCase();
+    if (msg.includes('provider is not enabled') || msg.includes('unsupported provider')) {
+      return 'Supabase Dashboard → Authentication → Providers → Google চালু (Enable) করে Client ID ও Client Secret সেভ করুন';
+    }
     if (
       msg.includes('user already registered') ||
       msg.includes('already registered') ||
@@ -53,6 +61,19 @@ export const RoseLoginScreen: React.FC<RoseLoginScreenProps> = ({ onLoginSuccess
   useEffect(() => {
     const handleCallback = async () => {
       const urlParams = new URLSearchParams(window.location.search);
+      const hashParams = new URLSearchParams(window.location.hash.replace(/^#/, ''));
+      const errorDesc =
+        urlParams.get('error_description') ||
+        hashParams.get('error_description') ||
+        urlParams.get('error') ||
+        hashParams.get('error');
+
+      if (errorDesc) {
+        setMessage({ type: 'error', text: translateError(errorDesc) });
+        window.history.replaceState({}, document.title, window.location.pathname);
+        return;
+      }
+
       const code = urlParams.get('code');
       const hash = window.location.hash;
 
@@ -91,6 +112,26 @@ export const RoseLoginScreen: React.FC<RoseLoginScreenProps> = ({ onLoginSuccess
     setLoading(true);
     setMessage(null);
     try {
+      try {
+        const settingsRes = await fetch(`${DEFAULT_SUPABASE_URL}/auth/v1/settings`, {
+          headers: { apikey: DEFAULT_SUPABASE_ANON_KEY },
+        });
+        if (settingsRes.ok) {
+          const settingsJson = await settingsRes.json();
+          if (settingsJson?.external && settingsJson.external.google === false) {
+            setMessage({
+              type: 'error',
+              text: `Supabase Dashboard → Authentication → Providers → Google চালু (Enable) করে Client ID (${DEFAULT_GOOGLE_CLIENT_ID.slice(
+                0,
+                16
+              )}…) ও Client Secret সেভ করুন`,
+            });
+            setLoading(false);
+            return;
+          }
+        }
+      } catch {}
+
       const isNative = Boolean((window as any).Capacitor?.isNativePlatform());
       const redirectTo = isNative ? 'rose://login' : `${window.location.origin}/auth/callback`;
 
